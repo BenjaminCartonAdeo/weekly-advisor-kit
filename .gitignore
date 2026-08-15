@@ -1,0 +1,8 @@
+# venv et deps locales (jamais versionnées)
+.venv/
+.opencode/node_modules/
+
+# artefacts du pipeline (jamais versionnés — reçus par le cron)
+reports/
+.opencode/plugins/weekly-advisor-engine/reports/
+*.log

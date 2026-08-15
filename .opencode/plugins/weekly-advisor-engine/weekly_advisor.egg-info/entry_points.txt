@@ -1,0 +1,2 @@
+[console_scripts]
+weekly-telemetry-aggregator = weekly_telemetry_aggregator.cli:main

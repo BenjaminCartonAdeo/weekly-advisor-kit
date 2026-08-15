@@ -1,0 +1,1104 @@
+# Spec — Pipeline `opencode-weekly-advisor` (v5.32)
+
+Changelog : voir `opencode-weekly-advisor-CHANGELOG.md` (fichier séparé depuis la v5.26).
+Dernières révisions intégrées : v5.31 (veille critique 3.5 + fixes insights), v5.31.b (cohérence 6.5), v5.31.c (retours du run de test complet), v5.32 (agent mince + skills + kit projet), v5.32.b (modèle hors agent — `--model` du cron).
+
+# Partie 0 — Orchestration : de cron à l'agent
+
+Le cron (**configuré et géré par vos soins, hors périmètre**) ne lance jamais le script Python directement. Il déclenche un **agent OpenCode dédié**, `weekly-advisor`, qui orchestre l'appel au CLI déterministe, fait le travail qualitatif (Parties 3 et 4), rédige le rapport final (Partie 7).
+
+## 1. Chaîne d'invocation — architecture unique
+
+Le cron appelle directement `opencode run`, **sans wrapper de gestion de serveur** : `opencode run` accepte `--port` (« port for the local server, defaults to random port ») et `--agent` (vérifié sur la doc CLI et `run.ts`, août 2026). Les étapes LLM (3, 4, 7) s'exécutent dans la session de l'agent ; les étapes déterministes (1, 2, 5, 6) n'ont **plus besoin du serveur** : le CLI lit directement la base SQLite locale d'OpenCode (Partie 1 §2, v5.16). Pas de `opencode serve`, pas de `--attach`, pas de serveur séparé.
+
+**Racine du run — définie, pas devinée** : le cron passe `--dir <project_root>` (la racine ciblée par la pipeline, celle qui contient `.opencode/`). L'agent s'exécute donc avec `$PWD` = cette racine — toutes les commandes `git -C "$PWD"`, les lectures et le lint en découlent ; l'agent ne devine jamais de chemin absolu. Le `project_root` de la config (Partie 1 §6) doit être identique à `$PWD` : la cohérence est vérifiée par `doctor` (Partie 1 §12), pas au runtime.
+
+```
+cron (utilisateur, hors périmètre)
+  │  ex. 0 6 * * 1  opencode run --port 4096 --agent weekly-advisor --dir /home/benjamin/Dev/Adeo "Lance la revue hebdomadaire"
+  ▼
+Agent OpenCode "weekly-advisor" (session dédiée, non-interactive,
+                                  serveur interne sur le port fixé)
+  │
+  ├─ 1. bash: python -m weekly_telemetry_aggregator run --anchor <run_time>
+  │       → weekly-summary-<date>.json (Partie 1)
+  │
+  ├─ 2. bash: python -m weekly_telemetry_aggregator releases --anchor <run_time>
+  │       → weekly-ecosystem-<date>.json (Partie 2 : veille + core changes)
+  │
+  ├─ 3. Audit qualitatif (Partie 3, LLM)
+  │       → lecture ciblée des transcripts des seules sessions candidates
+  │         via show-session <id>
+  │       → écrit weekly-quality-findings-<date>.json (archive)
+  │         + transcript-extract-<session_id>.md par session candidate (disque)
+  │       → constats transmis en mémoire aux étapes 3.5, 4, 6.5 et 7
+  │
+  ├─ 3.5. Veille critique (étape LLM, v5.31 — Partie 2 §1 « deux étages »)
+  │       → croise TOUTE la collecte ecosystem avec l'environnement existant
+  │         et les findings des sessions coûteuses
+  │       → écrit weekly-watch-findings-<date>.json (adopt / improve-existing /
+  │         token-saver / ignore) — jamais d'installation automatique
+  │
+  ├─ 4. Auto-Drafting skills & commands (Partie 4, LLM)
+  │       → agit sur les constats skill-candidate / command-candidate (≤ 3/run)
+  │       → création .opencode/skills/ et .opencode/commands/, commit direct
+  │         par écriture (cf. Partie 4 §7)
+  │
+  ├─ 5. bash: harness-eval harness-lint (Partie 5)
+  │       → lint déterministe de .opencode/ dans son état final
+  │       → weekly-harness-digest-<date>.json directement (--format json natif)
+  │
+  ├─ 6. bash: python -m weekly_telemetry_aggregator insights --anchor <run_time>
+  │       → weekly-insights-<date>.json (Partie 6 : deltas, alertes, R1-R4)
+  │
+  ├─ 6.5. Cohérence de l'environnement (étape LLM, v5.31.b — Partie 6 §6)
+  │       → passe critique finale : état déclaratif de .opencode/{agents,skills,
+  │         commands} croisé avec l'usage réel (skill_usage / R1 / R3 / harness)
+  │       → écrit weekly-coherence-findings-<date>.json (duplicate / dead-reference /
+  │         unused-unreferenced / mismatch / token-risk ; tags delete/shrink/merge/
+  │         recalibrate/reference) — aucune écriture auto
+  │
+  └─ 7. Rapport final (Partie 7) — rendu déterministe :
+         7a. bash: report-prep → weekly-report-draft-<date>.md (sections chiffrées, template)
+         7b. LLM : brouillon auto (report-blocks-draft) puis bloc « Prose » optionnel
+             → weekly-report-blocks-<date>.md (contrat anti-hallucination vérifié par le code)
+         7c. bash: report-assemble → weekly-report-<date>.md (le signal du cron)
+```
+
+Le `--anchor` passé aux appels est le même `run_time` pour tous — la fenêtre dérivée du même `run_time` (`lookback_days × 24h`) est identique partout, sans dérive entre invocations. **L'agent génère `run_time` une seule fois, en première commande bash** : `RUN_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)` — jamais par appel, sinon les fenêtres de `run`, `releases` et `insights` dérivent de quelques secondes.
+
+## 2. Définition de l'agent `weekly-advisor`
+
+Fichier : `.opencode/agents/infrastructure/weekly-advisor.md` (pluriel — convention actuelle
+OpenCode ; dossiers intermédiaires admis, vérifié par `opencode agent list`).
+
+**Agent mince + skills d'étape (v5.32)** : l'agent est un squelette (~55 lignes) qui porte
+l'ordre figé, les permissions et les invariants transverses. Chaque étape LLM charge un
+skill dédié `.opencode/skills/weekly-*/SKILL.md` — chargé à la demande, jamais en permanence :
+
+| Étape | Skill |
+|---|---|
+| 3 — audit qualitatif | `weekly-quality-audit` (catégories, schéma findings, paraphrase) |
+| 3.5 — veille critique | `weekly-watch-review` (adopt/improve/token-saver/ignore, sécurité) |
+| 4 — auto-drafting | `weekly-drafting` (formats, public cible, commit-draft) |
+| 6.5 — cohérence | `weekly-coherence-review` (catégories, tags action, lecture seule) |
+| 7b — prose | `weekly-report-prose` (contrat anti-hallucination, balises) |
+
+Deux commands complètent l'interface humaine : `/weekly-review` (lance la chaîne complète,
+même ordre que le cron, `agent: weekly-advisor` dans son frontmatter) et `/weekly-report`
+(résumé du dernier rapport). **Transposabilité (kit projet)** : l'agent, les 5 skills et les
+2 commands sont génériques (aucune référence au projet d'origine — tout se lit via la
+config `project_root`) ; un repo cible copie `weekly-advisor/` + `.opencode/` (agent, skills,
+commands) + la spec, adapte la config ; le modèle est passé par
+`opencode run --model <model>` (décision du déploiement — aucun `model:` en dur dans
+l'agent, v5.32.b), et la commande du cron fonctionne telle quelle.
+
+Toolset volontairement restreint — l'agent qui existe pour réduire vos coûts de tokens ne doit pas être le premier poste de dépense qu'il audite :
+- **`bash`**, limité à une allowlist de **deux familles** (v5.23) : `python -m weekly_telemetry_aggregator …` (sous-commandes `run`, `show-session`, `releases`, `insights`, `report-prep`, `report-assemble`, `commit-draft`, `doctor`, `self-cost`) et `harness-eval harness-lint …`. **Plus de `git` brut** : toute l'écriture git (pré-checks, identité, add scopé, commit) passe par `commit-draft` (Partie 4 §7) — le rollback `git revert --no-edit` reste une action humaine, hors allowlist. Si OpenCode permet une allowlist de commandes par agent, la préférer à un accès bash général.
+- **`read`**, scope : les JSON/extracts produits par les Parties 1/2/3/5/6, `.opencode/skills/`, `.opencode/commands/`, `.opencode/agents/`, le fichier de config du pipeline (`<project_root>/weekly-telemetry-config.json`)
+- **`write`**, scope : `.opencode/skills/`, `.opencode/commands/` (**création uniquement en v1** — la v2 étend à l'édition des fichiers existants pour R4, cf. Partie 6 §5), le répertoire de sortie (rapport, findings, extracts)
+- **Pas** d'accès au catalogue complet d'un agent de code généraliste (pas de `edit` sur le code applicatif, pas de navigateur/web) — cet agent audite et documente, il ne développe pas
+
+## 3. Accès aux transcripts pour les Parties 3 et 4 — tranché
+
+Sous-commande dédiée sur le CLI de la Partie 1 (DRY : réutilise `sqlite_reader.py`, zéro logique de lecture dupliquée) :
+
+```
+python -m weekly_telemetry_aggregator show-session <session_id> [--include-children]
+```
+
+- Sortie : texte structuré lisible (pas du JSON brut), une entrée par tour : outil appelé, arguments clés, résumé du résultat, texte des messages
+- `--include-children` : inclut les sessions enfants (subagents) liées par `parentID`
+- **Compaction des séquences répétitives** : si N ≥ 3 tours consécutifs appellent le même outil avec des arguments et un résultat d'erreur similaires (comparaison textuelle simple), n'afficher que le premier et le dernier, remplacer le reste par `[... N-2 appels similaires masqués ...]`. Règle mécanique, toujours déterministe — déduplication, pas synthèse.
+
+La Partie 3 sauvegarde la sortie de chaque `show-session` sur disque (`transcript-extract-<session_id>.md` dans `output_dir/extracts/`) ; la Partie 4 consomme ces fichiers (Partie 4 §4) — aucun pari sur la rétention du contexte de l'agent.
+
+## 4. Exit codes — santé d'exécution uniquement
+
+| Code | Sens |
+|---|---|
+| `0` | Toutes les étapes ont tourné complètement |
+| `1` | Run dégradé : au moins une étape partielle (warnings Partie 1, source en panne Partie 2) |
+| `2` | Échec bloquant d'une étape (script en erreur, serveur injoignable et fallback échoué) |
+
+L'agent remonte le pire des exit codes rencontrés parmi ses étapes.
+
+**Contrat d'alerte du cron — le rapport EST le signal** : `opencode run` ne permet pas à l'agent de contrôler l'exit code du processus (vérifié dans `run.ts` — aucun mécanisme ; un run qui se termine normalement sort à `0`). Pas de fichier de statut : la machinerie `.status`/silence-radio des versions 5.9-5.13 est **supprimée**. Règles :
+- l'agent écrit le rapport en **dernier** ; le rapport présent = run terminé (les dégradations sont visibles dans son annexe)
+- rapport absent à la fin de l'exécution d'`opencode run` = échec (y compris crash hard : OOM, segfault, kill — l'agent n'a rien écrit) → le cron alerte, le log cron (Partie 0 §5) contient la cause
+- exit `2` d'un CLI → l'agent **s'arrête sans écrire de rapport** ; exit `1` → il continue, la dégradation est notée dans l'annexe
+
+**Étapes LLM (3, 4, 7) — codes dérivés de leurs livrables** : ces étapes n'ont pas d'exit code propre ; c'est la présence/absence de leur livrable qui dégrade le run. Audit (3) sans `weekly-quality-findings` produit → `1` ; drafting (4) avec un commit en échec (fichier écrit mais non historisé) → `1` ; rapport (7) non écrit → `2`.
+
+**Cas particulier `harness-eval`** : neutralisé par `|| true` (Partie 5 §3) — le signal de l'étape est la **présence du digest** ; s'il manque (crash de l'outil), `insights` le gère (Partie 6 §2 : deltas lint à `null`, alerte sautée, warning) et la dégradation apparaît dans l'annexe du rapport.
+
+## 5. Contrat cron & environnement d'exécution
+
+Le cron (**configuré et géré par vos soins, hors périmètre**) doit satisfaire un contrat d'environnement, en plus du contrat d'invocation :
+
+**Invocation** : `opencode run --port 4096 --agent weekly-advisor --dir <project_root> "Lance la revue hebdomadaire"` — non-interactif, `--dir` = `project_root` de la config (Partie 1 §6). **Statut** : le cron alerte si `weekly-report-<date>.md` est absent en fin d'exécution (cf. §4) — le rapport est le signal, pas de fichier de statut.
+
+**PATH — résolu par le cron, jamais par l'agent** : l'agent exécute `python -m weekly_telemetry_aggregator …` et `harness-eval harness-lint …` dans un bash qui hérite de l'environnement du cron — un job cron typique a un PATH minimal et n'a pas votre shell interactif. Le cron doit donc mettre sur PATH (ou sourcer) : le binaire `python` du venv du projet (`weekly-advisor/.venv/bin` — sans lui, `ModuleNotFoundError` sur les dépendances du CLI, notamment `httpx`) et le binaire `harness-eval` (pipx, venv, etc.). Sans cela, l'agent hérite d'un environnement où les deux familles de commandes de son allowlist n'existent pas — échec dès l'étape 1.
+
+**Recommandé — résolution via `uv`** : plutôt que de sourcer un venv (fragile : PATH minimal, variables d'environnement manquantes dans un cron), le cron expose un `python` qui résout via `uv run --project <chemin-weekly-advisor>` (ex. un wrapper `weekly-python` sur PATH, ou l'activation du venv — au choix du cron). L'allowlist de l'agent reste `python -m weekly_telemetry_aggregator …` : la résolution du mot `python` est le contrat du cron, jamais l'affaire de l'agent.
+
+**Décision : cron conservé** — systemd/launchd a été envisagé (v5.19) puis écarté sur décision explicite : le contrat PATH ci-dessus + la journalisation suffisent, et la configuration système reste hors périmètre. Le contrat du cron : invocation (Partie 0 §1), PATH résolu (paragraphe ci-dessus), journalisation stdout/stderr.
+
+Le binaire `opencode` lui-même est **hors contrat PATH** : le cron l'invoque directement (premier mot de sa propre commande — s'il n'était pas résolu, le cron échouerait avant l'agent, pas la pipeline), et l'agent ne l'appelle jamais en bash (le CLI lit la base SQLite locale, Partie 1 §2 ; les étapes LLM passent par la session de l'agent) — rien à résoudre de ce côté.
+
+**Journalisation** : le cron capture stdout/stderr d'`opencode run` vers un log (ex. `<output_dir>/weekly-run-<date>.log`) — le rapport absent dit *que* le run a échoué, le log dit *pourquoi* (les erreurs de script n'apparaissent que là).
+
+**Limite de couverture du signal (assumée)** : « rapport absent = échec » ne couvre que les exécutions **lancées** — si le cron lui-même ne tourne pas (machine éteinte, démon cassé, permissions), rien ne s'exécute et aucune alerte locale n'est possible. **Recommandation forte (v5.21)** : heartbeat externe pingé par le cron en début de run (ex. healthchecks.io), qui alerte en cas de run manqué — c'est le **seul maillon qui ne dépend pas de l'exécution locale** ; la configuration reste hors périmètre (à l'utilisateur), mais ce n'est plus une note en bas de page.
+
+**Non-interactivité** : toutes les commandes git prescrites (Partie 4 §7) sont non-interactives (`--no-edit` sur `revert`, messages de commit passés en argument) ; les hooks pre-commit bloquants relèvent de la vérification d'environnement (cf. Partie 4 §7).
+
+---
+
+# Partie 1 — `weekly-telemetry-aggregator`
+
+Agrège la télémétrie de toutes les sessions OpenCode de la semaine en un JSON exploitable par la suite (audit, insights, rapport).
+
+## 1. Objectif & périmètre
+
+**Fait** : agréger, pour toutes les sessions OpenCode actives dans les 7 derniers jours, les métriques de tokens/coût/cache/skills déjà persistées par OpenCode — sans relancer d'agent, sans recalculer de tokenisation.
+
+**Ne fait pas** :
+- Analyse qualitative des prompts → Partie 3
+- Lint du harness → Partie 5
+- Deltas/alertes/maintenance → Partie 6
+- Rédaction du rapport → Partie 7
+
+**Principe directeur** : reproduire la même source de vérité que TokenScope (la télémétrie `step-finish` persistée par OpenCode), mais en lecture directe et en boucle sur plusieurs sessions, sans payer le coût d'un system prompt d'agent à chaque session analysée.
+
+## 2. Source de données — SQLite locale (v5.16)
+
+**Les sessions OpenCode sont dans une base SQLite** (vérifié localement le 13 août 2026, version installée) : `~/.local/share/opencode/opencode.db` (mode WAL). Tables confirmées :
+- `session` — **table vivante depuis la migration** (vérifié le 14 août 2026 : dernière écriture < 1 min avant le run de test ; `session_v2` est le **miroir figé depuis le 07/08** — lire `session_v2` rend invisible toute l'activité récente, c'est le bug racine corrigé par l'adaptateur `v1-live`, cf. §2 compat + changelog v5.29) — métadonnées : `id`, `parent_id`, `title`, `model` (**JSON `{id, providerID, variant}`** — pas une chaîne `provider/model` ; NULL → « unknown »), `agent`, `cost`, `tokens_input/output/reasoning/cache_read/cache_write` (**agrégats déjà calculés par OpenCode**), `time_created`/`time_updated` (**ms epoch** — conversion ISO nécessaire pour la fenêtre) ; `session_pending` existe mais est une file de delivery interne — **inutilisable** pour détecter les sessions actives
+- `message` (data JSON) / `part` (data JSON, indexée par session `part_session_idx`) — les parts : `step-finish` (`cost` + `tokens{cache{read,write}}`), `tool` (nom + `state`), `text` (tours utilisateur), `reasoning`, `compaction`, …
+- migrations Drizzle versionnées (`migration`, 42 entrées)
+
+**L'agrégation lit cette base directement, en lecture seule** — plus de SDK `opencode-ai`, plus de serveur requis pour l'étape 1, plus d'auth, plus de fallback stockage, plus de retry HTTP (la mécanique v5.3 est caduque pour l'étape 1).
+
+**Compatibilité v1/v2 — interface `SchemaAdapter` (v5.24)** : le reader expose une interface unique (`list_sessions`, `step_finishes_in_window`, `tool_calls`, `user_turns`, `children`, `active_sessions`) avec deux implémentations, sélectionnées par auto-détection :
+- **V1Adapter** (historique) : `session_v2`/`message`/`part` (step-finish dans `part.data`) — ne sert plus que sur les bases pré-migration
+- **HybridAdapter `v1-live`** (v5.29) : métadonnées depuis **`session`** (sessions CLI), télémétrie `part`/`message` (V1-style)
+- **DualAdapter `v1-dual`** (v5.30, vérifié le 14 août 2026 sur la base actuelle) : métadonnées **`session` ∪ `session_v2`** (dédup par id, ligne la plus fraîche), télémétrie `part`/`message` — **c'est l'adaptateur actif d'`opencode.db`**. Le client tient DEUX magasins de métadonnées vivants : sessions CLI (`opencode run`/TUI) → `session`, sessions serveur/démon → `session_v2` (sans parts persistées → `unflushed`) ; lire une seule table cache la semaine de l'autre monde (0 session au lieu de 19 sur la même fenêtre, v5.30)
+- **V2Adapter** (observé le 13 août 2026, `opencode-next.db` v0.0.0-next) : `session` (même forme que `session_v2`), `session_message` typée (`user` → `data.text` direct, `assistant` → `content[]` en blocs), **event-sourcing** — la télémétrie par étape vit dans `event` (`session.step.ended.1` : payload `cost` + `tokens.cache{read,write}` **confirmé identique** au step-finish v1 ; `session.tool.called.1`, `session.reasoning.ended.1`, …) ; `part`/`message` vidés (legacy) ; migrations dans `data_migration`
+- **Détection** : config `opencode_db_path` (défaut `auto`) — essayer les candidats (`opencode.db`, `opencode-next.db`), retenir celui dont le schéma matche un adaptateur ; si les deux matchent, la base au `time_updated` le plus récent gagne (la vivante) ; aucun match → exit `2` (« version d'OpenCode non supportée, lancer doctor »)
+- L'agrégateur consomme la sortie normalisée de l'adaptateur — la logique pure ne change pas entre v1 et v2 ; le support v2 s'active naturellement quand la base v2 devient la vivante
+
+**Contrat de lecture** : `busy_timeout` (verrous transitoires pendant qu'OpenCode écrit — WAL = lecture concurrente sûre) ; ouverture en `file:...?mode=ro` **si** les fichiers `-wal`/`-shm` sont présents (cas normal : OpenCode tourne ou a tourné) ; **repli si `SQLITE_READONLY_CANTLOCK`** (base WAL sans shm accessible) : ouverture normale + `PRAGMA query_only=ON` — jamais d'écriture, jamais de `immutable=1` (incompatible avec un writer vivant) ; requêtes par session (index par session dans les deux schémas — jamais de scan complet) ; pré-filtre `time_updated >= period.start` (élague) puis fenêtrage sur les timestamps de la fenêtre par session ; parsing sélectif des JSON — jamais chargés en masse.
+
+**Risque assumé — schéma interne** : la base n'est pas une API publique. Mitigations : version d'OpenCode épinglée ; `doctor` (Partie 1 §12) vérifie tables/colonnes + compteur de migrations avant tout run ; toute dérive de schéma → exit `2` bruyant, jamais silencieux. **Piste d'intégrité gratuite** : les agrégats de `session` (cost, tokens_*) permettent de cross-checker la somme des parts par session (écart significatif → warning).
+
+**Pricing — une seule règle** : `step-finish.cost` (dans `part.data`), lu tel quel, jamais recalculé. Si absent → warning `missing-pricing:<model>`, la session reste dans les totaux de tokens, est exclue des totaux de coût. **Jamais de taux par défaut silencieux.**
+
+**Skills** : pas de table skill — l'univers (`skills_never_loaded`) vient du scan des `SKILL.md` (portée fixe : `project_root/.opencode/skills/` + `~/.config/opencode/skills/` + compatibilités `.claude/skills/`/`.agents/skills/` projet et global) ; les **chargements** viennent des parts `tool` de nom `skill` (`state.input.name`, `state.metadata.dir` — forme confirmée sur la base locale), même pattern que TokenScope.
+
+## 3. Flux d'exécution
+
+```
+1. Charger la config : fichier `<project_root>/weekly-telemetry-config.json` par défaut (ou `--config <path>`) ;
+   la cohérence `project_root` vs répertoire d'exécution est vérifiée par `doctor` (Partie 1 §12), pas au runtime ;
+   fenêtre dérivée du run : period = [run_time − lookback_days×24h, run_time],
+   run_time = horodatage UTC, surchargeable via --anchor <ISO>
+2. Ouvrir `opencode.db` en lecture seule (mode=ro, busy_timeout) ; vérifier le schéma attendu
+   (tables/colonnes, compteur de migrations) — écart → exit `2` avec message explicite
+   (« version d'OpenCode incompatible, lancer doctor »)
+3. Lister les sessions :
+   a. PRÉ-FILTRE SQL : `time_updated >= period.start` (élague — condition nécessaire, pas un critère)
+   b. AUTO-EXCLUSION : sessions dont `time_updated >= run_time − 10 min` (encore actives — heuristique
+      validée : la session en cours a été mise à jour < 1 min avant le run de test ; `session_pending`
+      et `time_suspended` ne sont pas des marqueurs fiables) → exclues des totaux, listées dans
+      warnings (couvre la session weekly-advisor elle-même et les sessions utilisateur en cours,
+      dont la télémétrie est incomplète de toute façon)
+   c. AUTO-EXCLUSION COMPLÉMENTAIRE (anti auto-pollution) : session dont le titre correspond à
+      `advisor_run_title` (config, défaut « Lance la revue hebdomadaire ») → exclue des totaux —
+      la session du run PRÉCÉDENT, terminée, retomberait sinon dans la fenêtre suivante et
+      polluerait les statistiques (le pipeline se verrait dans ses propres totaux, une semaine en retard)
+4. Pour chaque session restante :
+   a. parts avec `time_created ∈ period` (step-finish : tokens/cache/cost ; tool : nom + args ;
+      text : tours utilisateur) — parsing sélectif des JSON
+   b. appels d'outils (nom, compte, tokens d'input estimés) — mêmes parts
+   c. skills chargés (parts `tool` de nom `skill`, état complet) — pattern TokenScope
+   d. sessions enfants (`parent_id`) et répéter a-c (même fenêtre)
+   e. construire un SessionUsage — agrégation limitée à la fenêtre, jamais à la vie entière
+   f. PROMPTS UTILISATEUR RÉPÉTÉS (v5.15 + v5.19) : tours utilisateur (parts `text` des messages
+      user), normaliser (minuscules, espaces aplatis, ponctuation finale tronquée) ; compter les
+      occurrences exactes, PUIS quasi-doublons : comparaison par paires `difflib.SequenceMatcher`
+      (stdlib) sur les 100 premiers caractères normalisés — ratio ≥ `user_prompt_repeat_similarity`
+      (défaut 0.9) → groupés comme répétitions ; si count ≥ `user_prompt_repeat_min` (défaut 3) et
+      longueur normalisée ≥ `user_prompt_repeat_min_chars` (défaut 80) → entrée dans
+      `user_prompt_repeats` (plafonné à 20). Coût négligeable : quelques dizaines de tours par
+      session, O(n²) trivial
+   g. INVOCATIONS DE COMMANDS (v5.22) : tours utilisateur commençant par `/` → nom du command,
+      comptage par command et par session (parts text déjà en main) — même coût que f
+5. Agréger les SessionUsage → WeeklySummary ; cross-check : somme des parts vs agrégats `session`
+   (cost, tokens_*) — écart significatif → warning ; **outliers par session** (médiane + MAD sur
+   les coûts de la fenêtre, z ≥ `session_outlier_z`, plancher `session_outlier_min_cost_usd`) ;
+   **bucketing journalier** (`daily_totals`) ; **paires de skills similaires** (`skill_similar_pairs`,
+   difflib sur descriptions + corps, seuil `skill_similarity_min`) ; warning si < 15 sessions dans
+   la fenêtre (échantillon d'outliers trop petit, v5.23) — tous calculs purs dans `aggregator.py`
+6. Écrire le JSON (atomique)
+7. Résumé court sur stdout + exit code (0/1/2)
+```
+
+Aucune étape n'invoque de LLM ni de commande `opencode run`.
+
+## 4. Modèle de données de sortie
+
+Fichier : `weekly-summary-<YYYY-MM-DD>.json` — date d'exécution UTC. Un fichier par jour de run ; un **re-run du même jour écrase** (fenêtre identique à `--anchor` fixé — la promesse « jamais écrasé » vaut entre jours différents), **jamais purgé** (l'historique est la mémoire des insights, Partie 6).
+
+```jsonc
+{
+  "schema_version": 2,
+  "period": { "start": "2026-08-03T06:00:00Z", "end": "2026-08-10T06:00:00Z" },
+  "generated_at": "2026-08-10T06:00:00Z",   // == period.end (run_time, lundi 06:00 UTC)
+
+  "totals": {
+    "session_count": 0,                     // sessions racines uniquement (enfants → subagent_totals)
+    "total_tokens": 0,
+    "total_cost_usd": 0.0,                  // racines + enfants mergés, une seule fois
+    "cache_read_tokens": 0,
+    "cache_write_tokens": 0,
+    "fresh_input_tokens": 0,
+    "output_tokens": 0,
+    "reasoning_tokens": 0,
+    "cache_hit_rate": 0.0                   // = cache_read / (cache_read + fresh_input)
+                                            // null si aucun input (div. par zéro) — formule UNIQUE
+                                            // pour totals et par session ; les cache_write sont
+                                            // un coût, pas un miss, ils n'entrent pas au dénominateur
+  },
+
+  "daily_totals": [                          // NOUVEAU v5.22 — bucketing journalier (tendance + spikes)
+    { "date": "2026-08-04", "cost_usd": 0.0, "total_tokens": 0, "cache_hit_rate": 0.0 }
+    // tri date ASC ; cache_hit_rate null si aucun input ce jour-là
+  ],
+
+  "by_model": [
+    { "model": "anthropic/claude-opus-4-5", "session_count": 0, "total_tokens": 0, "total_cost_usd": 0.0 }
+    // clé normalisée "provider/model" — fusionner les alias
+  ],
+
+  "top_sessions_by_cost": [                 // tri : cost_usd DESC, session_id ASC (ordre total déterministe)
+    {
+      "session_id": "ses_xxx",
+      "title_or_topic": "string|null",
+      "cost_usd": 0.0,
+      "total_tokens": 0,
+      "project_path": "string|null",
+      "duration_seconds": 0,                // premier → dernier step-finish DANS la fenêtre
+      "active_time_seconds": 0,             // somme des gaps inter-step-finish < 5 min
+      "cost_per_active_minute": 0.0,        // null si active_time_seconds = 0
+      "api_call_count": 0,
+      "includes_subagents": true,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cache_efficiency": 0.0,              // même formule que totals.cache_hit_rate, null si aucun input
+      "context_composition": {              // catégorisation des parts (estimations chars/4)
+        "file_tokens": 0, "tool_result_tokens": 0, "text_tokens": 0, "reasoning_tokens": 0
+      }
+    }
+  ],
+
+  "cost_outliers": [                          // NOUVEAU v5.22 — sessions anormalement chères (z-score robuste)
+    { "session_id": "ses_xxx", "cost_usd": 4.2, "z_score": 3.4 }
+    // médiane + MAD sur les coûts de la fenêtre ; z ≥ session_outlier_z ET
+    // coût ≥ session_outlier_min_cost_usd (plancher anti-bruit) ; tri z DESC
+  ],
+
+  "tool_usage": [
+    { "tool": "bash", "call_count": 0, "estimated_input_tokens": 0 }
+    // longueur(args) des ToolPart ÷ 4 — proxy d'INPUT uniquement (les résultats ne sont pas comptés)
+  ],
+
+  "skill_usage": [
+    { "skill": "git-review", "load_count": 0, "sessions_used_in": 0 }
+  ],
+
+  "command_usage": [                          // NOUVEAU v5.22 — invocations de slash commands
+    { "command": "optimize", "call_count": 0, "sessions_used_in": 0 }
+    // tours utilisateur commençant par "/" (parts text des messages user) ; tri alpha ;
+    // alimente command-underuse (Partie 3 §3) et le rapport
+  ],
+
+  "skill_similar_pairs": [                    // NOUVEAU v5.25 — paires de skills potentiellement redondants
+    { "skills": ["a", "b"], "similarity": 0.85 }
+    // difflib.SequenceMatcher sur description + 200 premiers caractères normalisés du corps ;
+    // ≥ skill_similarity_min (0.8) ; top 5 paires, tri similarity DESC ;
+    // alimente R3 (Partie 6 §4) — le garde-fou déterministe que harness-eval ne fournit pas (Partie 5 §5)
+  ],
+
+  "skill_catalog_count": 0,
+  "skills_never_loaded": ["deploy-staging"],
+
+  "user_prompt_repeats": [                  // NOUVEAU v5.15 — prompts utilisateur exactement répétés
+    { "normalized_preview": "string",       // 80 premiers caractères du prompt normalisé
+      "count": 3,                            // ≥ user_prompt_repeat_min
+      "session_id": "ses_xxx",
+      "avg_chars": 120 }                     // longueur moyenne du prompt d'origine
+    // tri : count DESC, session_id ASC ; plafonné à 20 entrées
+  ],
+
+  "subagent_totals": {
+    "child_session_count": 0,
+    "total_cost_usd": 0.0,
+    "by_agent_type": [
+      { "agent_type": "docs", "session_count": 0, "cost_usd": 0.0 }
+    ]
+  },
+
+  "warnings": [                             // plafonné à 50 entrées par run
+    { "session_id": "ses_yyy", "message": "missing-pricing:... / fallback approximate mode / session active exclue" }
+  ]
+}
+```
+
+Chaque champ répond à une question du rapport ou alimente une règle des Parties 3/6 : `cost_per_active_minute` + `api_call_count` distinguent une boucle d'un vrai travail de fond (`duration_seconds` élevé) ; `cache_read/write/efficiency` par session repèrent les réécritures de cache en boucle ; `context_composition` rend visibles les gros postes (résultats d'outils vs fichiers) ; `skills_never_loaded` alimente la règle R1 (Partie 6).
+
+**Règles normatives de sérialisation** : ordre total déterministe documenté pour chaque liste (coût DESC + tiebreak pour `top_sessions_by_cost`, alphabétique ailleurs) ; montants arrondis à 6 décimales ; divisions par zéro → `null` ; `warnings` plafonné à 50.
+
+## 5. Modules
+
+```
+weekly_telemetry_aggregator/
+├── cli.py              # sous-commandes : run (défaut), show-session <id> [--include-children],
+│                       #   releases (Partie 2), insights (Partie 6),
+│                       #   doctor & self-cost (Partie 1 §12)
+├── config.py           # chargement config, fenêtre = run_time − lookback_days×24h
+├── sqlite_reader.py    # lecture seule d'opencode.db (mode=ro, busy_timeout, schéma vérifié,
+│                       #   requêtes fenêtrées par session — v5.16 ; adaptateurs V1/V2 + auto-détection
+│                       #   de la base vivante — v5.24)
+├── models.py           # dataclasses : SessionUsage, WeeklySummary, ToolUsage, SkillUsage, Findings
+├── aggregator.py       # logique de calcul pure (pas d'I/O), testable isolément
+├── insights.py         # pur : deltas + alertes + règles R1-R4 (Partie 6)
+├── report.py           # rendu du rapport : template Jinja2, report-prep/report-assemble (Partie 7)
+├── safe_git_write.py    # écriture git sécurisée, partagée (v5.23) : validation frontmatter,
+│                       #   pré-checks (HEAD détaché, rebase/merge), add scopé, commit -c identité,
+│                       #   gestion d'échec sans retry — exposé via la sous-commande commit-draft
+│                       #   (Partie 4 §7) ; utilisé en v2 par la Partie 6 R4 sans duplication
+├── releases.py         # veille minimale : npm/topics/MCP/releases (Partie 2, httpx)
+├── transcript.py       # formatage lisible d'une session pour show-session (Partie 0 §3)
+├── writer.py           # sérialisation JSON, écriture atomique — recette imposée : écrire dans
+│                       #   `<cible>.tmp` DANS LE MÊME RÉPERTOIRE puis `os.replace(tmp, cible)` ;
+│                       #   un `open(cible, "w")` direct n'est PAS atomique — un crash à mi-écriture
+│                       #   laisse un JSON tronqué qui ferait échouer `insights` la semaine suivante
+│                       #   (os.replace est atomique sur le même système de fichiers, d'où le .tmp
+│                       #   dans le même répertoire et pas dans /tmp)
+└── __main__.py         # délègue à cli.py
+```
+
+**`aggregator.py` et `insights.py` doivent être purs** (entrées = données, sortie = structures) pour des tests unitaires sans dépendre de la base OpenCode. **`transcript.py`** réutilise `sqlite_reader.py` — même lecture, même schéma vérifié. **`releases.py`** est sans état : filtres par date, zéro fichier de dédup persistant.
+
+## 6. Configuration
+
+Fichier `weekly-telemetry-config.json` (surchargeable en CLI) :
+
+```json
+{
+  "project_root": "/home/benjamin/Dev/Adeo",
+  "opencode_db_path": "auto",           // auto : opencode.db puis opencode-next.db, la vivante gagne
+  "lookback_days": 7,
+  "output_dir": "~/opencode-weekly-reports/",
+  "top_sessions_limit": 5,
+  "audit_max_sessions": 8,
+  "skill_similarity_min": 0.8,
+  "review_window_weeks": 4,
+  "session_outlier_z": 3.0,
+  "session_outlier_min_cost_usd": 0.5,
+  "max_candidates_per_run": 3,
+  "include_subagents": true,
+  "fail_on_missing_telemetry": false,
+  "exclude_active_sessions": true,
+  "advisor_run_title": "Lance la revue hebdomadaire",
+  "git_name": "Weekly Advisor",
+  "git_email": "weekly-advisor@localhost",
+  "release_keywords": ["skill", "cache", "context", "compaction"],
+  "github_min_stars": 5,
+  "user_prompt_repeat_min": 3,
+  "user_prompt_repeat_similarity": 0.9,
+  "opencode_version_min": "1.18.0",       // épinglage : doctor vérifie `opencode --version`
+  "user_prompt_repeat_min_chars": 80,
+  "ignored_findings": [],              // snooze manuel : identifiants "category:target" à ne plus
+                                       // proposer (ex. "skill-maintenance:deploy-staging") —
+                                       // éditer la config, pas de nouvel état auto-géré
+  "audit": {
+    "cost_per_active_minute_min": 0.5,
+    "cache_efficiency_gap": 0.2
+  },
+  "insights": {
+    "weekly_budget_usd": 25.0,
+    "monthly_budget_usd": 100.0,
+    "daily_spike_z_min": 3.0,
+    "cache_hit_rate_min": 0.6,
+    "cost_wow_pct_max": 15.0,
+    "lint_violations_max": 10,
+    "never_loaded_runs_threshold": 4
+  }
+}
+```
+
+- Emplacement de la config : `<project_root>/weekly-telemetry-config.json` par défaut, surchargeable via `--config <path>`
+- `--anchor <ISO-8601>` : fixe `run_time` (tests, rejeu) ; défaut = horodatage d'exécution
+- Run hebdo le **lundi 06:00 UTC**
+- Exit codes : `0` = complet, `1` = partiel (warnings, sessions sautées), `2` = échec total
+
+## 7. Points vérifiés avant implémentation (août 2026)
+
+**Règle permanente (v5.27, actée après le test `status: draft`) : tout garde-fou qui dépend du comportement interne d'OpenCode (scanner de skills, événements, schéma, chargement) est vérifié en live et daté — jamais inféré d'un raisonnement plausible. Les vérifications ci-dessous portent cette marque.
+
+1. **Base SQLite** : `~/.local/share/opencode/opencode.db` (WAL, 14,3 Go sur la machine cible) — **`session` = table vivante** (vérifié le 14 août 2026 ; **l'observation du 13 août 2026 « `session_v2` vivante » était déjà périmée** — `session_v2` est figée depuis le 07/08, `session` porte l'activité réelle : 8 193 lignes dont les mises à jour du 10-14 août), `message`/`part` (JSON : `step-finish` avec `cost` + `tokens.cache{read,write}` ; `tool` avec nom + `state` ; `text` avec `data.text` ; `reasoning`), migrations Drizzle (42). Version installée : 1.18.18 — `opencode_version_min` 1.18.0. **Conséquence (v5.30)** : l'adaptateur actif sur `opencode.db` est `v1-dual` (`session` ∪ `session_v2`) — le comptage réel de la semaine passe de 0 à 19 sessions racines (ancre 16:04, même fenêtre 168h).
+2. **Filtrage par date** : pré-filtre `session.time_updated >= period.start` via l'adaptateur (élague), fenêtrage sur `part.time_created` par session (index `part_session_idx`) — **mesuré : 17 sessions / 7 473 parts en 3 ms** (13 août) ; **re-mesuré le 14 août avec `v1-dual` : 44 sessions touchées / 112 M tokens / run ~5 s (ancre 16:04)**. Timestamps **ms epoch** (conversion ISO ↔ ms).
+3. **Sessions enfants** : colonne `parent_id`.
+4. **`duration_seconds`** : min/max `part.time_created` dans la fenêtre.
+5. **Coût** : `step-finish.cost` dans `part.data` — lecture directe, warning sinon ; agrégats `session.cost/tokens_*` disponibles comme cross-check (l'interprétation du 13 août « `session` legacy car 6 476 lignes `model` NULL » était **fausse** : `session` est la table live ; `session_v2` est le miroir figé).
+6. **Code source TokenScope** : repo `ramtinJ95/opencode-tokenscope` — `plugin/tokenscope.ts` + `plugin/tokenscope-lib/{analyzer,skill,context,types}.ts` (pas de `opencode.js`). Le module `context.ts` inspire la `context_composition` — à répliquer en Python en estimation chars/4.
+7. **Transport — tranché v5.16** : lecture SQLite locale en mode `ro` — SDK, serveur, auth, fallback et retry HTTP supprimés (étape 1 sans serveur ; les étapes LLM 3/4/7 continuent de tourner dans des sessions OpenCode).
+8. **Leçon v5.29 — vérifier quelle table est live, pas laquelle « devrait » l'être** : l'observation du 13 août (session_v2 vivante) est contredite le 14 (session vivante) — la migration du client est asynchrone et silencieuse. Règle de code : `detect_db` choisit l'adaptateur au `MAX(time_updated)` le plus récent parmi les schémas valides (v1 / v1-live / v2) ; `doctor` affiche l'adaptateur retenu.
+
+8. **Schéma v2 observé (v5.24)** : `opencode-next.db` (v0.0.0-next-15919) — `session` (même forme que `session_v2`), `session_message` typée (`user`/`assistant`/`compaction`/`agent-switched`/`model-switched`/`synthetic`, `data.text` pour les tours user), `event` event-sourcé (`session.step.ended.1` porte `cost` + `tokens.cache{read,write}` — payload identique au step-finish v1 ; `session.tool.called.1`, `session.reasoning.ended.1`), `part`/`message` vidés, migrations dans `data_migration`. Le V2Adapter s'appuie sur ces faits ; à re-vérifier quand la base v2 deviendra la vivante.
+
+## 8. Gestion des erreurs
+
+| Cas | Comportement |
+|---|---|
+| Session à télémétrie partielle/mode approximatif | `warnings`, exclue des totaux |
+| Session encore active au moment du run | `warnings`, exclue des totaux (y compris la session d'audit) |
+| Session enfant orpheline | `subagent_totals` sans rattachement, journalisée |
+| Aucune session dans la fenêtre | JSON valide, totaux à 0, pas d'erreur fatale |
+| Part JSON illisible sur une session | Log + skip, le run continue |
+| Coût non résolu | Warning `missing-pricing:<model>` — tokens comptés, coût exclu |
+| Base absente ou verrouillée (busy_timeout épuisé) | Exit `2` avec message explicite |
+| Schéma inattendu (tables/colonnes, migrations) | Exit `2` — « version d'OpenCode incompatible, lancer doctor » |
+| Écart cross-check parts vs agrégats `session` | Warning |
+
+## 9. Dépendances
+
+- `sqlite3` (stdlib) pour la lecture d'opencode.db — **plus de SDK `opencode-ai`** (v5.16)
+- `httpx` pour les GET de la Partie 2 — le SDK étant retiré, httpx reste une dépendance directe assumée (cohérence avec le code existant du squelette `weekly-advisor/`, pas de `requests`)
+- `jinja2` pour le rendu du rapport (Partie 7) — la seule nouvelle dépendance depuis la v5.16
+- Aucune dépendance de tokenisation — on lit les tokens déjà comptés par OpenCode. **tiktoken rejeté (v5.24)** : `cl100k_base` est le tokenizer d'OpenAI seul — Anthropic ne publie pas le sien (la prémisse « pour OpenAI/Anthropic » était fausse) ; les fichiers BPE se téléchargent au premier usage (dépendance réseau, anti offline-first) ; une table d'encodages par modèle serait nécessaire (le parc est mixte : gpt-5-mini, claude-haiku-4.5, deepseek, …) ; et les estimations chars/4 sont monotones et cohérentes — l'insight (quelle catégorie domine le contexte) ne change pas avec la précision, seuls les totaux exacts comptent et ils existent déjà (step-finish persistés). `harness-eval` fait le même compromis (chars/4 sans tiktoken, observé v7.9.0).
+- Python ≥ 3.11, stdlib `dataclasses`, `json`, `pathlib`, `argparse`, `sqlite3`
+
+## 10. Tests
+
+- Unitaires sur `aggregator.py` et `insights.py` (deltas, alertes, règles R1-R4) avec fixtures manuelles
+- `releases.py` avec HTTP mocké (npm/topics/MCP/releases)
+- `sqlite_reader.py` testé avec **bases SQLite en mémoire** (mêmes tables/colonnes, parts JSON de test)
+- Intégration optionnelle contre la vraie `opencode.db` locale, `@pytest.mark.integration`, skippé en CI
+- Fixture de non-régression : JSON identique entre deux runs à `--anchor` fixé **et état de la base figé**
+- Règles de bord : divisions par zéro → `null`, session active exclue, pré-filtre `updated`
+
+## 11. Prochaine étape
+
+Écrire `sqlite_reader.py` en premier (lecture seule, schéma vérifié, requêtes fenêtrées par session), en s'appuyant sur `plugin/tokenscope.ts` et `tokenscope-lib/` de `ramtinJ95/opencode-tokenscope` pour l'extraction des skills chargés (parts `tool` de nom `skill`). `aggregator.py`, `insights.py`, `models.py`, `releases.py` sont développables et testables indépendamment.
+
+## 12. Doctor & self-cost — contrôle et visibilité du pipeline lui-même
+
+Le pipeline audite votre usage ; deux sous-commandes l'auditent lui :
+
+**`doctor`** — diagnostic d'installation, **sans rien écrire** : config parsable et clés requises présentes ; `project_root` == répertoire d'exécution ; **version d'OpenCode ≥ `opencode_version_min`** (`opencode --version` — l'épinglage du schéma passe par l'épinglage du binaire) ; **base OpenCode lisible et détectée** (auto-détection `opencode_db_path` : adaptateur V1 ou V2 actif, colonnes critiques présentes, compteur de migrations cohérent — `migration` ≥ 42 pour V1, `data_migration` pour V2) ; `output_dir` accessible en écriture ; `harness-eval` et `git` résolus sur PATH. Exit `0` = prêt, `1` = avertissements (ex. fallback actif), `2` = blocant. À lancer à l'installation et après chaque mise à jour du pipeline.
+
+**`self-cost`** — coût de la session du run en cours (via `sqlite_reader.py` : la ligne `session` du run courant — encore plus simple en SQL direct) : compense les exclusions du §3.b-c qui rendent le pipeline invisible dans ses propres totaux. Consommé par l'annexe du rapport (Partie 7 §3) — « coût propre du pipeline : X $ ». C'est le seul endroit où le pipeline se voit lui-même ; le reste du temps, il est exclu de ses propres statistiques par conception.
+
+**Limite assumée** : aucune boucle d'amélioration du pipeline lui-même en v1 — il améliore vos skills/commands, pas ses propres prompts ni son code (seule exception : `harness-eval` lint l'agent file, Partie 5). L'évolution se fait par édition manuelle + `doctor` après chaque changement + tests. Piste v2 si le besoin se matérialise : un audit du transcript du run précédent (devenu éligible) par le run courant.
+
+---
+
+# Partie 2 — Veille : collecte + analyse critique (étape 2, v5.31)
+
+**Deux étages** : (1) une collecte déterministe (`releases`) qui agrège les sources (API datées + listes/sites via la config `watch` typée — v5.30) ; (2) une **analyse critique LLM** (agent weekly-advisor, étape 3.5) qui parcourt la collecte **en connaissance de l'environnement existant** (catalogue skills/commands/agents, config, findings des sessions coûteuses) et produit `weekly-watch-findings-<date>.json` : recommandations **orientées action** (`adopt` / `improve-existing` / `token-saver` / `ignore`) pour réduire la consommation de tokens et améliorer l'expérience. **Le regard critique est la valeur** : le diff seul (nouveautés) ne voit pas un outil du marché mieux fait que l'existant. Sécurité : jamais d'installation automatique d'outils externes — l'agent remonte, l'humain décide ; dédup par repo source ; priorité aux entrées officielles/actives. (La v4 avait réduit à la seule feed releases — c'était un garde-fou, pas une veille.)
+
+```
+python -m weekly_telemetry_aggregator releases --anchor <run_time>
+```
+
+## 1. Sources
+
+| Source | Requête | Couvre |
+|---|---|---|
+| **npm registry** | `GET https://registry.npmjs.org/-/v1/search?text=keywords:opencode-plugin,opencode&size=250` (virgule = OR, qualificateur `keywords:` vérifié sur le REGISTRY-API.md officiel ; paginer avec `from` si `total` > 250) ; filtre client sur `package.date` | Plugins/paquets `opencode` publiés |
+| **GitHub Topics** | `GET /search/repositories?q=topic:opencode-plugin+stars:>5&sort=updated` (qualifier `stars:>` côté serveur — filtre le bruit hello-world/forks ; seuil `github_min_stars` en config, défaut 5 ; `GITHUB_TOKEN` env optionnel) ; filtre client sur `pushed_at`/`created_at` | Projets non publiés sur npm |
+| **MCP registry officiel** | `GET https://registry.modelcontextprotocol.io/v0.1/servers?updated_since=<period.start>&version=latest` (vérifié en live : réponse `{servers: [...], metadata: {...}}` — 30 entrées pour `updated_since` = 1 jour ; la combinaison des deux filtres fonctionne) ; filtre client `publishedAt` + `status: deleted` + garde-fou défensif `isLatest: false` (extensions dans `_meta["io.modelcontextprotocol.registry/official"]` de chaque entrée — chemin confirmé en live : `status`, `publishedAt`, `updatedAt`, `isLatest`) | Nouveaux serveurs MCP |
+| **Releases OpenCode** | `GET https://api.github.com/repos/anomalyco/opencode/releases` (vérifié en live : champs `tag_name`/`published_at`/`body`/`name` — ex. v1.18.18 publiée le 13 août 2026) ; filtre fenêtre sur `published_at` + mots-clés `release_keywords` (word-boundaries) ; `summary` = premières lignes de `body` | Changements du **cœur** OpenCode |
+
+**Veille étendue (v5.30) — config `watch` typée** (en plus des 4 sources API) :
+`repo` (releases+commits, fenêtre), `list` (diff du README d'un repo de curation —
+nouveaux liens depuis le snapshot local), `web` (diff des liens d'une page HTML),
+`topic` (GitHub topic search, daté), `rss` (items datés des flux Atom/RSS). Les
+types list/web utilisent un **snapshot local** (`output_dir/watch-state/`) avec
+**baseline silencieuse au premier run** — c'est l'exception assumée au principe
+« sans état », nécessaire au diff. Cap 50 items/source/run. `watch_repos` reste
+accepté (rétrocompatible, fusionné dans `watch`).
+
+**Sans état** : pas de `seen-items.json`, pas de dédup inter-runs — un item dans la fenêtre est « nouveau pour vous » depuis la dernière lecture, point. Dédup **intra-run** seulement (même repo trouvé par npm et GitHub → un item, `found_via` liste les sources). Pas de `curated` (plus de sources de curation), pas de `kind` (plus de notion version-bump : la date de dernière publication suffit).
+
+**Sources explicitement coupées (assumé)** : awesome-opencode (diff git), skills-hub-registry, ecosyste.ms dependents, VoltAgent, npm dependents (qualificateur inexistant). À réévaluer si la veille minimale s'avère insuffisante — jamais toutes d'un coup.
+
+## 2. Sortie
+
+Fichier : `weekly-ecosystem-<date>.json` :
+
+```jsonc
+{
+  "schema_version": 2,
+  "period": { "start": "...", "end": "..." },
+  "generated_at": "...",
+
+  "new_items": [
+    {
+      "name": "opencode-goal-mode",
+      "category": "plugin",              // plugin | skill | agent | mcp-server
+      "repo_url": "https://github.com/.../...",
+      "npm_package": "string|null",
+      "description": "string",
+      "published_at": "...",
+      "found_via": ["npm:keywords:opencode-plugin"],
+      "new_repo": false                  // true si créé dans la fenêtre (champ GitHub created_at)
+    }
+  ],
+
+  "core_changes": [
+    { "version": "v1.18.13", "date": "2026-08-04", "summary": "string",
+      "matched_keywords": ["skill", "cache"], "relevance_flag": "high" }
+    // ≥2 mots-clés → high ; 1 → medium ; 0 → non émis
+  ],
+
+  "counts_by_category": { "plugin": 0, "skill": 0, "agent": 0, "mcp-server": 0 },
+  "counts_by_source": {
+    "npm:keywords:opencode-plugin": 0, "github:topic:opencode-plugin": 0,
+    "mcp-registry": 0, "github:releases:opencode": 0
+  },
+
+  "warnings": [
+    { "source": "string", "message": "API indisponible / rate-limited, source ignorée pour ce run" }
+  ]
+}
+```
+
+Les champs clés du rapport : `found_via` (≥ 2 sources → item notable) et `new_repo` (créé dans la fenêtre → à regarder). `core_changes` reste la seule source qui protège les hypothèses de la Partie 1.
+
+## 3. Erreurs & bruit
+
+| Cas | Comportement |
+|---|---|
+| Source API indisponible/rate-limitée | Retry + backoff sur 429/5xx, puis `warnings` — exit `0` si au moins une source a réussi (échec partiel = warning seul, le run reste complet), `1` si toutes les sources échouent — évite une alerte cron hebdo pour une source en panne passagère |
+| Item à source unique, `new_repo: false` | Conservé dans `new_items` — le rapport le relègue en liste « à surveiller » (Partie 7 §4) |
+| Aucun release avec mot-clé pertinent | `core_changes` vide, pas d'entrée forcée |
+| Package npm sans `repo_url` | Clé de dédup intra-run = `npm_package` (fallback défini) |
+
+---
+
+# Partie 3 — Audit qualitatif : usage des tokens & prompting (étape 3)
+
+Extension du sous-agent LLM (comme la Partie 4, ce n'est **pas un script Python déterministe**) : à partir des sessions candidates identifiées par la Partie 1, détecte les erreurs de prompting, le sous-emploi de l'environnement (skills **et commands**), et produit des constats structurés.
+
+## 1. Objectif & périmètre
+
+**Fait** : pour chaque session candidate, examiner son transcript (via `show-session`) et produire des **constats catégorisés** — erreur de prompting, sous-emploi d'un skill/command existant, candidat skill/command, mauvais choix de modèle — chacun avec une recommandation.
+
+**Ne fait pas** :
+- Aucun calcul déterministe (fait par la Partie 1)
+- N'écrit aucun fichier dans `.opencode/` — seule la Partie 4 écrit (création), pour les constats candidats
+- Ne rédige pas le rapport final — les constats sont transmis en mémoire à l'étape 7 et archivés en JSON
+
+## 2. Sélection des sessions à auditer (déterministe, en amont du LLM)
+
+Le tri reste entièrement dans le JSON de la Partie 1 — aucune session n'est écartée ou retenue par jugement du LLM :
+- `top_sessions_by_cost` (déjà trié par coût, limite `top_sessions_limit`)
+- Sessions avec `cost_per_active_minute` au-dessus d'un seuil configurable (signal de boucle, indépendamment du coût absolu)
+- Sessions avec `cache_efficiency` significativement sous la moyenne hebdomadaire (`totals.cache_hit_rate`) — signal d'invalidation de cache
+- Sessions apparaissant dans `user_prompt_repeats` (prompt utilisateur **exactement** répété ≥ `user_prompt_repeat_min` fois, même session peu coûteuse) — couvre `command-candidate`/`command-underuse` hors sessions chères : l'angle mort v1 est réduit aux quasi-doublons flous
+- Sessions dans `cost_outliers` (v5.22 — outliers statistiques médiane+MAD : anormalement chères pour VOTRE baseline, même hors top N absolu)
+
+**Plafond dur du volume d'audit (v5.25)** : `audit_max_sessions` (défaut 8) — les candidates au-delà sont auditées dans l'ordre de priorité des signaux (top coût, outliers, boucle, cache, prompts répétés) jusqu'à épuisement du plafond ; les non-auditées restent listées au rapport (« candidates non traitées »). C'est le bornage dur du coût de l'étape 3 : le volume de transcripts est le seul driver de coût, il est désormais plafonné — le levier « modèle économique » devient un réglage, plus une condition de survie.
+
+Les seuils (`audit.cost_per_active_minute_min`, `audit.cache_efficiency_gap`, `user_prompt_repeat_min`, `user_prompt_repeat_min_chars`, `audit_max_sessions`) sont dans la config (Partie 1 §6).
+
+## 3. Catégories de constats
+
+| Catégorie | Ce qui est cherché | Signal déterministe de sélection |
+|---|---|---|
+| `loop` | Retries répétés sur le même point | `cost_per_active_minute` élevé + `api_call_count` élevé sur courte fenêtre |
+| `cache-invalidation` | Modification répétée des premiers messages/system prompt | `cache_efficiency` bas malgré du contexte a priori réutilisable |
+| `context-bloat` | Session longue, contexte jamais compacté alors que la tâche a changé de sujet | `duration_seconds`/`active_time_seconds`/`total_tokens` élevés |
+| `manual-injection` | Copier-coller répété d'informations qui auraient pu venir d'un skill/MCP/command existant | Transcript × `skill_usage`/`skills_never_loaded` |
+| `skill-underuse` | Tâche couverte par un skill existant faite manuellement | `skills_never_loaded` + transcript |
+| `command-underuse` | Séquence de prompts longs répétée alors qu'un command existant la couvre (`.opencode/commands/` jamais invoqué) | Transcript (tours utilisateur) × scan `.opencode/commands/` |
+| `command-candidate` | Séquence de prompts longs répétée **≥ 3 fois** dans la session, aucun command existant ne la couvre | Transcript (tours utilisateur) — détection par le LLM pendant l'examen |
+| `skill-candidate` | Séquence de 5+ appels d'outils cohérente vers un même objectif, aucun skill existant ne la couvre | Transcript × `skill_usage`/`skills_never_loaded` |
+| `model-mismatch` | Modèle coûteux pour une tâche simple (ou l'inverse, à l'origine de retries) | `by_model` × nature de la tâche |
+| `command-improvement` (v5.30) | Pattern coûteux (`context-bloat`/`loop`) **lancé par une commande existante** (premiers tours `/nom`) — la commande qui a déclenché la dérive doit embarquer des garde-fous de coût (périmètre obligatoire, budget d'itérations, mode audit) | Transcript (tours initiaux `/nom`) × catégories coûteuses — l'inverse du `command-candidate` (ici la commande EXISTE et couvre, mais est mal calibrée) |
+
+Les détections `command-underuse`/`command-candidate` se font pendant l'examen du transcript (les sessions candidates le sont déjà pour d'autres raisons) — pas de signal déterministe dédié, pas de champ supplémentaire dans la Partie 1. Pour `command-candidate`, vérifier l'absence de couverture contre la **liste des commands existants** (`.opencode/commands/*.md`, lus via `read`).
+
+## 4. Format de sortie (archive)
+
+Fichier : `weekly-quality-findings-<YYYY-MM-DD>.json` — **archive pour vous** : les constats sont transmis en mémoire aux étapes 4 et 7, le fichier ne sert pas d'interface entre étapes. Pas de gate de validation : le prompt demande un JSON strict valide ; si l'archive est mal formée, rien ne casse.
+
+```jsonc
+{
+  "schema_version": 2,
+  "period": { "start": "...", "end": "..." },
+  "generated_at": "...",
+
+  "findings": [
+    {
+      "session_id": "ses_xxx",
+      "category": "cache-invalidation",   // valeur libre si aucune catégorie ne correspond
+      "severity": "high",                  // high | medium | low
+      "description": "string",
+      "evidence_summary": "string",        // paraphrase, PAS de citation verbatim — max ~200 caractères
+      "recommendation": "string",
+      "recommendation_type": "prompting-habit",  // prompting-habit | environment-change
+                                                // | skill-candidate | command-candidate
+      "impact_order_of_magnitude": "medium"      // small | medium | large | null si non estimable
+    }
+  ]
+}
+```
+
+## 5. Constats vs actions — limite de portée explicite
+
+| `recommendation_type` | Action |
+|---|---|
+| `prompting-habit` | Rapport uniquement — retour sur **votre** façon de prompter |
+| `environment-change` | Rapport uniquement en v1 — y compris pour un skill/agent/command existant mal calibré : la réécriture d'un fichier existant dont les agents dépendent reste manuelle |
+| `skill-candidate` | Transmis à la Partie 4 (création, plafond combiné) — **seule** catégorie d'écriture avec `command-candidate` |
+| `command-candidate` | Transmis à la Partie 4 (création, plafond combiné) |
+| `command-improvement` (v5.30) | Transmis à la Partie 4 (**amélioration** de la commande existante, plafond combiné) |
+
+Frontière « l'agent vous informe » vs « l'agent agit » : en v1, seule la **création** de nouveaux skills/commands est automatisée. (Les types `skill-maintenance`/`harness-fix` existent dans le même format de findings mais sont émis par la Partie 6, pas par l'audit LLM.)
+
+## 6. Flux
+
+```
+1. Reçoit weekly-summary.json (Partie 1) + `ignored_findings` de la config — ne ré-émet pas un candidat déjà snoozé
+2. Sélectionne les sessions candidates (§2) — déterministe
+3. Pour chaque session candidate :
+   a. python -m weekly_telemetry_aggregator show-session <id> [--include-children si la session a des sous-agents]
+   b. Écrit transcript-extract-<session_id>.md dans output_dir/extracts/
+   c. Examine le transcript selon les catégories du §3
+   d. Produit 0 à N findings
+4. Écrit weekly-quality-findings-<date>.json (archive, JSON strict)
+5. Transmet en mémoire les findings candidats à la Partie 4, et l'ensemble à l'étape 7
+```
+
+## 7. Limites connues (v1)
+
+- Détection heuristique, pas exhaustive
+- Pas de comparaison inter-sessions (copier-coller répété entre deux sessions différentes) — nécessiterait un diff de contenu entre transcripts, hors périmètre
+- **Pas de reprise à mi-pipeline** : si l'agent meurt entre les étapes 3 et 7, l'archive des findings n'est pas re-parsée au run suivant (elle est archive, pas interface). Conséquence assumée : le retry du même jour (`--anchor` rejoué) couvre la même fenêtre et re-détecte les candidats — aucune donnée perdue, seule l'analyse du run avorté est sautée.
+- **Coût de l'audit lui-même** : proportionnel au volume des transcripts des candidates — borné par la compaction de `show-session` (Partie 0 §3) et le plafond de sessions ; le levier principal si la facture est sensible est le choix d'un modèle rapide/économique pour cette étape (config de l'agent). **Visibilité du coût propre du pipeline** : le run courant est exclu des totaux (sessions actives + filtre de titre, Partie 1 §3.b-c) ; le coût réel du pipeline est consultable via `self-cost` (Partie 1 §12) et rapporté à l'annexe du rapport — à surveiller si la facture hebdo monte sans cause visible dans les sessions utilisateur.
+- **`command-candidate`/`command-underuse` — angle mort réduit (v5.15 + v5.19)** : les répétitions **exactes** ET les **quasi-doublons** (similarité ≥ 0,9 via `difflib.SequenceMatcher`) de prompts utilisateur sont détectés par la Partie 1 (`user_prompt_repeats`, §2 critère n°4) et sélectionnent la session même si elle est bon marché. Reste hors v1 : les **paraphrases** (même intention, formulation différente) — piste v2 : embeddings locaux (Annexe).
+
+---
+
+# Partie 4 — Auto-Drafting skills & commands (étape 4)
+
+Fonctionnalité inspirée du mécanisme d'auto-amélioration de [Hermes Agent](https://github.com/NousResearch/hermes-agent) : après une tâche complexe (5+ appels d'outils) ou une séquence de prompts répétée, l'agent crée des documents de compétence réutilisables.
+
+## 1. Nature
+
+**Ceci n'est pas un script Python déterministe** — distiller une séquence d'actions en procédure réutilisable demande du jugement (niveau d'abstraction, étapes répétables vs spécifiques). Responsabilité du sous-agent LLM, comme la Partie 3.
+
+## 2. Différence de fonctionnement avec Hermes — assumée
+
+Hermes capture la compétence **juste après la tâche**, contexte frais. Notre pipeline tourne **une fois par semaine, après coup** — structurellement moins précis, limite connue. **Piste v2** : plugin OpenCode écoutant l'événement de fin de session (`session.idle`) : si ≥ 5 appels d'outils et succès, append à `draft-candidates.jsonl` (zéro LLM) — la Partie 4 consommerait cette file en priorité. À chiffrer dès maintenant, pas dans le périmètre v1.
+
+**Build-vs-adopt documenté (v5.25)** — l'alternative temps réel existe et a été vérifiée le 14 août 2026 : `opencode-self-improve` (Svtter — SkillForge après chaque tour, Curator périodique, SkillInjector avant chaque tour, skills dans son propre store SQLite) et `skill-optimizer` (hqhq1025 — skill-miner/personalizer/generalizer). Non adoptés, pour trois raisons : (a) la boucle SkillForge est **à chaud et non bornée** (extraction LLM après chaque tour — coût cumulé potentiellement massif, exactement le risque que le batch plafonné par `audit_max_sessions` évite) ; (b) leurs skills vivent dans **un store tiers injecté à chaque tour** — un modèle qui contourne le filet de revue git (commit-draft, validation frontmatter, revert) et l'audit de `.opencode/` ; (c) le **Curator est la bonne idée** — adopté sous forme déterministe légère (`skill_similar_pairs` + R3, v5.25). Le flux « détection à chaud → synthèse hebdo » que ces outils confirment reste la piste v2, inchangée.
+
+**Latence — clarification (v5.26)** : `audit_max_sessions` borne le **coût**, pas la **fraîcheur** — un pattern répété quotidiennement reste invisible jusqu'au run suivant, plafond ou pas. La latence hebdo n'est PAS traitée en v1 : la réponse est le flux v2 (`session.idle` → `draft-candidates.jsonl`), rien d'autre. **Validité du calcul de coût** : la comparaison « batch ≈ 150-250 k tokens/semaine vs SkillForge non borné » n'est valable QUE parce que `audit_max_sessions` existe — retirer le plafond invalide le chiffre, pas seulement l'argument.
+
+## 3. Déclencheur
+
+Alimenté directement par les constats `skill-candidate`, `command-candidate` **et `command-improvement`** (v5.30) de la Partie 3 — pas de recalcul indépendant, pour éviter que les parties dérivent des critères. La Partie 3 a déjà vérifié :
+- `skill-candidate` : 5+ appels d'outils formant une séquence cohérente vers un même objectif ; **absence de skill existant** couvrant la séquence (`skill_usage`, `skills_never_loaded`)
+- `command-candidate` : 3+ répétitions de prompts longs ; **absence de command existant** couvrant la séquence (scan `.opencode/commands/`)
+
+**Plafond combiné** : au plus `max_candidates_per_run` constats candidats par run (défaut 3, config — skills + commands confondus), classés par sévérité décroissante. **Justification du 3** (v5.21 — le chiffre était en dur et non expliqué) : 3 drafts ≈ 10-15 min de LLM et 3 commits à revoir par semaine, un équilibre empirique entre valeur et bruit ; ajustable via la config si le repo est plus ou moins actif. Les candidats non retenus restent dans l'archive des findings et sont listés au rapport (section 5) en « candidats non traités ».
+
+**Périmètre projet — cohérence entre la télémétrie et l'écriture** : la Partie 1 agrège toutes les sessions de l'instance locale, mais l'écriture des skills/commands cible `<project_root>` (Partie 0 §1). Un constat candidat dont la session source appartient à un autre projet (`session.project_path` hors de `project_root`) n'est **pas** écrit dans le `.opencode/` de `project_root` : il devient un constat `environment-change` (report-only), à traiter manuellement dans le projet concerné.
+
+## 4. Données d'entrée — fichiers d'extract
+
+- La Partie 3 a écrit `transcript-extract-<session_id>.md` sur disque (Partie 3 §6.b)
+- La Partie 4 **lit ces fichiers** via l'outil `read` (scopé, Partie 0 §2)
+- Fallback si l'extract manque : `show-session <id>` en re-fetch pour cette seule session, jamais en systématique
+- Pour la vérification de chevauchement : lecture des `.opencode/skills/*/SKILL.md` et `.opencode/commands/*.md` existants
+
+## 5. Flux
+
+```
+1. Reçoit : les findings candidats de la Partie 3 (≤ 3), avec leurs session_id
+2. Pour chaque finding :
+   a. Lit transcript-extract-<session_id>.md (fallback : show-session)
+   b. Évalue si la séquence est généralisable — rejette si trop spécifique,
+      même si la Partie 3 l'avait qualifiée (double filtre)
+   c. **Skill ou command — arbre de décision (respecter le type du constat par défaut) :
+      - `skill-candidate` → SKILL.md ; `command-candidate` → command — le type vient
+        du constat, la Partie 4 ne le re-dérive pas
+      - en cas de doute (généralisation ambiguë) : la séquence généralise des appels
+        d'outils/navigation/analyse (bash, read, grep répétés) → SKILL.md (procédure) ;
+        la séquence généralise un prompt long répété côté utilisateur, sans raisonnement
+        multi-outils → command (template $ARGUMENTS)
+      - changer de type par rapport au constat = exception : le justifier dans le
+        frontmatter (`overlaps_with` ou `description`), sinon respecter le type d'origine**
+   d. Rédige le fichier (SKILL.md ou command .md, cf. §6), format des conventions
+      existantes (vérifiées sur le repo : .opencode/commands/*.md avec frontmatter
+      description, agent/model optionnels, $ARGUMENTS)
+   e. Vérifie le chevauchement avec les skills/commands/agents existants :
+      si chevauchement → NE CRÉE PAS de doublon : émet un constat
+      "environment-change" (fusion manuelle) et passe au suivant
+3. Écrit dans .opencode/skills/ (création) ou .opencode/commands/ (création **ou amélioration** d'une commande existante pour `command-improvement` — v5.30) ;
+   **validation déterministe post-écriture (v5.21)** : frontmatter parsable (split `---`,
+   stdlib — pas de PyYAML), `name` == nom du dossier (skills), `description` non vide ;
+   en échec → PAS de commit, constat `environment-change`, warning au rapport — c'est le
+   seul garde-fou indépendant disponible (`harness-eval` ne couvre pas `.opencode/skills/`,
+   Partie 5 §5) ;
+   puis un commit git isolé par écriture (cf. §7)
+```
+
+## 6. Format des fichiers écrits
+
+**Skill** (format agentskills.io, conventions OpenCode) :
+
+```yaml
+---
+name: string          # identifiant du skill, court
+description: string   # une ligne, déclenche le chargement à la demande
+metadata:
+  authored_by: "opencode-weekly-advisor"
+  authored_at: "2026-08-07"
+  source_sessions: ["ses_xxx", "ses_yyy"]   # traçabilité
+  overlaps_with: ["nom-skill-existant"]     # vide si aucun chevauchement détecté
+  target_agents: ["java-pro", "backend-architect"]  # v5.30 : agents ciblés (public du skill)
+---
+
+**Règle du public cible (v5.30)** : à la rédaction, la Partie 4 détermine QUI utilisera le skill —
+si le public est identifiable (agents reproduisant le pattern observé), elle (a) renseigne
+`metadata.target_agents`, (b) **référence le skill dans le corps de chaque agent ciblé**
+(section « pour toute tâche X, charger le skill Y ») — un skill jamais référencé ni chargé
+est proposé au retrait par R1 (le pipeline le traite comme inutilisé) ; si aucune cible
+n'est identifiable (skill générique), `target_agents` reste vide et le chargement est
+piloté par la seule description. Les commands sont invoquées manuellement (`/nom`) —
+pas de référence agent nécessaire.
+
+## Quand utiliser
+[à quel type de tâche ce skill s'applique]
+
+## Procédure
+[étapes généralisées, pas la trace verbatim de la session d'origine]
+
+## Points d'attention
+[erreurs rencontrées dans la session d'origine, à éviter la prochaine fois]
+```
+
+**Command** (convention vérifiée sur `.opencode/commands/*.md` du repo) :
+
+```yaml
+---
+description: string   # une ligne obligatoire — déclenche la suggestion
+# agent: string       # optionnel — agent à utiliser
+# model: string       # optionnel — modèle à utiliser
+---
+
+Corps du prompt du command — généralisé depuis la séquence d'origine,
+$ARGUMENTS pour les paramètres variables
+```
+
+`source_sessions` et `overlaps_with` restent dans le frontmatter même sans validation manuelle : c'est ce qui permet, six mois plus tard, de retrouver d'où vient un fichier.
+
+## 7. Traçabilité — commit direct, un commit par écriture (choix assumé)
+
+**Décision : commit direct sur la branche courante, avec `git revert` comme filet de rollback.** La v5 avait transitoirement opté pour une branche dédiée ; vous préférez le commit direct — seul ce §7 change par rapport à cette itération, le reste de la spec est neutre. Le filet de sécurité reste le même en sens inverse : chaque écriture est un commit isolé, identifiable par son message, annulable par `git revert --no-edit <commit>` sans archéologie. Contreparties assumées : le contexte cron (identité git, signing, hooks pre-commit) touche la branche de travail — vérifier l'environnement git du cron une fois ; et un skill/command auto-rédigé depuis un transcript est chargé par les futurs agents dès le commit — la revue se fait après coup, via `git log --grep="auto-rédigé"`, avec revert comme mécanisme de retour en arrière.
+
+**Écriture entièrement en code — sous-commande `commit-draft` (v5.23)** : l'agent ne tape plus de commandes git. Tout ce qui suit (validation, pré-checks, add, commit) vit dans `safe_git_write.py` (Partie 1 §5), exposé par le CLI — la Partie 6 v2 (R4) l'utilisera à l'identique, zéro duplication :
+
+```
+python -m weekly_telemetry_aggregator commit-draft --file "$PWD"/.opencode/skills/<nouveau-skill>.md --kind skill
+python -m weekly_telemetry_aggregator commit-draft --file "$PWD"/.opencode/commands/<nom>.md --kind command
+```
+
+Comportement du module (tout en code, plus rien dans le prompt) :
+- **Validation du draft (v5.21)** : frontmatter parsable (split `---`, stdlib), `name` == nom du dossier (skills), `description` non vide — en échec : exit `1`, PAS de commit, l'agent émet un constat `environment-change` + warning au rapport
+- **Pré-checks** : HEAD détaché (`git rev-parse --abbrev-ref HEAD` → `HEAD`), rebase/merge en cours (`.git/rebase-merge`/`MERGE_HEAD`) — en échec : exit `1` (fichier écrit, non commité), warning au rapport (« créés mais non commités : rebase/merge en cours ») ; un working tree dirty n'est PAS un blocage (add au fichier exact)
+- **Add scopé** : toujours le fichier exact, chemin absolu — jamais `git add .` ni un répertoire
+- **Identité** : lue depuis la config (`git_name`/`git_email`) par le module lui-même — l'agent n'a plus à lire la config pour ça (simplification de la prescription v5.5) ; injectée via `-c user.name=… -c user.email=…`
+- **Commit** : message construit par le module (`skill:`/`command:` + `(auto-rédigé, revue hebdo <date>)`, corps `Source: sessions …` + `Chevauchement détecté: …`) — **provenance : le module lit le frontmatter du fichier lui-même** (`metadata.source_sessions`, `metadata.overlaps_with`, déjà écrits par la Partie 4 §5.d) — pas d'arguments supplémentaires à `commit-draft`, cohérent avec « le module lit le fichier qu'il commite » ; un commit par écriture, jamais groupé
+- **Échec hooks/autre** : exit `1`, fichier conservé, **pas de retry en boucle**, à rattraper manuellement
+- **Rollback** : toujours `git revert --no-edit <commit>` — action humaine, hors allowlist (sans `--no-edit`, l'éditeur système suspendrait le processus en non-interactif)
+
+## 8. Limites connues (v1)
+
+- Pas de curator/consolidation automatique : chevauchement → constat `environment-change` (fusion manuelle)
+- **Deux catégories de risque, explicitement séparées (v5.26)** : les 7 garde-fous techniques (validation frontmatter, pré-checks HEAD/rebase, add scopé, identité, message construit, overlap check, revert) protègent la **forme** et le **repo** — ils ne protègent pas la **qualité** (un skill syntaxiquement valide, passé l'overlap check, dont la généralisation est mauvaise — jugée par le même LLM qui a produit le finding). Le risque qualité est **accepté en v1** et la fenêtre est : skill chargé dès le commit → revue au rapport du lundi → `git revert --no-edit` si mauvais. Le compromis « cooldown par `status: draft` dans le frontmatter » a été testé et **rejeté sur preuve** (14 août 2026, `opencode debug skill` : le flag est ignoré, le skill reste chargé — seuls `name`/`description`/`license`/`compatibility`/`metadata` sont reconnus) ; les seuls mécanismes réellement bloquants sont les emplacements de staging, jugés disproportionnés à ≤ 3 créations/semaine. La détection post-hoc (R3 étendu, `skill_similar_pairs`) et le Curator v2 restent les réponses à ce risque.
+- Détection a posteriori : la qualité dépend de la sélection Partie 3. `git log --grep="auto-rédigé"` liste tout ce que le pipeline a écrit pour la revue
+
+---
+
+# Partie 5 — `harness-eval` : lint de la configuration `.opencode/` (étape 5)
+
+Outil tiers — [`redhat-community-ai-tools/harness-eval`](https://github.com/redhat-community-ai-tools/harness-eval), PyPI `harness-eval`, Python ≥ 3.11. (Existence vérifiée : repo GitHub 200, PyPI 200.)
+
+## 1. Ce que ça apporte
+
+Toutes les autres parties analysent **l'usage**. `harness-eval` analyse **la configuration elle-même**, indépendamment de son usage : AGENTS.md, skills, commands, hooks, configs MCP, agents, `.opencode/`. Un skill mal écrit mais jamais chargé cette semaine échapperait à la Partie 3 — `harness-eval` le repère quand même.
+
+## 2. Quatre commandes — une seule retenue pour le run
+
+**`harness-lint`** (règles déterministes + analyse système — budget de tokens, chevauchements de déclencheurs, dépendances — sans LLM). Seul **`harness-lint`** est retenu pour le run hebdomadaire (zéro appel LLM). **Version mesurée : 7.9.0** (installée et testée le 13 août 2026 sur le projet cible) — `review`, `security` et `skill-verify` existent mais ne sont pas utilisés par le run. (Le comptage de règles a dérivé 64 → 97 → 7.9.0 entre les versions : l'épinglage §6 est vital.)
+
+## 3. Où ça s'insère (Partie 0 §1, étape 5)
+
+```
+harness-eval harness-lint "$PWD" --format json --output "<output_dir>/weekly-harness-digest-<date>.json" || true
+```
+(`$PWD` = project_root, garanti par `--dir` ; `output_dir` est lu dans la config, chemin absolu — le fichier de sortie n'est jamais relatif à la racine.)
+
+**Pourquoi `|| true`** : le tool `bash` des agents LLM traite tout exit code non nul comme une erreur et bouclerait à « corriger » la commande. **Mesuré : `harness-lint` sort à `0` même avec des violations** (62 erreurs / 2 670 warnings dans le test réel) — le `|| true` est donc purement défensif (un comportement d'exit différent entre versions ne casserait rien). Le signal de l'étape est **la présence du digest** : s'il manque (crash), `insights` le gère (Partie 6 §2 : deltas lint à `null`, alerte sautée, warning). **Durée mesurée : ~98 s** sur le projet cible — le cron doit l'anticiper, l'agent ne doit pas considérer l'étape comme bloquée.
+
+Exécuté après la Partie 4 (sur `.opencode/` dans son état final de la semaine) :
+- **Garde-fou indépendant** sur ce que la Partie 4 vient d'écrire — doublons (TF-IDF), budget de tokens, chevauchement de déclencheurs, plus rigoureux que la vérification `overlaps_with` du LLM
+- **Bilan de santé indépendant de l'usage** pour l'ensemble de `.opencode/`
+- Ne bloque et ne revert rien automatiquement — les violations alimentent la Partie 6 et le rapport
+
+**Exit code** : neutralisé par `|| true` (cf. ci-dessus) — les violations ne remontent jamais comme erreur ; l'absence du digest est le seul signal d'échec de l'étape, et il est non bloquant (Partie 6 §2).
+
+## 4. Sortie — digest natif confirmé (mesuré, v7.9.0)
+
+`--format json --output` produit un **digest déjà structuré** (testé sur le projet cible) — pas de SARIF, pas de `jq`, **pas de sous-commande de regroupement** (le cas « JSON verbeux » de la v5 ne se matérialise pas) :
+- clés utiles : `budget` (total/always_loaded/on_demand/ratio/heaviest — **l'analyse de budget de tokens est pré-calculée**), `triggers` (skill_count, with_description, missing_use_when, overlaps), `dependencies` (total_edges, broken), `findings`, `inspection.summary` (total/errors/warnings), `metadata` (version, duration_seconds, components_scanned, rules_checked)
+- **bruit à ignorer** : `inspection.*` (listes détaillées — 3 636 entrées `uncategorized` sur le projet cible, le rapport ne lit que les compteurs) ; `setup` (nom du projet)
+- les tokens sont comptés en **chars/4** (tiktoken absent — cohérent avec les estimations du pipeline)
+
+Le digest est consommé tel quel par les étapes 6, 7 et 8 ; le texte détaillé des violations reste sur disque.
+
+## 5. Couverture réelle — skills NON couverts (confirmé)
+
+**Mesuré sur le projet cible (v7.9.0)** : `triggers.skill_count = 0` alors que 12+ skills existent dans `.opencode/skills/` — **`harness-lint` ne couvre pas les skills OpenCode**, ni leur budget, ni leurs déclencheurs. Conséquences assumées : la surveillance des skills repose sur les mécanismes internes du pipeline — vérification `overlaps_with` de la Partie 4 (§5.e), règles R1-R3 de la Partie 6, et `skills_never_loaded`/`skill_usage` de la Partie 1. À ré-évaluer si une future version de l'outil couvre `.opencode/skills/`.
+
+## 6. Dépendances & version
+
+`harness-eval` (PyPI), **épingler la version exacte** — un lint déterministe ne veut dire « stable dans le temps » que si l'outil ne change pas de version sans qu'on le sache (la dérive 64 → 97 règles le démontre).
+
+---
+
+# Partie 6 — `insights` : deltas, alertes, maintenance (étape 6)
+
+**Le maillon mesure + correction.** Sans comparaison dans le temps, le pipeline produit des constats isolés — avec elle, il mesure l'amélioration (coût, cache, violations lint) et émet des candidats d'action (retirer/fusionner/corriger).
+
+## 1. Objectif & périmètre
+
+**Fait** : diff déterministe entre le run courant et le run précédent (summaries + digests lint), application de seuils configurables, règles de maintenance — **100 % déterministe, zéro LLM**.
+
+**Ne fait pas** :
+- N'interprète pas les causes — la lecture qualitative reste la Partie 7
+- N'écrit rien dans `.opencode/` en v1 (rapport uniquement) ; auto-fix des violations triviales en v2, en commits directs
+
+## 2. Entrées
+
+- `weekly-summary-<date>.json` (Partie 1) et le summary du run précédent
+- `weekly-harness-digest-<date>.json` (Partie 5) et son précédent
+- Les 4 derniers summaries pour la règle R1 (historique local, jamais purgé)
+
+Digest du run courant absent (étape 5 en échec) → `lint_violations_delta_by_rule` à `null`, règle d'alerte `lint_violations_max` sautée, warning dans le delta — jamais d'échec d'`insights` pour un digest manquant.
+
+**Découverte du run précédent — règle de code, pas d'hypothèse** : `glob("weekly-summary-*.json")` dans `output_dir`, tri par date décroissante, retenir le plus récent **strictement antérieur** à la date du run courant (dérivée de `--anchor`). La fenêtre 168h ne suffit pas à identifier le fichier : si le cron a raté un cycle, « la semaine d'avant » n'existe pas et le delta compare deux fenêtres non adjacentes — le warning correspondant est déjà prévu (§7). Même règle pour `weekly-harness-digest-*.json`. Aucun fichier antérieur → `deltas` à `null`, pas d'erreur (premier run).
+
+**Fenêtres de durées différentes — deltas de volume neutralisés (v5.31)** : un `lookback_days` modifié entre deux runs (ex. `run --force` avec 14j puis 15j, mesuré le 15 août 2026 : 336h vs 360h) produisait des `cost_wow_pct`/`total_tokens_delta_pct` artefactuels (+30 % à fenêtre identique en réalité). Fix : `_window_hours(period)` calcule la durée de chaque période ; si `|durée précédente − durée courante| > 1h` → `cost_wow_pct` et `total_tokens_delta_pct` à `null` + warning explicite dans `deltas._warnings` (« fenêtre précédente (336h) ≠ courante (360h) — deltas de volume non comparables ») ; l'alerte `cost_wow_pct_max` ne se déclenche pas. `cache_hit_rate_delta` (ratio) reste calculé.
+
+**Garde `run --force` (v5.31.c)** : `run` avertit quand `--force` écrase un summary existant dont la durée de fenêtre diffère de > 1h : « la baseline insights du précédent sera perdue (deltas/spikes du prochain run) ». Le re-run du même jour avec une fenêtre différente détruit la baseline de comparaison — visible désormais, jamais silencieux.
+
+## 3. Sortie
+
+Fichier : `weekly-insights-<date>.json` :
+
+```jsonc
+{
+  "schema_version": 1,
+  "period": { "start": "...", "end": "..." },
+  "previous_run_date": "2026-08-03",
+  "generated_at": "...",
+
+  "deltas": {
+    "cost_wow_pct": 12.4,                  // null si pas de run précédent OU fenêtres
+                                           // hétérogènes (v5.31 : warning dans _warnings)
+    "cache_hit_rate_delta": -0.03,
+    "total_tokens_delta_pct": 8.1,         // null dans le même cas
+    "_warnings": ["fenêtre précédente (336h) ≠ courante (360h) — …"],  // v5.31
+    "skills": { "newly_loaded": ["a"], "newly_silent": ["b"] },
+    "lint_violations_delta_by_rule": { "trigger-overlap": 2, "token-budget": -1 }
+  },
+
+  "alerts": [
+    { "rule": "weekly_budget_usd", "threshold": 25.0, "observed": 31.2, "severity": "high" }
+  ],
+
+  "maintenance": {
+    "findings": [                          // même format que les findings de la Partie 3
+                                             // (session_id: null — pas liés à une session)
+      { "session_id": null, "category": "retire-candidate", "severity": "high",
+        "description": "skill 'deploy-staging' jamais chargé sur 4 runs + chevauchement de déclencheurs",
+        "evidence_summary": "skills_never_loaded: 4/4 runs ; lint rule trigger-overlap : 2 fichiers",
+        "recommendation": "Retirer .opencode/skills/deploy-staging/SKILL.md après revue",
+        "recommendation_type": "skill-maintenance",
+        "impact_order_of_magnitude": "small" }
+    ],
+    "stats": { "runs_scanned": 5, "skills_in_catalog": 12,
+               "never_loaded_consecutive": { "deploy-staging": 4 },
+               "spike_baseline_days": 28 }   // v5.23 : jours de baseline réellement comparés
+                                                // pour daily_spike_z_min — visible si le cron a sauté
+  }
+}
+```
+
+## 4. Règles
+
+**Alertes (seuils en config)** :
+
+| Règle | Condition | Sévérité |
+|---|---|---|
+| `weekly_budget_usd` | `totals.total_cost_usd` > seuil | `high` |
+| `monthly_budget_usd` | Σ des summaries des 30 derniers jours (historique JSON, v5.22) > seuil | `high` |
+| `daily_spike_z_min` | z-score (médiane+MAD) d'un jour de `daily_totals` vs les jours des 4 summaries précédents ≥ seuil (v5.22) ; **z borné à `DAILY_SPIKE_Z_CAP = 10.0`** (v5.31) — un `MAD≈0` produit des z astronomiques (99,19 / 39,23 / 13,46 mesurés le 15 août 2026) qui sont un artefact, pas un signal plus fort ; `observed` = `min(z brut, cap)` + note `"MAD≈0, z borné"` si le z brut dépasse le cap | `medium` |
+| `cache_hit_rate_min` | `totals.cache_hit_rate` < seuil | `medium` |
+| `cost_wow_pct_max` | `cost_wow_pct` > seuil — **sautée si fenêtres hétérogènes** (`cost_wow_pct` à `null`, v5.31) | `medium` |
+| `lint_violations_max` | Σ violations digest > seuil | `medium` |
+
+**Maintenance (déterministe, aucune lecture LLM)** — les règles R1-R4 ignorent les cibles listées dans `ignored_findings` (snooze manuel : éditer la config, pas de nouvel état auto-géré ; le rapport liste les ignorés en annexe) :
+
+| Règle | Condition | Constat |
+|---|---|---|
+| R1 — retrait | Skill dans `skills_never_loaded` sur ≥ `never_loaded_runs_threshold` runs consécutifs | `skill-maintenance` / `retire-candidate`, `medium` |
+| R2 — retrait prioritaire | R1 **et** violation `trigger-overlap` sur ce skill | `skill-maintenance` / `retire-candidate`, `high` |
+| R3 — fusion | Doublon TF-IDF (digest, si couvert) **ou** `skill_similar_pairs` (v5.25 — difflib sur descriptions+corps : couvre les skills que harness-eval ne voit pas) | `skill-maintenance` / `merge-candidate`, `medium` |
+| R4 — correction de format | Violation **triviale** : frontmatter/description manquante ou invalide, erreur de format | `harness-fix` / `fix-candidate`, `low` — auto-fix possible en v2 |
+| R5 — réécriture | Violation **non triviale** : budget de tokens dépassé, doublon partiel hors R3 | `harness-fix` / `fix-candidate`, `medium` — **jamais automatique** (la réécriture demande du jugement, revue manuelle) |
+
+## 5. Actions — phasé
+
+| Version | Action |
+|---|---|
+| **v1** | Rapport uniquement : constats présentés à la Partie 7 avec leurs preuves chiffrées. Aucune écriture (cohérent avec « création seule », Partie 3 §5). |
+| **v2** | Auto-fix des `fix-candidate` triviaux (R4) via `commit-draft` (Partie 4 §7 — module `safe_git_write.py` **partagé**, zéro duplication ; les pré-checks et la validation s'appliquent aux corrections comme aux créations). **Anticipation v2 (v5.23.b)** : un mode `--kind fix` — gabarit de message différent (`harness-fix:` + référence à la règle R4, sans dépendance aux `source_sessions` qui peuvent manquer ou être périmées sur un fichier existant) ; le scope `write` « création uniquement » de la Partie 0 §2 s'étend alors à l'édition des fichiers concernés. Retraits/fusions jamais automatiques. |
+
+## 6. Cohérence de l'environnement — passe critique finale (étape 6.5, v5.31.b)
+
+**Le maillon état déclaratif vs usage réel.** Les règles R1-R3 regardent les skills ; l'étape 6.5 (LLM, agent `weekly-advisor`) étend le regard à TOUT `.opencode/{agents,skills,commands}` et le croise avec la télémétrie du run. Introduite après le run du 15 août 2026 qui a détecté, entre autres : les skills dédiés `jira-to-code-audit`/`sonar-refactor` absents de l'activation guide d'AGENTS.md (les sessions primaires ne les chargent pas), un frontmatter invalide (`ponytail-debt`, description non quotée), 10 skills jamais chargés ni référencés, et le lint harness injouable (3639 fichiers non catégorisés).
+
+**Fait** : lecture seule + écriture d'un fichier findings. **Ne fait pas** : aucune écriture dans `.opencode/` — les findings alimentent la revue humaine (fusion, retrait, recalibrage).
+
+### Entrées
+- Catalogue déclaratif de `.opencode/{agents,skills,commands}` (frontmatter + corps, via `skill_catalog` du summary + lecture)
+- `summary.skill_usage` / `command_usage` / `skills_never_loaded` (Partie 1)
+- `insights.maintenance` (R1 retrait, R3 fusion) et le digest harness (triggers, budget)
+- Findings Partie 3 (sessions coûteuses → cibles de forcing)
+
+### Sortie — `weekly-coherence-findings-<date>.json`
+
+Format findings (même schéma que Partie 3 §4 : category, severity, description, evidence_summary avec la preuve, recommendation, recommendation_type, impact_order_of_magnitude) + **tag action** sur chaque finding : `delete` / `shrink` / `merge` / `recalibrate` / `reference`. Classés par impact décroissant (le plus gros gain d'abord) — une ligne par finding, style ponytail-audit.
+
+### Catégories
+
+| Catégorie | Détection | Exemple mesuré (run 2026-08-15) |
+|---|---|---|
+| `duplicate` | Agents/skills/commands redondants — chevauchements d'AGENTS **invisibles à R3** (R3 ne couvre que les skills via digest/difflib) | `ponytail-review` vs `caveman-review` |
+| `dead-reference` | Référence vers un agent/skill/command supprimé ou passé hidden | — |
+| `unused-unreferenced` | Skill/command jamais utilisé sur N runs ET référencé nulle part (R1 confirme) — tag `delete` | 10 skills morts (seuil R1 non atteint : planifier) |
+| `mismatch` | Description mal calibrée vs usage réel, frontmatter invalide, `overlaps_with` non résolu — tag `recalibrate`/`fix` | `ponytail-debt` description non quotée (YAML invalide) ; `command_usage` vide alors que des sessions montrent `/swarmx` ; lint harness scanne 3639 fichiers non catégorisés → alerte `lint_violations_max=10` structurellement injouable |
+| `token-risk` | Agent aux sessions coûteuses + skill dédié jamais chargé → **cible de forcing** (croiser findings P3) — tag `reference` | `jira-to-code-audit`/`sonar-refactor` absents de l'activation guide d'AGENTS.md alors que les 2 patterns les plus coûteux de la fenêtre (audit Jira 37,6 $, refactor Sonar 13,6 $) en disposent |
+
+Le rapport (Partie 7 §3, section 5 du template) rend la cohérence **en tête** de la section « Santé de l'environnement », avant le lint harness, avec les tags action.
+
+### Limites connues (v5.31.b)
+- Passe LLM — les preuves (`evidence_summary`) sont obligatoires ; sans preuve, le finding est écarté à la revue
+- La détection `unused-unreferenced` dépend de la régularité du cron (même fragilité que R1)
+- Le scan couvre les 3 familles déclaratives (agents/skills/commands) — pas les plugins/scripts externes
+
+## 7. Limites connues
+
+- Fenêtre glissante 168h : si le cron dérive ou saute une semaine, `cost_wow_pct` compare des fenêtres non adjacentes → warning dans le delta, comparabilité à confirmer dans le rapport. Pas de checkpoint persistant en v1 (état = complexité). **Depuis v5.31** : fenêtres de durées différentes → deltas de volume neutralisés (`null` + warning), jamais d'artefact silencieux.
+- R1 dépend de la régularité du cron : si un run saute, le compteur « consécutif » se fausse — le champ `runs_scanned` le rend visible.
+- **`cost_outliers` — fragile sur petits échantillons (v5.23)** : médiane+MAD sur < 15 sessions peut produire des z élevés par pur artefact d'échantillon ; c'est un signal d'investigation humaine, **jamais une décision automatique** ; l'agrégateur émet un warning quand l'échantillon est trop petit (Partie 1 §3, étape 5).
+- **`daily_spike_z_min` — même fragilité que R1** : si le cron saute une semaine, la baseline de comparaison se réduit silencieusement — visibilité via `stats.spike_baseline_days`. **Depuis v5.31** : `MAD≈0` → z borné à `DAILY_SPIKE_Z_CAP` avec note (le spike reste signalé, l'intensité n'est plus surestimée).
+- **Re-run `--force` du même jour (v5.31.c)** : écrase le summary → la baseline de comparaison du run suivant est perdue ; la garde avertit quand la fenêtre diffère, mais une fenêtre identique écrase sans avertissement (comportement spec « jamais écrasé » = re-run même jour assumé).
+
+---
+
+# Partie 7 — Rapport final (étape 7) — rendu déterministe (v5.20)
+
+Le rapport est la seule sortie que vous lisez. **Révision v5.20** : les chiffres sont rendus par du **code** (template Jinja2 + sous-commandes `report-prep`/`report-assemble`), le LLM ne produit que le bloc qualitatif. Les protocoles « relecture des 4 JSON » (v5.3) et « copie verbatim » (v5.19) sont **supprimés** : c'était de la mitigation par prompt — les LLM lissent les chiffres même en les relisant. Le pipeline applique enfin au rapport son propre principe : *vérifier avec du code, pas avec de la persuasion*.
+
+## 1. Objectif & périmètre
+
+**Fait** : un rapport Markdown lisible en 5 minutes dont **tous les nombres proviennent du code** (summary/insights/digest/ecosystem + git), et dont la seule prose est le bloc constats rédigé par le LLM.
+
+**Ne fait pas** :
+- Le LLM n'écrit **aucun chiffre** — les valeurs sont rendues par le template ; le bloc qualitatif ne cite que catégories et sévérités
+- Le LLM ne cite jamais le transcript verbatim (règle copyright, Partie 3 §4) — paraphrase ≤ 200 caractères
+- Le LLM ne recommande jamais l'installation d'un item écosystème à source unique et non nouveau — la sélection est du code (§4)
+
+## 2. Flux — trois sous-étapes (étape 7 de la Partie 0)
+
+```
+7a. bash: python -m weekly_telemetry_aggregator report-prep --anchor <run_time>
+    → rend les sections déterministes (1, 2, 3, 5, 6, 7, 8) dans weekly-report-draft-<date>.md
+    (template Jinja2 ; sources : summary, insights, digest, ecosystem, git log
+    --grep="auto-rédigé, revue hebdo" --since=<period.start> — v5.31.c : grep affiné,
+    le grep large comptait les commits du pipeline mentionnant le mot,
+    présence des artefacts pour l'annexe)
+7b. LLM : lit les constats (en mémoire) + extracts si besoin → écrit UNIQUEMENT le bloc
+    « Constats qualitatifs » dans weekly-report-blocks-<date>.md (prose markdown,
+    ≤ ~40 lignes, aucun chiffre, pas de citation verbatim)
+7c. bash: python -m weekly_telemetry_aggregator report-assemble --anchor <run_time>
+    → injecte le bloc 7b dans le draft → weekly-report-<date>.md (le signal du cron)
+    → si 7b absent : le rapport est rendu avec « constats non disponibles » et l'annexe
+      le mentionne — le rapport existe toujours (dégradé), les dégradations sont visibles
+    ⚠ **Un assemble réussi supprime le draft (consommé)** (v5.31.c) : pour un nouvel
+      assemble (ex. après édition du bloc prose), relancer `report-prep` d'abord —
+      sinon erreur « draft inexistant — un assemble précédent l'a consommé/supprimé :
+      relancer report-prep d'abord » (RC=2). Mesuré : l'agent a débuggé le validateur
+      ~20 min au lieu de relancer report-prep (run de test 2026-08-15).
+```
+
+Le rapport est assemblé par du code : il existe même si 7b échoue — cohérent avec la sémantique v5.14 (rapport présent = run terminé, dégradations dans l'annexe ; rapport absent = fatal, le cron alerte).
+
+## 3. Ce que le template rend (déterministe, `report-prep`)
+
+| Section | Sources | Rendu par le template |
+|---|---|---|
+| 1. Résumé exécutif | summary, insights, findings (présence/compteurs), git log | Chiffres + compteurs : coût, Δ, alertes (n), constats par sévérité (comptés depuis le fichier findings si présent, sinon « non disponibles »), créations (n, via git log), **+ compteur « N auto-rédigés en attente de revue depuis M semaines »** (v5.27 — `git log --grep="auto-rédigé, revue hebdo"` hors fenêtre courante — v5.31.c : le grep affiné exclut les faux positifs (commits du pipeline mentionnant le mot) —, fenêtre `review_window_weeks` ; en tête du rapport pour fermer la boucle humaine : un skill mal généralisé est repéré avant d'accumuler des runs), violations lint (Δ) |
+| 2. Alertes & tendances | insights + summary | Table alerts (règle / seuil / observé / sévérité) + deltas clés + **tendance journalière** (`daily_totals`, une ligne par jour) |
+| 3. Coûts | summary | Total ; top 3 modèles (fusion < 5 % en « autres » — faite par le template) ; top N sessions (coût, durée, coût/min actif, cache_efficiency) ; **outliers** (`cost_outliers` — **dédup par `session_id`** (v5.23) : une session déjà dans le top N porte un marqueur « † outlier » dans le tableau au lieu d'apparaître dans les deux listes) ; **top 5 commands** (`command_usage`) ; sous-agents si > 10 % |
+| 4. Constats qualitatifs | **bloc 7b (LLM)** | **seule section non rendue par le template** |
+| 5. Actions du pipeline | git log `--grep="auto-rédigé, revue hebdo" --since=<period.start>` (v5.31.c : grep affiné) | Fichiers + commits créés par le run ; rappel revert `--no-edit` |
+| 5. Santé de l'environnement (v5.31) | digest + insights.maintenance + `weekly-coherence-findings` | **Cohérence d'abord** (passe critique agents/skills/commands, ranked, tags delete/shrink/merge/recalibrate/reference), puis lint harness (violations, budget, triggers, dependencies, findings R1-R4 avec preuves) |
+| 7. Écosystème | ecosystem | core_changes (high → paragraphe, medium → ligne) ; new_items notables (≥ 2 `found_via` **ou** `new_repo` — sélection par le template) ; reste en « à surveiller » (une ligne) |
+| 8. Annexe technique | artefacts, summary.warnings, self-cost | Fichiers produits (glob output_dir), warnings (cap 50), **statut par étape** (présence des artefacts — les dégradations sont visibles sans dépendre de la mémoire du LLM), coût propre (`self-cost`) |
+
+## 4. Règles d'arbitrage — désormais du code
+
+Les seuils de bruit de la v5.5 (fusion < 5 %, regroupement des low, relégation « à surveiller », top 3 modèles, sessions hors top N jamais listées) sont **implémentés dans le template/renderer**, plus confiés au LLM. Restent des règles de prompt pour le bloc 7b : constats triés sévérité DESC puis impact ; low groupés en liste compacte ; **aucun chiffre** ; pas de citation verbatim. Longueur cible ≤ 150 lignes — garantie par construction (le bloc LLM est borné à ~40 lignes).
+
+## 5. Dépendance
+
+`jinja2` — la seule nouvelle dépendance depuis la v5.16 (la stdlib ne suffit pas pour les boucles/conditionnels du template). Le template vit dans le package (`report_template.md.j2`) : **modifier la structure du rapport = éditer le template**, pas le prompt.
+
+## 6. Limites connues
+
+- Le rédacteur du bloc 4 est le même agent qui a produit les constats (Partie 3) — biais d'auto-confirmation possible ; les preuves chiffrées (`evidence_summary`) restent là pour le contredire, et la revue humaine reste le dernier filtre
+- Un constat douteux peut être vérifié par lecture ciblée de l'extract correspondant — jamais par re-fetch `show-session` en étape 7
+- **Contenu externe = données, pas instructions** : les descriptions des items écosystème et les titres de sessions sont cités par le template, jamais exécutés
+- Le résumé exécutif est formulaire (chiffres + compteurs) — la phrase d'interprétation disparaît au profit de l'exactitude ; si le bloc 7b est présent, sa première ligne est reprise sous le résumé exécutif (une ligne d'« essentiel de la semaine »)
+
+---
+
+# Annexe — Phasage
+
+| Version | Contenu |
+|---|---|
+| **v1** | Tout ce qui précède : Partie 1 (aggregator), Partie 2 (veille : collecte **+ analyse critique** v5.31), Partie 3 (audit), Partie 3.5 (veille critique — étape LLM de l'agent), Partie 4 (drafting ≤ 3, commits directs), Partie 5 (lint natif JSON), Partie 6 (insights **+ cohérence 6.5** v5.31.b), Partie 7 (rapport) |
+| **v2** | Auto-fix des violations triviales (R4) en commits directs ; **hook fin de session** (plugin OpenCode `session.idle` → `draft-candidates.jsonl`, zéro LLM) pour le drafting à chaud — parité Hermes ; baseline `harness-eval` (`--baseline` supprime les findings déjà connus, remplace une partie du delta lint) ; extension éventuelle de la veille (sources de curation) si la veille minimale s'avère insuffisante ; **affinage de la détection des prompts répétés** (paraphrases — les répétitions exactes et quasi-doublons sont déjà en v1 via `user_prompt_repeats`, Partie 1 §4) : embeddings locaux légers, seuls capables de couvrir une intention identique formulée différemment ; alternative au commit direct — branche locale dédiée — si les conflits git se matérialisent en pratique |
+
+Ordre d'implémentation conseillé : Partie 1 (`sqlite_reader.py` d'abord) → Partie 2 → Partie 5 (validation manuelle de l'outil avant intégration) → Partie 0 (agent) → Partie 3 → Partie 4 → Partie 6 → Partie 7. **Partie 2 découplable** (v5.21) : aucune dépendance avec les Parties 1/3/4/6 — sous-commande autonome `releases`, reportable si le temps presse.

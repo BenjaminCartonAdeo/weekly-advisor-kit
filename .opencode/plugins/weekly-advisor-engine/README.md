@@ -1,0 +1,281 @@
+# weekly-advisor
+
+Pipeline hebdomadaire de revue d'usage OpenCode — **mesure, étonnement, correction**.
+Il agrège la télémétrie des sessions de la semaine, croise l'offre du marché et l'état
+de l'environnement, produit des insights fiables (alertes budgétaires, spikes, lint),
+rédige des skills/commands à partir des patterns coûteux observés, et assemble un
+rapport Markdown lisible en 5 minutes.
+
+Documentation de référence :
+- **Spec** : [`opencode-weekly-advisor-5`](../opencode-weekly-advisor-5) — le contrat détaillé (8 parties)
+- **Historique des décisions** : [`opencode-weekly-advisor-CHANGELOG.md`](../opencode-weekly-advisor-CHANGELOG.md)
+- **Agent d'orchestration** : [`.opencode/agents/infrastructure/weekly-advisor.md`](../.opencode/agents/infrastructure/weekly-advisor.md)
+
+---
+
+## 1. Vue d'ensemble
+
+| | |
+|---|---|
+| **Rôle** | Revue hebdomadaire de la consommation de tokens (coûts, patterns de prompting, santé de l'environnement `.opencode/`) |
+| **Déclenchement** | Cron → `opencode run --agent weekly-advisor --dir <project_root>` (l'agent orchestre, jamais le script seul) |
+| **Cœur** | CLI Python 100 % déterministe (zéro LLM) pour la mesure ; LLM (l'agent) pour l'analyse qualitative |
+| **Version** | v5.31 (veille critique, cohérence, fixes fenêtres/z-score) |
+| **État** | Production-ready — 8 passes valides sur run complet (15 août 2026) |
+
+### Principe fondateur
+
+> **Vérifier avec du code, pas avec de la persuasion.**
+> Tous les nombres du rapport proviennent du template (Jinja2) — le LLM n'écrit
+> **aucun chiffre** (contrat anti-hallucination vérifié par le code). Les garde-fous
+> dépendant du comportement interne d'OpenCode sont **mesurés et datés**, jamais inférés.
+
+---
+
+## 2. Architecture — le run en 10 étapes
+
+```
+cron (hors périmètre, ex. `0 6 * * 1`)
+  └─ opencode run --port 4096 --agent weekly-advisor --dir /home/benjamin/Dev/Adeo "Lance la revue hebdomadaire"
+       │
+       ├─ 1.    run          → weekly-summary-<date>.json          (Partie 1, déterministe)
+       │        lecture SQLite locale (adaptateur auto v1/v1-live/v2), fenêtre glissante
+       │        [run_time − lookback_days×24h, run_time]
+       │
+       ├─ 2.    releases     → weekly-ecosystem-<date>.json        (Partie 2, déterministe)
+       │        veille : repos, listes awesome, topics GitHub, RSS (config watch typée)
+       │
+       ├─ 3.    Audit qualitatif (LLM)                              (Partie 3)
+       │        sélection déterministe (audit-candidates) → show-session <id> →
+       │        weekly-quality-findings-<date>.json + extracts/transcript-extract-*.md
+       │
+       ├─ 3.5.  Veille critique (LLM)                               (Partie 2 §1, v5.31)
+       │        collecte croisée avec l'environnement existant + findings coûteux →
+       │        weekly-watch-findings-<date>.json (adopt / improve-existing /
+       │        token-saver / ignore) — jamais d'installation auto
+       │
+       ├─ 4.    Auto-drafting (LLM)                                 (Partie 4)
+       │        draft-candidates → création .opencode/skills|commands/ (+ référence
+       │        dans les agents ciblés) → commit-draft (1 commit par écriture, traçable)
+       │
+       ├─ 5.    harness        → weekly-harness-digest-<date>.json  (Partie 5, déterministe)
+       │        harness-eval harness-lint (pin 7.9.0), ~98 s
+       │
+       ├─ 6.    insights     → weekly-insights-<date>.json          (Partie 6, déterministe)
+       │        deltas vs run précédent, alertes budgétaires/spikes, maintenance R1-R4
+       │
+       ├─ 6.5.  Cohérence environnement (LLM)                        (Partie 6 §6, v5.31.b)
+       │        .opencode/{agents,skills,commands} vs usage réel →
+       │        weekly-coherence-findings-<date>.json (duplicate / dead-reference /
+       │        unused-unreferenced / mismatch / token-risk, tags action)
+       │
+       └─ 7.    Rapport final (hybride)                              (Partie 7)
+            7a. report-prep          → weekly-report-draft-<date>.md   (sections chiffrées)
+            7b. report-blocks-draft  → brouillon auto (filet de sécurité) + bloc prose
+                                       optionnel (contrat anti-hallucination, 0 chiffre)
+            7c. report-assemble      → weekly-report-<date>.md  ← LE SIGNAL du cron
+                (assemble supprime le draft : relancer report-prep avant un 2ᵉ assemble)
+```
+
+Le `--anchor` est généré **une seule fois** (`RUN_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)`)
+et passé identique à toutes les sous-commandes — la fenêtre dérivée est identique partout.
+
+---
+
+## 3. Installation
+
+```sh
+cd weekly-advisor
+uv sync --extra dev        # python 3.11+, uv (ou pip install -e ".[dev]")
+.venv/bin/python -m pytest # 169 tests — tout doit passer
+```
+
+Pas de dépendance externe au runtime : lecture SQLite locale (pas de SDK, pas de serveur),
+`httpx` pour la veille, `jinja2` pour le rapport.
+
+---
+
+## 4. Configuration — `weekly-telemetry-config.json`
+
+```jsonc
+{
+  "project_root": "/home/benjamin/Dev/Adeo",        // racine ciblée (celle de .opencode/)
+  "opencode_db_path": "auto",                       // auto = détection adaptateur (v1/v1-live/v2)
+  "output_dir": ".../weekly-advisor/reports",       // tous les artefacts JSON/MD
+  "lookback_days": 7,                               // fenêtre glissante (168h)
+  "top_sessions_limit": 5,                          // top N sessions du rapport
+  "include_subagents": true,                        // sessions enfants dans les totaux
+  "exclude_active_sessions": true,                  // sessions en cours exclues (télémétrie incomplète)
+  "advisor_run_title": "Lance la revue hebdomadaire", // auto-exclusion de la propre session advisor
+  "session_outlier_z": 3.0, "session_outlier_min_cost_usd": 0.5, "outlier_min_sessions": 15,
+  "cross_check_tolerance_pct": 0.25,                // tolérance agrégats vs somme des parts
+  "harness_eval_version": "7.9.0",                  // pin harness
+  "blocks_min_words": 40,                           // taille minimale du bloc prose (Partie 7)
+  "git_name": "Weekly Advisor", "git_email": "...", // identité des commits auto-rédigés
+  "release_keywords": ["skill", "cache", "context", "compaction"],
+  "github_min_stars": 5,                            // seuil de pertinence des items GitHub
+  "opencode_version_min": "1.18.0",                 // version minimale vérifiée par doctor
+  "ignored_findings": [],                           // snooze manuel (éditer, pas d'état auto)
+  "insights": {                                     // seuils d'alertes (Partie 6)
+    "weekly_budget_usd": 25.0, "monthly_budget_usd": 100.0,
+    "daily_spike_z_min": 3.0, "cache_hit_rate_min": 0.6,
+    "cost_wow_pct_max": 15.0, "lint_violations_max": 10,
+    "never_loaded_runs_threshold": 4,               // R1 : retrait après N runs sans chargement
+    "cache_write_zero_runs": 2
+  },
+  "watch": [                                        // sources de veille typées (v5.30)
+    { "type": "repo",  "name": "adeo/ai-skills" },  //   repo GitHub
+    { "type": "list",  "name": "awesome-opencode/awesome-opencode" }, // liste awesome
+    { "type": "topic", "name": "mcp-server" },      //   topic GitHub
+    { "type": "rss",   "name": "https://simonwillison.net/atom/everything/" }
+  ],
+  "watch_repos": ["adeo/ai-skills"]                 // dépôts suivis (legacy, union avec watch)
+}
+```
+
+---
+
+## 5. Sous-commandes CLI (13)
+
+| Commande | Rôle | Entrée → Sortie |
+|---|---|---|
+| `run` | Agrégation télémétrie (défaut) | SQLite → `weekly-summary-<date>.json` |
+| `show-session <id> [--include-children] [--extract-dir DIR]` | Transcript lisible d'une session (compaction des séquences répétitives) | extraction → stdout / `extracts/transcript-extract-<id>.md` |
+| `releases` | Veille écosystème + core changes | sources watch → `weekly-ecosystem-<date>.json` + `watch-state/` |
+| `insights` | Deltas, alertes, maintenance R1-R4 | summaries + digests → `weekly-insights-<date>.json` |
+| `harness` | Étape 5 : `harness-eval harness-lint` | `.opencode/` → `weekly-harness-digest-<date>.json` |
+| `audit-candidates` | Sélection déterministe sessions à auditer (P3) | summary → `weekly-audit-candidates-<date>.json` |
+| `draft-candidates` | Candidats skill/command à rédiger (P4), sévérité DESC, plafonné | summary+findings → `weekly-draft-candidates-<date>.json` |
+| `commit-draft --kind skill\|command --file <path>` | Validation + commit d'un draft (pré-checks, add scopé, identité) | fichier → commit `skill:`/`command:` |
+| `report-prep` | Rendu des sections déterministes (template Jinja2) | artefacts → `weekly-report-draft-<date>.md` |
+| `report-blocks-draft` | Brouillon déterministe du bloc prose (filet de sécurité) | artefacts → `weekly-report-blocks-auto-<date>.md` |
+| `report-assemble` | Injection du bloc LLM dans le draft | draft + blocks → `weekly-report-<date>.md` |
+| `doctor` | Diagnostic de l'installation (DB, version, config, git) | stdout |
+| `self-cost` | Coût de la propre session du run | SQLite → stdout (annexe du rapport) |
+
+Options globales : `--config <path>`, `--anchor <ISO-8601>` (fige `run_time` pour tests/rejeu),
+`--output-dir <dir>` (override). Exit codes : **0** = complet, **1** = partiel (warnings),
+**2** = échec total (fatal → stopper sans rapport).
+
+---
+
+## 6. Artefacts de sortie (répertoire `reports/`)
+
+| Fichier | Passe | Contenu clé |
+|---|---|---|
+| `weekly-summary-<date>.json` | 1 | Sessions comptées, coût/tokens/cache, top modèles, `daily_totals`, `skill_usage`, `command_usage`, outliers, subagents |
+| `weekly-ecosystem-<date>.json` | 2 | `core_changes`, `new_items` (dédup `seen-items.json`) |
+| `weekly-audit-candidates-<date>.json` | 3 | Sessions `audited` / `unaudited` |
+| `extracts/transcript-extract-<id>.md` | 3 | Transcripts lisibles par session candidate |
+| `weekly-quality-findings-<date>.json` | 3 | Constats P3 (catégories, sévérités, preuves) |
+| `weekly-watch-findings-<date>.json` | 3.5 | Veille critique : adopt / improve-existing / token-saver / ignore |
+| `weekly-harness-digest-<date>.json` | 5 | Violations lint de `.opencode/` (62 erreurs / 2670 warnings mesurés) |
+| `weekly-insights-<date>.json` | 6 | deltas, alerts, maintenance R1-R4, `_warnings` |
+| `weekly-coherence-findings-<date>.json` | 6.5 | Cohérence environnement (duplicate, mismatch, token-risk…) |
+| `weekly-report-draft-<date>.md` | 7a | Sections chiffrées (template) |
+| `weekly-report-blocks-auto-<date>.md` | 7b | Brouillon prose déterministe (filet) |
+| `weekly-report-blocks-<date>.md` | 7b | Prose LLM optionnelle (aucun chiffre) |
+| `weekly-report-<date>.md` | 7c | **LE rapport final — le signal du cron** |
+
+---
+
+## 7. Le rapport final — sections
+
+| § | Contenu | Source |
+|---|---|---|
+| Synthèse | Coût, sessions, alertes, veille, lint — en 5 lignes | template |
+| 1. Résumé exécutif | Compteurs + « N auto-rédigés en attente de revue depuis M semaines » | template + git |
+| 2. Alertes & tendances | Table alertes (règle/seuil/observé/sévérité) + tendance journalière | template |
+| 3. Coûts | Top modèles, top sessions, outliers (dédup), top commands, sous-agents | template |
+| 4. Constats qualitatifs | **Seule section LLM** — prose ≤ 60 lignes, balises de source, 0 chiffre | bloc 7b |
+| 5. Actions du pipeline | Skills/commands auto-rédigés + rappel revert `--no-edit` | git log |
+| 5'. Santé de l'environnement | Cohérence 6.5 d'abord (tags action), puis lint harness + R1-R4 | coherence + digest + insights |
+| 7. Écosystème | Core changes + nouveautés notables (sélection par le template) | ecosystem |
+| 8. Annexe technique | Artefacts, warnings, statut par étape, coût propre (`self-cost`) | glob + fichiers |
+
+Le rapport existe **toujours** (dégradé si une passe échoue) — l'annexe rend les
+dégradations visibles. Rapport absent = run fatal, le cron alerte.
+
+---
+
+## 8. Pièges connus & garde-fous (appris sur données réelles)
+
+| Piège | Symptôme mesuré | Garde-fou (v5.31) |
+|---|---|---|
+| **Fenêtres hétérogènes** | `cost_wow` +30 % artefact (336h vs 360h, run 15j) | `_window_hours` : écart > 1h → deltas de volume `null` + warning `_warnings` |
+| **MAD≈0** | z-score daily_spike astronomique (99,19 / 39,23) | `DAILY_SPIKE_Z_CAP = 10.0` + note « MAD≈0, z borné » |
+| **Draft consommé** | 2ᵉ assemble échoue RC=2, agent débugge ~20 min le validateur | Message « un assemble précédent l'a consommé — relancer report-prep » + doc agent (ordre 7.d2) |
+| **Comptage commits auto** | 4 listés dont 1 faux positif (feat mentionnant le mot) | grep affiné `auto-rédigé, revue hebdo` |
+| **Re-run `--force`** | Écrase le summary → baseline insights perdue (deltas/spikes disparus) | Avertissement si fenêtre de l'existant ≠ nouvelle (> 1h) |
+| **Table vivante SQLite** | « 0 session » trompeur (mauvaise table) | Adaptateur auto (v1 / v1-live / v2), détection par `MAX(time_updated)` + priorité |
+| **harness ne couvre pas les skills** | `triggers.skill_count = 0` avec 12+ skills | R1-R3 internes + `skills_never_loaded` + `skill_usage` |
+| **Contrat anti-hallucination** | Chiffre dans le bloc prose | Rejet par le code + fallback brouillon auto (annexe mentionne le rejet) |
+
+---
+
+## 9. Tests & qualité
+
+```sh
+cd weekly-advisor
+.venv/bin/python -m pytest        # 169 tests (16 s)
+.venv/bin/ruff check .            # lint
+.venv/bin/ruff format --check .   # format
+```
+
+Couverture clé : adaptateurs SQLite (v1/v1-live/v2), agrégation (totaux, cross-check),
+fenêtres hétérogènes, z-score borné, règles R1-R4, rendu du rapport (template),
+`commit-draft` (pré-checks git, validation frontmatter), `_git_log` (filtrage commits auto),
+garde `run --force`, `report-assemble` (draft manquant, rejet de bloc).
+
+---
+
+## 10. Cycle de vie
+
+1. **Run hebdo** (cron) — les 10 étapes de la §2, ~30-45 min (run 5-15 min, harness ~98 s, LLM en parallèle des étapes déterministes)
+2. **Revue humaine** — lire `reports/weekly-report-<date>.md` : alertes, cohérence (tags action), veille critique, commits auto-rédigés en attente de revue
+3. **Actions** — fusion/retrait/recalibrage via les findings (jamais automatisé) ; snooze via `ignored_findings`
+4. **Étonnement** — un constat inattendu sur données réelles = candidat fix du pipeline (c'est la boucle qui a produit v5.29 → v5.31)
+
+Documents liés : spec (contrat complet) · changelog (décisions datées) · agent file (workflow opérationnel).
+
+---
+
+## 11. Kit projet — transposer à un autre repo (v5.32)
+
+L'agent est un **squelette** ; les étapes LLM vivent dans 5 skills chargés à la demande :
+
+```
+.opencode/
+├── agents/infrastructure/weekly-advisor.md   ← squelette (~55 l.) : ordre, permissions, invariants
+├── skills/
+│   ├── weekly-quality-audit/SKILL.md     ← étape 3 : catégories P3, schéma findings, paraphrase
+│   ├── weekly-watch-review/SKILL.md      ← étape 3.5 : veille critique (adopt/improve/token-saver)
+│   ├── weekly-drafting/SKILL.md          ← étape 4 : formats skill/command, public cible, commit-draft
+│   ├── weekly-coherence-review/SKILL.md  ← étape 6.5 : catégories + tags action (lecture seule)
+│   └── weekly-report-prose/SKILL.md      ← étape 7b : contrat anti-hallucination, balises [F]/[M]/[A]
+└── commands/
+    ├── weekly-review.md                  ← `/weekly-review` : lance la chaîne (humain interactif)
+    └── weekly-report.md                  ← `/weekly-report` : résume le dernier rapport
+```
+
+**Transposer = copier 3 éléments dans le repo cible, adapter 2 choses :**
+
+```sh
+# 1. Copier :
+#    - weekly-advisor/          (package + weekly-telemetry-config.json)
+#    - .opencode/               (agent + 5 skills weekly-* + 2 commands weekly-*)
+#    - opencode-weekly-advisor-5 (spec, à la racine)
+# 2. Adapter la config : project_root, output_dir, git_name/git_email
+# 3. Adapter le modèle : le passer via --model dans la ligne cron / la config du poste
+#    (auth opencode requise) — aucun model en dur dans l'agent
+# 4. Vérifier :
+opencode agent list | grep weekly        # agent chargé
+cd weekly-advisor && uv sync --extra dev
+.venv/bin/python -m weekly_telemetry_aggregator doctor
+opencode run --port 4096 --agent weekly-advisor \
+        --model opencode/deepseek-v4-flash-free --dir <repo> "Lance la revue hebdomadaire"
+```
+
+Aucune référence au projet d'origine dans l'agent, les skills ou les commands — tout se lit
+via la config (`project_root`). L'activation du cron : wrapper déterministe (`scripts/weekly-
+advisor-cron.sh`, zéro LLM) OU `opencode run --agent weekly-advisor` (chaîne complète).

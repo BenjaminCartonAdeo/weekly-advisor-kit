@@ -1,0 +1,243 @@
+# Rapport hebdomadaire OpenCode — {{ date }}
+
+> Généré par le pipeline `weekly-advisor` v5.30. Sections 1-3, 5-8 : déterministes
+> (parties 1/2/6/7). Section 4 : constats qualitatifs de l'agent (partie 3/4).
+
+## Synthèse
+
+- **Sessions** : {{ summary.totals.session_count }} comptées (racines){{ (" — " ~ summary.selection.window_touched ~ " touchées dans la fenêtre, audit §1") if summary.selection.window_touched else "" }}
+- **Coût** : **\${{ "%.4f"|format(summary.totals.total_cost_usd) }}** · {{ "{:,}".format(summary.totals.total_tokens) }} tokens · cache hit {{ summary.totals.cache_hit_rate if summary.totals.cache_hit_rate is not none else "n/a" }}{{ (" (delta " ~ "%.4f"|format(insights.deltas.cache_hit_rate_delta) ~ ")") if insights and insights.deltas and insights.deltas.cache_hit_rate_delta is not none else "" }}
+- **Alertes** : {{ insights.alerts|length if insights and insights.alerts else 0 }}{{ (" — " ~ insights.alerts|map(attribute='rule')|join(", ")) if insights and insights.alerts else "" }}
+- **Veille** : {{ ecosystem.new_items|length if ecosystem and ecosystem.new_items else 0 }} nouveautés{{ (" · repos suivis : " ~ ecosystem.watch_repos|join(", ")) if ecosystem and ecosystem.watch_repos else "" }}
+- **Lint harness** : {{ ("`" ~ harness_top_rules[0].rule ~ "` — " ~ harness_top_rules[0].count ~ " violation(s)") if digest and harness_top_rules else "non exécuté / page absente" }}
+
+## 1. Vue d'ensemble
+
+- Période : `{{ period.start }}` → `{{ period.end }}`
+- Sessions (racines) : {{ summary.totals.session_count }}
+- Coût total : **\${{ "%.4f"|format(summary.totals.total_cost_usd) }}**
+- Tokens totaux : {{ "{:,}".format(summary.totals.total_tokens) }}
+- Cache : hit rate **{{ summary.totals.cache_hit_rate if summary.totals.cache_hit_rate is not none else "n/a" }}**
+  (read={{ "{:,}".format(summary.totals.cache_read_tokens) }} / write={{ "{:,}".format(summary.totals.cache_write_tokens) }})
+{% if insights and insights.deltas and insights.deltas.cache_hit_rate_delta is not none %}
+  - delta vs run précédent : {{ "%.4f"|format(insights.deltas.cache_hit_rate_delta) }}
+{% endif %}
+{% if cost_outliers_state in ("computed", "computed:small-sample") %}
+- Cost outliers : **calculés** (état `{{ cost_outliers_state }}`{% if cost_outliers_state == "computed:small-sample" %} — échantillon réduit, MAD robuste{% endif %}) — liste en §2
+{% else %}
+- Cost outliers : **non calculés** (état `{{ cost_outliers_state }}` — sample ou données insuffisants)
+{% endif %}
+- Warnings pipeline : {{ summary.warnings|length }}
+
+{% if summary.selection and summary.selection.window_touched %}
+### Audit de sélection — pourquoi ce compte ?
+
+{{ summary.selection.window_touched }} sessions touchées dans la fenêtre : **{{ summary.selection.counted }} comptées** (racines + enfants fusionnés), {{ summary.selection.excluded_active }} exclues actives (télémétrie incomplète), {{ summary.selection.excluded_no_activity }} sans télémétrie dans la fenêtre, {{ summary.selection.excluded_unflushed }} non persistées en DB (client actif), {{ summary.selection.excluded_advisor }} sessions advisor, {{ summary.selection.excluded_error }} en erreur de lecture.
+
+| Session | Statut | Coût ($) | Titre |
+|---|---|---|---|
+{% for r in summary.selection.recent %}
+| `{{ r.session_id }}` | {{ r.status }} | {{ "%.4f"|format(r.cost) if r.cost is not none else "n/a" }} | {{ r.title or r.session_id }} |
+{% endfor %}
+
+{% endif %}
+### Répartition journalière
+
+| Date | Coût (\$) | Tokens | Cache hit |
+|------|----------|--------|-----------|
+{% for d in daily_totals %}
+| {{ d.date }} | {{ "%.4f"|format(d.cost_usd) }} | {{ "{:,}".format(d.total_tokens) }} | {{ d.cache_hit_rate if d.cache_hit_rate is not none else "n/a" }} |
+{% endfor %}
+
+## 2. Coûts & modèles
+
+### Top modèles
+
+| Modèle | Sessions | Tokens | Coût (\$) |
+|--------|----------|--------|-----------|
+{% for m in models_top %}
+| {{ m.model }} | {{ m.session_count }} | {{ "{:,}".format(m.total_tokens) }} | {{ "%.4f"|format(m.total_cost_usd) }} |
+{% endfor %}
+
+{% if summary.cost_outliers %}
+### Outliers de coût (z-score robuste, seuil configuré)
+
+{% for o in summary.cost_outliers %}
+- **{{ o.session_id }}** : \${{ "%.4f"|format(o.cost_usd) }} (z={{ "%.2f"|format(o.z_score) }})
+{% endfor %}
+{% endif %}
+
+### Sessions les plus coûteuses
+
+{% if top_sessions and top_sessions[0].get("reported_cost_usd_lifetime") is not none %}
+*Coût `reported_cost_usd_lifetime` : total `session` ∪ `session_v2` (**lifetime**) — à comparer au coût fenêtré ; écart > tolérance ⇒ warning cross-check (K7).*
+{% endif %}
+{% for s in top_sessions %}
+{% if s.session_id in outliers %}[OUTLIER] {% endif %}**{{ s.title_or_topic or s.session_id }}** (`{{ s.session_id }}`) — \${{ "%.4f"|format(s.cost_usd) }}, {{ "{:,}".format(s.total_tokens) }} tokens
+  - durée {{ s.duration_seconds }}s / active {{ s.active_time_seconds }}s, coût/actif {{ "%.4f"|format(s.cost_per_active_minute) if s.cost_per_active_minute is not none else "n/a" }}\$/min
+  - API calls {{ s.api_call_count }}, cache eff. {{ s.cache_efficiency if s.cache_efficiency is not none else "n/a" }}, sous-agents {{ "oui" if s.includes_subagents else "non" }}
+{% endfor %}
+
+## 3. Télémétrie & usage de l'environnement
+
+### Outils
+
+{% if summary.tool_usage %}
+| Outil | Appels | Tokens estimés |
+|-------|--------|----------------|
+{% for t in summary.tool_usage %}
+| {{ t.tool }} | {{ t.call_count }} | {{ t.estimated_input_tokens }} |
+{% endfor %}
+{% else %}
+*Aucune activité outil mesurée sur la fenêtre.*
+{% endif %}
+
+### Skills chargés
+
+{% if summary.skill_usage %}
+{% for sk in summary.skill_usage %}
+- `{{ sk.skill }}` × {{ sk.load_count }} ({{ sk.sessions_used_in }} session(s))
+{% endfor %}
+{% else %}
+*Aucun skill chargé.*
+{% endif %}
+
+{% if summary.skills_never_loaded %}
+**Skills jamais chargés** (catalogue {{ summary.skill_catalog_count }}) : {{ summary.skills_never_loaded|join(", ") }}
+{% endif %}
+
+### Commandes slash
+
+{% if summary.command_usage %}
+{% for c in summary.command_usage %}
+- `/{{ c.command }}` × {{ c.call_count }} ({{ c.sessions_used_in }} session(s))
+{% endfor %}
+{% else %}
+*Aucune commande slash mesurée.*
+{% endif %}
+
+{% if summary.user_prompt_repeats %}
+### Prompts utilisateur répétés
+
+{% for r in summary.user_prompt_repeats %}- « {{ r.normalized_preview }} » × {{ r.count }} (moy. {{ r.avg_chars }} car., ex. `{{ r.session_id }}`)
+{% endfor %}
+{% endif %}
+
+## 4. Constats qualitatifs (agent)
+
+<!-- QUALITY_BLOCK -->
+
+## 5. Santé de l'environnement (harness + cohérence)
+
+{% if coherence_findings and coherence_findings.findings %}
+### Cohérence de l'environnement (passe critique — agents/skills/commands)
+
+{% for f in coherence_findings.findings %}
+- **{{ f.tag|default(f.category) }}** {{ f.description }}{% if f.evidence_summary %} (preuve : {{ f.evidence_summary[:110] }}){% endif %} → {{ f.recommendation }}
+{% endfor %}
+
+{% endif %}
+{% if digest %}
+- Violations : {{ digest.inspection.summary.errors if digest.inspection.summary is defined else "n/a" }} erreurs, {{ digest.inspection.summary.warnings if digest.inspection.summary is defined else "n/a" }} warnings
+{% if harness_top_rules %}
+Top règles violées :
+{% for r in harness_top_rules %}
+  - `{{ r.rule }}` — {{ r.count }} violation(s)
+{% endfor %}
+{% endif %}
+{% if harness_ignored_rules %}
+Règles exclues du top (config `harness_ignored_rules`) : {{ harness_ignored_rules|join(", ") }} — bruit structurel non compté.
+{% endif %}
+{% if harness_budget %}
+- Budget tokens : **{{ "{:,}".format(harness_budget.total_tokens) }}** (always-loaded {{ "{:,}".format(harness_budget.always_loaded) }} / on-demand {{ "{:,}".format(harness_budget.on_demand) }}, ratio {{ harness_budget.always_loaded_ratio }}) — plus lourd : `{{ harness_budget.heaviest }}`
+{% endif %}
+{% if harness_triggers %}
+- Triggers : {{ harness_triggers.skill_count }} skills, {{ harness_triggers.overlaps|length }} chevauchement(s)
+{% endif %}
+{% if harness_dependencies %}
+- Dépendances : {{ harness_dependencies.total_edges }} arêtes, {{ harness_dependencies.broken|length }} cassée(s)
+{% endif %}
+{% else %}
+*Digest harness absent ce run (étape 5 non exécutée ou fichier manquant).*
+{% endif %}
+
+## 6. Veille — recommandations & nouveautés
+
+{% if watch_findings and watch_findings.findings %}
+### Recommandations (regard critique — à revoir, jamais d'installation automatique)
+
+{% for f in watch_findings.findings %}
+- **[{{ f.severity|upper }}] {{ f.category }}** — {{ f.description }}{% if f.evidence_summary %} (preuve : {{ f.evidence_summary[:120] }}){% endif %} → {{ f.recommendation }}
+{% endfor %}
+
+{% endif %}
+{% if ecosystem %}
+- Nouveautés détectées : {{ ecosystem.new_items|length }}
+{% if ecosystem.watch_repos %}
+- Sources suivies (watch) : {{ ecosystem.watch_repos|join(", ") }}{% if ecosystem.watch and ecosystem.watch|length > ecosystem.watch_repos|length %} + {{ ecosystem.watch|map(attribute='name')|reject('in', ecosystem.watch_repos)|join(", ") }}{% endif %}
+{% if watch_warned %}
+  - ⚠ Source GitHub indisponible ce run (réseau / accès repo requis) — activité non vérifiée.
+{% elif watch_items %}
+{% for item in watch_items %}
+  - **{{ item.name }}** ({{ item.category }}) — {{ item.description[:120] }} [{{ item.found_via|join(", ") }}]
+{% endfor %}
+{% else %}
+  - _Aucune activité sur la fenêtre (dernier push hors période)._
+{% endif %}
+{% endif %}
+{% for item in ecosystem.new_items[:5] %}
+- **{{ item.name }}** (`{{ item.category }}`) — {{ item.description[:120] }} [{{ item.found_via|join(", ") }}]
+{% endfor %}
+{% if ecosystem.core_changes %}
+Évolutions du cœur :
+{% for c in ecosystem.core_changes[:5] %}
+- v{{ c.version }} ({{ c.date }}) — {{ c.summary[:200] }} `{{ c.relevance_flag }}`
+{% endfor %}
+{% endif %}
+{% elif not watch_findings or not watch_findings.findings %}
+*Veille non réalisée ce run.*
+{% endif %}
+
+## 7. Alertes & maintenance
+
+{% if insights %}
+{% if insights.alerts %}
+{% for a in insights.alerts %}- **[{{ a.severity|upper }}]** règle `{{ a.rule }}` (seuil {{ a.threshold }}, observé {{ a.observed }})
+{% endfor %}
+{% else %}
+*Aucune alerte.*
+{% endif %}
+
+{% if insights.maintenance.findings %}
+Constats de maintenance (R1-R4) :
+{% for f in insights.maintenance.findings %}
+- **[{{ f.severity|upper }}]** {{ f.description }} → {{ f.recommendation }}{% if f.evidence_summary %} — preuve : {{ f.evidence_summary[:120] }}{% endif %}
+{% endfor %}
+{% else %}
+*Aucun constat de maintenance.*
+{% endif %}
+{% else %}
+*Insights non générés ce run.*
+{% endif %}
+
+## 8. Annexes
+
+- Artefacts : `weekly-summary-{{ date }}.json`, `weekly-insights-{{ date }}.json`, `weekly-harness-digest-{{ date }}.json`, `weekly-ecosystem-{{ date }}.json`
+- Coût propre du pipeline (self-cost) : {{ "%.4f"|format(self_cost) if self_cost is not none else "non mesurable" }} $
+- Commits auto-rédigés sur la fenêtre : {{ auto_commits|length }}
+{% for c in auto_commits[:10] %}
+  - `{{ c.hash }}` {{ c.date }} {{ c.subject }}
+{% endfor %}
+- **{{ pending_auto_commits }}** commits auto-rédigés en attente de revue (du plus vieux que {{ date }})
+{% if summary.skills_targets %}
+- **Skills auto-rédigés et cibles** :{% for name, agents in summary.skills_targets.items() %} `{{ name }}` → {{ agents|join(", ") }}{% if not loop.last %} ;{% endif %}{% endfor %}
+{% endif %}
+{% if audit_candidates and audit_candidates.unaudited %}
+- **Candidates d'audit non traitées** (plafond {{ audit_candidates.limit }}) : {{ audit_candidates.unaudited|map(attribute='session_id')|join(", ") }}
+{% endif %}
+{% if warnings_grouped %}
+- Warnings pipeline ({{ summary.warnings|length }}) :
+{% for g in warnings_grouped %}
+  - **×{{ g.count }}** {{ g.message }}{% if g.count > 1 %} — `{{ g.session_ids[:6]|join("`, `") }}{% if g.session_ids|length > 6 %}…{% endif %}`{% endif %}
+{% endfor %}
+{% endif %}
