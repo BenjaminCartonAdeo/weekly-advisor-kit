@@ -46,6 +46,8 @@ est absent, quelque chose s'est mal passé. Codes de sortie : `0` complet, `1` p
 
 Prérequis : `opencode` ≥ 1.18 avec un modèle authentifié (`opencode auth login`), `uv` —
 détails et alternatives : [`INSTALL.md`](INSTALL.md).
+Optionnel : `harness-eval` (étape 5 — lint de `.opencode/`) et `gh` (repos privés de la
+veille) — les étapes concernées dégradent proprement (warnings) en leur absence.
 
 ```sh
 git clone https://github.com/BenjaminCartonAdeo/weekly-advisor-kit.git && cd weekly-advisor-kit
@@ -93,6 +95,17 @@ Détails et heartbeat recommandé : [`INSTALL.md`](INSTALL.md) §2.7.
 | [`opencode-weekly-advisor`](opencode-weekly-advisor) | La spec complète (8 parties) — le contrat du pipeline : orchestration, télémétrie, veille, audit, drafting, lint, insights, rapport |
 | [`INSTALL.md`](INSTALL.md) | Installation pas à pas : prérequis, config, validation, cron, mise à jour, dépannage |
 | [`README.md`](README.md) | Ce fichier — vue d'ensemble |
+
+## Limites & compatibilité
+
+- **Schéma SQLite d'opencode** : le moteur lit directement les tables internes
+  (`session_v2`/`part` ou `session`/`event`), avec pins de schéma vérifiés au run
+  (tables/colonnes requises, compteur de migrations). Ce n'est **pas une API publique** :
+  une mise à jour majeure d'opencode peut rompre la collecte télémétrique jusqu'à la mise
+  à jour du kit — `weekly_doctor` diagnostique base, config et binaires.
+- **Veille (étape 2)** : dépend d'APIs publiques (npm, GitHub, registre MCP) — rate-limits
+  possibles, warnings par source tolérés, le run continue.
+- **`harness-eval` épinglé** (7.9.0) : toute dérive de version est signalée par le doctor.
 
 ## Développement
 
