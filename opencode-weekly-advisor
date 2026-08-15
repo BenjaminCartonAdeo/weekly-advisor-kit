@@ -15,7 +15,7 @@ Le cron appelle directement `opencode run`, **sans wrapper de gestion de serveur
 
 ```
 cron (utilisateur, hors périmètre)
-  │  ex. 0 6 * * 1  opencode run --port 4096 --agent weekly-advisor --dir /home/benjamin/Dev/Adeo "Lance la revue hebdomadaire"
+  │  ex. 0 6 * * 1  opencode run --port 4096 --agent weekly-advisor --model <model> --dir /path/to/your-repo "Lance la revue hebdomadaire"
   ▼
 Agent OpenCode "weekly-advisor" (session dédiée, non-interactive,
                                   serveur interne sur le port fixé)
@@ -116,6 +116,7 @@ Toolset volontairement restreint — l'agent qui existe pour réduire vos coûts
 - **`read`**, scope : les JSON/extracts produits par les Parties 1/2/3/5/6, `.opencode/skills/`, `.opencode/commands/`, `.opencode/agents/`, le fichier de config du pipeline (`<engine>/weekly-telemetry-config.json` — layout kit v6.0 : `.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`, résolu par le plugin)
 - **`write`**, scope : `.opencode/skills/`, `.opencode/commands/` (**création uniquement en v1** — la v2 étend à l'édition des fichiers existants pour R4, cf. Partie 6 §5), le répertoire de sortie (rapport, findings, extracts)
 - **Pas** d'accès au catalogue complet d'un agent de code généraliste (pas de `edit` sur le code applicatif, pas de navigateur/web) — cet agent audite et documente, il ne développe pas
+- **Exactitude (v6.0.a)** : le frontmatter autorise `edit`/`read` au niveau système (squelette portatif, aucune règle spécifique au repo) — le bornage du périmètre (scope ci-dessus) est porté par les consignes de l'agent et des skills, pas par un enforcement technique par répertoire ; `webfetch`, `task` et `bash` restent bloqués.
 
 ## 3. Accès aux transcripts pour les Parties 3 et 4 — tranché
 
@@ -154,7 +155,7 @@ L'agent remonte le pire des exit codes rencontrés parmi ses étapes.
 
 Le cron (**configuré et géré par vos soins, hors périmètre**) doit satisfaire un contrat d'environnement, en plus du contrat d'invocation :
 
-**Invocation** : `opencode run --port 4096 --agent weekly-advisor --dir <project_root> "Lance la revue hebdomadaire"` — non-interactif, `--dir` = `project_root` de la config (Partie 1 §6). **Statut** : le cron alerte si `weekly-report-<date>.md` est absent en fin d'exécution (cf. §4) — le rapport est le signal, pas de fichier de statut.
+**Invocation** : `opencode run --port 4096 --agent weekly-advisor --model <model> --dir <project_root> "Lance la revue hebdomadaire"` — le modèle est une **décision du déploiement** (v5.32.b, jamais en dur dans l'agent : `--model` du cron ou config globale en interactif) ; non-interactif, `--dir` = `project_root` de la config (Partie 1 §6). **Statut** : le cron alerte si `weekly-report-<date>.md` est absent en fin d'exécution (cf. §4) — le rapport est le signal, pas de fichier de statut.
 
 **PATH — résolu par le plugin, plus par le cron (v6.0)** : l'agent n'appelle plus rien en bash — les 13 tools `weekly_*` invoquent le CLI du moteur via le binaire `$WEEKLY_PYTHON` ?? `<worktree>/.venv/bin/python` résolu par le plugin (défaut : venv racine du repo, `<project_root>/.venv`). Le cron n'a donc **rien à mettre sur PATH** pour la pipeline (v1-v5.32 : il devait exposer `python` du venv du projet et `harness-eval` — la résolution est désormais interne au plugin, `harness-eval` compris). Seule contrainte : le venv racine doit exister avec le moteur installé (`uv venv .venv && uv pip install -e .opencode/plugins/weekly-advisor-engine`), et `git` reste requis pour les étapes git du rapport (déjà sur le PATH du cron par défaut).
 
@@ -414,7 +415,7 @@ Fichier `weekly-telemetry-config.json` (surchargeable en CLI) :
 
 ```json
 {
-  "project_root": "/home/benjamin/Dev/Adeo",
+  "project_root": "/path/to/your-repo", // le repo audité (celui qui contient .opencode/) — à adapter au clone
   "opencode_db_path": "auto",           // auto : opencode.db puis opencode-next.db, la vivante gagne
   "lookback_days": 7,
   "output_dir": "~/opencode-weekly-reports/",
@@ -436,6 +437,11 @@ Fichier `weekly-telemetry-config.json` (surchargeable en CLI) :
   "user_prompt_repeat_min": 3,
   "user_prompt_repeat_similarity": 0.9,
   "opencode_version_min": "1.18.0",       // épinglage : doctor vérifie `opencode --version`
+  "outlier_min_sessions": 15,             // coût des outliers significatif seulement si ≥ N sessions (v5.23/5.28)
+  "cross_check_tolerance_pct": 0.25,      // tolérance relative du cross-check parts vs agrégats session (v5.28)
+  "harness_eval_version": "7.9.0",        // épinglage harness-eval — doctor alerte sur dérive (v5.28)
+  "blocks_min_words": 40,                 // Nb. de mots min. du bloc LLM accepté par report-assemble (v5.28)
+  "baseline_summary_path": null,          // summary explicite du run précédent pour le 1er insights (v5.28)
   "user_prompt_repeat_min_chars": 80,
   "ignored_findings": [],              // snooze manuel : identifiants "category:target" à ne plus
                                        // proposer (ex. "skill-maintenance:deploy-staging") —
@@ -451,7 +457,8 @@ Fichier `weekly-telemetry-config.json` (surchargeable en CLI) :
     "cache_hit_rate_min": 0.6,
     "cost_wow_pct_max": 15.0,
     "lint_violations_max": 10,
-    "never_loaded_runs_threshold": 4
+    "never_loaded_runs_threshold": 4,
+    "cache_write_zero_runs": 2
   }
 }
 ```
@@ -869,6 +876,10 @@ Toutes les autres parties analysent **l'usage**. `harness-eval` analyse **la con
 
 ## 3. Où ça s'insère (Partie 0 §1, étape 5)
 
+En layout kit (v6.0), l'étape 5 passe par le tool `weekly_harness` du plugin — le moteur
+résout `project_root` depuis la config et invoque, de manière équivalente à l'ancienne
+forme bash (v1-v5.32) :
+
 ```
 harness-eval harness-lint "$PWD" --format json --output "<output_dir>/weekly-harness-digest-<date>.json" || true
 ```
@@ -1060,7 +1071,7 @@ Le rapport est la seule sortie que vous lisez. **Révision v5.20** : les chiffre
 ## 2. Flux — trois sous-étapes (étape 7 de la Partie 0)
 
 ```
-7a. bash: python -m weekly_telemetry_aggregator report-prep --anchor <run_time>
+7a. tool `weekly_report_prep` (plugin — équivalent CLI : `python -m weekly_telemetry_aggregator report-prep --anchor <run_time>`)
     → rend les sections déterministes (1, 2, 3, 5, 6, 7, 8) dans weekly-report-draft-<date>.md
     (template Jinja2 ; sources : summary, insights, digest, ecosystem, git log
     --grep="auto-rédigé, revue hebdo" --since=<period.start> — v5.31.c : grep affiné,
@@ -1069,7 +1080,7 @@ Le rapport est la seule sortie que vous lisez. **Révision v5.20** : les chiffre
 7b. LLM : lit les constats (en mémoire) + extracts si besoin → écrit UNIQUEMENT le bloc
     « Constats qualitatifs » dans weekly-report-blocks-<date>.md (prose markdown,
     ≤ ~40 lignes, aucun chiffre, pas de citation verbatim)
-7c. bash: python -m weekly_telemetry_aggregator report-assemble --anchor <run_time>
+7c. tool `weekly_report_assemble` (plugin — équivalent CLI : `python -m weekly_telemetry_aggregator report-assemble --anchor <run_time>`)
     → injecte le bloc 7b dans le draft → weekly-report-<date>.md (le signal du cron)
     → si 7b absent : le rapport est rendu avec « constats non disponibles » et l'annexe
       le mentionne — le rapport existe toujours (dégradé), les dégradations sont visibles

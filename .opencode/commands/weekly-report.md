@@ -1,10 +1,11 @@
 ---
-description: "Résume le dernier rapport hebdomadaire du pipeline weekly-advisor (reports/weekly-report-*.md le plus récent) — synthèse, alertes, constats, actions."
+description: "Résume le dernier rapport hebdomadaire du pipeline weekly-advisor (<output_dir>/weekly-report-*.md le plus récent) — synthèse, alertes, constats, actions."
 ---
 
 # Dernier rapport hebdomadaire
 
-Trouve le rapport le plus récent dans `weekly-advisor/reports/weekly-report-*.md`
+Trouve le rapport le plus récent dans `<output_dir>/weekly-report-*.md` — output_dir de la
+config du moteur (`.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`) —
 (glob, tri par date décroissante) et résume-le pour une lecture rapide.
 
 ## Sortie attendue

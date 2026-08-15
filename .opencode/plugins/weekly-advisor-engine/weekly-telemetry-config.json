@@ -36,14 +36,8 @@
     "never_loaded_runs_threshold": 4,
     "cache_write_zero_runs": 2
   },
-  "watch_repos": [
-    "adeo/ai-skills"
-  ],
+  "watch_repos": [],
   "watch": [
-    {
-      "type": "repo",
-      "name": "adeo/ai-skills"
-    },
     {
       "type": "repo",
       "name": "mvanhorn/printing-press-library"
