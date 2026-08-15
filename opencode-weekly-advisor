@@ -1,7 +1,7 @@
 # Spec — Pipeline `opencode-weekly-advisor` (v6.0)
 
 Changelog : voir `opencode-weekly-advisor-CHANGELOG.md` (fichier séparé depuis la v5.26).
-Dernières révisions intégrées : v5.31 (veille critique 3.5 + fixes insights), v5.31.b (cohérence 6.5), v5.31.c (retours du run de test complet), v5.32 (agent mince + skills + kit projet), v5.32.b (modèle hors agent — `--model` du cron), v5.32.c (doctor : config introuvable = warning, pas exit 2), v6.0 (layout kit : plugin enveloppe `weekly_*` + agent tools, `bash: deny`, moteur déplacé dans `.opencode/plugins/weekly-advisor-engine/`).
+Dernières révisions intégrées : v5.31 (veille critique 3.5 + fixes insights), v5.31.b (cohérence 6.5), v5.31.c (retours du run de test complet), v5.32 (agent mince + skills + kit projet), v5.32.b (modèle hors agent — `--model` du cron), v5.32.c (doctor : config introuvable = warning, pas exit 2), v6.0 (layout kit : plugin enveloppe `weekly_*` + agent tools, `bash: deny`, moteur déplacé dans `.opencode/plugins/weekly-advisor-engine/`), v6.0.a (rename spec `opencode-weekly-advisor-5` → `opencode-weekly-advisor` ; doctor : `project_root` sans `.opencode/` = problem exit 2 — sentinelle d'installation ; warning « config introuvable » uniquement sans `--config` explicite).
 
 # Partie 0 — Orchestration : de cron à l'agent
 
@@ -11,7 +11,7 @@ Le cron (**configuré et géré par vos soins, hors périmètre**) ne lance jama
 
 Le cron appelle directement `opencode run`, **sans wrapper de gestion de serveur** : `opencode run` accepte `--port` (« port for the local server, defaults to random port ») et `--agent` (vérifié sur la doc CLI et `run.ts`, août 2026). Les étapes LLM (3, 4, 7) s'exécutent dans la session de l'agent ; les étapes déterministes (1, 2, 5, 6) n'ont **plus besoin du serveur** : le CLI lit directement la base SQLite locale d'OpenCode (Partie 1 §2, v5.16). Pas de `opencode serve`, pas de `--attach`, pas de serveur séparé.
 
-**Racine du run — définie, pas devinée** : le cron passe `--dir <project_root>` (la racine ciblée par la pipeline, celle qui contient `.opencode/`). L'agent s'exécute donc avec `$PWD` = cette racine — toutes les commandes `git -C "$PWD"`, les lectures et le lint en découlent ; l'agent ne devine jamais de chemin absolu. Le `project_root` de la config (Partie 1 §6) doit être identique à `$PWD` : la cohérence est vérifiée par `doctor` (Partie 1 §12), pas au runtime.
+**Racine du run — définie, pas devinée** : le cron passe `--dir <project_root>` (la racine ciblée par la pipeline, celle qui contient `.opencode/`). L'agent s'exécute donc avec `$PWD` = cette racine — toutes les commandes `git -C "$PWD"`, les lectures et le lint en découlent ; l'agent ne devine jamais de chemin absolu. Le `project_root` de la config (Partie 1 §6) doit être la **même racine** ; en layout kit (v6.0), le cwd du CLI = dossier moteur (le plugin lance `execFile` avec `cwd: engine`) ≠ project_root — l'égalité cwd/project_root n'est donc plus vérifiée (v5.32.c) ; c'est la **présence de `.opencode/`** dans `project_root` qui fait foi (v6.0.a : absente → exit `2` — sentinelle d'installation, cf. Partie 1 §12).
 
 ```
 cron (utilisateur, hors périmètre)
@@ -113,7 +113,7 @@ l'agent, v5.32.b), et la commande du cron fonctionne telle quelle.
 
 Toolset volontairement restreint — l'agent qui existe pour réduire vos coûts de tokens ne doit pas être le premier poste de dépense qu'il audite :
 - **`bash: deny` (v6.0)** — plus d'allowlist : l'agent n'a **aucun** besoin de bash, les 13 tools `weekly_*` couvrent toute la mécanique (le CLI et `harness-eval` sont appelés par le plugin, pas par l'agent). En v1-v5.32, une allowlist de deux familles bash (`python -m weekly_telemetry_aggregator …` et `harness-eval harness-lint …`) tenait ce rôle ; le plugin la rend obsolète. Le rollback `git revert --no-edit` reste une action humaine, hors périmètre.
-- **`read`**, scope : les JSON/extracts produits par les Parties 1/2/3/5/6, `.opencode/skills/`, `.opencode/commands/`, `.opencode/agents/`, le fichier de config du pipeline (`<project_root>/weekly-telemetry-config.json` — via le plugin en v6.0, les tools dérivent les chemins du cwd)
+- **`read`**, scope : les JSON/extracts produits par les Parties 1/2/3/5/6, `.opencode/skills/`, `.opencode/commands/`, `.opencode/agents/`, le fichier de config du pipeline (`<engine>/weekly-telemetry-config.json` — layout kit v6.0 : `.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`, résolu par le plugin)
 - **`write`**, scope : `.opencode/skills/`, `.opencode/commands/` (**création uniquement en v1** — la v2 étend à l'édition des fichiers existants pour R4, cf. Partie 6 §5), le répertoire de sortie (rapport, findings, extracts)
 - **Pas** d'accès au catalogue complet d'un agent de code généraliste (pas de `edit` sur le code applicatif, pas de navigateur/web) — cet agent audite et documente, il ne développe pas
 
@@ -217,7 +217,7 @@ Agrège la télémétrie de toutes les sessions OpenCode de la semaine en un JSO
 
 ```
 1. Charger la config : le plugin la passe en `--config` (layout kit : `.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`) ; défaut CLI autonome : `<cwd>/weekly-telemetry-config.json` ;
-   la cohérence `project_root` vs répertoire d'exécution est vérifiée par `doctor` (Partie 1 §12), pas au runtime ;
+   la cohérence du `project_root` est vérifiée par `doctor` (Partie 1 §12 : `.opencode/` présent, config trouvée), pas au runtime ;
    fenêtre dérivée du run : period = [run_time − lookback_days×24h, run_time],
    run_time = horodatage UTC, surchargeable via --anchor <ISO>
 2. Ouvrir `opencode.db` en lecture seule (mode=ro, busy_timeout) ; vérifier le schéma attendu
@@ -515,7 +515,7 @@ Fichier `weekly-telemetry-config.json` (surchargeable en CLI) :
 
 Le pipeline audite votre usage ; deux sous-commandes l'auditent lui :
 
-**`doctor`** — diagnostic d'installation, **sans rien écrire** : config parsable et clés requises présentes ; `project_root` == répertoire d'exécution ; **version d'OpenCode ≥ `opencode_version_min`** (`opencode --version` — l'épinglage du schéma passe par l'épinglage du binaire) ; **base OpenCode lisible et détectée** (auto-détection `opencode_db_path` : adaptateur V1 ou V2 actif, colonnes critiques présentes, compteur de migrations cohérent — `migration` ≥ 42 pour V1, `data_migration` pour V2) ; `output_dir` accessible en écriture ; `harness-eval` et `git` résolus sur PATH. **Depuis v5.32.c** : config introuvable → **warning** (exit `1`), pas exit `2` — le doctor poursuit son diagnostic avec défauts (`project_root` = cwd, sorties par défaut) et l'installation incomplète reste visible sans bloquer le run. Exit `0` = prêt, `1` = avertissements (ex. fallback actif, config introuvable), `2` = blocant. À lancer à l'installation et après chaque mise à jour du pipeline.
+**`doctor`** — diagnostic d'installation, **sans rien écrire** : config parsable et clés requises présentes ; `project_root` **contient `.opencode/`** (v6.0.a — sentinelle d'installation : la config de distribution est en placeholder `/path/to/...`, un clone non adapté reçoit un **problem** exit `2` avec message d'action, plus jamais un warning silencieux qu'un LLM pourrait omettre) ; **version d'OpenCode ≥ `opencode_version_min`** (`opencode --version` — l'épinglage du schéma passe par l'épinglage du binaire) ; **base OpenCode lisible et détectée** (auto-détection `opencode_db_path` : adaptateur V1 ou V2 actif, colonnes critiques présentes, compteur de migrations cohérent — `migration` ≥ 42 pour V1, `data_migration` pour V2) ; `output_dir` accessible en écriture ; `harness-eval` et `git` résolus sur PATH. **Depuis v5.32.c** : config introuvable → **warning** (exit `1`), pas exit `2` — le doctor poursuit son diagnostic avec défauts (`project_root` = cwd, sorties par défaut) et l'installation incomplète reste visible sans bloquer le run. **Depuis v6.0.a** : ce warning n'est émis que si la config n'a pas été passée en `--config` (le plugin la passe toujours — plus de warning fantôme à chaque doctor). Exit `0` = prêt, `1` = avertissements (ex. fallback actif, config introuvable), `2` = blocant. À lancer à l'installation et après chaque mise à jour du pipeline.
 
 **`self-cost`** — coût de la session du run en cours (via `sqlite_reader.py` : la ligne `session` du run courant — encore plus simple en SQL direct) : compense les exclusions du §3.b-c qui rendent le pipeline invisible dans ses propres totaux. Consommé par l'annexe du rapport (Partie 7 §3) — « coût propre du pipeline : X $ ». C'est le seul endroit où le pipeline se voit lui-même ; le reste du temps, il est exclu de ses propres statistiques par conception.
 
