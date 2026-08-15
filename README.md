@@ -37,7 +37,7 @@ nano .opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json
 # 4. binaires du poste : opencode ≥1.18, harness-eval 7.9.0, git, python ≥3.11 + uv
 # 5. tests + diagnostic (depuis le dossier moteur — les tests importent `tests` depuis le cwd) :
 cd .opencode/plugins/weekly-advisor-engine
-../../../../.venv/bin/python -m pytest -q
+../../../.venv/bin/python -m pytest -q
 cd ../../..
 opencode run --agent weekly-advisor --dir . "Exécute weekly_doctor et donne son verdict"
 ```
@@ -71,5 +71,7 @@ premier run du jour.
 
 ```sh
 uv pip install --python .venv/bin/python -e .opencode/plugins/weekly-advisor-engine[dev]
-python -m pytest .opencode/plugins/weekly-advisor-engine/tests
+# tests : depuis le DOSSIER MOTEUR (les tests importent `tests` depuis le cwd)
+cd .opencode/plugins/weekly-advisor-engine
+../../../.venv/bin/python -m pytest tests -q
 ```
