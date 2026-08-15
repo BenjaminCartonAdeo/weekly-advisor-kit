@@ -20,6 +20,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["weekly_telemetry_aggregator"]
 
+[tool.setuptools.package-data]
+weekly_telemetry_aggregator = ["templates/*.j2"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"

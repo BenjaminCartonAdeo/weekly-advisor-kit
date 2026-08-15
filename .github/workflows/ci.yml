@@ -34,6 +34,9 @@ jobs:
         run: uv run pytest -q
       - name: Packaging
         run: uv build
+      - name: Wheel content (template inclus)
+        run: unzip -l dist/*.whl | grep -q "templates/report_template.md.j2"
+
       - name: Plugin TS (syntaxe)
         run: node --check .opencode/plugins/weekly-advisor.ts
         working-directory: .
