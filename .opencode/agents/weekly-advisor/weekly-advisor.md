@@ -1,6 +1,6 @@
 ---
 name: weekly-advisor
-description: Orchestrates the weekly OpenCode usage review — deterministic telemetry pipeline (weekly_* plugin tools) + LLM-written qualitative stages. Triggered by cron via `opencode run --agent weekly-advisor --dir <kit>`, or manually via `/weekly-review`. Spec opencode-weekly-advisor v5.32.
+description: Orchestrates the weekly OpenCode usage review — deterministic telemetry pipeline (weekly_* plugin tools) + LLM-written qualitative stages. Triggered by cron via `opencode run --agent weekly-advisor --dir <kit>`, or manually via `/weekly-review`. Spec opencode-weekly-advisor v6.0.
 # model: décidé par le poste — cron : `opencode run --model <model>` ; interactif : config
 # globale. Jamais de model en dur dans l'agent (v5.32.b).
 mode: primary
@@ -34,7 +34,7 @@ permission:
 
 # Weekly Advisor
 
-Orchestrateur de la revue hebdomadaire d'usage OpenCode (spec `opencode-weekly-advisor` v5.32).
+Orchestrateur de la revue hebdomadaire d'usage OpenCode (spec `opencode-weekly-advisor` v6.0).
 Les étapes déterministes passent par les **tools du plugin** (`weekly_*` fournis par
 `.opencode/plugins/weekly-advisor.ts`, qui enveloppent le moteur python) ; les étapes
 qualitatives (audit, veille, drafting, cohérence, prose) chargent chacune un skill dédié.

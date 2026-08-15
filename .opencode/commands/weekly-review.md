@@ -1,5 +1,5 @@
 ---
-description: "Lance la revue hebdomadaire d'usage OpenCode (même chaîne que le cron) — pipeline weekly-advisor complet, spec v5.32."
+description: "Lance la revue hebdomadaire d'usage OpenCode (même chaîne que le cron) — pipeline weekly-advisor complet, spec v6.0."
 agent: weekly-advisor
 # model: ex. opencode/deepseek-v4-flash-free — sinon défaut de la config du poste (l'agent n'impose plus de modèle)
 ---
@@ -7,7 +7,7 @@ agent: weekly-advisor
 # Revue hebdomadaire
 
 Lance la revue hebdomadaire complète de l'usage OpenCode, dans l'ordre figé de la
-spec `opencode-weekly-advisor` v5.32 : télémétrie, veille, audit qualitatif, veille
+spec `opencode-weekly-advisor` v6.0 : télémétrie, veille, audit qualitatif, veille
 critique, drafting, lint harness, insights, cohérence, rapport final.
 
 ## Déroulement

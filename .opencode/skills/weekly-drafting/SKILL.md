@@ -13,15 +13,17 @@ commit direct traçable. Jamais de correction du code applicatif : écriture dan
 
 ## Flux
 
-1. `draft-candidates --anchor $RUN_TIME` → `weekly-draft-candidates-<date>.json`
+1. `weekly_draft_candidates` → `weekly-draft-candidates-<date>.json`
+   (équivalent CLI : `draft-candidates --anchor <ancre>` — l'ancre est gérée par le
+   plugin `<output_dir>/anchor-last.txt`, pas de calcul manuel)
    (candidats skill-candidate / command-candidate / command-improvement, sévérité DESC,
    plafonné par `max_candidates_per_run`)
 2. Pour chaque candidat : lire `extracts/transcript-extract-<session_id>.md`
-   (fallback `show-session`), **généraliser (jamais verbatim)**, rédiger le fichier
+   (fallback `weekly_show_session`), **généraliser (jamais verbatim)**, rédiger le fichier
 3. Vérifier le chevauchement vs `.opencode/skills/*/SKILL.md` + `.opencode/commands/*.md` →
    **si `overlaps_with` non vide ⇒ NE PAS committer** : constat `environment-change`
    (report-only), pas de création
-4. `commit-draft --kind skill|command --file <chemin absolu>` — validation frontmatter,
+4. `weekly_commit_draft --kind skill|command --file <chemin absolu>` — validation frontmatter,
    pré-checks (HEAD/rebase), add scopé, message construit depuis le frontmatter ;
    **1 commit par écriture** ; échec → exit 1, fichier conservé, signaler au rapport
 

@@ -6,6 +6,10 @@ Pipeline de revue hebdomadaire d'usage OpenCode, distribuable en **un seul dossi
 
 Spec : `opencode-weekly-advisor-5` · Décisions : `opencode-weekly-advisor-CHANGELOG.md`
 
+**Validé** : run complet **exit 0 sur Adeo le 15 août 2026** (12 étapes, outils du plugin,
+drafting honnête — 0 candidat → aucun commit forcé). Déployé en production sur Adeo
+(migration commitée `2605479`) ; ce kit en est le miroir de distribution.
+
 ## Structure
 
 ```
@@ -39,23 +43,29 @@ opencode run --agent weekly-advisor --dir . "Exécute weekly_doctor et donne son
 ```
 
 > `.npmrc` local : le registre npm public est requis pour `@opencode-ai/plugin` (introuvable
-> sur les registres internes). Le venv et `node_modules` sont gitignorés.
+> sur les registres internes) — **sauf si** votre registre interne proxifie npm public
+> (vérifié chez Adeo : jfrog résout `@opencode-ai/plugin` sans `.npmrc`). Le venv et
+> `node_modules` sont gitignorés.
 
 ## Cron
 
 ```cron
 SHELL=/bin/bash
-PATH=/home/<TOI>/.local/bin:/home/<TOI>/Dev/weekly-advisor-kit/.venv/bin:/usr/local/bin:/usr/bin:/bin
+PATH=/home/<TOI>/.local/bin:/usr/local/bin:/usr/bin:/bin
 0 6 * * 1 opencode run --port 4096 --agent weekly-advisor \
     --model opencode/deepseek-v4-flash-free \
     --dir /home/<TOI>/Dev/weekly-advisor-kit "Lance la revue hebdomadaire" \
     >> /var/log/weekly-advisor.log 2>&1
 ```
 
-Le rapport final : `<output_dir>/weekly-report-<date>.md` — c'est le signal du cron
+Plus **rien à mettre sur PATH** pour la pipeline : le plugin résout lui-même le python
+(`<worktree>/.venv/bin/python`) et le moteur — le cron n'a besoin que d'`opencode` et
+`git`. Le rapport final : `<output_dir>/weekly-report-<date>.md` — c'est le signal du cron
 (alerte si absent). Pièges connus : permission user `ask` auto-rejetée en non-interactif
-(mesuré v5.32) ; draft consommé par l'assemble (relancer `weekly_report_prep` avant un
-nouvel assemble).
+(mesuré v5.32 — prévoir `"permission": {"*": "allow"}` en user) ; draft consommé par
+l'assemble (relancer `weekly_report_prep` avant un nouvel assemble) ; passe 6.5 : les
+coherence-findings du jour existants sont conservés (archive) — fraîcheur garantie au
+premier run du jour.
 
 ## Développement
 

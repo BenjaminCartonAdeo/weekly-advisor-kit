@@ -12,10 +12,13 @@ Sélection déterministe en amont (aucun choix de session ici), examen LLM des t
 
 ## Flux
 
-1. `audit-candidates --anchor $RUN_TIME` → `weekly-audit-candidates-<date>.json`
+1. `weekly_audit_candidates` → `weekly-audit-candidates-<date>.json`
+   (équivalent CLI : `audit-candidates --anchor <ancre>` — l'ancre est gérée par le
+   plugin `<output_dir>/anchor-last.txt`, pas de calcul manuel)
    (`audited` / `unaudited`, plafond `audit_max_sessions` — ne PAS auditer au-delà)
-2. Pour chaque session `audited` : `show-session <id> [--include-children si sous-agents]
-   --extract-dir <output_dir>/extracts` → `extracts/transcript-extract-<id>.md`
+2. Pour chaque session `audited` : `weekly_show_session <id> [--include-children si
+   sous-agents]` → `extracts/transcript-extract-<id>.md` (le tool écrit l'extract ;
+   équivalent CLI : `show-session <id> --extract-dir <output_dir>/extracts`)
 3. Examiner chaque transcript selon les catégories ci-dessous
 4. **Relier chaque session à son lanceur** : si les premiers tours utilisateur commencent par
    `/` (ex. `/swarmx`), identifier la commande lanceuse et l'examiner. Si la session est
