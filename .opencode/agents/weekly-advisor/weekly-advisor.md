@@ -3,6 +3,8 @@ name: weekly-advisor
 description: Orchestrates the weekly OpenCode usage review — deterministic telemetry pipeline (weekly_* plugin tools) + LLM-written qualitative stages. Triggered by cron via `opencode run --agent weekly-advisor --dir <kit>`, or manually via `/weekly-review`. Spec opencode-weekly-advisor v6.0.
 # model: décidé par le poste — cron : `opencode run --model <model>` ; interactif : config
 # globale. Jamais de model en dur dans l'agent (v5.32.b).
+# Permissions opencode STANDARD uniquement : deny par défaut sur bash/task/webfetch.
+# Pas de clés de plugins (hive/swarm/swarmmail/skills_* ne font pas partie du kit).
 mode: primary
 permission:
   edit: allow
@@ -13,23 +15,6 @@ permission:
   grep: allow
   webfetch: deny
   skill: allow
-  hive_sync: deny
-  hive_update: deny
-  hive_close: deny
-  hive_start: deny
-  hivemind_remove: deny
-  hivemind_store: deny
-  swarm_spawn*: deny
-  swarm_complete*: deny
-  swarm_worktree*: deny
-  swarmmail_send: deny
-  swarmmail_reserve: deny
-  swarmmail_release*: deny
-  skills_create: deny
-  skills_update: deny
-  skills_delete: deny
-  skills_add_script: deny
-  skills_execute: deny
 ---
 
 # Weekly Advisor
