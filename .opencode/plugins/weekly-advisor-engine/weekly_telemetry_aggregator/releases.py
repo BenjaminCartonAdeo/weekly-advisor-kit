@@ -33,6 +33,9 @@ from urllib.parse import quote
 
 import httpx
 
+from .util import iso as _iso
+from .util import parse_anchor as _parse_anchor
+
 #: Canonical found_via ordering — also the processing order of the new-item sources.
 FOUND_VIA_ORDER = [
     "npm:keywords:opencode-plugin",
@@ -67,21 +70,6 @@ URL_RELEASES = "https://api.github.com/repos/anomalyco/opencode/releases"
 
 class SourceError(Exception):
     """One watch source ultimately failed; the run continues (warning, non-fatal)."""
-
-
-def _parse_anchor(value: str | None) -> datetime:
-    """Same semantics as `main.py`: now(UTC) or ISO with Z→+00:00, UTC if naive."""
-    if value is None:
-        return datetime.now(UTC)
-    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt
-
-
-def _iso(dt: datetime) -> str:
-    """UTC ISO-8601 with a Z suffix ("%Y-%m-%dT%H:%M:%SZ")."""
-    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _parse_date(value: str | None) -> datetime | None:
@@ -250,7 +238,7 @@ def _fetch_github_topics(
     return items
 
 
-# ---------------------------------------------------------------- mcp --------# ---------------------------------------------------------------- mcp --------
+# ---------------------------------------------------------------- mcp --------
 def _mcp_repo_url(inner: dict) -> str:
     """First remote URL: direct keys first, then the `remotes` list."""
     for key in ("repository", "githubUrl", "homepage", "sourceUrl", "repositoryUrl"):
@@ -544,7 +532,6 @@ def _split_repo(repo: str) -> tuple[str, str]:
     parts = str(repo or "").strip().strip("/").split("/")
     if len(parts) != 2 or not all(parts):
         raise ValueError(f"watch_repos doit être 'owner/name', reçu: {repo!r}")
-    from urllib.parse import quote
 
     return quote(parts[0]), quote(parts[1])
 

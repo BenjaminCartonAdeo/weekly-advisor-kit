@@ -12,45 +12,26 @@ from __future__ import annotations
 
 import subprocess
 from collections import Counter
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .config import TelemetryConfig
 from .insights import flatten_harness_findings
-from .main import _parse_anchor
+from .util import iso as _iso
+from .util import load_json as _load_json
+from .util import parse_anchor as _parse_anchor
+from .util import read_text as _load_text
 
 
-def _iso(dt) -> str:
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _load_json(path: Path) -> dict | None:
-    import json
-
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-
-
-def _git_log(project_root: Path, since_iso: str) -> list[dict]:
-    """Auto-redige commits inside the window: [{hash, date, subject}]."""
+def _git_log_raw(project_root: Path, *args: str) -> list[str]:
+    """Lines of `git log --grep=auto-rédigé, revue hebdo <args>`; [] on any failure."""
     if project_root is None or not (project_root / ".git").exists():
         return []
     try:
         proc = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(project_root),
-                "log",
-                "--grep=auto-rédigé, revue hebdo",
-                "--since=" + since_iso,
-                "--format=%h|%ad|%s",
-                "--date=short",
-            ],
+            ["git", "-C", str(project_root), "log", "--grep=auto-rédigé, revue hebdo", *args],
             capture_output=True,
             text=True,
             timeout=20,
@@ -59,8 +40,15 @@ def _git_log(project_root: Path, since_iso: str) -> list[dict]:
         return []
     if proc.returncode != 0:
         return []
+    return proc.stdout.splitlines()
+
+
+def _git_log(project_root: Path, since_iso: str) -> list[dict]:
+    """Auto-redige commits inside the window: [{hash, date, subject}]."""
     rows = []
-    for line in proc.stdout.splitlines():
+    for line in _git_log_raw(
+        project_root, "--since=" + since_iso, "--format=%h|%ad|%s", "--date=short"
+    ):
         parts = line.split("|", 2)
         if len(parts) == 3:
             rows.append({"hash": parts[0], "date": parts[1], "subject": parts[2]})
@@ -68,45 +56,25 @@ def _git_log(project_root: Path, since_iso: str) -> list[dict]:
 
 
 def _pending_auto_commits(project_root: Path, cutoff_iso: str) -> int:
-    if project_root is None or not (project_root / ".git").exists():
-        return 0
-    try:
-        proc = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(project_root),
-                "log",
-                "--grep=auto-rédigé, revue hebdo",
-                "--before=" + cutoff_iso,
-                "--format=%H",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return 0
-    if proc.returncode != 0:
-        return 0
-    return len([line for line in proc.stdout.splitlines() if line.strip()])
+    return len(
+        [
+            line
+            for line in _git_log_raw(project_root, "--before=" + cutoff_iso, "--format=%H")
+            if line.strip()
+        ]
+    )
 
 
 def _self_cost_value(cfg: TelemetryConfig) -> float | None:
-    from .sqlite_reader import DataSourceError, detect_db
+    """Cost of the pipeline's own advisor session for the report; None when undetectable."""
+    from .main import _advisor_cost
+    from .sqlite_reader import DataSourceError
 
     try:
-        _path, adapter = detect_db(cfg.opencode_db_path)
+        found = _advisor_cost(cfg)
     except DataSourceError:
         return None
-    try:
-        meta = adapter.find_session_by_title(cfg.advisor_run_title)
-        if meta is None:
-            return None
-        agg = adapter.session_aggregates(meta.session_id)
-        return agg["cost"] if agg else 0.0
-    finally:
-        adapter.conn.close()
+    return found[0] if found else None
 
 
 def _top_models(summary: dict, limit: int = 3) -> list[dict]:
@@ -144,12 +112,9 @@ def _complete_daily(period: dict, daily: list[dict]) -> list[dict]:
     Le bucketing ne produit que les jours avec activité — le lecteur pouvait croire
     à des trous de données. On complète la période avec des entrées à zéro.
     """
-    from datetime import datetime as _dt
-    from datetime import timedelta as _td
-
     try:
-        start = _dt.fromisoformat(period.get("start", "").replace("Z", "+00:00")).date()
-        end = _dt.fromisoformat(period.get("end", "").replace("Z", "+00:00")).date()
+        start = datetime.fromisoformat(period.get("start", "").replace("Z", "+00:00")).date()
+        end = datetime.fromisoformat(period.get("end", "").replace("Z", "+00:00")).date()
     except ValueError:
         return daily
     by_date = {d.get("date"): d for d in daily}
@@ -167,7 +132,7 @@ def _complete_daily(period: dict, daily: list[dict]) -> list[dict]:
                 },
             )
         )
-        cur += _td(days=1)
+        cur += timedelta(days=1)
     return out
 
 
@@ -182,6 +147,16 @@ def _group_warnings(warnings: list[dict]) -> list[dict]:
         if sid not in entry["session_ids"]:
             entry["session_ids"].append(sid)
     return list(grouped.values())
+
+
+def _top_harness_rules(
+    digest: dict | None, ignored_rules: list[str], n: int = 5
+) -> list[tuple[str, int]]:
+    """Top-N most-violated harness rules, ignored rules excluded."""
+    ignored = set(ignored_rules)
+    return Counter(
+        f["rule"] for f in flatten_harness_findings(digest) if f.get("rule") not in ignored
+    ).most_common(n)
 
 
 def report_prep(
@@ -220,11 +195,7 @@ def report_prep(
         "harness_ignored_rules": list(cfg.harness_ignored_rules),
         "harness_top_rules": [
             {"rule": rule, "count": count}
-            for rule, count in Counter(
-                f["rule"]
-                for f in flatten_harness_findings(digest)
-                if f.get("rule") not in set(cfg.harness_ignored_rules)
-            ).most_common(5)
+            for rule, count in _top_harness_rules(digest, cfg.harness_ignored_rules)
         ],
         "cost_outliers_state": summary.get("cost_outliers_state", "computed"),
         "outliers": {o["session_id"] for o in summary.get("cost_outliers", [])},
@@ -265,13 +236,6 @@ def report_prep(
     draft = out / f"weekly-report-draft-{date}.md"
     draft.write_text(rendered, encoding="utf-8")
     return draft, ctx
-
-
-def _load_text(path: Path) -> str | None:
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        return None
 
 
 def report_blocks_draft(
@@ -336,7 +300,7 @@ def report_blocks_draft(
     flat = flatten_harness_findings(digest)
     if flat:
         lines += ["## Règles harness les plus violées", ""]
-        for rule, count in Counter(f["rule"] for f in flat).most_common(5):
+        for rule, count in _top_harness_rules(digest, cfg.harness_ignored_rules):
             lines += [f"- `{rule}` : {count} violation(s)", ""]
     lines += ["## Recommandations", ""]
     lines += [

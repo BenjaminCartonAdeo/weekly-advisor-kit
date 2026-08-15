@@ -68,10 +68,6 @@ class SessionUsage:
     partial: bool = False
 
     @property
-    def total_tokens(self) -> int:
-        return sum(s.total_tokens for s in self.steps)
-
-    @property
     def cost_usd(self) -> float:
         return round6(sum(s.cost for s in self.steps if s.cost is not None))
 

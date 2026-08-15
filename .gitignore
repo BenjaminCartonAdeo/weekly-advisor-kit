@@ -2,7 +2,13 @@
 .venv/
 .opencode/node_modules/
 
+# artefacts Python (bytecode/build, jamais versionnés)
+__pycache__/
+*.pyc
+*.egg-info/
+
 # artefacts du pipeline (jamais versionnés — reçus par le cron)
 reports/
 .opencode/plugins/weekly-advisor-engine/reports/
 *.log
+dist/

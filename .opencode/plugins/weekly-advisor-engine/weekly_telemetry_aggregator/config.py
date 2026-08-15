@@ -82,7 +82,8 @@ class TelemetryConfig:
     #: veille étendue — entrées typées (v5.30) :
     #:   {"type": "repo", "name": "owner/repo"}  → releases + commits (fenêtre)
     #:   {"type": "list", "name": "owner/repo"}  → diff du README (nouveaux liens)
-    #:   {"type": "web",  "name": "https://..."} → diff des liens d'une page
+    #:   {"type": "topic", "name": "topic"}      → GitHub topic search
+    #:   {"type": "rss", "name": "https://..."}  → items datés d'un flux RSS/Atom
     watch: list[dict] = field(default_factory=list)
     user_prompt_repeat_min: int = 3
     user_prompt_repeat_similarity: float = 0.9
@@ -113,27 +114,21 @@ def _parse(p: Path) -> TelemetryConfig:
     raw = json.loads(p.read_text(encoding="utf-8"))
     cfg = TelemetryConfig()
 
-    def _get_int(key: str, default: int) -> int:
-        return int(raw.get(key, default))
+    def _get(key: str, default, cast):
+        return cast(raw.get(key, default))
 
-    def _get_float(key: str, default: float) -> float:
-        return float(raw.get(key, default))
-
-    def _get_bool(key: str, default: bool) -> bool:
-        return bool(raw.get(key, default))
-
-    cfg.lookback_days = _get_int("lookback_days", cfg.lookback_days)
-    cfg.top_sessions_limit = _get_int("top_sessions_limit", cfg.top_sessions_limit)
-    cfg.audit_max_sessions = _get_int("audit_max_sessions", cfg.audit_max_sessions)
-    cfg.skill_similarity_min = _get_float("skill_similarity_min", cfg.skill_similarity_min)
-    cfg.review_window_weeks = _get_int("review_window_weeks", cfg.review_window_weeks)
-    cfg.session_outlier_z = _get_float("session_outlier_z", cfg.session_outlier_z)
-    cfg.session_outlier_min_cost_usd = _get_float(
-        "session_outlier_min_cost_usd", cfg.session_outlier_min_cost_usd
+    cfg.lookback_days = _get("lookback_days", cfg.lookback_days, int)
+    cfg.top_sessions_limit = _get("top_sessions_limit", cfg.top_sessions_limit, int)
+    cfg.audit_max_sessions = _get("audit_max_sessions", cfg.audit_max_sessions, int)
+    cfg.skill_similarity_min = _get("skill_similarity_min", cfg.skill_similarity_min, float)
+    cfg.review_window_weeks = _get("review_window_weeks", cfg.review_window_weeks, int)
+    cfg.session_outlier_z = _get("session_outlier_z", cfg.session_outlier_z, float)
+    cfg.session_outlier_min_cost_usd = _get(
+        "session_outlier_min_cost_usd", cfg.session_outlier_min_cost_usd, float
     )
-    cfg.outlier_min_sessions = _get_int("outlier_min_sessions", cfg.outlier_min_sessions)
-    cfg.cross_check_tolerance_pct = _get_float(
-        "cross_check_tolerance_pct", cfg.cross_check_tolerance_pct
+    cfg.outlier_min_sessions = _get("outlier_min_sessions", cfg.outlier_min_sessions, int)
+    cfg.cross_check_tolerance_pct = _get(
+        "cross_check_tolerance_pct", cfg.cross_check_tolerance_pct, float
     )
     cfg.harness_eval_version = str(raw.get("harness_eval_version", cfg.harness_eval_version))
     cfg.harness_ignored_rules = [
@@ -141,21 +136,21 @@ def _parse(p: Path) -> TelemetryConfig:
     ]
     _bsv = raw.get("baseline_summary_path")
     cfg.baseline_summary_path = str(_bsv) if _bsv else None
-    cfg.blocks_min_words = _get_int("blocks_min_words", cfg.blocks_min_words)
-    cfg.max_candidates_per_run = _get_int("max_candidates_per_run", cfg.max_candidates_per_run)
-    cfg.include_subagents = _get_bool("include_subagents", cfg.include_subagents)
-    cfg.fail_on_missing_telemetry = _get_bool(
-        "fail_on_missing_telemetry", cfg.fail_on_missing_telemetry
+    cfg.blocks_min_words = _get("blocks_min_words", cfg.blocks_min_words, int)
+    cfg.max_candidates_per_run = _get("max_candidates_per_run", cfg.max_candidates_per_run, int)
+    cfg.include_subagents = _get("include_subagents", cfg.include_subagents, bool)
+    cfg.fail_on_missing_telemetry = _get(
+        "fail_on_missing_telemetry", cfg.fail_on_missing_telemetry, bool
     )
-    cfg.exclude_active_sessions = _get_bool("exclude_active_sessions", cfg.exclude_active_sessions)
-    cfg.user_prompt_repeat_min = _get_int("user_prompt_repeat_min", cfg.user_prompt_repeat_min)
-    cfg.user_prompt_repeat_similarity = _get_float(
-        "user_prompt_repeat_similarity", cfg.user_prompt_repeat_similarity
+    cfg.exclude_active_sessions = _get("exclude_active_sessions", cfg.exclude_active_sessions, bool)
+    cfg.user_prompt_repeat_min = _get("user_prompt_repeat_min", cfg.user_prompt_repeat_min, int)
+    cfg.user_prompt_repeat_similarity = _get(
+        "user_prompt_repeat_similarity", cfg.user_prompt_repeat_similarity, float
     )
-    cfg.user_prompt_repeat_min_chars = _get_int(
-        "user_prompt_repeat_min_chars", cfg.user_prompt_repeat_min_chars
+    cfg.user_prompt_repeat_min_chars = _get(
+        "user_prompt_repeat_min_chars", cfg.user_prompt_repeat_min_chars, int
     )
-    cfg.github_min_stars = _get_int("github_min_stars", cfg.github_min_stars)
+    cfg.github_min_stars = _get("github_min_stars", cfg.github_min_stars, int)
     cfg.opencode_version_min = str(raw.get("opencode_version_min", cfg.opencode_version_min))
     cfg.git_name = str(raw.get("git_name", cfg.git_name))
     cfg.git_email = str(raw.get("git_email", cfg.git_email))

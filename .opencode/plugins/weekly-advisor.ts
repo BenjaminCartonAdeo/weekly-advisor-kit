@@ -84,41 +84,55 @@ function runCli(worktree: string, args: string[], timeoutMs: number): Promise<st
   })
 }
 
+// Factories pour les tools « 1 sous-commande → 1 appel CLI » (le cas majoritaire).
+function anchorTool(
+  description: string,
+  cliArgs: (anchor: string) => string[],
+  timeoutMs: number,
+) {
+  return tool({
+    description,
+    args: { anchor: tool.schema.string().optional().describe("ISO-8601 override (rare)") },
+    async execute(args) {
+      const { outputDir } = resolveEngine(worktree)
+      return runCli(worktree, cliArgs(anchorArg(args.anchor, outputDir)), timeoutMs)
+    },
+  })
+}
+
+function noArgTool(description: string, cliArgs: string[], timeoutMs: number) {
+  return tool({
+    description,
+    args: {},
+    async execute() {
+      return runCli(worktree, cliArgs, timeoutMs)
+    },
+  })
+}
+
 export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
   const worktree = ctx.worktree ?? ctx.directory
   return {
     tool: {
-      weekly_run: tool({
-        description:
-          "Étape 1 du weekly-advisor : collecte télémétrique complète (run --force). " +
+      weekly_run: anchorTool(
+        "Étape 1 du weekly-advisor : collecte télémétrique complète (run --force). " +
           "Écrit weekly-summary-<date>.json. L'ancre est lue/créée dans <output_dir>/anchor-last.txt.",
-        args: { anchor: tool.schema.string().optional().describe("ISO-8601 override (rare)") },
-        async execute(args) {
-          const { outputDir } = resolveEngine(worktree)
-          const anchor = anchorArg(args.anchor, outputDir)
-          return runCli(worktree, ["run", "--force", "--anchor", anchor], 1_800_000)
-        },
-      }),
+        (anchor) => ["run", "--force", "--anchor", anchor],
+        1_800_000,
+      ),
 
-      weekly_releases: tool({
-        description: "Étape 2 : veille écosystème (releases). Écrit weekly-ecosystem-<date>.json.",
-        args: { anchor: tool.schema.string().optional() },
-        async execute(args) {
-          const { outputDir } = resolveEngine(worktree)
-          return runCli(worktree, ["releases", "--anchor", anchorArg(args.anchor, outputDir)], 900_000)
-        },
-      }),
+      weekly_releases: anchorTool(
+        "Étape 2 : veille écosystème (releases). Écrit weekly-ecosystem-<date>.json.",
+        (anchor) => ["releases", "--anchor", anchor],
+        900_000,
+      ),
 
-      weekly_audit_candidates: tool({
-        description:
-          "Étape 3 (1/2) : sélection déterministe des sessions à auditer (audit-candidates) → " +
+      weekly_audit_candidates: anchorTool(
+        "Étape 3 (1/2) : sélection déterministe des sessions à auditer (audit-candidates) → " +
           "weekly-audit-candidates-<date>.json (audited/unaudited, plafond audit_max_sessions).",
-        args: { anchor: tool.schema.string().optional() },
-        async execute(args) {
-          const { outputDir } = resolveEngine(worktree)
-          return runCli(worktree, ["audit-candidates", "--anchor", anchorArg(args.anchor, outputDir)], 120_000)
-        },
-      }),
+        (anchor) => ["audit-candidates", "--anchor", anchor],
+        120_000,
+      ),
 
       weekly_show_session: tool({
         description:
@@ -136,60 +150,43 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
         },
       }),
 
-      weekly_harness: tool({
-        description: "Étape 5 : lint de .opencode/ (harness-eval). Écrit weekly-harness-digest-<date>.json.",
-        args: { anchor: tool.schema.string().optional() },
-        async execute(args) {
-          const { outputDir } = resolveEngine(worktree)
-          return runCli(worktree, ["harness", "--anchor", anchorArg(args.anchor, outputDir)], 900_000)
-        },
-      }),
+      weekly_harness: anchorTool(
+        "Étape 5 : lint de .opencode/ (harness-eval). Écrit weekly-harness-digest-<date>.json.",
+        (anchor) => ["harness", "--anchor", anchor],
+        900_000,
+      ),
 
-      weekly_insights: tool({
-        description: "Étape 6 : deltas, alertes et maintenance. Écrit weekly-insights-<date>.json.",
-        args: { anchor: tool.schema.string().optional() },
-        async execute(args) {
-          const { outputDir } = resolveEngine(worktree)
-          return runCli(worktree, ["insights", "--anchor", anchorArg(args.anchor, outputDir)], 300_000)
-        },
-      }),
+      weekly_insights: anchorTool(
+        "Étape 6 : deltas, alertes et maintenance. Écrit weekly-insights-<date>.json.",
+        (anchor) => ["insights", "--anchor", anchor],
+        300_000,
+      ),
 
-      weekly_draft_candidates: tool({
-        description:
-          "Étape 4 (1/2) : candidats à l'auto-drafting (draft-candidates) → " +
+      weekly_draft_candidates: anchorTool(
+        "Étape 4 (1/2) : candidats à l'auto-drafting (draft-candidates) → " +
           "weekly-draft-candidates-<date>.json (skill-candidate / command-candidate / command-improvement, plafonné).",
-        args: { anchor: tool.schema.string().optional() },
-        async execute(args) {
-          const { outputDir } = resolveEngine(worktree)
-          return runCli(worktree, ["draft-candidates", "--anchor", anchorArg(args.anchor, outputDir)], 120_000)
-        },
-      }),
+        (anchor) => ["draft-candidates", "--anchor", anchor],
+        120_000,
+      ),
 
-      weekly_report_prep: tool({
-        description: "Étape 7a (1/2) : prépare le brouillon de rapport (report-prep → weekly-report-draft-<date>.md).",
-        args: {},
-        async execute() {
-          return runCli(worktree, ["report-prep"], 120_000)
-        },
-      }),
+      weekly_report_prep: noArgTool(
+        "Étape 7a (1/2) : prépare le brouillon de rapport (report-prep → weekly-report-draft-<date>.md).",
+        ["report-prep"],
+        120_000,
+      ),
 
-      weekly_report_blocks_draft: tool({
-        description: "Étape 7a (2/2) : génère le brouillon auto des blocs (report-blocks-draft → weekly-report-blocks-auto-<date>.md).",
-        args: {},
-        async execute() {
-          return runCli(worktree, ["report-blocks-draft"], 120_000)
-        },
-      }),
+      weekly_report_blocks_draft: noArgTool(
+        "Étape 7a (2/2) : génère le brouillon auto des blocs (report-blocks-draft → weekly-report-blocks-auto-<date>.md).",
+        ["report-blocks-draft"],
+        120_000,
+      ),
 
-      weekly_report_assemble: tool({
-        description:
-          "Étape 7c : assemble le rapport final (report-assemble → weekly-report-<date>.md). " +
+      weekly_report_assemble: noArgTool(
+        "Étape 7c : assemble le rapport final (report-assemble → weekly-report-<date>.md). " +
           "⚠ un assemble réussi consomme le draft : pour un nouvel assemble, relancer weekly_report_prep d'abord.",
-        args: {},
-        async execute() {
-          return runCli(worktree, ["report-assemble"], 120_000)
-        },
-      }),
+        ["report-assemble"],
+        120_000,
+      ),
 
       weekly_commit_draft: tool({
         description:
@@ -204,21 +201,17 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
         },
       }),
 
-      weekly_self_cost: tool({
-        description: "Étape 8 (annexe) : coût de la fenêtre du run (self-cost).",
-        args: {},
-        async execute() {
-          return runCli(worktree, ["self-cost"], 120_000)
-        },
-      }),
+      weekly_self_cost: noArgTool(
+        "Étape 8 (annexe) : coût de la fenêtre du run (self-cost).",
+        ["self-cost"],
+        120_000,
+      ),
 
-      weekly_doctor: tool({
-        description: "Diagnostic du kit : vérifie opencode, harness-eval, git, gh, DB et la config (doctor).",
-        args: {},
-        async execute() {
-          return runCli(worktree, ["doctor"], 120_000)
-        },
-      }),
+      weekly_doctor: noArgTool(
+        "Diagnostic du kit : vérifie opencode, harness-eval, git, gh, DB et la config (doctor).",
+        ["doctor"],
+        120_000,
+      ),
     },
   }
 }

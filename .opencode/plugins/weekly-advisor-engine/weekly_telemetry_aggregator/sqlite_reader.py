@@ -23,8 +23,34 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .models import StepFinish
+
 #: Minimal Drizzle migration count for the V1 schema (schema pin, v5.27).
 MIGRATION_MIN_V1 = 42
+
+#: session_v2 metadata columns (V1 + dual schema checks).
+_SESSION_V2_COLUMNS = [
+    "id",
+    "parent_id",
+    "title",
+    "model",
+    "agent",
+    "cost",
+    "tokens_input",
+    "tokens_output",
+    "tokens_reasoning",
+    "tokens_cache_read",
+    "tokens_cache_write",
+    "time_created",
+    "time_updated",
+]
+
+#: DualAdapter SELECT list (metadata union of session/session_v2).
+_META_COLS = (
+    "id, parent_id, title, model, agent, directory, cost, tokens_input, "
+    "tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write, "
+    "time_created, time_updated"
+)
 
 
 class SchemaError(Exception):
@@ -206,6 +232,111 @@ def _tokens_of(data: dict) -> dict:
     }
 
 
+def _tally_tools(records) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
+    """Accumulate tool-call counts, arg chars and loaded-skill counts from (name, input) pairs."""
+    tool_calls: dict[str, int] = {}
+    tool_arg_chars: dict[str, int] = {}
+    skills: dict[str, int] = {}
+    for name, raw_input in records:
+        arg_chars = (
+            len(json.dumps(raw_input, ensure_ascii=False, default=str))
+            if raw_input is not None
+            else 0
+        )
+        tool_calls[name] = tool_calls.get(name, 0) + 1
+        tool_arg_chars[name] = tool_arg_chars.get(name, 0) + arg_chars
+        if name in {"skill", "skills", "load-skill"}:
+            inp = raw_input if isinstance(raw_input, dict) else {}
+            skill = str(inp.get("name") or inp.get("skill") or "unknown")
+            skills[skill] = skills.get(skill, 0) + 1
+    return tool_calls, tool_arg_chars, skills
+
+
+def _merge_step_records(records, messages) -> list[tuple[int, dict, str, float | None]]:
+    """[(ts, tokens, model, cost)] — each step record merged with its closest assistant
+    message (two-pointer, tie → earlier); untouched when no message is near."""
+    merged: list[tuple[int, dict, str, float | None]] = []
+    mi = 0
+    for ts, data in records:
+        tokens = _tokens_of(data)
+        cost = data.get("cost")
+        model = "unknown/unknown"
+        while mi < len(messages) and messages[mi][0] < ts:
+            mi += 1
+        candidate = None
+        if mi > 0:
+            candidate = messages[mi - 1]
+        if mi < len(messages):
+            nxt = messages[mi]
+            if candidate is None or (nxt[0] - ts) < (ts - candidate[0]):
+                candidate = nxt
+        if candidate is not None:
+            mdata = candidate[1]
+            mtokens = _tokens_of(mdata)
+            if mdata.get("modelID"):
+                model = model_key(mdata)
+            elif mdata.get("model") is not None:
+                model = model_key(mdata.get("model"))
+            tokens = {
+                "input": mtokens["input"] or tokens["input"],
+                "output": mtokens["output"] or tokens["output"],
+                "reasoning": mtokens["reasoning"] or tokens["reasoning"],
+                "cache_read": tokens["cache_read"] or mtokens["cache_read"],
+                "cache_write": tokens["cache_write"] or mtokens["cache_write"],
+            }
+            if cost is None:
+                cost = mdata.get("cost")
+        merged.append((ts, tokens, model, cost))
+    return merged
+
+
+def _steps_from_records(session_id: str, records, messages) -> list[StepFinish]:
+    """StepFinish list from step-finish records + assistant messages (V1/V2 adapters).
+
+    Records present → per-record two-pointer merge with the closest message;
+    absent (older rows) → assistant messages are the steps.
+    """
+    if records:
+        merged = _merge_step_records(records, messages)
+    else:
+        merged = [
+            (ts, _tokens_of(data), model_key(data), data.get("cost")) for ts, data in messages
+        ]
+    return [
+        StepFinish(
+            session_id=session_id,
+            timestamp=_iso_from_ms(ts),
+            model=model,
+            tokens_input=tokens["input"],
+            tokens_output=tokens["output"],
+            tokens_reasoning=tokens["reasoning"],
+            tokens_cache_read=tokens["cache_read"],
+            tokens_cache_write=tokens["cache_write"],
+            cost=cost,
+        )
+        for ts, tokens, model, cost in merged
+    ]
+
+
+def _session_aggregates(conn: sqlite3.Connection, table: str, session_id: str) -> dict | None:
+    """Session aggregate totals from one metadata table (cost-null → None)."""
+    row = conn.execute(
+        f"SELECT cost, tokens_input, tokens_output, tokens_reasoning, "
+        f"tokens_cache_read, tokens_cache_write FROM {table} WHERE id = ?",
+        (session_id,),
+    ).fetchone()
+    if row is None or row["cost"] is None:
+        return None
+    return {
+        "cost": float(row["cost"]),
+        "tokens_input": float(row["tokens_input"] or 0.0),
+        "tokens_output": float(row["tokens_output"] or 0.0),
+        "tokens_reasoning": float(row["tokens_reasoning"] or 0.0),
+        "tokens_cache_read": float(row["tokens_cache_read"] or 0.0),
+        "tokens_cache_write": float(row["tokens_cache_write"] or 0.0),
+    }
+
+
 class V1Adapter(SchemaAdapter):
     """opencode.db — session_v2 / message / part / migration (Drizzle, >= 42)."""
 
@@ -216,25 +347,7 @@ class V1Adapter(SchemaAdapter):
 
     def check_schema(self) -> None:
         _require_tables(self.conn, ["session_v2", "message", "part", "migration"])
-        _require_columns(
-            self.conn,
-            "session_v2",
-            [
-                "id",
-                "parent_id",
-                "title",
-                "model",
-                "agent",
-                "cost",
-                "tokens_input",
-                "tokens_output",
-                "tokens_reasoning",
-                "tokens_cache_read",
-                "tokens_cache_write",
-                "time_created",
-                "time_updated",
-            ],
-        )
+        _require_columns(self.conn, "session_v2", _SESSION_V2_COLUMNS)
         _require_columns(self.conn, "part", ["session_id", "data", "time_created"])
         # NB: the real schema stores part.type inside data JSON, not in a column.
         _require_columns(self.conn, "message", ["session_id", "data", "time_created"])
@@ -280,16 +393,11 @@ class V1Adapter(SchemaAdapter):
         self, session_id: str, ptype: str, start_ms: int, end_ms: int
     ) -> list[tuple[int, dict]]:
         """part rows whose data.type == ptype (the real V1 schema keeps type inside data)."""
-        out: list[tuple[int, dict]] = []
-        for row in self.conn.execute(
-            "SELECT data, time_created FROM part WHERE session_id = ? "
-            "AND time_created >= ? AND time_created <= ? ORDER BY time_created",
-            (session_id, start_ms, end_ms),
-        ):
-            data = _json_obj(row["data"])
-            if data.get("type") == ptype:
-                out.append((int(row["time_created"]), data))
-        return out
+        return [
+            (ts, data)
+            for ts, data in self._parts_of_type_all(session_id, start_ms, end_ms)
+            if data.get("type") == ptype
+        ]
 
     def _step_finish_parts(
         self, session_id: str, start_ms: int, end_ms: int
@@ -297,99 +405,23 @@ class V1Adapter(SchemaAdapter):
         return self._parts_of_type(session_id, "step-finish", start_ms, end_ms)
 
     def session_steps(self, session_id: str, start_ms: int, end_ms: int) -> list:
-        from .models import StepFinish
-
-        parts = self._step_finish_parts(session_id, start_ms, end_ms)
-        messages = self._assistant_messages(session_id, start_ms, end_ms)
-        steps: list[StepFinish] = []
-
-        if parts:
-            # Two-pointer merge: attach the closest assistant message (tie → earlier).
-            mi = 0
-            for ts, data in parts:
-                tokens = _tokens_of(data)
-                cost = data.get("cost")
-                model = "unknown/unknown"
-                while mi < len(messages) and messages[mi][0] < ts:
-                    mi += 1
-                candidate = None
-                if mi > 0:
-                    candidate = messages[mi - 1]
-                if mi < len(messages):
-                    nxt = messages[mi]
-                    if candidate is None or (nxt[0] - ts) < (ts - candidate[0]):
-                        candidate = nxt
-                if candidate is not None:
-                    mdata = candidate[1]
-                    mtokens = _tokens_of(mdata)
-                    if mdata.get("modelID"):
-                        model = model_key(mdata)
-                    elif mdata.get("model") is not None:
-                        model = model_key(mdata.get("model"))
-                    tokens = {
-                        "input": mtokens["input"] or tokens["input"],
-                        "output": mtokens["output"] or tokens["output"],
-                        "reasoning": mtokens["reasoning"] or tokens["reasoning"],
-                        "cache_read": tokens["cache_read"] or mtokens["cache_read"],
-                        "cache_write": tokens["cache_write"] or mtokens["cache_write"],
-                    }
-                    if cost is None:
-                        cost = mdata.get("cost")
-                steps.append(
-                    StepFinish(
-                        session_id=session_id,
-                        timestamp=_iso_from_ms(ts),
-                        model=model,
-                        tokens_input=tokens["input"],
-                        tokens_output=tokens["output"],
-                        tokens_reasoning=tokens["reasoning"],
-                        tokens_cache_read=tokens["cache_read"],
-                        tokens_cache_write=tokens["cache_write"],
-                        cost=cost,
-                    )
-                )
-        else:
-            # Fallback: no step-finish parts (older rows) → assistant messages are the steps.
-            for ts, data in messages:
-                tokens = _tokens_of(data)
-                steps.append(
-                    StepFinish(
-                        session_id=session_id,
-                        timestamp=_iso_from_ms(ts),
-                        model=model_key(data),
-                        tokens_input=tokens["input"],
-                        tokens_output=tokens["output"],
-                        tokens_reasoning=tokens["reasoning"],
-                        tokens_cache_read=tokens["cache_read"],
-                        tokens_cache_write=tokens["cache_write"],
-                        cost=data.get("cost"),
-                    )
-                )
-        return steps
+        return _steps_from_records(
+            session_id,
+            self._step_finish_parts(session_id, start_ms, end_ms),
+            self._assistant_messages(session_id, start_ms, end_ms),
+        )
 
     def _tool_parts(self, session_id: str, start_ms: int, end_ms: int) -> list[tuple[int, dict]]:
         return self._parts_of_type(session_id, "tool", start_ms, end_ms)
 
     def session_tools(self, session_id: str, start_ms: int, end_ms: int) -> tuple[dict, dict, dict]:
-        tool_calls: dict[str, int] = {}
-        tool_arg_chars: dict[str, int] = {}
-        skills: dict[str, int] = {}
+        records = []
         for _ts, data in self._tool_parts(session_id, start_ms, end_ms):
             state = data.get("state") if isinstance(data.get("state"), dict) else data
             name = str(data.get("tool") or state.get("name") or data.get("name") or "unknown")
             raw_input = state.get("input") if "input" in state else data.get("input")
-            arg_chars = (
-                len(json.dumps(raw_input, ensure_ascii=False, default=str))
-                if raw_input is not None
-                else 0
-            )
-            tool_calls[name] = tool_calls.get(name, 0) + 1
-            tool_arg_chars[name] = tool_arg_chars.get(name, 0) + arg_chars
-            if name in {"skill", "skills", "load-skill"}:
-                inp = raw_input if isinstance(raw_input, dict) else {}
-                skill = str(inp.get("name") or inp.get("skill") or "unknown")
-                skills[skill] = skills.get(skill, 0) + 1
-        return tool_calls, tool_arg_chars, skills
+            records.append((name, raw_input))
+        return _tally_tools(records)
 
     def session_user_turns(self, session_id: str, start_ms: int, end_ms: int) -> list[str]:
         turns: list[str] = []
@@ -403,14 +435,14 @@ class V1Adapter(SchemaAdapter):
         self, session_id: str, start_ms: int, end_ms: int
     ) -> list[tuple[int, dict]]:
         """Every part row in window (data.type kept), for context/lint walks."""
-        out: list[tuple[int, dict]] = []
-        for row in self.conn.execute(
-            "SELECT data, time_created FROM part WHERE session_id = ? "
-            "AND time_created >= ? AND time_created <= ? ORDER BY time_created",
-            (session_id, start_ms, end_ms),
-        ):
-            out.append((int(row["time_created"]), _json_obj(row["data"])))
-        return out
+        return [
+            (int(row["time_created"]), _json_obj(row["data"]))
+            for row in self.conn.execute(
+                "SELECT data, time_created FROM part WHERE session_id = ? "
+                "AND time_created >= ? AND time_created <= ? ORDER BY time_created",
+                (session_id, start_ms, end_ms),
+            )
+        ]
 
     def session_context_chars(self, session_id: str, start_ms: int, end_ms: int) -> dict[str, int]:
         counts = {"file": 0, "tool_result": 0, "text": 0, "reasoning": 0}
@@ -438,21 +470,7 @@ class V1Adapter(SchemaAdapter):
         return counts
 
     def session_aggregates(self, session_id: str) -> dict | None:
-        row = self.conn.execute(
-            "SELECT cost, tokens_input, tokens_output, tokens_reasoning, "
-            "tokens_cache_read, tokens_cache_write FROM session_v2 WHERE id = ?",
-            (session_id,),
-        ).fetchone()
-        if row is None or row["cost"] is None:
-            return None
-        return {
-            "cost": float(row["cost"]),
-            "tokens_input": float(row["tokens_input"] or 0.0),
-            "tokens_output": float(row["tokens_output"] or 0.0),
-            "tokens_reasoning": float(row["tokens_reasoning"] or 0.0),
-            "tokens_cache_read": float(row["tokens_cache_read"] or 0.0),
-            "tokens_cache_write": float(row["tokens_cache_write"] or 0.0),
-        }
+        return _session_aggregates(self.conn, "session_v2", session_id)
 
     def session_parts(self, session_id: str) -> list[PartRecord]:
         records: list[PartRecord] = []
@@ -518,25 +536,7 @@ class DualAdapter(V1Adapter):
 
     def check_schema(self) -> None:
         _require_tables(self.conn, ["session", "session_v2", "part", "message", "migration"])
-        _require_columns(
-            self.conn,
-            "session_v2",
-            [
-                "id",
-                "parent_id",
-                "title",
-                "model",
-                "agent",
-                "cost",
-                "tokens_input",
-                "tokens_output",
-                "tokens_reasoning",
-                "tokens_cache_read",
-                "tokens_cache_write",
-                "time_created",
-                "time_updated",
-            ],
-        )
+        _require_columns(self.conn, "session_v2", _SESSION_V2_COLUMNS)
         _require_columns(
             self.conn,
             "session",
@@ -557,11 +557,7 @@ class DualAdapter(V1Adapter):
         return int(row["m"] or 0)
 
     def list_sessions(self, since_ms: int) -> list[SessionMeta]:
-        cols = (
-            "id, parent_id, title, model, agent, directory, cost, tokens_input, "
-            "tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write, "
-            "time_created, time_updated"
-        )
+        cols = _META_COLS
         rows = self.conn.execute(
             f"SELECT {cols} FROM ("
             f"SELECT {cols} FROM session WHERE time_updated >= ? "
@@ -582,28 +578,13 @@ class DualAdapter(V1Adapter):
 
     def session_aggregates(self, session_id: str) -> dict | None:
         for tbl in ("session", "session_v2"):
-            row = self.conn.execute(
-                f"SELECT cost, tokens_input, tokens_output, tokens_reasoning, "
-                f"tokens_cache_read, tokens_cache_write FROM {tbl} WHERE id = ?",
-                (session_id,),
-            ).fetchone()
-            if row is not None and row["cost"] is not None:
-                return {
-                    "cost": float(row["cost"]),
-                    "tokens_input": float(row["tokens_input"] or 0.0),
-                    "tokens_output": float(row["tokens_output"] or 0.0),
-                    "tokens_reasoning": float(row["tokens_reasoning"] or 0.0),
-                    "tokens_cache_read": float(row["tokens_cache_read"] or 0.0),
-                    "tokens_cache_write": float(row["tokens_cache_write"] or 0.0),
-                }
+            agg = _session_aggregates(self.conn, tbl, session_id)
+            if agg is not None:
+                return agg
         return None
 
     def find_session_by_title(self, title: str) -> SessionMeta | None:
-        cols = (
-            "id, parent_id, title, model, agent, directory, cost, tokens_input, "
-            "tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write, "
-            "time_created, time_updated"
-        )
+        cols = _META_COLS
         rows = self.conn.execute(
             f"SELECT {cols} FROM ("
             f"SELECT {cols} FROM session WHERE title = ? "
@@ -691,73 +672,11 @@ class V2Adapter(SchemaAdapter):
         return out
 
     def session_steps(self, session_id: str, start_ms: int, end_ms: int) -> list:
-        from .models import StepFinish
-
-        events = self._step_events(session_id, start_ms, end_ms)
-        messages = self._assistant_messages(session_id, start_ms, end_ms)
-        steps: list[StepFinish] = []
-
-        if events:
-            mi = 0
-            for ts, data in events:
-                tokens = _tokens_of(data)
-                cost = data.get("cost")
-                model = "unknown/unknown"
-                while mi < len(messages) and messages[mi][0] < ts:
-                    mi += 1
-                candidate = None
-                if mi > 0:
-                    candidate = messages[mi - 1]
-                if mi < len(messages):
-                    nxt = messages[mi]
-                    if candidate is None or (nxt[0] - ts) < (ts - candidate[0]):
-                        candidate = nxt
-                if candidate is not None:
-                    mdata = candidate[1]
-                    mtokens = _tokens_of(mdata)
-                    if mdata.get("modelID"):
-                        model = model_key(mdata)
-                    elif mdata.get("model") is not None:
-                        model = model_key(mdata.get("model"))
-                    tokens = {
-                        "input": mtokens["input"] or tokens["input"],
-                        "output": mtokens["output"] or tokens["output"],
-                        "reasoning": mtokens["reasoning"] or tokens["reasoning"],
-                        "cache_read": tokens["cache_read"] or mtokens["cache_read"],
-                        "cache_write": tokens["cache_write"] or mtokens["cache_write"],
-                    }
-                    if cost is None:
-                        cost = mdata.get("cost")
-                steps.append(
-                    StepFinish(
-                        session_id=session_id,
-                        timestamp=_iso_from_ms(ts),
-                        model=model,
-                        tokens_input=tokens["input"],
-                        tokens_output=tokens["output"],
-                        tokens_reasoning=tokens["reasoning"],
-                        tokens_cache_read=tokens["cache_read"],
-                        tokens_cache_write=tokens["cache_write"],
-                        cost=cost,
-                    )
-                )
-        else:
-            for ts, data in messages:
-                tokens = _tokens_of(data)
-                steps.append(
-                    StepFinish(
-                        session_id=session_id,
-                        timestamp=_iso_from_ms(ts),
-                        model=model_key(data),
-                        tokens_input=tokens["input"],
-                        tokens_output=tokens["output"],
-                        tokens_reasoning=tokens["reasoning"],
-                        tokens_cache_read=tokens["cache_read"],
-                        tokens_cache_write=tokens["cache_write"],
-                        cost=data.get("cost"),
-                    )
-                )
-        return steps
+        return _steps_from_records(
+            session_id,
+            self._step_events(session_id, start_ms, end_ms),
+            self._assistant_messages(session_id, start_ms, end_ms),
+        )
 
     def _tool_events(self, session_id: str, start_ms: int, end_ms: int) -> list[tuple[int, dict]]:
         out: list[tuple[int, dict]] = []
@@ -770,24 +689,10 @@ class V2Adapter(SchemaAdapter):
         return out
 
     def session_tools(self, session_id: str, start_ms: int, end_ms: int) -> tuple[dict, dict, dict]:
-        tool_calls: dict[str, int] = {}
-        tool_arg_chars: dict[str, int] = {}
-        skills: dict[str, int] = {}
-        for _ts, data in self._tool_events(session_id, start_ms, end_ms):
-            name = str(data.get("name") or "unknown")
-            raw_input = data.get("input")
-            arg_chars = (
-                len(json.dumps(raw_input, ensure_ascii=False, default=str))
-                if raw_input is not None
-                else 0
-            )
-            tool_calls[name] = tool_calls.get(name, 0) + 1
-            tool_arg_chars[name] = tool_arg_chars.get(name, 0) + arg_chars
-            if name in {"skill", "skills", "load-skill"}:
-                inp = raw_input if isinstance(raw_input, dict) else {}
-                skill = str(inp.get("name") or inp.get("skill") or "unknown")
-                skills[skill] = skills.get(skill, 0) + 1
-        return tool_calls, tool_arg_chars, skills
+        return _tally_tools(
+            (str(data.get("name") or "unknown"), data.get("input"))
+            for _ts, data in self._tool_events(session_id, start_ms, end_ms)
+        )
 
     def session_user_turns(self, session_id: str, start_ms: int, end_ms: int) -> list[str]:
         turns: list[str] = []
@@ -831,21 +736,7 @@ class V2Adapter(SchemaAdapter):
         return counts
 
     def session_aggregates(self, session_id: str) -> dict | None:
-        row = self.conn.execute(
-            "SELECT cost, tokens_input, tokens_output, tokens_reasoning, "
-            "tokens_cache_read, tokens_cache_write FROM session WHERE id = ?",
-            (session_id,),
-        ).fetchone()
-        if row is None or row["cost"] is None:
-            return None
-        return {
-            "cost": float(row["cost"]),
-            "tokens_input": float(row["tokens_input"] or 0.0),
-            "tokens_output": float(row["tokens_output"] or 0.0),
-            "tokens_reasoning": float(row["tokens_reasoning"] or 0.0),
-            "tokens_cache_read": float(row["tokens_cache_read"] or 0.0),
-            "tokens_cache_write": float(row["tokens_cache_write"] or 0.0),
-        }
+        return _session_aggregates(self.conn, "session", session_id)
 
     def session_parts(self, session_id: str) -> list[PartRecord]:
         records: list[PartRecord] = []

@@ -7,8 +7,6 @@ SchemaAdapter (sqlite_reader.py, v5.16/v5.24) — no SDK, no server, no pricing 
 
 from __future__ import annotations
 
-import contextlib
-import json
 import re
 import shutil
 import subprocess
@@ -20,6 +18,9 @@ from .aggregator import _cap_warnings, aggregate
 from .config import TelemetryConfig
 from .models import Period, SessionUsage, SkillCatalogEntry, WarningEntry, round6
 from .sqlite_reader import DataSourceError, SessionMeta, _to_ms, detect_db
+from .util import iso as _iso
+from .util import load_json, period_hours
+from .util import parse_anchor as _parse_anchor
 from .writer import write_summary
 
 EXIT_OK = 0
@@ -31,21 +32,7 @@ ACTIVE_CUTOFF_MINUTES = 10
 #: Skill universe dirs (spec §2): project + global, .opencode/.claude/.agents.
 SKILL_LAYOUTS = ((".opencode", "skills"), (".claude", "skills"), (".agents", "skills"))
 #: Cross-check tolerance for lifetime parts-cost vs session_v2 aggregate.
-CROSS_CHECK_REL = 0.05
 CROSS_CHECK_ABS = 0.01
-
-
-def _iso(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _parse_anchor(value: str | None) -> datetime:
-    if value is None:
-        return datetime.now(UTC)
-    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt
 
 
 def _truncate(text: str, limit: int = 80) -> str | None:
@@ -294,6 +281,15 @@ def _build_selection(audit: list[dict], limit: int) -> dict:
     }
 
 
+def _existing_period(path: Path) -> tuple[str | None, str | None]:
+    """(start, end) ISO strings of an existing summary JSON; (None, None) on garbage."""
+    data = load_json(path) or {}
+    period = data.get("period")
+    if not isinstance(period, dict):
+        return None, None
+    return period.get("start"), period.get("end")
+
+
 # --------------------------------------------------------------------------- run
 
 
@@ -410,68 +406,40 @@ def run(
         summary.warnings = _cap_warnings([*summary.warnings, *extra_warnings])
 
     out_path = cfg.output_dir / f"weekly-summary-{run_time:%Y-%m-%d}.json"
-    if out_path.exists() and force:
-        # v5.31 (c) : --force avec une fenêtre différente écrase le précédent →
-        # la baseline insights (deltas/spikes) sera perdue.
-        try:
-            existing = json.loads(out_path.read_text(encoding="utf-8")) or {}
-            ex_start = existing.get("period", {}).get("start")
-            ex_end = existing.get("period", {}).get("end")
-            if ex_start and ex_end:
-                old_hours = (
-                    datetime.fromisoformat(ex_end.replace("Z", "+00:00"))
-                    - datetime.fromisoformat(ex_start.replace("Z", "+00:00"))
-                ).total_seconds() / 3600
-                if abs(old_hours - cfg.window_hours()) > 1:
-                    print(
-                        f"telemetry-aggregator: --force écrase un summary de fenêtre "
-                        f"{old_hours:.0f}h ≠ {cfg.window_hours():.0f}h — la baseline insights "
-                        "du précédent sera perdue (deltas/spikes du prochain run)",
-                        flush=True,
-                    )
-        except (OSError, ValueError, TypeError):
-            pass
-    if out_path.exists() and not force:
-        existing_end = None
-        with contextlib.suppress(OSError, ValueError):
-            existing_end = (
-                (json.loads(out_path.read_text(encoding="utf-8")) or {})
-                .get("period", {})
-                .get("end")
-            )
-        existing_start = None
-        with contextlib.suppress(OSError, ValueError):
-            existing_start = (
-                (json.loads(out_path.read_text(encoding="utf-8")) or {})
-                .get("period", {})
-                .get("start")
-            )
-        window_note = ""
-        if existing_start and existing_end:
-            try:
-                old_hours = (
-                    datetime.fromisoformat(existing_end.replace("Z", "+00:00"))
-                    - datetime.fromisoformat(existing_start.replace("Z", "+00:00"))
-                ).total_seconds() / 3600
-                if abs(old_hours - cfg.window_hours()) > 1:
-                    window_note = (
-                        f" — attention: fenêtre existante {old_hours:.0f}h ≠ {cfg.window_hours():.0f}h "
-                        "(K9, v5.30)"
-                    )
-            except (ValueError, TypeError):
-                window_note = ""
-        if existing_end and existing_end != _iso(run_time):
-            print(
-                f"telemetry-aggregator: summary exists with period end {existing_end} "
-                f"≠ ancre {_iso(run_time)} — ré-exécutez avec la même ancre ou --force (K9){window_note}",
-                flush=True,
-            )
+    if out_path.exists():
+        existing_start, existing_end = _existing_period(out_path)
+        old_hours = (
+            period_hours(existing_start, existing_end) if existing_start and existing_end else None
+        )
+        if force:
+            # v5.31 (c) : --force avec une fenêtre différente écrase le précédent →
+            # la baseline insights (deltas/spikes) sera perdue.
+            if old_hours is not None and abs(old_hours - cfg.window_hours()) > 1:
+                print(
+                    f"telemetry-aggregator: --force écrase un summary de fenêtre "
+                    f"{old_hours:.0f}h ≠ {cfg.window_hours():.0f}h — la baseline insights "
+                    "du précédent sera perdue (deltas/spikes du prochain run)",
+                    flush=True,
+                )
         else:
-            print(
-                f"telemetry-aggregator: output exists: {out_path} (use --force to overwrite){window_note}",
-                flush=True,
-            )
-        return EXIT_OK  # idempotent re-run: nothing to do is a success
+            window_note = ""
+            if old_hours is not None and abs(old_hours - cfg.window_hours()) > 1:
+                window_note = (
+                    f" — attention: fenêtre existante {old_hours:.0f}h ≠ {cfg.window_hours():.0f}h "
+                    "(K9, v5.30)"
+                )
+            if existing_end and existing_end != _iso(run_time):
+                print(
+                    f"telemetry-aggregator: summary exists with period end {existing_end} "
+                    f"≠ ancre {_iso(run_time)} — ré-exécutez avec la même ancre ou --force (K9){window_note}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"telemetry-aggregator: output exists: {out_path} (use --force to overwrite){window_note}",
+                    flush=True,
+                )
+            return EXIT_OK  # idempotent re-run: nothing to do is a success
     print("telemetry-aggregator: écriture du summary…", flush=True)
     write_summary(out_path, summary)
 
@@ -561,11 +529,7 @@ def doctor(
         n = migrations if migrations is not None else 0
         if migrations is None:
             warnings.append("compteur de migrations introuvable — schéma non standard")
-        elif (
-            (adapter.name == "v1" and n < 42)
-            or (adapter.name == "v1-live" and n < 42)
-            or (adapter.name == "v2" and n < 1)
-        ):
+        elif (adapter.name == "v1" and n < 42) or (adapter.name == "v2" and n < 1):
             warnings.append(f"compteur de migrations faible ({n}) — vérifier la version d'OpenCode")
         adapter.conn.close()
         print(f"doctor: base OpenCode détectée: {path} (adaptateur {adapter.name}, migrations={n})")
@@ -690,13 +654,14 @@ def harness(cfg: TelemetryConfig, *, anchor: str | None = None, timeout: int = 9
     return EXIT_OK
 
 
-def self_cost(cfg: TelemetryConfig, *, anchor: str | None = None) -> int:  # noqa: ARG001
-    """Cost of the pipeline's own run session (Part 1 §12) — the one place the pipeline sees itself."""
-    try:
-        _path, adapter = detect_db(cfg.opencode_db_path)
-    except DataSourceError as exc:
-        print(f"self-cost: FATAL: {exc}", file=sys.stderr, flush=True)
-        return EXIT_TOTAL_FAILURE
+def _advisor_cost(cfg: TelemetryConfig) -> tuple[float, str] | None:
+    """(cost_usd, session_id) of the pipeline's own advisor session; None when undetectable.
+
+    Shared by `self_cost` (CLI) and the report's self-cost line: title lookup
+    first, then the most recent weekly-advisor agent session (v5.30 E).
+    Raises DataSourceError when no DB is found.
+    """
+    _path, adapter = detect_db(cfg.opencode_db_path)
     try:
         meta = adapter.find_session_by_title(cfg.advisor_run_title)
         if meta is None:
@@ -716,11 +681,23 @@ def self_cost(cfg: TelemetryConfig, *, anchor: str | None = None) -> int:  # noq
                     best = m
             meta = best
         if meta is None:
-            print("self-cost: session du pipeline introuvable — coût propre non mesurable (0 $)")
-            return EXIT_PARTIAL
+            return None
         agg = adapter.session_aggregates(meta.session_id)
-        cost = agg["cost"] if agg else 0.0
-        print(f"self-cost: coût propre du pipeline: ${cost:.4f} (session {meta.session_id[:12]})")
-        return EXIT_OK
+        return (agg["cost"] if agg else 0.0), meta.session_id
     finally:
         adapter.conn.close()
+
+
+def self_cost(cfg: TelemetryConfig, *, anchor: str | None = None) -> int:  # noqa: ARG001
+    """Cost of the pipeline's own run session (Part 1 §12) — the one place the pipeline sees itself."""
+    try:
+        found = _advisor_cost(cfg)
+    except DataSourceError as exc:
+        print(f"self-cost: FATAL: {exc}", file=sys.stderr, flush=True)
+        return EXIT_TOTAL_FAILURE
+    if found is None:
+        print("self-cost: session du pipeline introuvable — coût propre non mesurable (0 $)")
+        return EXIT_PARTIAL
+    cost, session_id = found
+    print(f"self-cost: coût propre du pipeline: ${cost:.4f} (session {session_id[:12]})")
+    return EXIT_OK

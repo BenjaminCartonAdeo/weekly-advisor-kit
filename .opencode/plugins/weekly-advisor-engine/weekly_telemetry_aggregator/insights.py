@@ -7,13 +7,17 @@ JSON loading, atomic write.
 
 from __future__ import annotations
 
-import json
+import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from .config import InsightsConfig, TelemetryConfig
-from .main import EXIT_OK, EXIT_TOTAL_FAILURE, _parse_anchor
+from .main import EXIT_OK, EXIT_TOTAL_FAILURE
+from .util import iso as _iso
+from .util import load_json as _load
+from .util import parse_anchor as _parse_anchor
+from .util import period_hours, robust_z
 from .writer import write_json_atomic
 
 DEFAULT_CATALOG_COUNT = 0
@@ -23,35 +27,14 @@ DEFAULT_CATALOG_COUNT = 0
 DAILY_SPIKE_Z_CAP = 10.0
 
 
-def _iso(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def _robust_z_scores(values: list[float]) -> list[float]:
-    """Robust z (median + MAD). MAD==0 → fall back to mean abs deviation so a
-    single spike among an otherwise-identical baseline is still detectable."""
-    if not values:
-        return []
-    vs = sorted(values)
-    n = len(vs)
-    median = vs[n // 2] if n % 2 else (vs[n // 2 - 1] + vs[n // 2]) / 2
-    devs = sorted(abs(v - median) for v in values)
-    mad = devs[n // 2] if n % 2 else (devs[n // 2 - 1] + devs[n // 2]) / 2
-    if mad == 0:
-        mad = sum(abs(v - median) for v in values) / n
-    if mad == 0:
-        return [0.0] * n
-    return [round(0.6745 * (v - median) / mad, 2) for v in values]
+    """Robust z (median + MAD, shared core in util); 2-decimal rounding kept."""
+    return [round(z, 2) for z in robust_z(values)]
 
 
 def _window_hours(period: dict) -> float | None:
     """Durée de fenêtre en heures (None si période invalide)."""
-    try:
-        start = datetime.fromisoformat(str(period.get("start", "")).replace("Z", "+00:00"))
-        end = datetime.fromisoformat(str(period.get("end", "")).replace("Z", "+00:00"))
-        return (end - start).total_seconds() / 3600
-    except (KeyError, ValueError, TypeError):
-        return None
+    return period_hours(str(period.get("start", "")), str(period.get("end", "")))
 
 
 def _pct_delta(current: float | None, previous: float | None) -> float | None:
@@ -479,13 +462,6 @@ def _ignored(ignored: list[str], category: str, target: str) -> bool:
 # ------------------------------------------------------------------ I/O wrapper
 
 
-def _load(path: Path) -> dict | None:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-
-
 def _state_previous(output_dir: Path, current_date: str) -> tuple[dict | None, dict | None]:
     """Previous summary+digest from the `previous_run.json` state (v5.28, P1.2).
 
@@ -501,27 +477,27 @@ def _state_previous(output_dir: Path, current_date: str) -> tuple[dict | None, d
     return prev_sum, prev_dig
 
 
-def _discover_previous(pattern: str, current_date: str, output_dir: Path) -> dict | None:
-    """Most recent artefact strictly older than the current run (spec §2).
+def _artifacts_before(output_dir: Path, pattern: str, current_date: str) -> list[tuple[str, Path]]:
+    """Sorted (date, path) artefacts matching <pattern>, strictly older than <date>.
 
-    Date extraction via regex so the pattern works for summary AND harness
+    Date extracted via regex so the pattern works for summary AND harness
     digests (v5.28: the previous prefix-strip only matched `weekly-summary-`,
     silently degrading lint deltas when only a digest was present).
     """
-    import re
-
-    candidates = []
+    found = []
     for p in sorted(output_dir.glob(pattern)):
         m = re.search(r"(\d{4}-\d{2}-\d{2})\.json$", p.name)
-        if not m:
-            continue
-        date = m.group(1)
-        if date < current_date:
-            candidates.append((date, p))
-    if not candidates:
+        if m and m.group(1) < current_date:
+            found.append((m.group(1), p))
+    return found
+
+
+def _discover_previous(pattern: str, current_date: str, output_dir: Path) -> dict | None:
+    """Most recent artefact strictly older than the current run (spec §2)."""
+    found = _artifacts_before(output_dir, pattern, current_date)
+    if not found:
         return None
-    candidates.sort(key=lambda c: c[0])
-    return _load(Path(candidates[-1][1]))
+    return _load(found[-1][1])
 
 
 def run(
@@ -567,14 +543,12 @@ def run(
                 previous, baseline_used = loaded, str(bp)
 
     recent = [current]
-    for p in sorted(out.glob("weekly-summary-*.json"))[::-1]:
+    for _d, p in _artifacts_before(out, "weekly-summary-*.json", date)[::-1]:
         if len(recent) >= 8:
             break
-        d = Path(p).name.replace("weekly-summary-", "").replace(".json", "")
-        if d < date:
-            loaded = _load(Path(p))
-            if loaded is not None:
-                recent.append(loaded)
+        loaded = _load(p)
+        if loaded is not None:
+            recent.append(loaded)
 
     data = compute(
         run_time=run_time,

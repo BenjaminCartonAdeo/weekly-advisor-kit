@@ -72,17 +72,6 @@ def make_usage(
     )
 
 
-def _tokens_json(input_, output, reason, cache_read, cache_write) -> str:
-    return json.dumps(
-        {
-            "input": input_,
-            "output": output,
-            "reasoning": reason,
-            "cache": {"read": cache_read, "write": cache_write},
-        }
-    )
-
-
 def seed_v1_file(path, sessions, *, migrations: int = 42) -> sqlite3.Connection:
     """Create a V1 opencode.db with realistic sessions (V1Adapter schema, >= 42 migrations).
 

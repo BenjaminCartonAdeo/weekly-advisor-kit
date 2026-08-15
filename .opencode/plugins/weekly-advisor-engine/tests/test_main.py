@@ -285,12 +285,12 @@ def test_doctor_warns_when_config_nowhere(tmp_path: Path, capsys):
     assert "vérifier --dir du cron" not in out
     # vrai défaut : config introuvable au cwd ET au project_root
     capsys.readouterr()
-    rc = doctor(cfg, cwd=tmp_path / "nowhere")
+    doctor(cfg, cwd=tmp_path / "nowhere")
     out = (capsys.readouterr().out + capsys.readouterr().err).lower()
     assert "config introuvable" in out
     # plugin : config passée explicitement (--config) → le warning n'est jamais émis
     capsys.readouterr()
-    rc = doctor(cfg, cwd=tmp_path / "nowhere", config_loaded=True)
+    doctor(cfg, cwd=tmp_path / "nowhere", config_loaded=True)
     out = (capsys.readouterr().out + capsys.readouterr().err).lower()
     assert "config introuvable" not in out
 

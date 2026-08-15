@@ -115,7 +115,7 @@ def test_summary_to_dict_v528_new_fields():
 
 
 def test_summary_serializes_skills_targets():
-    from tests.helpers import make_step, make_usage, tzutc
+    from helpers import make_step, make_usage, tzutc
     from weekly_telemetry_aggregator.aggregator import aggregate
     from weekly_telemetry_aggregator.models import Period, SkillCatalogEntry
     from weekly_telemetry_aggregator.writer import summary_to_dict

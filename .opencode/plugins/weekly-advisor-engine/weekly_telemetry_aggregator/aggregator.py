@@ -35,6 +35,7 @@ from .models import (
     WeeklySummary,
     round6,
 )
+from .util import robust_z
 
 #: Gaps strictly below this threshold count as "active" time (5 minutes).
 ACTIVE_GAP_LIMIT = timedelta(minutes=5)
@@ -152,23 +153,13 @@ def _prompt_repeat_groups(
     Normalized turns are grouped greedily (deterministic order: session_id ASC,
     then turn order): exact match wins, else SequenceMatcher ratio on the first
     PROMPT_COMPARE_CHARS of the normalized text >= `similarity`.
+    Quasi-duplicate scan is bucketed by length (len//16, ±2 buckets): with
+    similarity >= 0.9 over 100 chars, matching texts have near-equal lengths
+    (v5.30 A — single path, no volume threshold).
     """
-    # v5.30 (A) : exact-match O(1) via dict + buckets par longueur pour les
-    # quasi-doublons (SequenceMatcher uniquement sur les longueurs proches) ;
-    # full-scan conservé quand le volume est faible (sémantique identique).
     groups: list[dict] = []  # {rep, count, chars_sum, session_id}
     exact: dict[str, dict] = {}
     buckets: dict[int, list[dict]] = {}
-    turns_total = sum(len(u.user_turns) for u in uses)
-
-    def _candidates_for(norm: str) -> list[dict]:
-        if turns_total < 200:  # petit volume : full-scan, aucune correspondance manquée
-            return groups
-        b = len(norm) // 16
-        out: list[dict] = []
-        for bb in range(b - 2, b + 3):
-            out.extend(buckets.get(bb, ()))
-        return out
 
     for usage in sorted(uses, key=lambda u: u.session_id):
         if usage.parent_id is not None:
@@ -182,8 +173,9 @@ def _prompt_repeat_groups(
                 continue
             target = exact.get(norm)
             if target is None:
-                for g in _candidates_for(norm):
-                    if g is target or g["rep"] == norm:
+                b = len(norm) // 16
+                for g in [cand for bb in range(b - 2, b + 3) for cand in buckets.get(bb, ())]:
+                    if g["rep"] == norm:
                         target = g
                         break
                     if (
@@ -246,27 +238,8 @@ def _skill_similar_pairs(entries, min_similarity: float) -> list[SkillSimilarPai
 
 
 def _robust_z(values: list[float]) -> dict[str, float]:
-    """Robust z-scores (median + MAD, v5.22). MAD==0 → all zeros (no outlier)."""
-    if not values:
-        return {}
-    median = (
-        sorted(values)[len(values) // 2]
-        if len(values) % 2
-        else (sorted(values)[len(values) // 2 - 1] + sorted(values)[len(values) // 2]) / 2
-    )
-    devs = sorted(abs(v - median) for v in values)
-    mad = (
-        devs[len(devs) // 2]
-        if len(devs) % 2
-        else (devs[len(devs) // 2 - 1] + devs[len(devs) // 2]) / 2
-    )
-    if mad == 0:
-        # All-identical baseline -> fall back to mean absolute deviation so a
-        # single spike is still detectable (v5.27).
-        mad = sum(abs(v - median) for v in values) / len(values)
-    if mad == 0:
-        return {str(i): 0.0 for i in range(len(values))}
-    return {str(i): round6(0.6745 * (v - median) / mad) for i, v in enumerate(values)}
+    """Robust z-scores per index (median + MAD, shared core in util); 6-decimal rounding."""
+    return {str(i): round6(z) for i, z in enumerate(robust_z(values))}
 
 
 def _cost_outliers(
@@ -355,6 +328,7 @@ def aggregate(
 
     # ---- totals (roots + children merged once) + per-root aggregated rows ----
     totals = Totals()
+    root_costs: dict[str, float] = {}
     model_agg: dict[str, dict] = defaultdict(
         lambda: {"sessions": set(), "tokens": 0, "cost": 0.0, "cache_read": 0.0, "fresh": 0.0}
     )
@@ -368,6 +342,7 @@ def aggregate(
         descendants = _descendants(by_id, root) if include_subagents else []
         merged = [s for u in [root, *descendants] for s in u.steps]
         cost = round6(sum(s.cost for s in merged if s.cost is not None))
+        root_costs[root.session_id] = cost
         tokens = sum(s.total_tokens for s in merged)
         totals.session_count += 1
         totals.total_tokens += tokens
@@ -441,14 +416,8 @@ def aggregate(
     ]
 
     # ---- cost outliers (roots, window cost) ----
-    _root_cost_map: dict[str, float] = {}
-    _root_cost_map: dict[str, float] = {}
-    for r in roots:
-        desc = _descendants(by_id, r) if include_subagents else []
-        merged = [s for u in [r, *desc] for s in u.steps]
-        _root_cost_map[r.session_id] = round6(sum(s.cost for s in merged if s.cost is not None))
     cost_outliers = _cost_outliers(
-        [(sid, _root_cost_map[sid]) for sid in sorted(_root_cost_map)],
+        [(sid, root_costs[sid]) for sid in sorted(root_costs)],
         z_min=session_outlier_z,
         min_cost=session_outlier_min_cost_usd,
     )
