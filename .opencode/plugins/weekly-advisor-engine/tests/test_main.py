@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
 from helpers import seed_hybrid_file, seed_v1_file, tzutc
 
 from weekly_telemetry_aggregator.config import TelemetryConfig
@@ -31,6 +33,17 @@ def _cfg(tmp_path: Path, db_path: Path, **over) -> TelemetryConfig:
     for k, v in over.items():
         setattr(cfg, k, v)
     return cfg
+
+
+@pytest.fixture
+def fake_opencode(tmp_path: Path, monkeypatch) -> None:
+    """Fake `opencode` binary in PATH — doctor's version check is hermetic (CI has none)."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    exe = bin_dir / "opencode"
+    exe.write_text("#!/bin/sh\necho '1.18.0'\n", encoding="utf-8")
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
 
 
 def _seed_n(db_path: Path, n: int, *, window_mins_ago: int = 60) -> Path:
@@ -241,7 +254,7 @@ def test_run_partial_only_on_read_failure(tmp_path: Path, monkeypatch):
     assert run(cfg, anchor=RUN_TIME.isoformat()) == EXIT_PARTIAL
 
 
-def test_doctor_ok_on_valid_db(tmp_path: Path):
+def test_doctor_ok_on_valid_db(tmp_path: Path, fake_opencode):
     _ = (tmp_path / ".opencode").mkdir()
     db = _seed_n(tmp_path / "opencode.db", 3)
     cfg = _cfg(tmp_path, db)
@@ -272,7 +285,7 @@ def test_doctor_missing_project_root(tmp_path: Path):
     assert doctor(cfg) == EXIT_TOTAL_FAILURE
 
 
-def test_doctor_warns_when_config_nowhere(tmp_path: Path, capsys):
+def test_doctor_warns_when_config_nowhere(tmp_path: Path, capsys, fake_opencode):
     """Layout kit : cwd=moteur (config au cwd) ≠ project_root (repo audité) — warning
     uniquement si la config est introuvable partout, plus jamais sur cwd≠project_root."""
     db = _seed_n(tmp_path / "opencode.db", 3)
@@ -605,7 +618,9 @@ def test_selection_audit_has_parent_id(tmp_path: Path):
     assert by_id["ses_parent"]["parent_id"] is None
 
 
-def test_doctor_warns_when_gh_missing_with_watch_repos(tmp_path: Path, monkeypatch, capsys):
+def test_doctor_warns_when_gh_missing_with_watch_repos(
+    tmp_path: Path, monkeypatch, capsys, fake_opencode
+):
     db = _seed_n(tmp_path / "opencode.db", 2)
     cfg = _cfg(tmp_path, db)
     (tmp_path / ".opencode").mkdir()
