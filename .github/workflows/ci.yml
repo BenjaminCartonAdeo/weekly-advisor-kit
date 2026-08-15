@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .opencode/plugins/weekly-advisor-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Install (lockfile reproductible + extras dev)
+        run: uv sync --frozen --all-extras
+      - name: Lint
+        run: uv run ruff check .
+      - name: Format
+        run: uv run ruff format --check .
+      - name: Tests (171, aucun réseau)
+        run: uv run pytest -q
+      - name: Packaging
+        run: uv build
+      - name: Plugin TS (syntaxe)
+        run: node --check .opencode/plugins/weekly-advisor.ts
+        working-directory: .
