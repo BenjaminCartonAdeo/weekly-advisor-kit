@@ -361,6 +361,7 @@ def test_prompt_repeats_large_volume_is_fast():
     import time
 
     from helpers import make_usage
+
     from weekly_telemetry_aggregator.aggregator import _prompt_repeat_groups
 
     # 2000 prompts : ~200 uniques répétés + variations de longueur
@@ -392,6 +393,7 @@ def test_command_name_ignores_absolute_paths():
 
 def test_prompt_repeats_excludes_child_sessions():
     from helpers import make_usage
+
     from weekly_telemetry_aggregator.aggregator import _prompt_repeat_groups
 
     prompt = "prompt long répété utilisateur qui dépasse largement le seuil minimum de caractères requis par la détection des répétitions"
@@ -408,6 +410,7 @@ def test_prompt_repeats_excludes_child_sessions():
 
 def test_skills_targets_propagated_to_summary():
     from helpers import make_step, make_usage
+
     from weekly_telemetry_aggregator.aggregator import aggregate
     from weekly_telemetry_aggregator.models import SkillCatalogEntry
 
