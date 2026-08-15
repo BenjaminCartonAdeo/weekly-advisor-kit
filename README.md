@@ -1,32 +1,85 @@
 # weekly-advisor-kit
 
-Pipeline de revue hebdomadaire d'usage OpenCode, distribuable en **un seul dossier** :
-`.opencode/` contient l'agent, les 5 skills d'étape, les 2 commands, le **plugin enveloppe**
-(tools `weekly_*` → moteur Python) et le **moteur** Python (`weekly-telemetry-aggregator`).
+[![CI](https://github.com/BenjaminCartonAdeo/weekly-advisor-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/BenjaminCartonAdeo/weekly-advisor-kit/actions/workflows/ci.yml)
 
-Spec : `opencode-weekly-advisor` · **Installation : [`INSTALL.md`](INSTALL.md)**
+Revue hebdomadaire automatisée de votre usage d'OpenCode : chaque semaine, le kit
+analyse votre télémétrie locale, surveille l'écosystème des plugins/skills, audite
+vos sessions coûteuses et produit **un rapport unique** `weekly-report-<date>.md`.
 
-**Validé** : run complet **exit 0 sur Adeo le 15 août 2026** (12 étapes, outils du plugin,
-drafting honnête — 0 candidat → aucun commit forcé). Déployé en production sur Adeo ;
-ce kit en est le miroir de distribution.
+Chaque lundi, il vous dit : combien vous avez dépensé, ce qui a coûté cher et pourquoi,
+quels skills/commands sont inutilisés ou redondants, quoi surveiller dans l'écosystème,
+et quelles corrections peuvent être auto-rédigées (proposées, jamais imposées).
 
-## Quickstart (6 commandes)
+Le kit tient dans **un seul dossier** `.opencode/` : un agent dédié, 5 skills
+qualitatifs, 2 commands, un **plugin enveloppe** (13 tools `weekly_*`) et un
+**moteur Python** déterministe (`weekly-telemetry-aggregator`).
+
+**Spécification** : [`opencode-weekly-advisor`](opencode-weekly-advisor) (le contrat complet, 8 parties)
+**Installation pas à pas** : [`INSTALL.md`](INSTALL.md)
+
+## Ce que fait le kit
+
+Le cœur est **100 % déterministe, zéro LLM** : le moteur Python lit directement la
+base SQLite locale d'OpenCode (pas de SDK, pas de serveur) et produit des JSON
+reproductibles. Le LLM n'intervient que sur les étapes qualitatives, encadrées par
+des skills dédiés et des contrats anti-hallucination.
+
+| Étape | Contenu | Exécuté par |
+|---|---|---|
+| 1 · Télémétrie | coûts, tokens, cache, modèles, sessions top/outliers, usage tools/skills/commands, prompts répétés, subagents | `weekly_run` (déterministe) |
+| 2 · Veille écosystème | npm, topics GitHub, registre MCP, releases OpenCode, repos/listes/RSS suivis | `weekly_releases` (déterministe) |
+| 3 · Audit qualitatif | sessions candidates (coût, outliers, boucles, cache, prompts répétés) → constats archivés | skill `weekly-quality-audit` |
+| 3.5 · Veille critique | marché × environnement × constats → recommandations adopt / improve / ignore | skill `weekly-watch-review` |
+| 4 · Auto-drafting | candidats skills/commands → rédaction + commit sécurisé et scoped | skill `weekly-drafting` + `weekly_commit_draft` |
+| 5 · Lint | `harness-eval` sur `.opencode/` (version épinglée) | `weekly_harness` (déterministe) |
+| 6 · Insights | deltas vs semaine précédente, alertes budget/cache/spikes, maintenance R1-R4 | `weekly_insights` (déterministe) |
+| 6.5 · Cohérence | état déclaratif (skills/agents) vs usage réel | skill `weekly-coherence-review` |
+| 7 · Rapport | sections déterministes + prose LLM validée → **`weekly-report-<date>.md`** | `weekly_report_prep` / `weekly_report_blocks_draft` / `weekly_report_assemble` |
+| 8 · Coût propre | coût de la session du pipeline lui-même (annexe du rapport) | `weekly_self_cost` (déterministe) |
+
+Le rapport final est **le signal** : le cron (ou vous) l'attend chaque semaine — s'il
+est absent, quelque chose s'est mal passé. Codes de sortie : `0` complet, `1` partiel
+(warnings tolérés), `2` fatal (stoppe sans rapport). En cas de doute sur le poste :
+`weekly_doctor` diagnostique base, config et binaires.
+
+## Quickstart
+
+Prérequis : `opencode` ≥ 1.18 avec un modèle authentifié (`opencode auth login`), `uv` —
+détails et alternatives : [`INSTALL.md`](INSTALL.md).
 
 ```sh
 git clone https://github.com/BenjaminCartonAdeo/weekly-advisor-kit.git && cd weekly-advisor-kit
-uv venv .venv && uv pip install --python .venv/bin/python -e ".opencode/plugins/weekly-advisor-engine[dev]"
-# ÉDITE la config — project_root et output_dir sont en placeholder (/path/to/...) :
-#   nano .opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json
-cd .opencode/plugins/weekly-advisor-engine && ../../../.venv/bin/python -m pytest -q && cd ../../..
-opencode run --agent weekly-advisor --model opencode/deepseek-v4-flash-free --dir . "Exécute weekly_doctor et donne son verdict"
+uv venv .venv && uv pip install -e ".opencode/plugins/weekly-advisor-engine[dev]"
+# 1 fichier à adapter : project_root + output_dir (chemins absolus)
+$EDITOR .opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json
+opencode run --agent weekly-advisor "Lance la revue hebdomadaire"
 ```
+
+- Comptez 10-30 min pour un run complet (télémétrie, réseau et lint compris) ; le rapport est dans
+  `<output_dir>/weekly-report-<date>.md`
+- Première fois ? Remplacez la dernière commande par
+  `opencode run --agent weekly-advisor "Exécute weekly_doctor et donne son verdict"` —
+  il valide base, config et binaires avant le premier run
+- Modèle : celui par défaut d'opencode, ou `--model <votre-modèle>` — jamais en dur dans le kit
+- Les placeholders `/path/to/...` de la config sont volontaires : tant qu'ils ne sont
+  pas adaptés, `weekly_doctor` échoue proprement au lieu de lancer un run sur un mauvais chemin
+
+## Cron (rappel)
+
+```cron
+0 6 * * 1 opencode run --port 4096 --agent weekly-advisor --model <votre-modèle> --dir /chemin/du/kit "Lance la revue hebdomadaire" >> /var/log/weekly-advisor.log 2>&1
+```
+
+Rien d'autre sur PATH : le plugin résout python et `harness-eval`. Le rapport final
+`<output_dir>/weekly-report-<date>.md` est le **signal** du cron (alerte si absent).
+Détails et heartbeat recommandé : [`INSTALL.md`](INSTALL.md) §2.7.
 
 ## Structure
 
 ```
 .opencode/
-├── agents/weekly-advisor/weekly-advisor.md   ← squelette : ordre figé, invariants, bash: deny
-├── skills/weekly-*/SKILL.md                  ← 5 étapes LLM (chargées à la demande)
+├── agents/weekly-advisor/weekly-advisor.md   ← orchestration : ordre figé, invariants, bash: deny
+├── skills/weekly-*/SKILL.md                  ← 5 étapes qualitatives (chargées à la demande)
 ├── commands/weekly-review.md / weekly-report.md
 └── plugins/
     ├── weekly-advisor.ts                     ← plugin enveloppe : 13 tools weekly_* (chemins dérivés)
@@ -37,28 +90,19 @@ opencode run --agent weekly-advisor --model opencode/deepseek-v4-flash-free --di
 
 | Document | Contenu |
 |---|---|
+| [`opencode-weekly-advisor`](opencode-weekly-advisor) | La spec complète (8 parties) — le contrat du pipeline : orchestration, télémétrie, veille, audit, drafting, lint, insights, rapport |
 | [`INSTALL.md`](INSTALL.md) | Installation pas à pas : prérequis, config, validation, cron, mise à jour, dépannage |
-| `opencode-weekly-advisor` | La spec complète (8 parties) — le contrat du pipeline : orchestration, télémétrie, veille, audit, drafting, lint, insights, rapport |
-| `README.md` | Ce fichier — vue d'ensemble |
-
-## Cron (rappel)
-
-```cron
-0 6 * * 1 opencode run --port 4096 --agent weekly-advisor \
-    --model opencode/deepseek-v4-flash-free \
-    --dir /home/<TOI>/Dev/weekly-advisor-kit "Lance la revue hebdomadaire" \
-    >> /var/log/weekly-advisor.log 2>&1
-```
-
-Rien d'autre sur PATH : le plugin résout python et `harness-eval`. Le rapport final
-`<output_dir>/weekly-report-<date>.md` est le **signal** du cron (alerte si absent).
-Détails et heartbeat recommandé : [`INSTALL.md`](INSTALL.md) §2.7.
+| [`README.md`](README.md) | Ce fichier — vue d'ensemble |
 
 ## Développement
 
 ```sh
-uv pip install --python .venv/bin/python -e ".opencode/plugins/weekly-advisor-engine[dev]"
-# tests : depuis le DOSSIER MOTEUR (les tests importent `tests` depuis le cwd)
+# tests + lint (depuis le dossier moteur : la config du repo y vit, les tests en dépendent)
 cd .opencode/plugins/weekly-advisor-engine
-../../../.venv/bin/python -m pytest tests -q    # 171 tests
+../../../.venv/bin/python -m pytest -q             # 171 tests
+../../../.venv/bin/python -m ruff check .          # lint
+../../../.venv/bin/python -m ruff format --check . # format
 ```
+
+CI GitHub Actions (`.github/workflows/ci.yml`) : install lockfile `--frozen`, lint,
+format, 171 tests, packaging et syntaxe du plugin TS — vérifiés sur chaque push/PR.
