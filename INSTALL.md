@@ -29,12 +29,12 @@ git clone https://github.com/BenjaminCartonAdeo/weekly-advisor-kit.git && cd wee
 ### 2.2 venv + moteur
 
 ```sh
-uv venv .venv
-uv pip install --python .venv/bin/python -e ".opencode/plugins/weekly-advisor-engine[dev]"
+uv sync --project .opencode/plugins/weekly-advisor-engine --all-extras
 ```
 
-Le suffixe `[dev]` installe `pytest` (nécessaire à l'étape 2.5). Sans `[dev]`, le run
-fonctionne mais pas les tests (`No module named pytest`).
+Le venv vit dans le projet moteur (`.opencode/plugins/weekly-advisor-engine/.venv`) —
+le plugin enveloppe le résout seul, aucune variable d'environnement. `--all-extras`
+installe le dev (`pytest`, `ruff`) ; sans lui le run fonctionne mais pas les tests.
 
 ### 2.3 Configuration — adaptation OBLIGATOIRE avant tout run
 
@@ -73,11 +73,10 @@ run cron (mesuré v5.32).
 ### 2.5 Validation — tests + doctor
 
 ```sh
-# tests : depuis le DOSSIER MOTEUR (les tests importent `tests` depuis le cwd)
 cd .opencode/plugins/weekly-advisor-engine
-../../../.venv/bin/python -m pytest -q     # 171 tests — tout doit passer
+uv run pytest -q     # 171 tests — tout doit passer
 cd ../../..
-opencode run --agent weekly-advisor --model opencode/deepseek-v4-flash-free \
+opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"
 ```
 
@@ -90,7 +89,7 @@ Attendu : **« Kit OK ... Prêt pour un run »** (exit 0). Sinon, les causes son
 ### 2.6 Run complet de test (recommandé)
 
 ```sh
-opencode run --port 4097 --agent weekly-advisor --model opencode/deepseek-v4-flash-free \
+opencode run --port 4097 --agent weekly-advisor --model <votre-modèle> \
     --dir . "Lance la revue hebdomadaire"
 ```
 
@@ -106,12 +105,12 @@ opencode run --port 4097 --agent weekly-advisor --model opencode/deepseek-v4-fla
 SHELL=/bin/bash
 PATH=/home/<TOI>/.local/bin:/usr/local/bin:/usr/bin:/bin
 0 6 * * 1 opencode run --port 4096 --agent weekly-advisor \
-    --model opencode/deepseek-v4-flash-free \
+    --model <votre-modèle> \
     --dir /home/<TOI>/Dev/weekly-advisor-kit "Lance la revue hebdomadaire" \
     >> /var/log/weekly-advisor.log 2>&1
 ```
 
-- **Rien de plus sur PATH** : la pipeline résout elle-même python (`<worktree>/.venv/bin/python`)
+- **Rien de plus sur PATH** : la pipeline résout elle-même python (`<moteur>/.venv/bin/python`)
   et `harness-eval` via le plugin ; seul `git` doit rester résolu (défaut)
 - **Signal** : rapport présent = run terminé ; **rapport absent** = échec → alerter ;
   le log contient la cause
@@ -122,10 +121,10 @@ PATH=/home/<TOI>/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 ```sh
 git pull
-uv pip install --python .venv/bin/python -e ".opencode/plugins/weekly-advisor-engine[dev]"
-cd .opencode/plugins/weekly-advisor-engine && ../../../.venv/bin/python -m pytest -q
+uv sync --project .opencode/plugins/weekly-advisor-engine --all-extras
+cd .opencode/plugins/weekly-advisor-engine && uv run pytest -q
 cd ../../..
-opencode run --agent weekly-advisor --model opencode/deepseek-v4-flash-free \
+opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"
 ```
 
@@ -161,7 +160,7 @@ Rien d'autre à nettoyer : aucun service, aucun fichier hors du repo et de `outp
 |---|---|---|
 | doctor : `PROBLEM: project_root ... ne contient pas .opencode/` (exit 2) | config non adaptée (placeholder) | adapter `project_root` (§2.3) |
 | doctor : `PROBLEM: output_dir non accessible ... '/path'` (exit 2) | `output_dir` placeholder | adapter `output_dir` (§2.3) |
-| `No module named pytest` | install sans `[dev]` | `uv pip install ... -e ".opencode/plugins/weekly-advisor-engine[dev]"` |
+| `No module named pytest` | install sans `--all-extras` | `uv sync --project .opencode/plugins/weekly-advisor-engine --all-extras` |
 | tool : `venv introuvable: ...` | venv absent | §2.2 |
 | tool : `moteur introuvable: ... (structure du kit corrompue)` | `.opencode/` incomplet | re-cloner proprement |
 | doctor : `opencode introuvable` | PATH du shell d'appel (cron minimal) | prérequis §1 + PATH du cron |
@@ -176,7 +175,7 @@ Rien d'autre à nettoyer : aucun service, aucun fichier hors du repo et de `outp
 ```sh
 # tests (depuis le dossier moteur)
 cd .opencode/plugins/weekly-advisor-engine
-../../../.venv/bin/python -m pytest tests -q
+uv run pytest tests -q
 
 # lint python
 uvx ruff check weekly_telemetry_aggregator tests

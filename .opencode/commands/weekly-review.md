@@ -1,7 +1,7 @@
 ---
 description: "Lance la revue hebdomadaire d'usage OpenCode (même chaîne que le cron) — pipeline weekly-advisor complet, spec v6.0."
 agent: weekly-advisor
-# model: ex. opencode/deepseek-v4-flash-free — sinon défaut de la config du poste (l'agent n'impose plus de modèle)
+# model: décidé par le poste (--model <votre-modèle>) — sinon défaut de la config (l'agent n'impose plus de modèle)
 ---
 
 # Revue hebdomadaire

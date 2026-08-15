@@ -293,7 +293,8 @@ def test_doctor_warns_when_config_nowhere(tmp_path: Path, capsys, fake_opencode)
     audited = tmp_path / "audited"
     (audited / ".opencode").mkdir(parents=True)  # repo audité légitime (layout kit)
     cfg.project_root = audited  # repo audité sans config — mode kit légitime
-    assert doctor(cfg) in (EXIT_OK, EXIT_PARTIAL)  # aucun warning cwd≠project_root
+    (tmp_path / "weekly-telemetry-config.json").write_text("{}", encoding="utf-8")
+    assert doctor(cfg, cwd=tmp_path) in (EXIT_OK, EXIT_PARTIAL)  # config au cwd → aucun warning
     out = (capsys.readouterr().out + capsys.readouterr().err).lower()
     assert "vérifier --dir du cron" not in out
     # vrai défaut : config introuvable au cwd ET au project_root

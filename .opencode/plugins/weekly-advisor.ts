@@ -6,7 +6,7 @@
  *
  * Résolution des chemins (toutes dérivées du worktree, zéro config absolue) :
  *   - moteur : <worktree>/.opencode/plugins/weekly-advisor-engine
- *   - python : $WEEKLY_PYTHON ?? <worktree>/.venv/bin/python
+ *   - python : $WEEKLY_PYTHON ?? <moteur>/.venv/bin/python (venv du projet moteur)
  *   - config : <moteur>/weekly-telemetry-config.json (relue à chaque appel)
  *   - ancre  : <output_dir>/anchor-last.txt — écrite par weekly_run si absente,
  *              lue par toutes les autres sous-commandes (aucune gestion LLM d'ancre)
@@ -29,13 +29,13 @@ interface EngineLoc {
 function resolveEngine(worktree: string): EngineLoc {
   const engine = path.join(worktree, ...ENGINE_REL)
   const python =
-    process.env.WEEKLY_PYTHON ?? path.join(worktree, ".venv", "bin", "python")
+    process.env.WEEKLY_PYTHON ?? path.join(engine, ".venv", "bin", "python")
   if (!fs.existsSync(engine)) {
     throw new Error(`moteur introuvable: ${engine} (structure du kit corrompue)`)
   }
   if (!fs.existsSync(python)) {
     throw new Error(
-      `venv introuvable: ${python} — exécuter dans le kit : uv venv .venv && uv pip install -e .opencode/plugins/weekly-advisor-engine`,
+      `venv introuvable: ${python} — exécuter depuis la racine du kit : uv sync --project .opencode/plugins/weekly-advisor-engine --all-extras`,
     )
   }
   // config : <moteur>/weekly-telemetry-config.json (même résolution que le CLI)

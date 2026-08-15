@@ -51,7 +51,7 @@ veille) — les étapes concernées dégradent proprement (warnings) en leur abs
 
 ```sh
 git clone https://github.com/BenjaminCartonAdeo/weekly-advisor-kit.git && cd weekly-advisor-kit
-uv venv .venv && uv pip install -e ".opencode/plugins/weekly-advisor-engine[dev]"
+uv sync --project .opencode/plugins/weekly-advisor-engine --all-extras
 # 1 fichier à adapter : project_root + output_dir (chemins absolus)
 $EDITOR .opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json
 opencode run --agent weekly-advisor "Lance la revue hebdomadaire"
@@ -110,11 +110,11 @@ Détails et heartbeat recommandé : [`INSTALL.md`](INSTALL.md) §2.7.
 ## Développement
 
 ```sh
-# tests + lint (depuis le dossier moteur : la config du repo y vit, les tests en dépendent)
+# le projet uv (pyproject + uv.lock) vit dans le dossier moteur
 cd .opencode/plugins/weekly-advisor-engine
-../../../.venv/bin/python -m pytest -q             # 171 tests
-../../../.venv/bin/python -m ruff check .          # lint
-../../../.venv/bin/python -m ruff format --check . # format
+uv run pytest -q             # 171 tests
+uv run ruff check .          # lint
+uv run ruff format --check . # format
 ```
 
 CI GitHub Actions (`.github/workflows/ci.yml`) : install lockfile `--frozen`, lint,

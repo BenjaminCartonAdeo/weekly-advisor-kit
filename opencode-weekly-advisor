@@ -86,7 +86,7 @@ sous-commande CLI : `run`, `releases`, `audit-candidates`, `show-session`, `harn
 `insights`, `draft-candidates`, `report-prep`, `report-blocks-draft`, `report-assemble`,
 `commit-draft`, `self-cost`, `doctor`), résout le moteur Python
 (`.opencode/plugins/weekly-advisor-engine/`), le binaire python
-(`$WEEKLY_PYTHON` ?? `<worktree>/.venv/bin/python`) et l'ancre
+(`$WEEKLY_PYTHON` ?? `<moteur>/.venv/bin/python`) et l'ancre
 (`<output_dir>/anchor-last.txt`) — **zéro bash pour la mécanique**. Chaque étape LLM
 charge un skill dédié `.opencode/skills/weekly-*/SKILL.md` — chargé à la demande, jamais
 en permanence :
@@ -105,7 +105,7 @@ même ordre que le cron, `agent: weekly-advisor` dans son frontmatter) et `/week
 les 2 commands, le plugin et le moteur sont génériques (aucune référence au projet
 d'origine — tout se lit via la config `project_root`) ; un repo cible copie tout
 `.opencode/` (agent, skills, commands, `plugins/weekly-advisor.ts`, `plugins/weekly-advisor-engine/`)
-+ la spec, crée le venv racine (`uv venv .venv && uv pip install -e .opencode/plugins/weekly-advisor-engine`),
++ la spec, crée le venv du moteur (`uv sync --project .opencode/plugins/weekly-advisor-engine --all-extras`),
 adapte la config (`project_root`, `output_dir`) ; le modèle est passé par
 `opencode run --model <model>` (décision du déploiement — aucun `model:` en dur dans
 l'agent, v5.32.b), et la commande du cron fonctionne telle quelle.
@@ -156,9 +156,9 @@ Le cron (**configuré et géré par vos soins, hors périmètre**) doit satisfai
 
 **Invocation** : `opencode run --port 4096 --agent weekly-advisor --model <model> --dir <project_root> "Lance la revue hebdomadaire"` — le modèle est une **décision du déploiement** (v5.32.b, jamais en dur dans l'agent : `--model` du cron ou config globale en interactif) ; non-interactif, `--dir` = `project_root` de la config (Partie 1 §6). **Statut** : le cron alerte si `weekly-report-<date>.md` est absent en fin d'exécution (cf. §4) — le rapport est le signal, pas de fichier de statut.
 
-**PATH — résolu par le plugin, plus par le cron (v6.0)** : l'agent n'appelle plus rien en bash — les 13 tools `weekly_*` invoquent le CLI du moteur via le binaire `$WEEKLY_PYTHON` ?? `<worktree>/.venv/bin/python` résolu par le plugin (défaut : venv racine du repo, `<project_root>/.venv`). Le cron n'a donc **rien à mettre sur PATH** pour la pipeline (v1-v5.32 : il devait exposer `python` du venv du projet et `harness-eval` — la résolution est désormais interne au plugin, `harness-eval` compris). Seule contrainte : le venv racine doit exister avec le moteur installé (`uv venv .venv && uv pip install -e .opencode/plugins/weekly-advisor-engine`), et `git` reste requis pour les étapes git du rapport (déjà sur le PATH du cron par défaut).
+**PATH — résolu par le plugin, plus par le cron (v6.0)** : l'agent n'appelle plus rien en bash — les 13 tools `weekly_*` invoquent le CLI du moteur via le binaire `$WEEKLY_PYTHON` ?? `<moteur>/.venv/bin/python` résolu par le plugin (défaut : venv du projet moteur, `.opencode/plugins/weekly-advisor-engine/.venv`). Le cron n'a donc **rien à mettre sur PATH** pour la pipeline (v1-v5.32 : il devait exposer `python` du venv du projet et `harness-eval` — la résolution est désormais interne au plugin, `harness-eval` compris). Seule contrainte : le venv du moteur doit exister (`uv sync --project .opencode/plugins/weekly-advisor-engine --all-extras`), et `git` reste requis pour les étapes git du rapport (déjà sur le PATH du cron par défaut).
 
-**Recommandé — venv racine du repo** : `uv venv <project_root>/.venv && uv pip install -e <project_root>/.opencode/plugins/weekly-advisor-engine` (le plugin résout par défaut `<worktree>/.venv/bin/python` ; un autre emplacement passe par `$WEEKLY_PYTHON`). Le venv racine est gitignoré ; c'est le seul prérequis d'installation côté environnement (v1-v5.32 : le cron devait sourcer un venv projet — fragile en PATH minimal — c'est caduc).
+**Recommandé — venv du moteur** : `uv sync --project <project_root>/.opencode/plugins/weekly-advisor-engine --all-extras` (le plugin résout par défaut `<moteur>/.venv/bin/python` ; un autre emplacement passe par `$WEEKLY_PYTHON`). Le venv du moteur est gitignoré ; c'est le seul prérequis d'installation côté environnement (v1-v5.32 : le cron devait sourcer un venv projet — fragile en PATH minimal — c'est caduc).
 
 **Décision : cron conservé** — systemd/launchd a été envisagé (v5.19) puis écarté sur décision explicite : le contrat d'invocation + la journalisation suffisent, et la configuration système reste hors périmètre. Le contrat du cron : invocation (Partie 0 §1), venv racine présent (paragraphe ci-dessus), journalisation stdout/stderr.
 
