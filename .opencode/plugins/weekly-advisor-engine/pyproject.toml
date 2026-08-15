@@ -1,7 +1,7 @@
 [project]
 name = "weekly-advisor"
 version = "0.2.0"
-description = "OpenCode weekly advisor pipeline: telemetry aggregation (Part 1) + ecosystem watch (Part 2) — spec opencode-weekly-advisor v5.27"
+description = "OpenCode weekly advisor pipeline: telemetry aggregation (Part 1) + ecosystem watch (Part 2) — spec opencode-weekly-advisor v6.0"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

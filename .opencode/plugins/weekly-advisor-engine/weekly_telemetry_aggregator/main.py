@@ -510,6 +510,7 @@ def doctor(
     *,
     cwd: Path | None = None,
     opencode_bin: str = "opencode",
+    config_loaded: bool = False,
 ) -> int:
     """Diagnose the installation — reads/writes nothing but a probe file in output_dir."""
     cwd = Path(cwd) if cwd is not None else Path.cwd()
@@ -520,18 +521,22 @@ def doctor(
         problems.append("project_root manquant dans la config")
     else:
         if not (cfg.project_root / ".opencode").is_dir():
-            warnings.append(f"project_root {cfg.project_root} sans .opencode/ — vérifier la racine")
-        try:
-            # layout kit : cwd = moteur (config lue au cwd) ≠ project_root (repo audité) —
-            # le vrai défaut est une config introuvable (cron lancé d'un dossier quelconque)
-            _cfg_nearby = (cwd / "weekly-telemetry-config.json").is_file()
-            _cfg_at_root = (cfg.project_root / "weekly-telemetry-config.json").is_file()
-            if not _cfg_nearby and not _cfg_at_root:
-                warnings.append(
-                    f"config introuvable au cwd ({cwd}) ni au project_root — vérifier --dir du cron"
-                )
-        except OSError:
-            warnings.append("project_root non résoluble — chemins à vérifier")
+            problems.append(
+                f"project_root {cfg.project_root} ne contient pas .opencode/ — "
+                "adapter la config (clone : project_root = chemin absolu de votre repo)"
+            )
+        if not config_loaded:
+            try:
+                # layout kit : cwd = moteur (config lue au cwd) ≠ project_root (repo audité) —
+                # le vrai défaut est une config introuvable (cron lancé d'un dossier quelconque)
+                _cfg_nearby = (cwd / "weekly-telemetry-config.json").is_file()
+                _cfg_at_root = (cfg.project_root / "weekly-telemetry-config.json").is_file()
+                if not _cfg_nearby and not _cfg_at_root:
+                    warnings.append(
+                        f"config introuvable au cwd ({cwd}) ni au project_root — vérifier --dir du cron"
+                    )
+            except OSError:
+                warnings.append("project_root non résoluble — chemins à vérifier")
 
     try:
         proc = subprocess.run(

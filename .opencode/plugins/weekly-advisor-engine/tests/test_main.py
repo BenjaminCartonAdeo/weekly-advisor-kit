@@ -242,6 +242,7 @@ def test_run_partial_only_on_read_failure(tmp_path: Path, monkeypatch):
 
 
 def test_doctor_ok_on_valid_db(tmp_path: Path):
+    _ = (tmp_path / ".opencode").mkdir()
     db = _seed_n(tmp_path / "opencode.db", 3)
     cfg = _cfg(tmp_path, db)
     cfg.project_root = tmp_path
@@ -249,8 +250,18 @@ def test_doctor_ok_on_valid_db(tmp_path: Path):
 
 
 def test_doctor_missing_db_is_problem(tmp_path: Path):
+    _ = (tmp_path / ".opencode").mkdir()
     cfg = _cfg(tmp_path, tmp_path / "missing.db")
     cfg.project_root = tmp_path
+    assert doctor(cfg) == EXIT_TOTAL_FAILURE
+
+
+def test_doctor_project_root_without_opencode_is_problem(tmp_path: Path):
+    """Sentinelle d'installation : project_root sans .opencode/ = config non adaptée
+    (clone : placeholder /path/to/...) — bloquant, jamais un warning silencieux."""
+    db = _seed_n(tmp_path / "opencode.db", 3)
+    cfg = _cfg(tmp_path, db)
+    cfg.project_root = tmp_path / "vide"
     assert doctor(cfg) == EXIT_TOTAL_FAILURE
 
 
@@ -267,7 +278,7 @@ def test_doctor_warns_when_config_nowhere(tmp_path: Path, capsys):
     db = _seed_n(tmp_path / "opencode.db", 3)
     cfg = _cfg(tmp_path, db)
     audited = tmp_path / "audited"
-    audited.mkdir()
+    (audited / ".opencode").mkdir(parents=True)  # repo audité légitime (layout kit)
     cfg.project_root = audited  # repo audité sans config — mode kit légitime
     assert doctor(cfg) in (EXIT_OK, EXIT_PARTIAL)  # aucun warning cwd≠project_root
     out = (capsys.readouterr().out + capsys.readouterr().err).lower()
@@ -277,6 +288,11 @@ def test_doctor_warns_when_config_nowhere(tmp_path: Path, capsys):
     rc = doctor(cfg, cwd=tmp_path / "nowhere")
     out = (capsys.readouterr().out + capsys.readouterr().err).lower()
     assert "config introuvable" in out
+    # plugin : config passée explicitement (--config) → le warning n'est jamais émis
+    capsys.readouterr()
+    rc = doctor(cfg, cwd=tmp_path / "nowhere", config_loaded=True)
+    out = (capsys.readouterr().out + capsys.readouterr().err).lower()
+    assert "config introuvable" not in out
 
 
 def test_self_cost_finds_advisor_session(tmp_path: Path, capsys):
@@ -592,6 +608,7 @@ def test_selection_audit_has_parent_id(tmp_path: Path):
 def test_doctor_warns_when_gh_missing_with_watch_repos(tmp_path: Path, monkeypatch, capsys):
     db = _seed_n(tmp_path / "opencode.db", 2)
     cfg = _cfg(tmp_path, db)
+    (tmp_path / ".opencode").mkdir()
     cfg.project_root = tmp_path
     cfg.watch_repos = ["adeo/ai-skills"]
     monkeypatch.setattr("weekly_telemetry_aggregator.main.shutil.which", lambda t: None)

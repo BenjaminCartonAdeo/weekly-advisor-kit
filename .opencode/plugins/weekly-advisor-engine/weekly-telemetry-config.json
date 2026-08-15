@@ -1,7 +1,7 @@
 {
-  "project_root": "/home/benjamin/Dev/Adeo",
+  "project_root": "/path/to/weekly-advisor-kit",
   "opencode_db_path": "auto",
-  "output_dir": "/home/benjamin/Dev/weekly-advisor-kit/reports",
+  "output_dir": "/path/to/weekly-advisor-kit/reports",
   "lookback_days": 7,
   "top_sessions_limit": 5,
   "include_subagents": true,

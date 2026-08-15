@@ -210,8 +210,8 @@ def _cmd_commit_draft(args, cfg) -> int:
     return 0 if ok else 1
 
 
-def _cmd_doctor(_args, cfg) -> int:
-    return doctor(cfg)
+def _cmd_doctor(args, cfg) -> int:
+    return doctor(cfg, config_loaded=getattr(args, "config", None) is not None)
 
 
 def _cmd_self_cost(args, cfg) -> int:
