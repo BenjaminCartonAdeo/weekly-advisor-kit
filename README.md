@@ -4,7 +4,7 @@ Pipeline de revue hebdomadaire d'usage OpenCode, distribuable en **un seul dossi
 `.opencode/` contient l'agent, les 5 skills d'étape, les 2 commands, le **plugin enveloppe**
 (tools `weekly_*` → moteur Python) et le **moteur** Python (`weekly-telemetry-aggregator`).
 
-Spec : `opencode-weekly-advisor` · Décisions : `opencode-weekly-advisor-CHANGELOG.md`
+Spec : `opencode-weekly-advisor`
 
 **Validé** : run complet **exit 0 sur Adeo le 15 août 2026** (12 étapes, outils du plugin,
 drafting honnête — 0 candidat → aucun commit forcé). Déployé en production sur Adeo ;

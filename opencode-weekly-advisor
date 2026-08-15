@@ -1,6 +1,6 @@
 # Spec — Pipeline `opencode-weekly-advisor` (v6.0)
 
-Changelog : voir `opencode-weekly-advisor-CHANGELOG.md` (fichier séparé depuis la v5.26).
+Changelog : historique des décisions séparé depuis la v5.26 — fichier `opencode-weekly-advisor-CHANGELOG.md`, **conservé côté interne Adeo, non distribué** dans le kit.
 Dernières révisions intégrées : v5.31 (veille critique 3.5 + fixes insights), v5.31.b (cohérence 6.5), v5.31.c (retours du run de test complet), v5.32 (agent mince + skills + kit projet), v5.32.b (modèle hors agent — `--model` du cron), v5.32.c (doctor : config introuvable = warning, pas exit 2), v6.0 (layout kit : plugin enveloppe `weekly_*` + agent tools, `bash: deny`, moteur déplacé dans `.opencode/plugins/weekly-advisor-engine/`), v6.0.a (rename spec `opencode-weekly-advisor-5` → `opencode-weekly-advisor` ; doctor : `project_root` sans `.opencode/` = problem exit 2 — sentinelle d'installation ; warning « config introuvable » uniquement sans `--config` explicite).
 
 # Partie 0 — Orchestration : de cron à l'agent
