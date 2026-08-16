@@ -1,6 +1,6 @@
 # Spec — Pipeline `opencode-weekly-advisor` (v6.0)
 
-Dernières révisions intégrées : v6.0.a (rename `opencode-weekly-advisor-5` → `opencode-weekly-advisor` ; doctor : `project_root` sans `.opencode/` = exit 2 — sentinelle d'installation ; warning « config introuvable » uniquement sans `--config` explicite), v6.0 (layout kit : plugin enveloppe `weekly_*` + agent tools, `bash: deny`, moteur dans `.opencode/plugins/weekly-advisor-engine/`), v5.32.b (modèle hors agent — `--model` du cron), v5.31.c (retours du run de test complet).
+Dernières révisions intégrées : v6.0.b (fix closure plugin — le layout v6.0 plantait au 1er appel tool, `ReferenceError: worktree is not defined`, détecté par smoke test d'exécution CI ; `--lookback-days` override de run déduit du prompt, jamais d'édition de config ; ancre rafraîchie si périmée — cadence hebdo non figée ; étape 0 `weekly_doctor` systématique), v6.0.a (rename `opencode-weekly-advisor-5` → `opencode-weekly-advisor` ; doctor : `project_root` sans `.opencode/` = exit 2 — sentinelle d'installation ; warning « config introuvable » uniquement sans `--config` explicite), v6.0 (layout kit : plugin enveloppe `weekly_*` + agent tools, `bash: deny`, moteur dans `.opencode/plugins/weekly-advisor-engine/`), v5.32.b (modèle hors agent — `--model` du cron), v5.31.c (retours du run de test complet).
 
 # Partie 0 — Orchestration : de cron à l'agent
 
@@ -67,8 +67,10 @@ Agent OpenCode "weekly-advisor" (session dédiée, non-interactive,
 ```
 
 **Ancre — gérée par le plugin, jamais par l'agent ** : le plugin résout `--anchor`
-depuis `<output_dir>/anchor-last.txt` — lu s'il existe, **créé** (date UTC courante) par
-`weekly_run` s'il est absent (première invocation du run). Tous les tools du même run
+depuis `<output_dir>/anchor-last.txt` — lu s'il est frais (âge ≤ fenêtre du run),
+**rafraîchi** (date UTC courante) s'il est périmé, **créé** s'il est absent (v6.0.b :
+sans refresh, une ancre immuable gèlerait la cadence — chaque run rejouerait la même
+fenêtre). Tous les tools du même run
 partagent la même ancre — la fenêtre dérivée (`lookback_days × 24h`) est identique partout,
 sans dérive entre invocations. L'agent n'a aucun calcul de temps à faire ; en CLI directe,
 `--anchor <ISO-8601>` reste disponible (tests/rejeu).
@@ -464,6 +466,7 @@ Fichier `weekly-telemetry-config.json` (surchargeable en CLI) :
 
 - Emplacement de la config : **en layout kit , le plugin la résout dans le moteur** (`.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`) ; le CLI conserve le défaut `<cwd>/weekly-telemetry-config.json` (usage autonome/legacy), surchargeable via `--config <path>`
 - `--anchor <ISO-8601>` : fixe `run_time` (tests, rejeu) ; défaut = horodatage d'exécution
+- `--lookback-days <int> (≥ 1)` : **override de run, déduit du prompt utilisateur** (v6.0.b) — fenêtre `run_time − N×24h` sans réécrire la config (en mémoire seulement) ; disponible avant ou après la sous-commande (`run --lookback-days 21` ≡ `--lookback-days 21 run`) ; consommateurs : `run`, `releases`
 - Run hebdo le **lundi 06:00 UTC**
 - Exit codes : `0` = complet, `1` = partiel (warnings, sessions sautées), `2` = échec total
 

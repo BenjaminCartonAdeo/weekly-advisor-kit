@@ -65,6 +65,10 @@ opencode run --agent weekly-advisor "Lance la revue hebdomadaire"
 - Modèle : celui par défaut d'opencode, ou `--model <votre-modèle>` — jamais en dur dans le kit
 - Les placeholders `/path/to/...` de la config sont volontaires : tant qu'ils ne sont
   pas adaptés, `weekly_doctor` échoue proprement au lieu de lancer un run sur un mauvais chemin
+- **Fenêtre du run** : par défaut `lookback_days` de la config (7 j). Besoin d'une autre
+  fenêtre ? Dites-le en toutes lettres (« revue des 3 dernières semaines ») — l'agent
+  déduit `N semaines → N×7` et passe `--lookback-days` en override du run, **la config
+  n'est jamais réécrite** (v6.0.b)
 
 ## Cron (rappel)
 
@@ -85,7 +89,7 @@ Détails et heartbeat recommandé : [`INSTALL.md`](INSTALL.md) §2.7.
 ├── commands/weekly-review.md / weekly-report.md
 └── plugins/
     ├── weekly-advisor.ts                     ← plugin enveloppe : 13 tools weekly_* (chemins dérivés)
-    └── weekly-advisor-engine/                ← moteur Python (package, config, tests — 171 tests)
+    └── weekly-advisor-engine/                ← moteur Python (package, config, tests — 177 tests)
 ```
 
 ## Documentation

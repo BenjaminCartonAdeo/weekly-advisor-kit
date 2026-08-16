@@ -13,8 +13,11 @@ critique, drafting, lint harness, insights, cohérence, rapport final.
 ## Déroulement
 
 Les étapes déterministes passent par les tools du plugin (`weekly_*`) — l'ancre est
-gérée par le plugin via `<output_dir>/anchor-last.txt`, aucun calcul manuel :
+gérée par le plugin via `<output_dir>/anchor-last.txt` (créée / rafraîchie si périmée),
+aucun calcul manuel. La fenêtre peut se déduire du prompt (« N semaines » → `N×7`) et
+se passer en override `lookback_days` sur `weekly_run`/`weekly_releases` (v6.0.b) :
 
+0. `weekly_doctor` — diagnostic du kit (2 = fatal → stopper)
 1. `weekly_run` — télémétrie
 2. `weekly_releases` — veille écosystème
 3. Audit qualitatif (skill `weekly-quality-audit`) — `weekly_audit_candidates` + `weekly_show_session`
