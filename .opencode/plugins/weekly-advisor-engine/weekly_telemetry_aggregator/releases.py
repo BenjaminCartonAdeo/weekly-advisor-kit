@@ -33,6 +33,7 @@ from urllib.parse import quote
 
 import httpx
 
+from .config import apply_lookback_override
 from .util import iso as _iso
 from .util import parse_anchor as _parse_anchor
 
@@ -837,11 +838,18 @@ def _fail_message(exc: Exception) -> str:
     return f"API indisponible / rate-limitated; source ignorée pour ce run ({short})"
 
 
-def run(cfg, *, anchor: str | None = None, client=None) -> tuple[dict, int]:
+def run(
+    cfg,
+    *,
+    anchor: str | None = None,
+    client=None,
+    lookback_days: int | None = None,
+) -> tuple[dict, int]:
     """Run the ecosystem watch. Returns (ecosystem_dict, exit_code).
 
     exit_code: 0 = complete (>=1 source ok), 1 = all sources failed.
     """
+    apply_lookback_override(cfg, lookback_days)
     run_time = _parse_anchor(anchor)
     window = timedelta(
         hours=cfg.window_hours() if hasattr(cfg, "window_hours") else cfg.lookback_days * 24.0

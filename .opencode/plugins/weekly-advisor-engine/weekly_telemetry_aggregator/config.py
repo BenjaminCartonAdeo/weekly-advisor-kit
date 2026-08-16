@@ -97,6 +97,20 @@ class TelemetryConfig:
         return self.lookback_days * 24.0
 
 
+def apply_lookback_override(cfg: TelemetryConfig, lookback_days: int | None) -> TelemetryConfig:
+    """Override de run `--lookback-days` (v6.0.b) : mutation en mémoire seulement.
+
+    La config JSON n'est **jamais** réécrite — l'override est déduit du prompt
+    utilisateur et porté par le CLI (ou l'appel API direct), jamais persisté.
+    """
+    if lookback_days is None:
+        return cfg
+    if lookback_days < 1:
+        raise ValueError(f"lookback_days doit être >= 1 (reçu {lookback_days})")
+    cfg.lookback_days = lookback_days
+    return cfg
+
+
 def load_config(path: str | Path | None = None) -> TelemetryConfig:
     """Load config from JSON; `path=None` → `<cwd>/weekly-telemetry-config.json` if present."""
     if path is not None:

@@ -120,6 +120,45 @@ def test_insights_baseline_summary_flag():
     assert args.baseline_summary == "x.json"
 
 
+# ============================================================ v6.0.b (lookback-days)
+
+
+def test_lookback_days_flag_before_and_after_subcommand():
+    """v6.0.b : override de run déduit du prompt — avant OU après la sous-commande."""
+    parser = build_parser()
+    assert parser.parse_args(["--lookback-days", "21", "run"]).lookback_days == 21
+    assert parser.parse_args(["run", "--lookback-days", "21"]).lookback_days == 21
+    assert parser.parse_args(["releases", "--lookback-days", "14"]).lookback_days == 14
+    assert parser.parse_args(["run"]).lookback_days is None
+
+
+def test_lookback_days_rejects_below_one():
+    import pytest
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["run", "--lookback-days", "0"])
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--lookback-days", "-3", "run"])
+
+
+def test_run_lookback_days_override_widens_window(tmp_path: Path):
+    """v6.0.b : run --lookback-days 21 → period.start = ancre − 21 j (config jamais touchée)."""
+    db = _seed(tmp_path)
+    conf = _write_config(tmp_path, db)
+    rc = main(
+        ["--config", str(conf), "--anchor", RUN_TIME.isoformat(), "run", "--lookback-days", "21"]
+    )
+    assert rc in (0, 1)
+    data = json.loads((tmp_path / "weekly-summary-2026-08-12.json").read_text(encoding="utf-8"))
+    expected_start = (RUN_TIME - __import__("datetime").timedelta(days=21)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    assert data["period"]["start"] == expected_start
+    # la config sur disque n'est pas modifiée (aucune édition de config, principe v6.0)
+    on_disk = json.loads(conf.read_text(encoding="utf-8"))
+    assert "lookback_days" not in on_disk
+
+
 # ============================================================ v5.29 (Parties 3/4 — candidats + extracts)
 
 

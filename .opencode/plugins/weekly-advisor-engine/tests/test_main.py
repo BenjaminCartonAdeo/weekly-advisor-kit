@@ -854,6 +854,19 @@ def test_parse_skill_md_target_agents(tmp_path: Path):
     assert targets2 == ["typescript-pro"]
 
 
+def test_run_lookback_days_override(tmp_path: Path, capsys):
+    """v6.0.b : run(..., lookback_days=21) → fenêtre 21 j, config intacte."""
+    db = _seed_n(tmp_path / "opencode.db", 2)
+    cfg = _cfg(tmp_path, db)
+    rc = run(cfg, anchor=RUN_TIME.isoformat(), lookback_days=21)
+    assert rc == EXIT_OK
+    out = capsys.readouterr().out
+    assert "fenêtre 21 j" in out
+    data = json.loads((tmp_path / "weekly-summary-2026-08-12.json").read_text(encoding="utf-8"))
+    assert data["period"]["start"] == (RUN_TIME - timedelta(days=21)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert cfg.lookback_days == 21  # mutation en mémoire seulement
+
+
 def test_run_force_warns_on_window_mismatch(tmp_path: Path, capsys):
     """v5.31 (c) : --force avec fenêtre différente avertit de la perte de baseline."""
     db = _seed_n(tmp_path / "opencode.db", 2)

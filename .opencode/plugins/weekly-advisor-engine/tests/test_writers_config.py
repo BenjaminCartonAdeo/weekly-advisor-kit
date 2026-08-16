@@ -8,7 +8,11 @@ from pathlib import Path
 from helpers import make_step, make_usage, tzutc
 
 from weekly_telemetry_aggregator.aggregator import aggregate
-from weekly_telemetry_aggregator.config import load_config
+from weekly_telemetry_aggregator.config import (
+    TelemetryConfig,
+    apply_lookback_override,
+    load_config,
+)
 from weekly_telemetry_aggregator.models import Period
 from weekly_telemetry_aggregator.writer import summary_to_dict
 
@@ -53,6 +57,22 @@ def test_config_json_overrides(tmp_path: Path):
     assert cfg.insights.weekly_budget_usd == 10
     assert cfg.insights.daily_spike_z_min == 2.2
     assert cfg.audit.cost_per_active_minute_min == 0.9
+
+
+def test_apply_lookback_override_memory_only():
+    """v6.0.b : override en mémoire ; None = no-op ; < 1 = ValueError."""
+    cfg = TelemetryConfig()
+    assert cfg.lookback_days == 7
+    assert apply_lookback_override(cfg, 21) is cfg
+    assert cfg.lookback_days == 21
+    apply_lookback_override(cfg, None)
+    assert cfg.lookback_days == 21  # no-op
+    import pytest
+
+    with pytest.raises(ValueError, match=">= 1"):
+        apply_lookback_override(cfg, 0)
+    with pytest.raises(ValueError, match=">= 1"):
+        apply_lookback_override(cfg, -2)
 
 
 def test_summary_to_dict_schema_v2_fields():

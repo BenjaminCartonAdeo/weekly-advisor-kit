@@ -250,6 +250,42 @@ def test_happy_path_all_sources(monkeypatch):
 
 
 # -----------------------------------------------------------------------------
+def test_run_lookback_days_override_widens_sources(monkeypatch):
+    """v6.0.b : releases.run(lookback_days=21) élargit la fenêtre.
+
+    Paquet daté 2026-07-25 : hors fenêtre 7 j (start 08-03), inclus dans 21 j
+    (start 07-20). La config n'est pas modifiée sur disque.
+    """
+    monkeypatch.setattr(releases, "_BACKOFF", (0.0, 0.0))
+    handler = make_handler(
+        {
+            URL_NPM: npm_payload(
+                {
+                    "name": "oc-late-pack",
+                    "description": "paru dans la fenêtre élargie",
+                    "date": "2026-07-25T00:00:00Z",
+                    "keywords": ["opencode", "skill"],
+                    "links": {"repository": "https://github.com/acme/oc-late-pack"},
+                },
+            ),
+            URL_GITHUB: {"items": []},
+            URL_MCP: {"servers": []},
+            URL_RELEASES: [],
+        }
+    )
+    client = FakeClient(handler)
+    cfg = make_cfg()
+    data, rc = releases.run(cfg, anchor=ANCHOR_ISO, client=client, lookback_days=21)
+    assert rc == 0
+    assert [i["name"] for i in data["new_items"]] == ["oc-late-pack"]
+    assert cfg.lookback_days == 21  # mutation en mémoire seulement
+    # contre-preuve : sans override, le même paquet est hors fenêtre 7 j
+    data7, rc7 = releases.run(make_cfg(), anchor=ANCHOR_ISO, client=FakeClient(handler))
+    assert rc7 == 0
+    assert [i["name"] for i in data7["new_items"]] == []
+
+
+# -----------------------------------------------------------------------------
 def test_intra_run_dedup_npm_and_github(monkeypatch):
     monkeypatch.setattr(releases, "_BACKOFF", (0.0, 0.0))
     handler = make_handler(

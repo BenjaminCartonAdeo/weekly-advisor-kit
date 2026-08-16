@@ -25,6 +25,13 @@ def _load_cfg(args) -> object:
 # ------------------------------------------------------------------ command handlers
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f"doit être >= 1 (reçu {value})")
+    return parsed
+
+
 def _cmd_run(args, cfg) -> int:
     return run(
         cfg,
@@ -33,6 +40,7 @@ def _cmd_run(args, cfg) -> int:
         top_sessions_limit=args.top_sessions_limit,
         include_subagents=args.include_subagents,
         fail_on_missing_telemetry=args.fail_on_missing_telemetry,
+        lookback_days=args.lookback_days,
     )
 
 
@@ -139,7 +147,7 @@ def _cmd_releases(args, cfg) -> int:
     from .releases import run as releases_run
     from .writer import write_json_atomic
 
-    data, rc = releases_run(cfg, anchor=args.anchor)
+    data, rc = releases_run(cfg, anchor=args.anchor, lookback_days=args.lookback_days)
     run_time = data["generated_at"]
     out_path = cfg.output_dir / f"weekly-ecosystem-{run_time[:10]}.json"
     write_json_atomic(out_path, data)
@@ -235,6 +243,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="ISO-8601 run_time (default: now UTC); identique pour toutes les sous-commandes",
     )
     parser.add_argument("--output-dir", help="Override output_dir from config")
+    parser.add_argument(
+        "--lookback-days",
+        type=_positive_int,
+        help="Override de run : fenêtre en jours (défaut = config lookback_days)",
+    )
 
     # Global flags are available both BEFORE the subcommand (parser) and AFTER
     # (each subparser reuses parent), so `run --anchor X` == `--anchor X run`.
@@ -244,6 +257,9 @@ def build_parser() -> argparse.ArgumentParser:
     global_parent.add_argument("--config", help=argparse.SUPPRESS, default=argparse.SUPPRESS)
     global_parent.add_argument("--anchor", help=argparse.SUPPRESS, default=argparse.SUPPRESS)
     global_parent.add_argument("--output-dir", help=argparse.SUPPRESS, default=argparse.SUPPRESS)
+    global_parent.add_argument(
+        "--lookback-days", help=argparse.SUPPRESS, default=argparse.SUPPRESS, type=_positive_int
+    )
 
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
     # run is the default subcommand (spec Partie 0 §3). Default all its flags so a

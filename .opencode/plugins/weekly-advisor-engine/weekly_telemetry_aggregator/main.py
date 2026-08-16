@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .aggregator import _cap_warnings, aggregate
-from .config import TelemetryConfig
+from .config import TelemetryConfig, apply_lookback_override
 from .models import Period, SessionUsage, SkillCatalogEntry, WarningEntry, round6
 from .sqlite_reader import DataSourceError, SessionMeta, _to_ms, detect_db
 from .util import iso as _iso
@@ -301,6 +301,7 @@ def run(
     top_sessions_limit: int | None = None,
     include_subagents: bool | None = None,
     fail_on_missing_telemetry: bool = False,
+    lookback_days: int | None = None,
 ) -> int:
     """Run the aggregation pipeline. Returns the process exit code (0/1/2)."""
     run_time = _parse_anchor(anchor)
@@ -310,6 +311,7 @@ def run(
         cfg.include_subagents = include_subagents
     if fail_on_missing_telemetry:
         cfg.fail_on_missing_telemetry = True
+    apply_lookback_override(cfg, lookback_days)
 
     period = Period(start=run_time - timedelta(hours=cfg.window_hours()), end=run_time)
     warnings: list[WarningEntry] = []
