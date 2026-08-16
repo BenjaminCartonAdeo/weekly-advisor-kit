@@ -8,8 +8,10 @@
  *   - moteur : <worktree>/.opencode/plugins/weekly-advisor-engine
  *   - python : $WEEKLY_PYTHON ?? <moteur>/.venv/bin/python (venv du projet moteur)
  *   - config : <moteur>/weekly-telemetry-config.json (relue à chaque appel)
- *   - ancre  : <output_dir>/anchor-last.txt — écrite par weekly_run si absente,
- *              lue par toutes les autres sous-commandes (aucune gestion LLM d'ancre)
+ *   - ancre  : <output_dir>/anchor-last.txt — lue si fraîche (âge ≤ fenêtre du run),
+ *              rafraîchie vers maintenant si périmée, créée si absente (v6.0.b).
+ *              Aucune gestion LLM d'ancre ; le refresh conditionnel évite la
+ *              cadence figée (une ancre immuable rejouerait la même fenêtre).
  */
 import { type Plugin, tool } from "@opencode-ai/plugin"
 import path from "node:path"
@@ -18,6 +20,13 @@ import { execFile } from "node:child_process"
 
 const ENGINE_REL = [".opencode", "plugins", "weekly-advisor-engine"]
 const ANCHOR_FILE = "anchor-last.txt"
+const DEFAULT_LOOKBACK_DAYS = 7
+
+// `worktree` est module-scope, affecté à l'init du plugin (v6.0.b) : les factories
+// de tools sont définies au niveau module et leurs closures en dépendent — une
+// déclaration locale au factory `WeeklyAdvisorPlugin` provoquait
+// `ReferenceError: worktree is not defined` au premier appel de tool (layout v6.0).
+let worktree = ""
 
 interface EngineLoc {
   engine: string
@@ -52,11 +61,25 @@ function resolveEngine(worktree: string): EngineLoc {
   return { engine, python, config, outputDir }
 }
 
-function readOrCreateAnchor(outputDir: string): string {
+/** Fenêtre du run dérivée de la config (jamais d'édition de config par le plugin). */
+function windowHours(config: Record<string, unknown>): number {
+  const days = config["lookback_days"]
+  return (typeof days === "number" ? days : DEFAULT_LOOKBACK_DAYS) * 24
+}
+
+/**
+ * Ancre : créée si absente, lue si fraîche (âge ≤ fenêtre), rafraîchie sinon.
+ * Sans refresh, une ancre figée à vie gèle la cadence : chaque run rejouerait
+ * la même fenêtre (mêmes fichiers de sortie, mêmes deltas).
+ */
+function readOrCreateAnchor(outputDir: string, windowHours: number): string {
   const file = path.join(outputDir, ANCHOR_FILE)
   if (fs.existsSync(file)) {
     const existing = fs.readFileSync(file, "utf8").trim()
-    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(existing)) return existing
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(existing)) {
+      const ageHours = (Date.now() - Date.parse(existing)) / 3_600_000
+      if (ageHours <= windowHours) return existing
+    }
   }
   const anchor = new Date().toISOString().replace(/\.\d{3}Z$/, "Z")
   fs.mkdirSync(outputDir, { recursive: true })
@@ -64,8 +87,12 @@ function readOrCreateAnchor(outputDir: string): string {
   return anchor
 }
 
-function anchorArg(anchor: string | undefined, outputDir: string): string {
-  return anchor ?? readOrCreateAnchor(outputDir)
+function anchorArg(
+  anchor: string | undefined,
+  config: Record<string, unknown>,
+  outputDir: string,
+): string {
+  return anchor ?? readOrCreateAnchor(outputDir, windowHours(config))
 }
 
 function runCli(worktree: string, args: string[], timeoutMs: number): Promise<string> {
@@ -85,17 +112,30 @@ function runCli(worktree: string, args: string[], timeoutMs: number): Promise<st
 }
 
 // Factories pour les tools « 1 sous-commande → 1 appel CLI » (le cas majoritaire).
+// `lookbackFlag` ajoute l'arg optionnel `lookback_days` (override de run déduit du
+// prompt — v6.0.b : fenêtre en jours, jamais d'édition de config).
 function anchorTool(
   description: string,
-  cliArgs: (anchor: string) => string[],
+  cliArgs: (anchor: string, lookbackDays: number | undefined) => string[],
   timeoutMs: number,
+  lookbackFlag = false,
 ) {
   return tool({
     description,
-    args: { anchor: tool.schema.string().optional().describe("ISO-8601 override (rare)") },
+    args: {
+      anchor: tool.schema.string().optional().describe("ISO-8601 override (rare)"),
+      ...(lookbackFlag
+        ? {
+            lookback_days: tool.schema
+              .number()
+              .optional()
+              .describe("Override de run : fenêtre en jours (rare ; défaut = config)"),
+          }
+        : {}),
+    },
     async execute(args) {
-      const { outputDir } = resolveEngine(worktree)
-      return runCli(worktree, cliArgs(anchorArg(args.anchor, outputDir)), timeoutMs)
+      const { config, outputDir } = resolveEngine(worktree)
+      return runCli(worktree, cliArgs(anchorArg(args.anchor, config, outputDir), args.lookback_days), timeoutMs)
     },
   })
 }
@@ -110,21 +150,27 @@ function noArgTool(description: string, cliArgs: string[], timeoutMs: number) {
   })
 }
 
+function withLookback(cliArgs: string[], lookbackDays: number | undefined): string[] {
+  return lookbackDays ? [...cliArgs, "--lookback-days", String(lookbackDays)] : cliArgs
+}
+
 export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
-  const worktree = ctx.worktree ?? ctx.directory
+  worktree = ctx.worktree ?? ctx.directory
   return {
     tool: {
       weekly_run: anchorTool(
         "Étape 1 du weekly-advisor : collecte télémétrique complète (run --force). " +
-          "Écrit weekly-summary-<date>.json. L'ancre est lue/créée dans <output_dir>/anchor-last.txt.",
-        (anchor) => ["run", "--force", "--anchor", anchor],
+          "Écrit weekly-summary-<date>.json. L'ancre est lue/créée/rafraîchie dans <output_dir>/anchor-last.txt.",
+        (anchor, lookback) => withLookback(["run", "--force", "--anchor", anchor], lookback),
         1_800_000,
+        true,
       ),
 
       weekly_releases: anchorTool(
         "Étape 2 : veille écosystème (releases). Écrit weekly-ecosystem-<date>.json.",
-        (anchor) => ["releases", "--anchor", anchor],
+        (anchor, lookback) => withLookback(["releases", "--anchor", anchor], lookback),
         900_000,
+        true,
       ),
 
       weekly_audit_candidates: anchorTool(

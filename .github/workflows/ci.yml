@@ -30,7 +30,7 @@ jobs:
         run: uv run ruff check .
       - name: Format
         run: uv run ruff format --check .
-      - name: Tests (171, aucun réseau)
+      - name: Tests (177, aucun réseau)
         run: uv run pytest -q
       - name: Packaging
         run: uv build
@@ -39,4 +39,16 @@ jobs:
 
       - name: Plugin TS (syntaxe)
         run: node --check .opencode/plugins/weekly-advisor.ts
+        working-directory: .
+
+      - name: Node 24 (type stripping TS natif)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Plugin smoke test (exécution)
+        # Régression layout v6.0 : les tools plantaient au 1er appel
+        # (ReferenceError: worktree is not defined) — node --check ne le voit pas.
+        # Faux moteur + python factice : closure, lookback_days, ancre fraîche/périmée.
+        run: node scripts/plugin-smoke.mjs
         working-directory: .
