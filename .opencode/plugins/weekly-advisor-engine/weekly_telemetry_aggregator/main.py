@@ -514,7 +514,11 @@ def doctor(
         )
         version = (proc.stdout or proc.stderr).strip()
     except (OSError, subprocess.TimeoutExpired):
-        problems.append(f"opencode introuvable ou non exécutable ({opencode_bin})")
+        # Non fatal (v6.0.f) : le run est lancé PAR opencode (binaire absolu du cron) et
+        # le pipeline lit opencode.db directement — un PATH étroit (cron) rend le binaire
+        # invisible au sous-processus sans casser la revue. Le version-pin devient une
+        # note, comme harness-eval.
+        warnings.append(f"opencode introuvable ou non exécutable ({opencode_bin})")
         version = "?"
 
     if version and version != "?":

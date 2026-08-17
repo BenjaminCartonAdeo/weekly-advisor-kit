@@ -262,6 +262,21 @@ def test_doctor_ok_on_valid_db(tmp_path: Path, fake_opencode):
     assert doctor(cfg) in (EXIT_OK, EXIT_PARTIAL)  # env warnings (opencode/git) tolerated
 
 
+def test_doctor_opencode_missing_is_warning_not_fatal(tmp_path: Path, capsys):
+    """v6.0.f : opencode hors PATH (cron étroit) = note non fatale — le run est lancé
+    par opencode lui-même et le pipeline lit opencode.db directement. La DB absente
+    reste la vraie fatalité (test_doctor_missing_db_is_problem)."""
+    _ = (tmp_path / ".opencode").mkdir()
+    db = _seed_n(tmp_path / "opencode.db", 3)
+    cfg = _cfg(tmp_path, db)
+    cfg.project_root = tmp_path
+    rc = doctor(cfg, opencode_bin="opencode_absent_zzz")
+    out = capsys.readouterr().out
+    assert rc in (EXIT_OK, EXIT_PARTIAL)
+    assert "WARNING: opencode introuvable" in out
+    assert "PROBLEM: opencode" not in out
+
+
 def test_doctor_missing_db_is_problem(tmp_path: Path):
     _ = (tmp_path / ".opencode").mkdir()
     cfg = _cfg(tmp_path, tmp_path / "missing.db")
