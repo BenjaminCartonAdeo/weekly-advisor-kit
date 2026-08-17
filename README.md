@@ -11,7 +11,7 @@ quels skills/commands sont inutilisés ou redondants, quoi surveiller dans l'éc
 et quelles corrections peuvent être auto-rédigées (proposées, jamais imposées).
 
 Le kit tient dans **un seul dossier** `.opencode/` : un agent dédié, 5 skills
-qualitatifs, 2 commands, un **plugin enveloppe** (13 tools `weekly_*`) et un
+qualitatifs, 2 commands, un **plugin enveloppe** (15 tools `weekly_*`) et un
 **moteur Python** déterministe (`weekly-telemetry-aggregator`).
 
 **Spécification** : [`opencode-weekly-advisor`](opencode-weekly-advisor) (le contrat complet, 8 parties)
@@ -88,8 +88,8 @@ Détails et heartbeat recommandé : [`INSTALL.md`](INSTALL.md) §2.7.
 ├── skills/weekly-*/SKILL.md                  ← 5 étapes qualitatives (chargées à la demande)
 ├── commands/weekly-review.md / weekly-report.md
 └── plugins/
-    ├── weekly-advisor.ts                     ← plugin enveloppe : 13 tools weekly_* (chemins dérivés)
-    └── weekly-advisor-engine/                ← moteur Python (package, config, tests — 177 tests)
+    ├── weekly-advisor.ts                     ← plugin enveloppe : 15 tools weekly_* (chemins dérivés)
+     └── weekly-advisor-engine/                ← moteur Python (package, config, tests)
 ```
 
 ## Documentation

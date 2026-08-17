@@ -124,6 +124,23 @@ for (const [name, cmd] of [
   )
 }
 
+// 7. watch context/validation : ancre propagée et tools exposés
+for (const [name, cmd] of [
+  ["weekly_watch_context", "watch-context"],
+  ["weekly_watch_validate", "watch-validate"],
+]) {
+  fs.writeFileSync(argvLog, "RESET")
+  await tools[name].execute({})
+  const argvN = fs.readFileSync(argvLog, "utf8").trim().split(" ")
+  const idx = argvN.indexOf("--anchor")
+  check(
+    `${name} passe --anchor`,
+    idx >= 0 && idx + 1 < argvN.length && argvN[idx + 1] === anchor3,
+    argvN.join(" "),
+  )
+  check(`${name} appelle ${cmd}`, argvN.includes(cmd), argvN.join(" "))
+}
+
 if (failures.length) {
   console.error(`\nSMOKE FAIL (${failures.length})\n- ${failures.join("\n- ")}`)
   process.exit(1)

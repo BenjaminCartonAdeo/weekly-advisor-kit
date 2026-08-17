@@ -1,6 +1,6 @@
 """CLI entry point for weekly-telemetry-aggregator (Part 0 §3, Part 1 §5).
 
-Subcommands: run (default), show-session, releases, insights,
+Subcommands: run (default), show-session, releases, watch-context, watch-validate, insights,
 report-prep, report-assemble, commit-draft, doctor, self-cost.
 """
 
@@ -156,6 +156,81 @@ def _cmd_releases(args, cfg) -> int:
         flush=True,
     )
     return rc
+
+
+def _cmd_watch_context(args, cfg) -> int:
+    """Join the dated ecosystem report with the local project worktree."""
+    from .main import EXIT_OK, EXIT_TOTAL_FAILURE, _parse_anchor
+    from .watch_context import build_watch_context, load_ecosystem_report
+    from .writer import write_json_atomic
+
+    run_time = _parse_anchor(args.anchor)
+    date = run_time.strftime("%Y-%m-%d")
+    ecosystem_path = (
+        Path(args.ecosystem).expanduser()
+        if args.ecosystem
+        else cfg.output_dir / f"weekly-ecosystem-{date}.json"
+    )
+    ecosystem, error = load_ecosystem_report(ecosystem_path)
+    if ecosystem is None:
+        print(
+            f"watch-context: FATAL: {error} — lancer releases d'abord", file=sys.stderr, flush=True
+        )
+        return EXIT_TOTAL_FAILURE
+
+    project_root = cfg.project_root or Path.cwd()
+    context = build_watch_context(
+        project_root,
+        ecosystem,
+        generated_at=run_time,
+        ecosystem_path=ecosystem_path,
+    )
+    out_path = cfg.output_dir / f"weekly-watch-context-{date}.json"
+    write_json_atomic(out_path, context)
+    for warning in context["warnings"]:
+        print(f"watch-context: WARNING: {warning}", flush=True)
+    print(
+        f"watch-context: items={len(context['market_matches'])} "
+        f"declared_plugins={context['counts']['declared_plugins']} file={out_path}",
+        flush=True,
+    )
+    return EXIT_OK
+
+
+def _cmd_watch_validate(args, cfg) -> int:
+    """Validate raw watch findings against the anchor-dated local context."""
+    from .main import EXIT_OK, EXIT_PARTIAL, EXIT_TOTAL_FAILURE, _parse_anchor
+    from .watch_validation import (
+        load_raw_findings,
+        load_watch_context,
+        validate_findings,
+    )
+    from .writer import write_json_atomic
+
+    run_time = _parse_anchor(args.anchor)
+    date = run_time.strftime("%Y-%m-%d")
+    context_path = cfg.output_dir / f"weekly-watch-context-{date}.json"
+    raw_path = cfg.output_dir / f"weekly-watch-findings-raw-{date}.json"
+
+    context, context_error = load_watch_context(context_path)
+    if context is None:
+        print(f"watch-validate: FATAL: {context_error}", file=sys.stderr, flush=True)
+        return EXIT_TOTAL_FAILURE
+    raw_findings, raw_error = load_raw_findings(raw_path)
+    if raw_findings is None:
+        print(f"watch-validate: FATAL: {raw_error}", file=sys.stderr, flush=True)
+        return EXIT_TOTAL_FAILURE
+
+    result = validate_findings(raw_findings, context, date=date)
+    out_path = cfg.output_dir / f"weekly-watch-findings-{date}.json"
+    write_json_atomic(out_path, result)
+    counts = result["validation"]["counts"]
+    print(
+        f"watch-validate: accepted={counts['accepted']} rejected={counts['rejected']} "
+        f"downgraded={counts['downgraded']} file={out_path}",
+        flush=True,
+    )
+    return EXIT_PARTIAL if counts["rejected"] else EXIT_OK
 
 
 def _cmd_insights(args, cfg) -> int:
@@ -318,6 +393,24 @@ def build_parser() -> argparse.ArgumentParser:
         "releases", parents=[global_parent], help="Ecosystem watch + core changes (Partie 2)"
     )
     p_rel.set_defaults(func=_cmd_releases)
+
+    p_watch = sub.add_parser(
+        "watch-context",
+        parents=[global_parent],
+        help="Join weekly-ecosystem with project plugins/skills/commands/agents",
+    )
+    p_watch.add_argument(
+        "--ecosystem",
+        help="Override the anchor-derived weekly-ecosystem-<date>.json input path",
+    )
+    p_watch.set_defaults(func=_cmd_watch_context)
+
+    p_watch_validate = sub.add_parser(
+        "watch-validate",
+        parents=[global_parent],
+        help="Validate raw watch findings against the local dated watch context",
+    )
+    p_watch_validate.set_defaults(func=_cmd_watch_validate)
 
     p_ins = sub.add_parser(
         "insights",

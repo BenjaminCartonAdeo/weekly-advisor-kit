@@ -6,5 +6,6 @@ rendu du rapport hebdomadaire — 100 % déterministe, zéro LLM.
 
 - Spécification : `opencode-weekly-advisor` (racine du kit)
 - CLI : `python -m weekly_telemetry_aggregator --help` (sous-commandes `run`,
-  `releases`, `insights`, `report-prep`, `report-assemble`, `doctor`, …)
-- Développement : `uv run pytest -q` (177 tests) · `uv run ruff check .`
+  `releases`, `watch-context`, `watch-validate`, `insights`, `report-prep`,
+  `report-assemble`, `doctor`, …)
+- Développement : `uv run pytest -q` · `uv run ruff check .`

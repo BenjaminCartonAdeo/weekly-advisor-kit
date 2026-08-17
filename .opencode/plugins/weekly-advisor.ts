@@ -173,6 +173,20 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
         true,
       ),
 
+      weekly_watch_context: anchorTool(
+        "Étape 2.5 : inventaire déterministe du worktree et crosswalk marché/existant. " +
+          "Écrit weekly-watch-context-<date>.json.",
+        (anchor) => ["watch-context", "--anchor", anchor],
+        120_000,
+      ),
+
+      weekly_watch_validate: anchorTool(
+        "Étape 3.6 : valide les findings bruts de la veille contre l'inventaire déterministe. " +
+          "Écrit weekly-watch-findings-<date>.json.",
+        (anchor) => ["watch-validate", "--anchor", anchor],
+        120_000,
+      ),
+
       weekly_audit_candidates: anchorTool(
         "Étape 3 (1/2) : sélection déterministe des sessions à auditer (audit-candidates) → " +
           "weekly-audit-candidates-<date>.json (audited/unaudited, plafond audit_max_sessions).",

@@ -14,9 +14,42 @@ le **regard critique** qui croise l'offre du marché avec les problèmes mesuré
 ## Entrées
 
 - `weekly-ecosystem-<date>.json` — **TOUS** les items, pas seulement les premiers
-- L'environnement existant : catalogue skills/commands/agents (`scan_skill_catalog` du
-  summary + `ls .opencode/{skills,commands,agents}` + config `watch`)
+- `weekly-watch-context-<date>.json` — inventaire déterministe du worktree et crosswalk
+  `existing_state`/`match` pour chaque item de marché (produit par
+  `weekly-telemetry-aggregator watch-context`)
+- L'environnement existant : le contexte déterministe d'abord, puis le catalogue
+  skills/commands/agents (`scan_skill_catalog` du summary + `ls .opencode/{skills,commands,agents}`)
+  uniquement pour compléter une information manquante
 - `weekly-quality-findings-<date>.json` (sessions coûteuses du run) et les alertes
+
+## Sortie de l'étape
+
+Le skill écrit uniquement le brouillon LLM dans :
+
+```text
+reports/weekly-watch-findings-raw-<date>.json
+```
+
+Il ne écrit jamais directement `weekly-watch-findings-<date>.json` : ce fichier est
+produit ensuite par `weekly_watch_validate`, qui applique les garde-fous déterministes.
+
+Pour chaque recommandation marché (`adopt`, `improve-existing` ou `token-saver`), le
+finding brut doit contenir un `subject` avec au moins un des champs suivants :
+
+```jsonc
+{
+  "subject": {
+    "name": "@vendor/plugin",
+    "npm_package": "@vendor/plugin",
+    "repo_url": "https://github.com/vendor/plugin"
+  }
+}
+```
+
+Le sujet doit être pris dans `weekly-watch-context.market_matches`, jamais inventé.
+`capability_state=covered` interdit de présenter l'élément comme une nouveauté ;
+`capability_state=unknown` autorise uniquement une comparaison argumentée, pas une
+preuve d'absence.
 
 ## Objectif
 
@@ -34,6 +67,19 @@ que l'existant n'est pas « nouveau » — il faut le repérer quand même.
 | `token-saver` | Outil qui réduirait la conso des sessions de type X (croiser avec les findings coûteux) |
 | `ignore` | Bruit (serveurs MCP abandonnés, listes mortes) — pour mémoire |
 
+Le validator peut transformer un finding en `verify-existing` ou `improve-existing` lorsque
+le sujet est déjà déclaré ou observé. Un finding `adopt` n'est valide que lorsque
+`existing_state` vaut `absent` dans le contexte déterministe.
+
+Le champ `existing_state` du contexte est une garde déterministe : un item `declared`
+est déjà déclaré dans le plugin config du projet et ne doit pas être proposé comme
+`adopt`; `observed` désigne un fichier/skill/command/agent déjà présent dans le
+worktree. `absent` et `unknown` restent des entrées à examiner, jamais des preuves
+d'installation.
+
+Le fichier final peut également porter `repair-existing` lorsqu'un état défaillant est
+fourni par un contexte runtime. Le brut LLM reste limité aux quatre catégories ci-dessus.
+
 ## Schéma du fichier findings
 
 ```jsonc
@@ -46,6 +92,11 @@ que l'existant n'est pas « nouveau » — il faut le repérer quand même.
       "description": "une phrase",
       "evidence_summary": "le LIEN avec l'existant ou le finding coûteux (≤ 200 car., paraphrase)",
       "recommendation": "action concrète",
+      "subject": {
+        "name": "nom canonique",
+        "npm_package": "package npm ou null",
+        "repo_url": "URL canonique ou null"
+      },
       "recommendation_type": "watch-adopt | watch-improve | watch-token-saver | watch-ignore",
       "impact_order_of_magnitude": "small | medium | large"
     }
@@ -57,6 +108,8 @@ que l'existant n'est pas « nouveau » — il faut le repérer quand même.
 
 - **Jamais d'installation automatique d'outils externes** — les candidats sont remontés,
   l'humain décide
+- Le contexte déterministe est la source de vérité pour l'existant ; ne jamais déduire
+  l'absence d'un plugin à partir du seul texte d'une description
 - Dédupliquer par repo GitHub source ; privilégier les entrées « Official »/« Claimed »
   et les repos actifs
 - Les `adopt`/`improve-existing` restent des candidats à revoir — l'écriture d'outils

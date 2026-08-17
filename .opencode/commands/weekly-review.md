@@ -20,8 +20,10 @@ se passer en override `lookback_days` sur `weekly_run`/`weekly_releases` (v6.0.b
 0. `weekly_doctor` — diagnostic du kit (2 = fatal → stopper)
 1. `weekly_run` — télémétrie
 2. `weekly_releases` — veille écosystème
+2.5. `weekly_watch_context` — inventaire worktree + crosswalk marché/existant
 3. Audit qualitatif (skill `weekly-quality-audit`) — `weekly_audit_candidates` + `weekly_show_session`
-3.5. Veille critique (skill `weekly-watch-review`)
+3.5. Veille critique (skill `weekly-watch-review`) → `weekly-watch-findings-raw-<date>.json`
+3.6. `weekly_watch_validate` — validation déterministe du finding contre le contexte
 4. Auto-drafting (skill `weekly-drafting`) — `weekly_draft_candidates` + `weekly_commit_draft`
 5. `weekly_harness` — lint `.opencode/`
 6. `weekly_insights` — deltas, alertes, maintenance

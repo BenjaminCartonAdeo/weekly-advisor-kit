@@ -58,8 +58,10 @@ reste gérée à 100 % par le plugin (`<output_dir>/anchor-last.txt`) : créée 
 | 0 | `weekly_doctor` — diagnostic du kit, **systématique** (rc 0/1 = OK, 2 = fatale → stopper sans rapport) | texte |
 | 1 | `weekly_run` (5-15 min — lancer en arrière-plan et poller si timeout) | `weekly-summary-<date>.json` |
 | 2 | `weekly_releases` (réseau ; warnings sources tolérés) | `weekly-ecosystem-<date>.json` |
+| 2.5 | `weekly_watch_context` (worktree uniquement ; warnings d'inventaire tolérés) | `weekly-watch-context-<date>.json` |
 | 3 | **Skill `weekly-quality-audit`** : `weekly_audit_candidates` → `weekly_show_session` → constats | `weekly-quality-findings-<date>.json` |
-| 3.5 | **Skill `weekly-watch-review`** : veille critique croisée (marché × existant × findings) | `weekly-watch-findings-<date>.json` |
+| 3.5 | **Skill `weekly-watch-review`** : veille critique croisée (marché × existant × findings), écrit le brut | `weekly-watch-findings-raw-<date>.json` |
+| 3.6 | `weekly_watch_validate` — validation déterministe des findings contre le contexte | `weekly-watch-findings-<date>.json` |
 | 4 | **Skill `weekly-drafting`** : `weekly_draft_candidates` → rédaction skills/commands + `weekly_commit_draft` (≤ plafond) | commits `skill:`/`command:` |
 | 5 | `weekly_harness` (pin 7.9.0 ; rc 0/1 = OK) | `weekly-harness-digest-<date>.json` |
 | 6 | `weekly_insights` | `weekly-insights-<date>.json` |
@@ -69,11 +71,15 @@ reste gérée à 100 % par le plugin (`<output_dir>/anchor-last.txt`) : créée 
 | 7c | `weekly_report_assemble` → **le signal du cron** ; ⚠ un assemble réussi **supprime le draft** : relancer `weekly_report_prep` avant un nouvel assemble | `weekly-report-<date>.md` |
 | 8 | `weekly_self_cost` (annexe du rapport) | texte |
 
+Après l'étape 3.5, appeler obligatoirement `weekly_watch_validate` avant l'étape 4.
+Le rapport, les insights et les étapes suivantes lisent uniquement le findings final,
+jamais le fichier `weekly-watch-findings-raw-<date>.json`.
+
 Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sans rapport**.
 
 ## Invariants (transverses à toutes les étapes)
 
-- Étapes déterministes (1/2/5/6/7) : **ne jamais réécrire les JSON/summary produits par le CLI**
+- Étapes déterministes (1/2/2.5/3.6/5/6/7) : **ne jamais réécrire les JSON/summary produits par le CLI**
 - **Périmètre lecture/écriture = worktree uniquement** (v6.0.c) : une cible résolue hors
   worktree (ex. commande globale `~/.config/opencode/commands/`) est **hors périmètre** →
   constat report-only, jamais de lecture ni de draft ; les doublons globaux d'une commande
@@ -84,11 +90,11 @@ Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sa
 - **Décision tranchée une fois** : chaque choix (sessions à auditer, candidats retenus,
   recommandations) est décidé, **écrit dans le findings, jamais re-dérivé** — pas de
   boucle de re-délibération sur un constat déjà archivé
-- Les findings (3/3.5/6.5) sont une **archive** : échec d'écriture → continuer (le run suivant
+- Les findings (3/3.5/3.6/6.5) sont une **archive** : échec d'écriture → continuer (le run suivant
   re-détecte) ; un findings mal formé ne casse rien
 - Ne jamais modifier : bases SQLite, config du projet, CI/CD, contrats API
 - Lire les JSON en source de vérité ; incohérence/warning → le signaler au rapport, pas corriger
 - Commit auto : uniquement drafting via `weekly_commit_draft` (scoped au fichier, identité config,
   jamais de secrets, jamais pendant rebase/merge) — rollback = `git revert --no-edit` (humain)
-- Fichiers écrits par l'agent : findings `weekly-*-findings-<date>.json`, `extracts/`,
+- Fichiers écrits par l'agent : findings bruts `weekly-watch-findings-raw-<date>.json`, autres findings `weekly-*-findings-<date>.json`, `extracts/`,
   drafts skills/commands via `weekly_commit_draft`, `weekly-report-blocks-<date>.md`
