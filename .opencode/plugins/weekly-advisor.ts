@@ -215,22 +215,22 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
         120_000,
       ),
 
-      weekly_report_prep: noArgTool(
+      weekly_report_prep: anchorTool(
         "Étape 7a (1/2) : prépare le brouillon de rapport (report-prep → weekly-report-draft-<date>.md).",
-        ["report-prep"],
+        (anchor) => ["report-prep", "--anchor", anchor],
         120_000,
       ),
 
-      weekly_report_blocks_draft: noArgTool(
+      weekly_report_blocks_draft: anchorTool(
         "Étape 7a (2/2) : génère le brouillon auto des blocs (report-blocks-draft → weekly-report-blocks-auto-<date>.md).",
-        ["report-blocks-draft"],
+        (anchor) => ["report-blocks-draft", "--anchor", anchor],
         120_000,
       ),
 
-      weekly_report_assemble: noArgTool(
+      weekly_report_assemble: anchorTool(
         "Étape 7c : assemble le rapport final (report-assemble → weekly-report-<date>.md). " +
           "⚠ un assemble réussi consomme le draft : pour un nouvel assemble, relancer weekly_report_prep d'abord.",
-        ["report-assemble"],
+        (anchor) => ["report-assemble", "--anchor", anchor],
         120_000,
       ),
 

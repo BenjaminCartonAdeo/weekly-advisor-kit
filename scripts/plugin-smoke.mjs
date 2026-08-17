@@ -106,6 +106,24 @@ await tools.weekly_run.execute({})
 const argv4 = fs.readFileSync(argvLog, "utf8").trim().split(" ")
 check("sans lookback_days : flag absent", !argv4.includes("--lookback-days"), argv4.join(" "))
 
+// 6. tools report : ancre propagée (v6.0.e — sinon report-prep vise la date du
+//    jour au lieu de la fenêtre du run → FATAL « summary absente »)
+for (const [name, cmd] of [
+  ["weekly_report_prep", "report-prep"],
+  ["weekly_report_blocks_draft", "report-blocks-draft"],
+  ["weekly_report_assemble", "report-assemble"],
+]) {
+  fs.writeFileSync(argvLog, "RESET")
+  await tools[name].execute({})
+  const argvN = fs.readFileSync(argvLog, "utf8").trim().split(" ")
+  const idx = argvN.indexOf("--anchor")
+  check(
+    `${name} passe --anchor`,
+    idx >= 0 && idx + 1 < argvN.length && argvN[idx + 1] === anchor3,
+    argvN.join(" "),
+  )
+}
+
 if (failures.length) {
   console.error(`\nSMOKE FAIL (${failures.length})\n- ${failures.join("\n- ")}`)
   process.exit(1)
