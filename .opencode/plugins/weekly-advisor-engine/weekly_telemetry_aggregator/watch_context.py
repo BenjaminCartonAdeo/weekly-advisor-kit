@@ -146,20 +146,6 @@ def normalize_repo_url(value: str | None) -> str | None:
         return None
     if text.lower().startswith("git+"):
         text = text[4:]
-    if text.lower().startswith("github:"):
-        text = "https://github.com/" + text[7:].lstrip("/")
-    elif text.startswith("git@"):  # scp-style git@github.com:owner/repo.git
-        host_path = text[4:]
-        if ":" not in host_path:
-            return None
-        host, path = host_path.split(":", 1)
-        text = f"https://{host}/{path}"
-    elif "://" not in text and not text.startswith("/"):
-        # Useful for GitHub full names found in a few ecosystem sources.
-        if re.fullmatch(r"[^/\s]+/[^/\s]+", text):
-            text = "https://github.com/" + text
-        else:
-            return None
 
     try:
         parts = urlsplit(text)
@@ -180,15 +166,6 @@ def normalize_repo_url(value: str | None) -> str | None:
     if host == "github.com":
         path = path.casefold()
     return f"https://{host}{path}"
-
-
-# Explicit aliases make the normalization contract easy to discover for
-# callers that use the terminology from the watch-context report.
-canonical_repo_url = normalize_repo_url
-normalize_repo = normalize_repo_url
-canonicalize_repo_url = normalize_repo_url
-canonicalize_npm_package = normalize_npm_package
-normalize_npm_package_name = normalize_npm_package
 
 
 def parse_jsonc(text: str) -> Any:
@@ -406,27 +383,6 @@ def _read_plugin_config(
         for declaration in declarations:
             if isinstance(declaration, str) and declaration.strip():
                 records.append(parse_plugin_spec(declaration, path=_relative(path, project_root)))
-            elif isinstance(declaration, Mapping):
-                # Be permissive for hand-written configs while keeping the
-                # string-array contract as the primary supported shape.
-                raw = (
-                    declaration.get("name") or declaration.get("package") or declaration.get("spec")
-                )
-                if isinstance(raw, str) and raw.strip():
-                    record = parse_plugin_spec(raw, path=_relative(path, project_root))
-                    repository = declaration.get("repository") or declaration.get("repo")
-                    explicit_repo = normalize_repo_url(repository)
-                    if explicit_repo and explicit_repo != record.repo_url:
-                        record = PluginRecord(
-                            **{
-                                **asdict(record),
-                                "repo_url": explicit_repo,
-                                "identities": _unique_identities(
-                                    (*record.identities, explicit_repo, _repo_slug(explicit_repo))
-                                ),
-                            }
-                        )
-                    records.append(record)
             else:
                 warnings.append(
                     f"ignored non-string plugin declaration in {_relative(path, project_root)}"
@@ -572,10 +528,6 @@ def inventory_environment(project_root: Path) -> EnvironmentInventory:
         },
         warnings=warnings,
     )
-
-
-scan_environment = inventory_environment
-scan_project_environment = inventory_environment
 
 
 def _json_safe(value: Any) -> Any:
@@ -870,9 +822,6 @@ def build_watch_context(
     if isinstance(ecosystem.get("generated_at"), str):
         context["ecosystem_generated_at"] = ecosystem["generated_at"]
     return context
-
-
-build_context = build_watch_context
 
 
 def load_ecosystem_report(path: Path) -> tuple[dict[str, Any] | None, str | None]:

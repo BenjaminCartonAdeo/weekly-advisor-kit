@@ -22,9 +22,6 @@ from typing import Any
 from .watch_context import normalize_npm_package, normalize_repo_url
 
 INPUT_CATEGORIES = frozenset({"adopt", "improve-existing", "token-saver", "ignore"})
-FINAL_DECISIONS = frozenset(
-    {"adopt", "verify-existing", "improve-existing", "repair-existing", "token-saver", "ignore"}
-)
 EXISTING_STATES = frozenset({"absent", "declared", "observed", "unknown"})
 
 _DECISION_BY_STATE = {
@@ -178,13 +175,6 @@ def match_subject_to_market(
     return copy.deepcopy(candidates[0])
 
 
-# Short aliases make the matching contract discoverable for callers using the
-# terminology from the watch reports.
-match_market_subject = match_subject_to_market
-find_market_match = match_subject_to_market
-match_market_item = match_subject_to_market
-
-
 def _rejection(index: int | None, finding: object, reason: str) -> dict[str, Any]:
     """Build one deterministic rejection while retaining the original value."""
 
@@ -211,11 +201,7 @@ def _raw_items(raw_findings: object) -> tuple[dict[str, Any], list[object], list
             return metadata, list(raw_values), []
         return metadata, [], [_rejection(None, raw_values, "findings must be an array")]
 
-    if raw_findings is None:
-        return {}, [], []
-    if _is_values(raw_findings):
-        return {}, list(raw_findings), []
-    return {}, [raw_findings], []
+    return {}, [], [_rejection(None, raw_findings, "findings root must be an object")]
 
 
 def _context_matches(context: Mapping[str, Any] | None) -> Sequence[object]:
@@ -306,7 +292,7 @@ def _validate_one_finding(
 
 
 def validate_findings(
-    raw_findings: Mapping[str, Any] | Sequence[object] | None,
+    raw_findings: Mapping[str, Any] | None,
     context: Mapping[str, Any] | None,
     *,
     date: str | None = None,
@@ -373,10 +359,6 @@ def validate_findings(
     return result
 
 
-# Name matching the file/command terminology used by the pipeline.
-validate_watch_findings = validate_findings
-
-
 def load_watch_json(path: Path) -> tuple[object | None, str | None]:
     """Load one local JSON report without consulting fallback/global paths."""
 
@@ -400,19 +382,12 @@ def load_watch_context(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     return dict(payload), None
 
 
-def load_raw_findings(path: Path) -> tuple[Mapping[str, Any] | Sequence[object] | None, str | None]:
-    """Load a raw findings object/array from exactly ``path``."""
+def load_raw_findings(path: Path) -> tuple[Mapping[str, Any] | None, str | None]:
+    """Load the object-shaped raw findings contract from exactly ``path``."""
 
     payload, error = load_watch_json(path)
     if error is not None:
         return None, error
     if isinstance(payload, Mapping):
         return dict(payload), None
-    if _is_values(payload):
-        return list(payload), None
-    return None, f"raw findings root must be an object or array: {path}"
-
-
-# Explicit aliases for callers that prefer report-oriented names.
-load_watch_context_report = load_watch_context
-load_watch_findings_raw = load_raw_findings
+    return None, f"raw findings root must be an object: {path}"
