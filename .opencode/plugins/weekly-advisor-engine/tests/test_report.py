@@ -125,6 +125,15 @@ def test_report_prep_renders_top_harness_rules(tmp_path: Path):
     (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
         __import__("json").dumps(
             {
+                "harness_include": {
+                    "unscoped_files": [".opencode/package.json"],
+                },
+                "harness_counts": {
+                    "files_scanned": 4,
+                    "components_scanned": 4,
+                    "findings_raw": 3,
+                    "findings_unique": 2,
+                },
                 "inspection": {
                     "summary": {"errors": 2, "warnings": 3},
                     "uncategorized": [
@@ -149,7 +158,7 @@ def test_report_prep_renders_top_harness_rules(tmp_path: Path):
                             ],
                         }
                     ],
-                }
+                },
             }
         ),
         encoding="utf-8",
@@ -159,6 +168,8 @@ def test_report_prep_renders_top_harness_rules(tmp_path: Path):
     text = draft.read_text(encoding="utf-8")
     assert "mcp-tool-poisoning" in text
     assert "2 violation(s)" in text
+    assert "4 fichier(s), 4 composant(s) inspecté(s)" in text
+    assert "hors allowlist non scannées" in text
 
 
 # ============================================================ v5.28 (synthèse + audit + watch)

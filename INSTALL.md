@@ -44,6 +44,7 @@ Fichier : `.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`
 |---|---|---|
 | `project_root` | **Chemin ABSOLU du repo audité** — celui qui contient `.opencode/` | placeholder `/path/to/weekly-advisor-kit` ✋ |
 | `output_dir` | Chemin ABSOLU des artefacts (rapports JSON/MD) | placeholder `/path/to/weekly-advisor-kit/reports` ✋ |
+| `harness_include` | Profil et globs allowlistés pour l'étape `harness` | `advisory` (policy + documentation) |
 | `git_name` / `git_email` | Identité des commits auto-rédigés (drafting) | `Weekly Advisor` / `weekly-advisor@localhost` (déjà neutres) |
 
 Les deux placeholders sont **volontaires** : tant qu'ils ne sont pas adaptés, `weekly_doctor`
@@ -57,6 +58,14 @@ sed -i 's|/path/to/weekly-advisor-kit|/home/<TOI>/Dev/weekly-advisor-kit|g' \
 
 Toutes les autres clés ont des défauts raisonnables (fenêtre 7 j, budgets, seuils,
 veille `watch`). Personnalisez `watch` (sources de veille) et les budgets selon votre usage.
+Le profil `strict` limite le lint aux surfaces de politique et aux entrypoints de
+plugins ; `advisory` ajoute `.opencode/skills/**/SKILL.md`, leurs références et leurs
+exemples. Les chemins sont toujours relatifs au projet et la projection est temporaire.
+Les exclusions générées/vendor (`node_modules`, moteur, venv, caches, bytecode,
+`.git`, `dist/build/coverage`) restent obligatoires ; `exclude_patterns` ne peut qu'en
+ajouter.
+Un fichier `.opencode/` qui ne correspond à aucun profil apparaît comme warning dans le
+digest (`harness_include.unscoped_files`) au lieu d'être scanné silencieusement.
 
 ### 2.4 Permissions user + auth (une fois par poste)
 

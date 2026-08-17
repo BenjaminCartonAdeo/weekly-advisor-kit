@@ -13,6 +13,45 @@ from pathlib import Path
 
 DEFAULT_CONFIG_NAME = "weekly-telemetry-config.json"
 
+DEFAULT_HARNESS_INCLUDE_PROFILES: dict[str, tuple[str, ...]] = {
+    "strict": (
+        ".opencode/AGENTS.md",
+        ".opencode/agents/**/*.md",
+        ".opencode/commands/**/*.md",
+        ".opencode/plugins/*.{js,ts,mjs,cjs}",
+        ".opencode/opencode.json",
+        ".opencode/opencode.jsonc",
+    ),
+    # Advisory is deliberately a superset: policy surfaces plus the
+    # documentation surfaces that influence skill loading and guidance.
+    "advisory": (
+        ".opencode/AGENTS.md",
+        ".opencode/agents/**/*.md",
+        ".opencode/commands/**/*.md",
+        ".opencode/plugins/*.{js,ts,mjs,cjs}",
+        ".opencode/opencode.json",
+        ".opencode/opencode.jsonc",
+        ".opencode/skills/**/SKILL.md",
+        ".opencode/skills/**/references/**/*.md",
+        ".opencode/skills/**/examples/**/*",
+    ),
+}
+
+DEFAULT_HARNESS_EXCLUDE_PATTERNS: tuple[str, ...] = (
+    ".opencode/node_modules/**",
+    ".opencode/plugins/weekly-advisor-engine/**",
+    "**/.venv/**",
+    "**/.git/**",
+    "**/__pycache__/**",
+    "**/.pytest_cache/**",
+    "**/.ruff_cache/**",
+    "**/.mypy_cache/**",
+    "**/.cache/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/coverage/**",
+)
+
 
 def _expand(path: str | Path) -> Path:
     return Path(path).expanduser()
@@ -42,6 +81,41 @@ class InsightsConfig:
 
 
 @dataclass(slots=True)
+class HarnessIncludeConfig:
+    """Allowlist profiles used to build the temporary harness projection."""
+
+    #: ``advisory`` is the safe default for this kit: policy + documentation.
+    default_profile: str = "advisory"
+    profiles: dict[str, list[str]] = field(
+        default_factory=lambda: {
+            name: list(patterns) for name, patterns in DEFAULT_HARNESS_INCLUDE_PROFILES.items()
+        }
+    )
+    #: Extra exclusions; mandatory generated/vendor exclusions are always merged in.
+    exclude_patterns: list[str] = field(
+        default_factory=lambda: list(DEFAULT_HARNESS_EXCLUDE_PATTERNS)
+    )
+
+    @property
+    def profile(self) -> str:
+        """Alias for callers that use the shorter profile name."""
+        return self.default_profile
+
+    @profile.setter
+    def profile(self, value: str) -> None:
+        self.default_profile = value
+
+    @property
+    def default_policy(self) -> str:
+        """Alias for configuration files that call the selected profile a policy."""
+        return self.default_profile
+
+    @default_policy.setter
+    def default_policy(self, value: str) -> None:
+        self.default_profile = value
+
+
+@dataclass(slots=True)
 class TelemetryConfig:
     project_root: Path | None = None
     #: "auto" → opencode.db then opencode-next.db, the live one wins (v5.24).
@@ -62,6 +136,8 @@ class TelemetryConfig:
     harness_eval_version: str = "7.9.0"
     #: harness rules excluded from top-rules/lint counts (noise reduction, v5.28).
     harness_ignored_rules: list[str] = field(default_factory=list)
+    #: harness-eval input allowlist; projection is temporary and project-relative.
+    harness_include: HarnessIncludeConfig = field(default_factory=HarnessIncludeConfig)
     #: optional explicit previous summary for the first insights run (v5.28).
     baseline_summary_path: str | None = None
     #: minimum words in the LLM blocks file accepted by report-assemble (v5.28).
@@ -148,6 +224,36 @@ def _parse(p: Path) -> TelemetryConfig:
     cfg.harness_ignored_rules = [
         str(x) for x in raw.get("harness_ignored_rules", cfg.harness_ignored_rules)
     ]
+    include_raw = raw.get("harness_include")
+    top_level_profile = raw.get("harness_include_profile")
+    if isinstance(top_level_profile, str) and top_level_profile:
+        cfg.harness_include.default_profile = top_level_profile
+    if isinstance(include_raw, str):
+        cfg.harness_include.default_profile = include_raw
+    elif isinstance(include_raw, list):
+        cfg.harness_include.profiles[cfg.harness_include.default_profile] = [
+            str(x) for x in include_raw
+        ]
+    elif isinstance(include_raw, dict):
+        profile = include_raw.get(
+            "default_profile",
+            include_raw.get("default_policy", include_raw.get("profile")),
+        )
+        if isinstance(profile, str) and profile:
+            cfg.harness_include.default_profile = profile
+        profiles = include_raw.get("profiles")
+        if isinstance(profiles, dict):
+            for name, patterns in profiles.items():
+                if isinstance(name, str) and isinstance(patterns, list):
+                    cfg.harness_include.profiles[name] = [str(x) for x in patterns]
+        patterns = include_raw.get("patterns")
+        if isinstance(patterns, list):
+            cfg.harness_include.profiles[cfg.harness_include.default_profile] = [
+                str(x) for x in patterns
+            ]
+        excludes = include_raw.get("exclude_patterns", include_raw.get("excludes"))
+        if isinstance(excludes, list):
+            cfg.harness_include.exclude_patterns = [str(x) for x in excludes]
     _bsv = raw.get("baseline_summary_path")
     cfg.baseline_summary_path = str(_bsv) if _bsv else None
     cfg.blocks_min_words = _get("blocks_min_words", cfg.blocks_min_words, int)

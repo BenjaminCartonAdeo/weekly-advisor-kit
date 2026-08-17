@@ -205,6 +205,8 @@ def report_prep(
         "harness_budget": (digest or {}).get("budget"),
         "harness_triggers": (digest or {}).get("triggers"),
         "harness_dependencies": (digest or {}).get("dependencies"),
+        "harness_scope": (digest or {}).get("harness_include"),
+        "harness_counts": (digest or {}).get("harness_counts"),
         "warnings_grouped": _group_warnings(summary.get("warnings", [])),
         "watch_warned": any(
             w.get("source") == "github:watch-repos" for w in (ecosystem or {}).get("warnings", [])

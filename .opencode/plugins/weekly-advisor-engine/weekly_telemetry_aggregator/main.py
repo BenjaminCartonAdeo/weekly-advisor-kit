@@ -7,21 +7,28 @@ SchemaAdapter (sqlite_reader.py, v5.16/v5.24) — no SDK, no server, no pricing 
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .aggregator import _cap_warnings, aggregate
 from .config import TelemetryConfig, apply_lookback_override
+from .harness_scope import (
+    copy_scope_to_projection,
+    enrich_harness_digest,
+    resolve_harness_scope,
+)
 from .models import Period, SessionUsage, SkillCatalogEntry, WarningEntry, round6
 from .sqlite_reader import DataSourceError, SessionMeta, _to_ms, detect_db
 from .util import iso as _iso
 from .util import load_json, period_hours
 from .util import parse_anchor as _parse_anchor
-from .writer import write_summary
+from .writer import write_json_atomic, write_summary
 
 EXIT_OK = 0
 EXIT_PARTIAL = 1
@@ -602,10 +609,13 @@ def doctor(
 
 
 def harness(cfg: TelemetryConfig, *, anchor: str | None = None, timeout: int = 900) -> int:
-    """Step 5: run `harness-eval harness-lint` into weekly-harness-digest-<date>.json.
+    """Run ``harness-eval`` against the configured temporary projection.
 
     Exit 0/1 of the tool = success (violations live in the digest, spec Partie 0 §4);
-    any other code or a missing binary = real step failure.
+    any other code or a missing binary = real step failure.  The worktree is
+    never modified by projection creation; when the tool emits a digest, its
+    temporary paths are remapped before the scope and normalized counts are
+    merged into the output.
     """
     run_time = _parse_anchor(anchor)
     date = run_time.strftime("%Y-%m-%d")
@@ -632,29 +642,58 @@ def harness(cfg: TelemetryConfig, *, anchor: str | None = None, timeout: int = 9
     out_path = cfg.output_dir / f"weekly-harness-digest-{date}.json"
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     try:
-        proc = subprocess.run(
-            [
-                binary,
-                "harness-lint",
-                str(cfg.project_root),
-                "--format",
-                "json",
-                "--output",
-                str(out_path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        scope = resolve_harness_scope(cfg.project_root, cfg.harness_include)
+        for warning in scope.warnings:
+            print(f"harness: WARNING: {warning}", flush=True)
+
+        with tempfile.TemporaryDirectory(prefix="weekly-harness-") as temporary:
+            projection_root = Path(temporary)
+            copy_scope_to_projection(cfg.project_root, scope, projection_root)
+            proc = subprocess.run(
+                [
+                    binary,
+                    "harness-lint",
+                    str(projection_root),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(out_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if proc.returncode not in (0, 1):
+                print(
+                    f"harness: FATAL: rc={proc.returncode} inattendu — échec réel d'étape",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return EXIT_TOTAL_FAILURE
+
+            # Keep compatibility with mocked/older wrappers that do not leave a
+            # digest behind.  A real harness-eval run normally takes this path.
+            if out_path.is_file():
+                try:
+                    digest = json.loads(out_path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    print(
+                        f"harness: FATAL: digest JSON illisible: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return EXIT_TOTAL_FAILURE
+                if not isinstance(digest, dict):
+                    print(
+                        "harness: FATAL: digest JSON invalide (objet attendu)",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return EXIT_TOTAL_FAILURE
+                enriched = enrich_harness_digest(digest, scope, projection_root)
+                write_json_atomic(out_path, enriched)
     except (OSError, subprocess.TimeoutExpired) as exc:
         print(f"harness: FATAL: exécution impossible: {exc}", file=sys.stderr, flush=True)
-        return EXIT_TOTAL_FAILURE
-    if proc.returncode not in (0, 1):
-        print(
-            f"harness: FATAL: rc={proc.returncode} inattendu — échec réel d'étape",
-            file=sys.stderr,
-            flush=True,
-        )
         return EXIT_TOTAL_FAILURE
     print(f"harness: digest {out_path} (rc={proc.returncode})", flush=True)
     return EXIT_OK

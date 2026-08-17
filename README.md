@@ -31,7 +31,7 @@ des skills dédiés et des contrats anti-hallucination.
 | 3 · Audit qualitatif | sessions candidates (coût, outliers, boucles, cache, prompts répétés) → constats archivés | skill `weekly-quality-audit` |
 | 3.5 · Veille critique | marché × environnement × constats → recommandations adopt / improve / ignore | skill `weekly-watch-review` |
 | 4 · Auto-drafting | candidats skills/commands → rédaction + commit sécurisé et scoped | skill `weekly-drafting` + `weekly_commit_draft` |
-| 5 · Lint | `harness-eval` sur `.opencode/` (version épinglée) | `weekly_harness` (déterministe) |
+| 5 · Lint | `harness-eval` sur une projection allowlistée de `.opencode/` (version épinglée) | `weekly_harness` (déterministe) |
 | 6 · Insights | deltas vs semaine précédente, alertes budget/cache/spikes, maintenance R1-R4 | `weekly_insights` (déterministe) |
 | 6.5 · Cohérence | état déclaratif (skills/agents) vs usage réel | skill `weekly-coherence-review` |
 | 7 · Rapport | sections déterministes + prose LLM validée → **`weekly-report-<date>.md`** | `weekly_report_prep` / `weekly_report_blocks_draft` / `weekly_report_assemble` |
@@ -46,8 +46,17 @@ est absent, quelque chose s'est mal passé. Codes de sortie : `0` complet, `1` p
 
 Prérequis : `opencode` ≥ 1.18 avec un modèle authentifié (`opencode auth login`), `uv` —
 détails et alternatives : [`INSTALL.md`](INSTALL.md).
-Optionnel : `harness-eval` (étape 5 — lint de `.opencode/`) et `gh` (repos privés de la
-veille) — les étapes concernées dégradent proprement (warnings) en leur absence.
+`harness-eval` est requis pour exécuter l'étape 5 (le `doctor` signale son absence et
+`weekly_harness` échoue fatalement) ; `gh` reste optionnel pour les repos privés de la
+veille et cette source se dégrade en warning.
+
+Le lint utilise par défaut le profil `advisory` de `harness_include` : surfaces de
+politique (`AGENTS`, agents, commands, configurations et entrypoints plugins) plus
+documentation des skills (`SKILL.md`, références et exemples). Le moteur copie ces
+seuls fichiers dans une projection temporaire ; `node_modules`, le moteur lui-même,
+les venv/caches et autres artefacts ne sont donc jamais exposés à `harness-eval`.
+Les fichiers `.opencode/` hors allowlist sont signalés dans
+`harness_include.unscoped_files` et ne sont pas scannés.
 
 ```sh
 git clone https://github.com/BenjaminCartonAdeo/weekly-advisor-kit.git && cd weekly-advisor-kit

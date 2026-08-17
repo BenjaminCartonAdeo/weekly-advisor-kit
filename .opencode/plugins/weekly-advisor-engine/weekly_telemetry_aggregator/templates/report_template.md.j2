@@ -138,7 +138,13 @@
 
 {% endif %}
 {% if digest %}
-- Violations : {{ digest.inspection.summary.errors if digest.inspection.summary is defined else "n/a" }} erreurs, {{ digest.inspection.summary.warnings if digest.inspection.summary is defined else "n/a" }} warnings
+- Inspection : {{ digest.inspection.summary.errors if digest.inspection.summary is defined else "n/a" }} erreurs, {{ digest.inspection.summary.warnings if digest.inspection.summary is defined else "n/a" }} warnings
+{% if harness_counts %}
+- Périmètre : {{ harness_counts.files_scanned if harness_counts.files_scanned is not none else "n/a" }} fichier(s), {{ harness_counts.components_scanned if harness_counts.components_scanned is not none else "n/a" }} composant(s) inspecté(s) ; findings bruts {{ harness_counts.findings_raw if harness_counts.findings_raw is not none else "n/a" }}, uniques {{ harness_counts.findings_unique if harness_counts.findings_unique is not none else "n/a" }}
+{% endif %}
+{% if harness_scope and harness_scope.unscoped_files %}
+- ⚠ Surfaces `.opencode/` hors allowlist non scannées : {{ harness_scope.unscoped_files|length }} fichier(s), aperçu : {{ harness_scope.unscoped_files[:10]|join(", ") }}{% if harness_scope.unscoped_files|length > 10 %} (+{{ harness_scope.unscoped_files|length - 10 }}){% endif %}
+{% endif %}
 {% if harness_top_rules %}
 Top règles violées :
 {% for r in harness_top_rules %}

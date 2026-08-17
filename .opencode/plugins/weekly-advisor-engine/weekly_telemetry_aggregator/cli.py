@@ -440,7 +440,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_harness = sub.add_parser(
         "harness",
         parents=[global_parent],
-        help="Step 5: harness-eval harness-lint → weekly-harness-digest-<date>.json (v5.28)",
+        help="Step 5: scoped harness-eval lint → weekly-harness-digest-<date>.json",
     )
     p_harness.set_defaults(func=_cmd_harness)
 

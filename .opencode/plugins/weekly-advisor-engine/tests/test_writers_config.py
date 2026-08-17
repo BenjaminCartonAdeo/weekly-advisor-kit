@@ -9,6 +9,7 @@ from helpers import make_step, make_usage, tzutc
 
 from weekly_telemetry_aggregator.aggregator import aggregate
 from weekly_telemetry_aggregator.config import (
+    DEFAULT_HARNESS_INCLUDE_PROFILES,
     TelemetryConfig,
     apply_lookback_override,
     load_config,
@@ -27,6 +28,11 @@ def test_config_defaults(tmp_path: Path):
     assert cfg.top_sessions_limit == 5
     assert cfg.output_dir == Path("~/opencode-weekly-reports").expanduser()
     assert cfg.window_hours() == 7 * 24
+    assert cfg.harness_include.default_profile == "advisory"
+    assert cfg.harness_include.profiles["strict"] == list(
+        DEFAULT_HARNESS_INCLUDE_PROFILES["strict"]
+    )
+    assert ".opencode/skills/**/SKILL.md" in cfg.harness_include.profiles["advisory"]
 
 
 def test_config_json_overrides(tmp_path: Path):
@@ -41,6 +47,11 @@ def test_config_json_overrides(tmp_path: Path):
                 "top_sessions_limit": 2,
                 "include_subagents": False,
                 "advisor_run_title": "Revue X",
+                "harness_include": {
+                    "default_profile": "strict",
+                    "profiles": {"strict": [".opencode/commands/**/*.md"]},
+                    "exclude_patterns": [".opencode/vendor/**"],
+                },
                 "insights": {"weekly_budget_usd": 10, "daily_spike_z_min": 2.2},
                 "audit": {"cost_per_active_minute_min": 0.9},
             }
@@ -54,6 +65,9 @@ def test_config_json_overrides(tmp_path: Path):
     assert cfg.top_sessions_limit == 2
     assert cfg.include_subagents is False
     assert cfg.advisor_run_title == "Revue X"
+    assert cfg.harness_include.default_profile == "strict"
+    assert cfg.harness_include.profiles["strict"] == [".opencode/commands/**/*.md"]
+    assert cfg.harness_include.exclude_patterns == [".opencode/vendor/**"]
     assert cfg.insights.weekly_budget_usd == 10
     assert cfg.insights.daily_spike_z_min == 2.2
     assert cfg.audit.cost_per_active_minute_min == 0.9

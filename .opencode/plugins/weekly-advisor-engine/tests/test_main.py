@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from datetime import timedelta
 from pathlib import Path
 
@@ -386,6 +387,103 @@ def test_harness_runs_and_writes_digest(tmp_path: Path, monkeypatch):
     lint_call = [c for c in calls if "harness-lint" in c]
     assert lint_call
     assert lint_call[0][-1] == str(tmp_path / "weekly-harness-digest-2026-08-12.json")
+
+
+def test_harness_uses_one_temporary_projection_and_merges_scope(tmp_path: Path, monkeypatch):
+    project = tmp_path / "project"
+    (project / ".opencode").mkdir(parents=True)
+    (project / ".opencode" / "commands").mkdir()
+    (project / ".opencode" / "node_modules").mkdir()
+    (project / ".opencode" / "plugins" / "weekly-advisor-engine").mkdir(parents=True)
+    (project / ".opencode" / "commands" / "review.md").write_text("review", encoding="utf-8")
+    (project / ".opencode" / "node_modules" / "vendor.js").write_text("vendor", encoding="utf-8")
+    (project / ".opencode" / "plugins" / "weekly-advisor-engine" / "source.py").write_text(
+        "vendor", encoding="utf-8"
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        if "--version" in args:
+            return _FakeProc(0, stdout="harness-eval 7.9.0")
+        calls.append(args)
+        projection = Path(args[2])
+        output = Path(args[args.index("--output") + 1])
+        assert (projection / ".opencode/commands/review.md").exists()
+        assert not (projection / ".opencode/node_modules/vendor.js").exists()
+        assert not (projection / ".opencode/plugins/weekly-advisor-engine/source.py").exists()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps(
+                {
+                    "metadata": {"components_scanned": 1},
+                    "inspection": {
+                        "uncategorized": [
+                            {
+                                "path": str(projection / ".opencode/commands/review.md"),
+                                "findings": [],
+                            }
+                        ]
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return _FakeProc(1)
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/harness-eval")
+    monkeypatch.setattr("subprocess.run", fake_run)
+    cfg = _cfg(tmp_path / "reports", tmp_path / "opencode.db")
+    cfg.project_root = project
+    assert harness(cfg, anchor=RUN_TIME.isoformat()) == EXIT_OK
+
+    assert len(calls) == 1
+    lint_call = calls[0]
+    assert lint_call[0:2] == ["/usr/bin/harness-eval", "harness-lint"]
+    assert Path(lint_call[2]) != project
+    digest = json.loads(
+        (cfg.output_dir / "weekly-harness-digest-2026-08-12.json").read_text(encoding="utf-8")
+    )
+    assert digest["inspection"]["uncategorized"][0]["path"] == ".opencode/commands/review.md"
+    assert digest["harness_include"]["included_file_count"] == 1
+    assert digest["harness_counts"]["components_scanned"] == 1
+
+
+def test_harness_projection_is_cleaned_up_when_subprocess_fails(tmp_path: Path, monkeypatch):
+    project = tmp_path / "project"
+    (project / ".opencode" / "commands").mkdir(parents=True)
+    (project / ".opencode" / "commands" / "review.md").write_text("review", encoding="utf-8")
+    created: list[Path] = []
+    real_temporary_directory = tempfile.TemporaryDirectory
+
+    class TrackingTemporaryDirectory:
+        def __init__(self, *args, **kwargs):
+            self._inner = real_temporary_directory(*args, **kwargs)
+            self.name = self._inner.name
+            created.append(Path(self.name))
+
+        def __enter__(self):
+            return self._inner.__enter__()
+
+        def __exit__(self, *args):
+            return self._inner.__exit__(*args)
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/harness-eval")
+
+    def failing_run(args, **kwargs):
+        if "--version" in args:
+            return _FakeProc(0, stdout="harness-eval 7.9.0")
+        raise OSError("harness unavailable")
+
+    monkeypatch.setattr("subprocess.run", failing_run)
+    monkeypatch.setattr(
+        "weekly_telemetry_aggregator.main.tempfile.TemporaryDirectory", TrackingTemporaryDirectory
+    )
+    cfg = _cfg(tmp_path / "reports", tmp_path / "opencode.db")
+    cfg.project_root = project
+
+    assert harness(cfg, anchor=RUN_TIME.isoformat()) == EXIT_TOTAL_FAILURE
+    assert created
+    assert all(not path.exists() for path in created)
 
 
 def test_harness_tool_rc1_is_ok(tmp_path: Path, monkeypatch):

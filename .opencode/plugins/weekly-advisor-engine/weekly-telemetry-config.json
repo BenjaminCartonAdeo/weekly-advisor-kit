@@ -13,6 +13,44 @@
   "outlier_min_sessions": 15,
   "cross_check_tolerance_pct": 0.25,
   "harness_eval_version": "7.9.0",
+  "harness_include": {
+    "default_profile": "advisory",
+    "profiles": {
+      "strict": [
+        ".opencode/AGENTS.md",
+        ".opencode/agents/**/*.md",
+        ".opencode/commands/**/*.md",
+        ".opencode/plugins/*.{js,ts,mjs,cjs}",
+        ".opencode/opencode.json",
+        ".opencode/opencode.jsonc"
+      ],
+      "advisory": [
+        ".opencode/AGENTS.md",
+        ".opencode/agents/**/*.md",
+        ".opencode/commands/**/*.md",
+        ".opencode/plugins/*.{js,ts,mjs,cjs}",
+        ".opencode/opencode.json",
+        ".opencode/opencode.jsonc",
+        ".opencode/skills/**/SKILL.md",
+        ".opencode/skills/**/references/**/*.md",
+        ".opencode/skills/**/examples/**/*"
+      ]
+    },
+    "exclude_patterns": [
+      ".opencode/node_modules/**",
+      ".opencode/plugins/weekly-advisor-engine/**",
+      "**/.venv/**",
+      "**/.git/**",
+      "**/__pycache__/**",
+      "**/.pytest_cache/**",
+      "**/.ruff_cache/**",
+      "**/.mypy_cache/**",
+      "**/.cache/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**"
+    ]
+  },
   "baseline_summary_path": null,
   "blocks_min_words": 40,
   "git_name": "Weekly Advisor",
