@@ -96,6 +96,22 @@ def _repo_root(file_path: Path) -> Path | None:
     return Path(proc.stdout.strip())
 
 
+def _ensure_opencode_scope(root: Path, file_path: Path) -> tuple[bool, str]:
+    """v6.0.c : les drafts vivent uniquement sous `.opencode/` du dépôt.
+
+    Un fichier hors worktree (ex. commande globale `~/.config/opencode/commands/`)
+    ou à la racine du projet est refusé — même s'il est dans un repo git.
+    """
+    try:
+        rel = file_path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False, f"{file_path} hors du dépôt git"
+    top = rel.parts[0] if rel.parts else ""
+    if top != ".opencode":
+        return False, f"fichier hors .opencode/ du projet ({rel})"
+    return True, "ok"
+
+
 def commit_draft(cfg: TelemetryConfig, file_path: Path, kind: str) -> tuple[bool, str]:
     """Validate + pre-checks + scoped add + commit. Returns (ok, message)."""
     if kind not in _MESSAGE_PREFIX:
@@ -108,6 +124,10 @@ def commit_draft(cfg: TelemetryConfig, file_path: Path, kind: str) -> tuple[bool
     root = _repo_root(file_path)
     if root is None:
         return False, "fichier hors dépôt git — pas de commit"
+
+    ok, msg = _ensure_opencode_scope(root, file_path)
+    if not ok:
+        return False, f"{msg} — pas de commit"
 
     branch = _run_git(root, "rev-parse", "--abbrev-ref", "HEAD")
     if branch.returncode != 0 or branch.stdout.strip() == "HEAD":

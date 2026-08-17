@@ -73,8 +73,8 @@ def test_missing_description_rejected(tmp_path: Path):
 
 def test_commit_draft_creates_commit(tmp_path: Path):
     repo = _init_repo(tmp_path)
-    skill = repo / "my-skill" / "SKILL.md"
-    skill.parent.mkdir()
+    skill = repo / ".opencode" / "skills" / "my-skill" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
     skill.write_text(VALID_SKILL, encoding="utf-8")
     cfg = TelemetryConfig()
     cfg.git_name = "Advisor Test"
@@ -82,6 +82,19 @@ def test_commit_draft_creates_commit(tmp_path: Path):
     assert ok, msg
     log = _git(repo, "log", "-1", "--format=%s %an")
     assert "skill:my-skill" in log and "Advisor Test" in log  # v5.30 : nom = dossier, plus SKILL.md
+
+
+def test_commit_draft_rejects_outside_opencode(tmp_path: Path):
+    """v6.0.c : un draft hors .opencode/ (ex. commande globale, racine du repo) est refusé."""
+    repo = _init_repo(tmp_path)
+    root_draft = repo / "my-skill" / "SKILL.md"  # dans le repo mais PAS sous .opencode/
+    root_draft.parent.mkdir()
+    root_draft.write_text(VALID_SKILL, encoding="utf-8")
+    ok, msg = commit_draft(TelemetryConfig(), root_draft, "skill")
+    assert ok is False
+    assert ".opencode" in msg
+    # contre-preuve : le même dossier sous .opencode/ passe (couvert par creates_commit)
+    assert _git(repo, "log", "-1", "--format=%s") == "base"  # aucun commit ajouté
 
 
 def test_commit_draft_rejects_outside_repo(tmp_path: Path):
@@ -106,8 +119,8 @@ def test_commit_draft_rejects_detached_head(tmp_path: Path):
     repo = _init_repo(tmp_path)
     dash = _git(repo, "rev-parse", "HEAD")
     _git(repo, "checkout", "-q", dash)  # detached HEAD
-    skill = repo / "det" / "SKILL.md"
-    skill.parent.mkdir()
+    skill = repo / ".opencode" / "skills" / "det" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
     skill.write_text("---\nname: det\ndescription: d\n---\nx", encoding="utf-8")
     ok, msg = commit_draft(TelemetryConfig(), skill, "skill")
     assert ok is False
@@ -116,8 +129,8 @@ def test_commit_draft_rejects_detached_head(tmp_path: Path):
 
 def test_commit_body_includes_target_agents(tmp_path: Path):
     repo = _init_repo(tmp_path)
-    skill = repo / "my-skill" / "SKILL.md"
-    skill.parent.mkdir()
+    skill = repo / ".opencode" / "skills" / "my-skill" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
     skill.write_text(
         "---\nname: my-skill\ndescription: un skill de test\nmetadata:\n  source_sessions:\n    - ses_abc\n  target_agents:\n    - java-pro\n    - backend-architect\n---\n# Corps\n",
         encoding="utf-8",
