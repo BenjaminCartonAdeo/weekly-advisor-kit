@@ -74,6 +74,18 @@ Corps généralisé, $ARGUMENTS pour les paramètres variables
   `commit-draft --kind command --file <chemin>` (modification, pas création) ; ne jamais
   réécrire le corps à blanc : conserver la structure et ajouter la section de garde-fous
 
+## Résolution des cibles (lecture/écriture = worktree uniquement, v6.0.c)
+
+- Une commande `/nom` ciblée par `command-improvement` se résout **dans le projet
+  d'abord** : `.opencode/commands/<nom>.md`. Si la même commande existe aussi dans la
+  config globale (`~/.config/opencode/commands/<nom>.md`) ou ailleurs, **la cible est
+  TOUJOURS la copie projet** — ne jamais lire l'autre
+- Commande absente du projet (globale uniquement) → **hors périmètre** : constat
+  `environment-change` (report-only), pas de draft, pas de lecture
+- Toute lecture/écriture hors worktree est **impossible** (permissions de l'agent) —
+  ne jamais tenter ; un échec de permission n'est **jamais fatal** : constater, le
+  signaler au rapport, continuer l'ordre figé (exit 1 partiel, pas 2)
+
 ## Périmètre projet
 
 Session dont `project_path` est hors `project_root` ⇒ constat `environment-change`

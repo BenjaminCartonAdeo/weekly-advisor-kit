@@ -74,6 +74,13 @@ Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sa
 ## Invariants (transverses à toutes les étapes)
 
 - Étapes déterministes (1/2/5/6/7) : **ne jamais réécrire les JSON/summary produits par le CLI**
+- **Périmètre lecture/écriture = worktree uniquement** (v6.0.c) : une cible résolue hors
+  worktree (ex. commande globale `~/.config/opencode/commands/`) est **hors périmètre** →
+  constat report-only, jamais de lecture ni de draft ; les doublons globaux d'une commande
+  projet ne sont jamais lus
+- **Un échec de tool n'arrête pas le run** (permission rejetée, source indisponible) :
+  constater, signaler au rapport, continuer l'ordre figé (exit 1 partiel — exit 2 réservé
+  aux fatalités moteur)
 - **Décision tranchée une fois** : chaque choix (sessions à auditer, candidats retenus,
   recommandations) est décidé, **écrit dans le findings, jamais re-dérivé** — pas de
   boucle de re-délibération sur un constat déjà archivé
