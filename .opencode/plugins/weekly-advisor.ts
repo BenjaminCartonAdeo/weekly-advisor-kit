@@ -261,3 +261,8 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
     },
   }
 }
+
+// Le loader d'opencode (v1.18.18 / next-17297) exige un export `default`
+// (SchemaError: Missing key at ["default"] sinon) — l'export nommé est conservé
+// pour le smoke test (scripts/plugin-smoke.mjs).
+export default WeeklyAdvisorPlugin
