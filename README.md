@@ -10,8 +10,8 @@ Chaque lundi, il vous dit : combien vous avez dépensé, ce qui a coûté cher e
 quels skills/commands sont inutilisés ou redondants, quoi surveiller dans l'écosystème,
 et quelles corrections peuvent être auto-rédigées (proposées, jamais imposées).
 
-Le kit tient dans **un seul dossier** `.opencode/` : un agent dédié, 5 skills
-qualitatifs, 2 commands, un **plugin enveloppe** (15 tools `weekly_*`) et un
+Le kit tient dans **un seul dossier** `.opencode/` : deux agents dédiés, 6 skills
+qualitatifs, 3 commands, un **plugin enveloppe** (16 tools `weekly_*`) et un
 **moteur Python** déterministe (`weekly-telemetry-aggregator`).
 
 **Spécification** : [`opencode-weekly-advisor`](opencode-weekly-advisor) (le contrat complet, 8 parties)
@@ -32,6 +32,7 @@ des skills dédiés et des contrats anti-hallucination.
 | 3.5 · Veille critique | marché × environnement × constats → recommandations adopt / improve / ignore | skill `weekly-watch-review` |
 | 4 · Auto-drafting | candidats skills/commands → rédaction + commit sécurisé et scoped | skill `weekly-drafting` + `weekly_commit_draft` |
 | 5 · Lint | `harness-eval` sur une projection allowlistée de `.opencode/` (version épinglée) | `weekly_harness` (déterministe) |
+| 5.5 · Remédiation | findings harness → décisions et corrections bornées, sans commit automatique | skill `harness-remediation` + `weekly_harness_remediate` |
 | 6 · Insights | deltas vs semaine précédente, alertes budget/cache/spikes, maintenance R1-R4 | `weekly_insights` (déterministe) |
 | 6.5 · Cohérence | état déclaratif (skills/agents) vs usage réel | skill `weekly-coherence-review` |
 | 7 · Rapport | sections déterministes + prose LLM validée → **`weekly-report-<date>.md`** | `weekly_report_prep` / `weekly_report_blocks_draft` / `weekly_report_assemble` |
@@ -94,11 +95,12 @@ Détails et heartbeat recommandé : [`INSTALL.md`](INSTALL.md) §2.7.
 ```
 .opencode/
 ├── agents/weekly-advisor/weekly-advisor.md   ← orchestration : ordre figé, invariants, bash: deny
-├── skills/weekly-*/SKILL.md                  ← 5 étapes qualitatives (chargées à la demande)
-├── commands/weekly-review.md / weekly-report.md
+├── agents/harness-remediator/harness-remediator.md ← remédiation bornée, sans edit/bash
+├── skills/{weekly-*,harness-remediation}/SKILL.md ← 6 étapes qualitatives (chargées à la demande)
+├── commands/weekly-review.md / weekly-report.md / harness-remediate.md
 └── plugins/
-    ├── weekly-advisor.ts                     ← plugin enveloppe : 15 tools weekly_* (chemins dérivés)
-     └── weekly-advisor-engine/                ← moteur Python (package, config, tests)
+    ├── weekly-advisor.ts                     ← plugin enveloppe : 16 tools weekly_* (chemins dérivés)
+    └── weekly-advisor-engine/                ← moteur Python (package, config, tests)
 ```
 
 ## Documentation

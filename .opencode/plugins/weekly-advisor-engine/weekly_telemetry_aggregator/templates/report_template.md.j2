@@ -145,6 +145,12 @@
 {% if harness_scope and harness_scope.unscoped_files %}
 - ⚠ Surfaces `.opencode/` hors allowlist non scannées : {{ harness_scope.unscoped_files|length }} fichier(s), aperçu : {{ harness_scope.unscoped_files[:10]|join(", ") }}{% if harness_scope.unscoped_files|length > 10 %} (+{{ harness_scope.unscoped_files|length - 10 }}){% endif %}
 {% endif %}
+{% if harness_remediation and harness_remediation.summary %}
+- Remédiation harness : {{ harness_remediation.summary.applied }} appliquée(s), {{ harness_remediation.summary.proposed }} proposée(s), {{ harness_remediation.summary.manual }} manuelle(s), {{ harness_remediation.summary.blocked }} bloquée(s), {{ harness_remediation.summary.rolled_back }} annulée(s)
+{% if harness_remediation.postcheck and harness_remediation.postcheck.status != "not_run" %}
+  - Post-check : {{ harness_remediation.postcheck.status }}{% if harness_remediation.postcheck.reason %} — {{ harness_remediation.postcheck.reason }}{% endif %}
+{% endif %}
+{% endif %}
 {% if harness_top_rules %}
 Top règles violées :
 {% for r in harness_top_rules %}

@@ -26,6 +26,7 @@ se passer en override `lookback_days` sur `weekly_run`/`weekly_releases` (v6.0.b
 3.6. `weekly_watch_validate` — validation déterministe du finding contre le contexte
 4. Auto-drafting (skill `weekly-drafting`) — `weekly_draft_candidates` + `weekly_commit_draft`
 5. `weekly_harness` — lint `.opencode/`
+5.5. Remédiation harness (skill `harness-remediation`) — propositions puis `weekly_harness_remediate`
 6. `weekly_insights` — deltas, alertes, maintenance
 6.5. Cohérence environnement (skill `weekly-coherence-review`)
 7. Rapport : `weekly_report_prep` → `weekly_report_blocks_draft` → prose (skill

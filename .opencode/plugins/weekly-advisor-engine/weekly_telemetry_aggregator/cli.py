@@ -1,7 +1,7 @@
 """CLI entry point for weekly-telemetry-aggregator (Part 0 §3, Part 1 §5).
 
 Subcommands: run (default), show-session, releases, watch-context, watch-validate, insights,
-report-prep, report-assemble, commit-draft, doctor, self-cost.
+report-prep, report-assemble, harness, harness-remediate, commit-draft, doctor, self-cost.
 """
 
 from __future__ import annotations
@@ -285,6 +285,17 @@ def _cmd_harness(args, cfg) -> int:
     return harness(cfg, anchor=args.anchor)
 
 
+def _cmd_harness_remediate(args, cfg) -> int:
+    from .harness_remediation import run as remediation_run
+
+    return remediation_run(
+        cfg,
+        proposal_path=Path(args.proposal),
+        mode=args.mode,
+        anchor=args.anchor,
+    )
+
+
 def _cmd_commit_draft(args, cfg) -> int:
     from .safe_git_write import commit_draft
 
@@ -443,6 +454,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Step 5: scoped harness-eval lint → weekly-harness-digest-<date>.json",
     )
     p_harness.set_defaults(func=_cmd_harness)
+
+    p_harness_remediate = sub.add_parser(
+        "harness-remediate",
+        parents=[global_parent],
+        help="Deterministic, gated harness proposal dry-run or remediation",
+    )
+    p_harness_remediate.add_argument(
+        "--proposal", required=True, help="JSON proposal file under output_dir"
+    )
+    p_harness_remediate.add_argument(
+        "--mode",
+        choices=("dry-run", "apply"),
+        default="dry-run",
+        help="dry-run is the safe default; apply requires every gate",
+    )
+    p_harness_remediate.set_defaults(func=_cmd_harness_remediate)
 
     p_blocks = sub.add_parser(
         "report-blocks-draft",

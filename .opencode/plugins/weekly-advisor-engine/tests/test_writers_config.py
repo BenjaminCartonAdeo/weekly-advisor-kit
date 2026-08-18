@@ -29,6 +29,8 @@ def test_config_defaults(tmp_path: Path):
     assert cfg.output_dir == Path("~/opencode-weekly-reports").expanduser()
     assert cfg.window_hours() == 7 * 24
     assert cfg.harness_include.default_profile == "advisory"
+    assert cfg.harness_auto_fix_rules == []
+    assert cfg.harness_auto_fix_max_files == 1
     assert cfg.harness_include.profiles["strict"] == list(
         DEFAULT_HARNESS_INCLUDE_PROFILES["strict"]
     )
@@ -47,6 +49,8 @@ def test_config_json_overrides(tmp_path: Path):
                 "top_sessions_limit": 2,
                 "include_subagents": False,
                 "advisor_run_title": "Revue X",
+                "harness_auto_fix_rules": ["quality/example-rule"],
+                "harness_auto_fix_max_files": 2,
                 "harness_include": {
                     "default_profile": "strict",
                     "profiles": {"strict": [".opencode/commands/**/*.md"]},
@@ -65,6 +69,8 @@ def test_config_json_overrides(tmp_path: Path):
     assert cfg.top_sessions_limit == 2
     assert cfg.include_subagents is False
     assert cfg.advisor_run_title == "Revue X"
+    assert cfg.harness_auto_fix_rules == ["quality/example-rule"]
+    assert cfg.harness_auto_fix_max_files == 2
     assert cfg.harness_include.default_profile == "strict"
     assert cfg.harness_include.profiles["strict"] == [".opencode/commands/**/*.md"]
     assert cfg.harness_include.exclude_patterns == [".opencode/vendor/**"]

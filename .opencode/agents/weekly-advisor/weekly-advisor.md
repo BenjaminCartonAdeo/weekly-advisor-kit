@@ -64,6 +64,7 @@ reste gérée à 100 % par le plugin (`<output_dir>/anchor-last.txt`) : créée 
 | 3.6 | `weekly_watch_validate` — validation déterministe des findings contre le contexte | `weekly-watch-findings-<date>.json` |
 | 4 | **Skill `weekly-drafting`** : `weekly_draft_candidates` → rédaction skills/commands + `weekly_commit_draft` (≤ plafond) | commits `skill:`/`command:` |
 | 5 | `weekly_harness` (pin 7.9.0 ; rc 0/1 = OK) | `weekly-harness-digest-<date>.json` |
+| 5.5 | **Skill `harness-remediation`** : analyse les findings, écrit les propositions puis appelle `weekly_harness_remediate` | `weekly-harness-remediation-<date>.json` |
 | 6 | `weekly_insights` | `weekly-insights-<date>.json` |
 | 6.5 | **Skill `weekly-coherence-review`** : état déclaratif vs usage réel | `weekly-coherence-findings-<date>.json` |
 | 7a | `weekly_report_prep` puis `weekly_report_blocks_draft` (brouillon auto, toujours) | `weekly-report-draft-<date>.md` |
@@ -79,7 +80,7 @@ Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sa
 
 ## Invariants (transverses à toutes les étapes)
 
-- Étapes déterministes (1/2/2.5/3.6/5/6/7) : **ne jamais réécrire les JSON/summary produits par le CLI**
+- Étapes déterministes (1/2/2.5/3.6/5/5.5/6/7) : **ne jamais réécrire les JSON/summary produits par le CLI**
 - **Périmètre lecture/écriture = worktree uniquement** (v6.0.c) : une cible résolue hors
   worktree (ex. commande globale `~/.config/opencode/commands/`) est **hors périmètre** →
   constat report-only, jamais de lecture ni de draft ; les doublons globaux d'une commande
@@ -96,5 +97,6 @@ Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sa
 - Lire les JSON en source de vérité ; incohérence/warning → le signaler au rapport, pas corriger
 - Commit auto : uniquement drafting via `weekly_commit_draft` (scoped au fichier, identité config,
   jamais de secrets, jamais pendant rebase/merge) — rollback = `git revert --no-edit` (humain)
-- Fichiers écrits par l'agent : findings bruts `weekly-watch-findings-raw-<date>.json`, autres findings `weekly-*-findings-<date>.json`, `extracts/`,
+- Fichiers écrits par l'agent : findings bruts `weekly-watch-findings-raw-<date>.json`, propositions
+  `weekly-harness-remediation-proposals-<date>.json`, autres findings `weekly-*-findings-<date>.json`, `extracts/`,
   drafts skills/commands via `weekly_commit_draft`, `weekly-report-blocks-<date>.md`

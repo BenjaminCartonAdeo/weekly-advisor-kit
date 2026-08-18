@@ -647,6 +647,35 @@ def test_report_harness_budget_rendered(tmp_path: Path):
     assert "Dépendances : 3 arêtes" in text
 
 
+def test_report_harness_remediation_status_rendered(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps({"inspection": {"summary": {"errors": 0, "warnings": 0}}}),
+        encoding="utf-8",
+    )
+    (tmp_path / f"weekly-harness-remediation-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "summary": {
+                    "applied": 0,
+                    "proposed": 2,
+                    "manual": 1,
+                    "blocked": 3,
+                    "rolled_back": 0,
+                },
+                "postcheck": {"status": "not_run", "reason": "no project changes were requested"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    draft, _ctx = report_prep(cfg, anchor=RUN.isoformat())
+    text = draft.read_text(encoding="utf-8")
+    assert "Remédiation harness" in text
+    assert "2 proposée(s)" in text
+    assert "1 manuelle(s)" in text
+
+
 def test_report_section6_renders_watch_recommendations(tmp_path: Path):
     """v5.31 : les recommandations de la veille critique sont rendues en tête du §6."""
     _write_summary(tmp_path)

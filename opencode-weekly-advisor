@@ -1,6 +1,6 @@
 # Spec — Pipeline `opencode-weekly-advisor` (v6.0)
 
-Dernières révisions intégrées : v6.0.h (harness-eval sur projection temporaire allowlistée, exclusions vendor/artefacts obligatoires, chemins et compteurs normalisés), v6.0.g (contexte déterministe de veille `watch-context`, inventaire worktree, validation des findings bruts et interdiction d'adopter un plugin déjà déclaré), v6.0.f (doctor : `opencode` hors PATH = warning non fatal), v6.0.e (ancre propagée aux tools report), v6.0.d (export `default` requis par le loader), v6.0.c (périmètre de draft = worktree uniquement — lecture/écriture jamais hors du projet, résolution projet-d'abord des cibles `command-improvement`, échec de permission non fatal ; `commit-draft` refuse tout fichier hors `.opencode/` du dépôt), v6.0.b (fix closure plugin — le layout v6.0 plantait au 1er appel tool, `ReferenceError: worktree is not defined`, détecté par smoke test d'exécution CI ; `--lookback-days` override de run déduit du prompt, jamais d'édition de config ; ancre rafraîchie si périmée — cadence hebdo non figée ; étape 0 `weekly_doctor` systématique), v6.0.a (rename `opencode-weekly-advisor-5` → `opencode-weekly-advisor` ; doctor : `project_root` sans `.opencode/` = exit 2 — sentinelle d'installation ; warning « config introuvable » uniquement sans `--config` explicite), v6.0 (layout kit : plugin enveloppe `weekly_*` + agent tools, `bash: deny`, moteur dans `.opencode/plugins/weekly-advisor-engine/`), v5.32.b (modèle hors agent — `--model` du cron), v5.31.c (retours du run de test complet).
+Dernières révisions intégrées : v6.0.i (remédiation harness pilotée par agent, propositions JSON, gate de confiance, post-check et rollback transactionnel), v6.0.h (harness-eval sur projection temporaire allowlistée, exclusions vendor/artefacts obligatoires, chemins et compteurs normalisés), v6.0.g (contexte déterministe de veille `watch-context`, inventaire worktree, validation des findings bruts et interdiction d'adopter un plugin déjà déclaré), v6.0.f (doctor : `opencode` hors PATH = warning non fatal), v6.0.e (ancre propagée aux tools report), v6.0.d (export `default` requis par le loader), v6.0.c (périmètre de draft = worktree uniquement — lecture/écriture jamais hors du projet, résolution projet-d'abord des cibles `command-improvement`, échec de permission non fatal ; `commit-draft` refuse tout fichier hors `.opencode/` du dépôt), v6.0.b (fix closure plugin — le layout v6.0 plantait au 1er appel tool, `ReferenceError: worktree is not defined`, détecté par smoke test d'exécution CI ; `--lookback-days` override de run déduit du prompt, jamais d'édition de config ; ancre rafraîchie si périmée — cadence hebdo non figée ; étape 0 `weekly_doctor` systématique), v6.0.a (rename `opencode-weekly-advisor-5` → `opencode-weekly-advisor` ; doctor : `project_root` sans `.opencode/` = exit 2 — sentinelle d'installation ; warning « config introuvable » uniquement sans `--config` explicite), v6.0 (layout kit : plugin enveloppe `weekly_*` + agent tools, `bash: deny`, moteur dans `.opencode/plugins/weekly-advisor-engine/`), v5.32.b (modèle hors agent — `--model` du cron), v5.31.c (retours du run de test complet).
 
 # Partie 0 — Orchestration : de cron à l'agent
 
@@ -18,7 +18,7 @@ cron (utilisateur, hors périmètre)
  ▼
 Agent OpenCode "weekly-advisor" (session dédiée, non-interactive,
  serveur interne sur le port fixé)
- │ ← plugin enveloppe .opencode/plugins/weekly-advisor.ts : 15 tools weekly_*
+ │ ← plugin enveloppe .opencode/plugins/weekly-advisor.ts : 16 tools weekly_*
  │ (chaque tool appelle le CLI du moteur ; chemins dérivés du cwd, ancre auto)
  │
  ├─ 1. weekly_run
@@ -55,6 +55,11 @@ Agent OpenCode "weekly-advisor" (session dédiée, non-interactive,
  │ → lint déterministe de .opencode/ dans son état final
  │ → weekly-harness-digest-<date>.json directement (--format json natif)
  │
+ ├─ 5.5. weekly_harness_remediate (Partie 5.5, LLM + gate déterministe)
+ │ → weekly-harness-remediation-proposals-<date>.json (propositions)
+ │ → weekly-harness-remediation-<date>.json (appliquées / proposées / bloquées / rollback)
+ │ → aucune correction security/* ni aucun commit automatique
+ │
  ├─ 6. weekly_insights
  │ → weekly-insights-<date>.json (Partie 6 : deltas, alertes, R1-R4)
  │
@@ -89,28 +94,29 @@ kit — pluriel, convention OpenCode ; vérifié par `opencode agent list`).
 **Agent mince + skills d'étape + plugin enveloppe ** : l'agent est un squelette
 (~60 lignes) qui porte l'ordre figé, les permissions et les invariants transverses.
 Toute la mécanique déterministe passe par le **plugin enveloppe**
-`.opencode/plugins/weekly-advisor.ts` : il expose **15 tools `weekly_*`** (un par
+`.opencode/plugins/weekly-advisor.ts` : il expose **16 tools `weekly_*`** (un par
 sous-commande CLI : `run`, `releases`, `watch-context`, `audit-candidates`, `show-session`, `harness`,
-`insights`, `draft-candidates`, `watch-validate`, `report-prep`, `report-blocks-draft`, `report-assemble`,
+`insights`, `draft-candidates`, `watch-validate`, `harness-remediate`, `report-prep`, `report-blocks-draft`, `report-assemble`,
 `commit-draft`, `self-cost`, `doctor`), résout le moteur Python
 (`.opencode/plugins/weekly-advisor-engine/`), le binaire python
 (`$WEEKLY_PYTHON` ?? `<moteur>/.venv/bin/python`) et l'ancre
 (`<output_dir>/anchor-last.txt`) — **zéro bash pour la mécanique**. Chaque étape LLM
-charge un skill dédié `.opencode/skills/weekly-*/SKILL.md` — chargé à la demande, jamais
+charge un skill dédié dans `.opencode/skills/` — chargé à la demande, jamais
 en permanence :
 
 | Étape | Skill |
 |---|---|
 | 3 — audit qualitatif | `weekly-quality-audit` (catégories, schéma findings, paraphrase) |
 | 3.5 — veille critique | `weekly-watch-review` (adopt/improve/token-saver/ignore, sécurité) |
+| 5.5 — remédiation harness | `harness-remediation` (analyse, proposition, gate, post-check) |
 | 4 — auto-drafting | `weekly-drafting` (formats, public cible, commit-draft) |
 | 6.5 — cohérence | `weekly-coherence-review` (catégories, tags action, lecture seule) |
 | 7b — prose | `weekly-report-prose` (contrat anti-hallucination, balises) |
 
-Deux commands complètent l'interface humaine : `/weekly-review` (lance la chaîne complète,
-même ordre que le cron, `agent: weekly-advisor` dans son frontmatter) et `/weekly-report`
-(résumé du dernier rapport). **Transposabilité (kit projet)** : l'agent, les 5 skills,
-les 2 commands, le plugin et le moteur sont génériques (aucune référence au projet
+Trois commands complètent l'interface humaine : `/weekly-review` (lance la chaîne complète,
+même ordre que le cron, `agent: weekly-advisor` dans son frontmatter), `/weekly-report`
+(résumé du dernier rapport) et `/harness-remediate` (traitement borné des findings harness).
+**Transposabilité (kit projet)** : les agents, les 6 skills, les 3 commands, le plugin et le moteur sont génériques (aucune référence au projet
 d'origine — tout se lit via la config `project_root`) ; un repo cible copie tout
 `.opencode/` (agent, skills, commands, `plugins/weekly-advisor.ts`, `plugins/weekly-advisor-engine/`)
 + la spec, crée le venv du moteur (`uv sync --project .opencode/plugins/weekly-advisor-engine --all-extras`),
@@ -119,7 +125,7 @@ adapte la config (`project_root`, `output_dir`) ; le modèle est passé par
 l'agent), et la commande du cron fonctionne telle quelle.
 
 Toolset volontairement restreint — l'agent qui existe pour réduire vos coûts de tokens ne doit pas être le premier poste de dépense qu'il audite :
-- **`bash: deny` ** — plus d'allowlist : l'agent n'a **aucun** besoin de bash, les 15 tools `weekly_*` couvrent toute la mécanique (le CLI et `harness-eval` sont appelés par le plugin, pas par l'agent). Auparavant, une allowlist de deux familles bash (`python -m weekly_telemetry_aggregator …` et `harness-eval harness-lint …`) tenait ce rôle ; le plugin la rend obsolète. Le rollback `git revert --no-edit` reste une action humaine, hors périmètre.
+- **`bash: deny` ** — plus d'allowlist : l'agent n'a **aucun** besoin de bash, les 16 tools `weekly_*` couvrent toute la mécanique (le CLI et `harness-eval` sont appelés par le plugin, pas par l'agent). Auparavant, une allowlist de deux familles bash (`python -m weekly_telemetry_aggregator …` et `harness-eval harness-lint …`) tenait ce rôle ; le plugin la rend obsolète. Le rollback `git revert --no-edit` reste une action humaine, hors périmètre.
 - **`read`**, scope : les JSON/extracts produits par les Parties 1/2/3/5/6, `.opencode/skills/`, `.opencode/commands/`, `.opencode/agents/`, le fichier de config du pipeline (`<engine>/weekly-telemetry-config.json` — layout kit : `.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`, résolu par le plugin)
 - **`write`**, scope : `.opencode/skills/`, `.opencode/commands/` (**création uniquement en v1** — la v2 étend à l'édition des fichiers existants pour R4, cf. Partie 6 §5), le répertoire de sortie (rapport, findings, extracts)
 - **Pas** d'accès au catalogue complet d'un agent de code généraliste (pas de `edit` sur le code applicatif, pas de navigateur/web) — cet agent audite et documente, il ne développe pas
@@ -167,7 +173,7 @@ Le cron (**configuré et géré par vos soins, hors périmètre**) doit satisfai
 
 **Invocation** : `opencode run --port 4096 --agent weekly-advisor --model <model> --dir <project_root> "Lance la revue hebdomadaire"` — le modèle est une **décision du déploiement** (jamais en dur dans l'agent : `--model` du cron ou config globale en interactif) ; non-interactif, `--dir` = `project_root` de la config (Partie 1 §6). **Statut** : le cron alerte si `weekly-report-<date>.md` est absent en fin d'exécution (cf. §4) — le rapport est le signal, pas de fichier de statut.
 
-**PATH — résolu par le plugin, plus par le cron ** : l'agent n'appelle plus rien en bash — les 15 tools `weekly_*` invoquent le CLI du moteur via le binaire `$WEEKLY_PYTHON` ?? `<moteur>/.venv/bin/python` résolu par le plugin (défaut : venv du projet moteur, `.opencode/plugins/weekly-advisor-engine/.venv`). Le cron n'a donc **rien à mettre sur PATH** pour la pipeline (auparavant : il devait exposer `python` du venv du projet et `harness-eval` — la résolution est désormais interne au plugin, `harness-eval` compris). Seule contrainte : le venv du moteur doit exister (`uv sync --project .opencode/plugins/weekly-advisor-engine --all-extras`), et `git` reste requis pour les étapes git du rapport (déjà sur le PATH du cron par défaut).
+**PATH — résolu par le plugin, plus par le cron ** : l'agent n'appelle plus rien en bash — les 16 tools `weekly_*` invoquent le CLI du moteur via le binaire `$WEEKLY_PYTHON` ?? `<moteur>/.venv/bin/python` résolu par le plugin (défaut : venv du projet moteur, `.opencode/plugins/weekly-advisor-engine/.venv`). Le cron n'a donc **rien à mettre sur PATH** pour la pipeline (auparavant : il devait exposer `python` du venv du projet et `harness-eval` — la résolution est désormais interne au plugin, `harness-eval` compris). Seule contrainte : le venv du moteur doit exister (`uv sync --project .opencode/plugins/weekly-advisor-engine --all-extras`), et `git` reste requis pour les étapes git du rapport (déjà sur le PATH du cron par défaut).
 
 **Recommandé — venv du moteur** : `uv sync --project <project_root>/.opencode/plugins/weekly-advisor-engine --all-extras` (le plugin résout par défaut `<moteur>/.venv/bin/python` ; un autre emplacement passe par `$WEEKLY_PYTHON`). Le venv du moteur est gitignoré ; c'est le seul prérequis d'installation côté environnement (auparavant : le cron devait sourcer un venv projet — fragile en PATH minimal — c'est caduc).
 
@@ -941,6 +947,18 @@ final de la semaine) :
 **Exit code** : `0` et `1` (violations) sont acceptés ; binaire absent, erreur de
 subprocessus ou code inattendu sont fatals. Un digest manquant reste non bloquant pour
 `insights` (Partie 6 §2), qui met les deltas lint à `null` et ajoute un warning.
+
+**Étape 5.5 — remédiation pilotée par agent** : le skill `harness-remediation` lit le
+digest, rédige `weekly-harness-remediation-proposals-<date>.json`, puis appelle
+`weekly_harness_remediate`. Le mode `apply` n'autorise que `confidence=high`, une règle
+présente dans `harness_auto_fix_rules`, un remplacement textuel unique sous
+`.opencode/skills/` ou `.opencode/commands/`, et au plus
+`harness_auto_fix_max_files` fichier(s). Les règles `security/*`, agents, plugins,
+configuration et fichiers hors worktree sont toujours bloqués. Le défaut est une
+allowlist vide et aucun commit automatique. Toute application est testée dans une
+projection temporaire ; si le finding ciblé ne disparaît pas ou si le post-check échoue,
+tous les fichiers modifiés sont restaurés. Le résultat `weekly-harness-remediation-<date>.json`
+est intégré au rapport avec les statuts applied/proposed/manual/blocked/rolled_back.
 
 ## 4. Sortie — digest natif confirmé (mesuré, v7.9.0)
 

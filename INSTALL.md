@@ -45,6 +45,8 @@ Fichier : `.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`
 | `project_root` | **Chemin ABSOLU du repo audité** — celui qui contient `.opencode/` | placeholder `/path/to/weekly-advisor-kit` ✋ |
 | `output_dir` | Chemin ABSOLU des artefacts (rapports JSON/MD) | placeholder `/path/to/weekly-advisor-kit/reports` ✋ |
 | `harness_include` | Profil et globs allowlistés pour l'étape `harness` | `advisory` (policy + documentation) |
+| `harness_auto_fix_rules` | Règles explicitement autorisées pour l'application automatique | `[]` (aucune) |
+| `harness_auto_fix_max_files` | Nombre maximum de fichiers modifiés par remédiation | `1` |
 | `git_name` / `git_email` | Identité des commits auto-rédigés (drafting) | `Weekly Advisor` / `weekly-advisor@localhost` (déjà neutres) |
 
 Les deux placeholders sont **volontaires** : tant qu'ils ne sont pas adaptés, `weekly_doctor`

@@ -136,6 +136,10 @@ class TelemetryConfig:
     harness_eval_version: str = "7.9.0"
     #: harness rules excluded from top-rules/lint counts (noise reduction, v5.28).
     harness_ignored_rules: list[str] = field(default_factory=list)
+    #: rules that may pass the deterministic harness remediation gate.
+    harness_auto_fix_rules: list[str] = field(default_factory=list)
+    #: maximum number of distinct files changed by one remediation run.
+    harness_auto_fix_max_files: int = 1
     #: harness-eval input allowlist; projection is temporary and project-relative.
     harness_include: HarnessIncludeConfig = field(default_factory=HarnessIncludeConfig)
     #: optional explicit previous summary for the first insights run (v5.28).
@@ -224,6 +228,12 @@ def _parse(p: Path) -> TelemetryConfig:
     cfg.harness_ignored_rules = [
         str(x) for x in raw.get("harness_ignored_rules", cfg.harness_ignored_rules)
     ]
+    auto_fix_rules = raw.get("harness_auto_fix_rules", cfg.harness_auto_fix_rules)
+    if isinstance(auto_fix_rules, list):
+        cfg.harness_auto_fix_rules = [str(x) for x in auto_fix_rules]
+    auto_fix_max_files = raw.get("harness_auto_fix_max_files", cfg.harness_auto_fix_max_files)
+    if isinstance(auto_fix_max_files, int) and not isinstance(auto_fix_max_files, bool):
+        cfg.harness_auto_fix_max_files = max(0, auto_fix_max_files)
     include_raw = raw.get("harness_include")
     top_level_profile = raw.get("harness_include_profile")
     if isinstance(top_level_profile, str) and top_level_profile:

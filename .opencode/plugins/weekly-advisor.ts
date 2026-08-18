@@ -216,6 +216,37 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
         900_000,
       ),
 
+      weekly_harness_remediate: tool({
+        description:
+          "Étape 5.5 : analyse/applique les propositions harness via une gate déterministe. " +
+          "Dry-run par défaut ; aucun commit automatique.",
+        args: {
+          proposal_file: tool.schema.string().describe("chemin absolu du JSON de propositions"),
+          mode: tool.schema
+            .enum(["dry-run", "apply"])
+            .optional()
+            .describe("dry-run par défaut ; apply uniquement après toutes les gates"),
+          anchor: tool.schema.string().optional().describe("ISO-8601 override (rare)"),
+        },
+        async execute(args) {
+          const { config, outputDir } = resolveEngine(worktree)
+          const anchor = anchorArg(args.anchor, config, outputDir)
+          return runCli(
+            worktree,
+            [
+              "harness-remediate",
+              "--proposal",
+              args.proposal_file,
+              "--mode",
+              args.mode ?? "dry-run",
+              "--anchor",
+              anchor,
+            ],
+            900_000,
+          )
+        },
+      }),
+
       weekly_insights: anchorTool(
         "Étape 6 : deltas, alertes et maintenance. Écrit weekly-insights-<date>.json.",
         (anchor) => ["insights", "--anchor", anchor],

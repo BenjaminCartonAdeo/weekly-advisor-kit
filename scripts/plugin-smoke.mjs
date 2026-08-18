@@ -141,6 +141,21 @@ for (const [name, cmd] of [
   check(`${name} appelle ${cmd}`, argvN.includes(cmd), argvN.join(" "))
 }
 
+// 8. remediator : proposition bornée et mode dry-run propagés
+fs.writeFileSync(argvLog, "RESET")
+await tools.weekly_harness_remediate.execute({
+  proposal_file: "/tmp/weekly-harness-proposals.json",
+  mode: "dry-run",
+})
+const remediationArgv = fs.readFileSync(argvLog, "utf8").trim().split(" ")
+check("weekly_harness_remediate appelle harness-remediate", remediationArgv.includes("harness-remediate"))
+check("remediator dry-run par défaut explicite", remediationArgv.includes("dry-run"), remediationArgv.join(" "))
+check(
+  "remediator passe --anchor",
+  remediationArgv.includes("--anchor") && remediationArgv[remediationArgv.indexOf("--anchor") + 1] === anchor3,
+  remediationArgv.join(" "),
+)
+
 if (failures.length) {
   console.error(`\nSMOKE FAIL (${failures.length})\n- ${failures.join("\n- ")}`)
   process.exit(1)
