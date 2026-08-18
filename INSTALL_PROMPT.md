@@ -2,7 +2,7 @@
 
 kit_version: 6.0.i
 source_repo: https://github.com/BenjaminCartonAdeo/weekly-advisor-kit
-archive_url: https://codeload.github.com/BenjaminCartonAdeo/weekly-advisor-kit/tar.gz/refs/heads/master
+clone_url: https://github.com/BenjaminCartonAdeo/weekly-advisor-kit.git
 
 > Usage : colle ce fichier dans une session OpenCode (remplace `<TARGET>`), ou demande
 > à un agent : « Lis https://raw.githubusercontent.com/BenjaminCartonAdeo/weekly-advisor-kit/master/INSTALL_PROMPT.md et exécute-le. »
@@ -23,8 +23,8 @@ adapte sa configuration à ce repo, valide l'installation par des portes déterm
 **AUTORISÉ :**
 - `/tmp` (téléchargement, extraction)
 - `<TARGET>/.opencode/` (copie du kit), `<TARGET>/reports/` (rapport d'installation)
-- réseau sortant limité à github.com (`raw.githubusercontent.com`, `codeload.github.com`, `api.github.com`)
-- commandes : `curl`, `tar`, `git ls-remote` (lecture), `uv sync`, `sed` (config),
+- réseau sortant limité à github.com (`github.com`, `raw.githubusercontent.com`)
+- commandes : `git clone` / `git rev-parse` (lecture), `uv sync`, `sed` (config),
   `python`/`pytest` du venv moteur, `node` (smoke), `cp`, `rm`, `cmp`, `grep`, `mkdir`
 
 **INTERDIT (violation = arrêt immédiat + rapport KO) :**
@@ -41,8 +41,6 @@ adapte sa configuration à ce repo, valide l'installation par des portes déterm
 | Binaire | Minimum | Vérification |
 |---|---|---|
 | `git` | — | `git --version` |
-| `curl` | — | `curl --version` |
-| `tar` | — | `tar --version` |
 | `uv` | ≥ 0.4 | `uv --version` |
 | `python3` | ≥ 3.11 | `python3 --version` |
 | `node` | ≥ 18 | `node --version` |
@@ -61,18 +59,19 @@ git -C <TARGET> rev-parse --is-inside-work-tree   # doit afficher `true`, sinon 
 test -d <TARGET>/.opencode && echo "EXISTS" || echo "ABSENT"   # note l'état (réinstallation)
 ```
 
-### 5.1 Téléchargement et extraction
+### 5.1 Récupération du kit — clone frais, jamais de tarball
+
+> GitHub met en cache les tarballs codeload ~5 min après un push : une archive relue
+> peut être périmée. `git clone --depth 1` est toujours frais et fournit le SHA exact.
 
 ```sh
 rm -rf /tmp/weekly-advisor-kit-src
-mkdir -p /tmp/weekly-advisor-kit-src
-curl -fsSL https://codeload.github.com/BenjaminCartonAdeo/weekly-advisor-kit/tar.gz/refs/heads/master \
-  -o /tmp/weekly-advisor-kit-src/kit.tar.gz
-tar -xzf /tmp/weekly-advisor-kit-src/kit.tar.gz -C /tmp/weekly-advisor-kit-src
-SRC=/tmp/weekly-advisor-kit-src/weekly-advisor-kit-master
+git clone --depth 1 --branch master https://github.com/BenjaminCartonAdeo/weekly-advisor-kit.git \
+  /tmp/weekly-advisor-kit-src
+SRC=/tmp/weekly-advisor-kit-src
 ```
 
-### 5.2 Vérification de l'archive (toutes obligatoires, une seule KO = STOP)
+### 5.2 Vérification du clone (toutes obligatoires, une seule KO = STOP)
 
 ```sh
 grep -m1 "^kit_version:" "$SRC/INSTALL_PROMPT.md"   # doit contenir `6.0.i`
@@ -86,7 +85,7 @@ for f in INSTALL.md README.md opencode-weekly-advisor \
   .opencode/plugins/weekly-advisor-engine/weekly_telemetry_aggregator/__init__.py; do
   test -f "$SRC/$f" || { echo "MANQUANT: $f"; exit 2; }
 done
-git ls-remote https://github.com/BenjaminCartonAdeo/weekly-advisor-kit.git refs/heads/master
+git -C "$SRC" rev-parse HEAD
 # note le SHA affiché → `source_sha` du rapport (audit de reproductibilité)
 ```
 
@@ -143,10 +142,10 @@ cd <TARGET>/.opencode/plugins/weekly-advisor-engine
 - rc `0` ou `1` = OK (warning `opencode` hors PATH acceptable)
 - rc `2` = **FATAL** → rollback (5.8) + rapport KO
 
-**2. Smoke plugin (depuis l'archive extraite, pas la cible)**
+**2. Smoke plugin (depuis le clone, pas la cible)**
 
 ```sh
-cd /tmp/weekly-advisor-kit-src/weekly-advisor-kit-master
+cd /tmp/weekly-advisor-kit-src
 node scripts/plugin-smoke.mjs
 ```
 
