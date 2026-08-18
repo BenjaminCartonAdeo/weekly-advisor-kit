@@ -3,6 +3,11 @@
 Guide pas à pas pour installer, configurer et valider `weekly-advisor-kit` sur un poste.
 Temps total : ~10 min (hors run complet de test : 30-45 min).
 
+> **Installation pilotée par agent ?** Utilisez [`INSTALL_PROMPT.md`](INSTALL_PROMPT.md) :
+> collez son contenu dans une session OpenCode (substituez `<TARGET>`), ou demandez à un
+> agent de lire `https://raw.githubusercontent.com/BenjaminCartonAdeo/weekly-advisor-kit/master/INSTALL_PROMPT.md`
+> et de l'exécuter. Ce guide reste la référence humaine (explications, dépannage, cron).
+
 > Vue d'ensemble et architecture : [`README.md`](README.md) · Contrat complet : `opencode-weekly-advisor`
 
 ## 1. Prérequis (binaires du poste)

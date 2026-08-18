@@ -10,12 +10,14 @@ Chaque lundi, il vous dit : combien vous avez dépensé, ce qui a coûté cher e
 quels skills/commands sont inutilisés ou redondants, quoi surveiller dans l'écosystème,
 et quelles corrections peuvent être auto-rédigées (proposées, jamais imposées).
 
-Le kit tient dans **un seul dossier** `.opencode/` : deux agents dédiés, 6 skills
+Le kit s'articule autour d'**un dossier cœur** `.opencode/` : deux agents dédiés, 6 skills
 qualitatifs, 3 commands, un **plugin enveloppe** (16 tools `weekly_*`) et un
-**moteur Python** déterministe (`weekly-telemetry-aggregator`).
+**moteur Python** déterministe (`weekly-telemetry-aggregator`) ; à la racine : la spec,
+les guides d'installation (humain + agent) et les scripts de validation.
 
 **Spécification** : [`opencode-weekly-advisor`](opencode-weekly-advisor) (le contrat complet, 8 parties)
-**Installation pas à pas** : [`INSTALL.md`](INSTALL.md)
+**Installation pas à pas (humain)** : [`INSTALL.md`](INSTALL.md)
+**Installation pilotée par agent** : [`INSTALL_PROMPT.md`](INSTALL_PROMPT.md) — colle le contenu dans une session OpenCode ou demande à un agent de lire la raw URL (`raw.githubusercontent.com/BenjaminCartonAdeo/weekly-advisor-kit/master/INSTALL_PROMPT.md`)
 
 ## Ce que fait le kit
 
@@ -93,14 +95,18 @@ Détails et heartbeat recommandé : [`INSTALL.md`](INSTALL.md) §2.7.
 ## Structure
 
 ```
-.opencode/
-├── agents/weekly-advisor/weekly-advisor.md   ← orchestration : ordre figé, invariants, bash: deny
-├── agents/harness-remediator/harness-remediator.md ← remédiation bornée, sans edit/bash
-├── skills/{weekly-*,harness-remediation}/SKILL.md ← 6 étapes qualitatives (chargées à la demande)
-├── commands/weekly-review.md / weekly-report.md / harness-remediate.md
-└── plugins/
-    ├── weekly-advisor.ts                     ← plugin enveloppe : 16 tools weekly_* (chemins dérivés)
-    └── weekly-advisor-engine/                ← moteur Python (package, config, tests)
+racine/
+├── INSTALL.md / INSTALL_PROMPT.md / README.md   ← guides d'installation (humain / agent) et vue d'ensemble
+├── opencode-weekly-advisor                      ← la spec (contrat complet)
+├── scripts/plugin-smoke.mjs                     ← smoke test du plugin (validation d'installation)
+└── .opencode/
+    ├── agents/weekly-advisor/weekly-advisor.md   ← orchestration : ordre figé, invariants, bash: deny
+    ├── agents/harness-remediator/harness-remediator.md ← remédiation bornée, sans edit/bash
+    ├── skills/{weekly-*,harness-remediation}/SKILL.md ← 6 étapes qualitatives (chargées à la demande)
+    ├── commands/weekly-review.md / weekly-report.md / harness-remediate.md
+    └── plugins/
+        ├── weekly-advisor.ts                     ← plugin enveloppe : 16 tools weekly_* (chemins dérivés)
+        └── weekly-advisor-engine/                ← moteur Python (package, config, tests)
 ```
 
 ## Documentation
@@ -108,7 +114,8 @@ Détails et heartbeat recommandé : [`INSTALL.md`](INSTALL.md) §2.7.
 | Document | Contenu |
 |---|---|
 | [`opencode-weekly-advisor`](opencode-weekly-advisor) | La spec complète (8 parties) — le contrat du pipeline : orchestration, télémétrie, veille, audit, drafting, lint, insights, rapport |
-| [`INSTALL.md`](INSTALL.md) | Installation pas à pas : prérequis, config, validation, cron, mise à jour, dépannage |
+| [`INSTALL_PROMPT.md`](INSTALL_PROMPT.md) | Installation **pilotée par agent** : prompt autonome à coller ou à lire via raw URL — clone, config, doctor, smoke, pytest, rapport |
+| [`INSTALL.md`](INSTALL.md) | Installation pas à pas pour un humain : prérequis, config, validation, cron, mise à jour, dépannage |
 | [`README.md`](README.md) | Ce fichier — vue d'ensemble |
 
 ## Limites & compatibilité
