@@ -11,6 +11,8 @@ metadata:
 La collecte (`releases`, déterministe) est une matière première. La valeur est ici :
 le **regard critique** qui croise l'offre du marché avec les problèmes mesurés du run.
 
+Tous les artefacts du run sont dans `<output_dir>/runs/current/` (alias stable du run actif).
+
 ## Entrées
 
 - `weekly-ecosystem-<date>.json` — **TOUS** les items, pas seulement les premiers
@@ -27,7 +29,7 @@ le **regard critique** qui croise l'offre du marché avec les problèmes mesuré
 Le skill écrit uniquement le brouillon LLM dans :
 
 ```text
-reports/weekly-watch-findings-raw-<date>.json
+reports/current/weekly-watch-findings-raw-<date>.json
 ```
 
 Il ne écrit jamais directement `weekly-watch-findings-<date>.json` : ce fichier est

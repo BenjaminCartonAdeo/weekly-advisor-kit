@@ -12,7 +12,8 @@ Sélection déterministe en amont (aucun choix de session ici), examen LLM des t
 
 ## Flux
 
-1. `weekly_audit_candidates` → `weekly-audit-candidates-<date>.json`
+1. `weekly_audit_candidates` → `weekly-audit-candidates-<date>.json` (dans `<output_dir>/runs/current/`,
+   alias stable du run actif)
    (équivalent CLI : `audit-candidates --anchor <ancre>` — l'ancre est gérée par le
    plugin `<output_dir>/anchor-last.txt`, pas de calcul manuel)
    (`audited` / `unaudited`, plafond `audit_max_sessions` — ne PAS auditer au-delà)

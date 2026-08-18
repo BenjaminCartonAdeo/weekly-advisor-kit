@@ -10,7 +10,8 @@ metadata:
 
 Le rapport final est assemblé par du code (`report-prep` → draft → `report-assemble`).
 Cette étape écrit UNIQUEMENT le bloc « Constats qualitatifs » (section 4) dans
-`weekly-report-blocks-<date>.md`. Le brouillon déterministe
+`weekly-report-blocks-<date>.md` (dans `<output_dir>/runs/current/` — alias stable du run
+actif). Le brouillon déterministe
 (`weekly-report-blocks-auto-<date>.md`, produit par `report-blocks-draft`) est le filet
 de sécurité : si le bloc est rejeté ou absent, le rapport sort quand même avec lui.
 
@@ -23,7 +24,9 @@ maintenance non vides). Sinon, NE PAS créer le fichier (le brouillon auto suffi
 
 1. **AUCUN chiffre** dans le texte visible (les balises de citation sont exclues du check)
 2. **Balise de source sur chaque affirmation** :
-   - `[F:ses_xxx#categorie]` — finding étape 3
+   - `[F:<session_id_complet>#categorie]` — finding étape 3 ; **l'ID de session doit être
+     complet** (ex. `ses_01J7XQ4...`, jamais tronqué — un ID raccourci est rejeté par
+     `report-assemble` (v6.0.k F5))
    - `[M:categorie]` — maintenance (R1-R4)
    - `[A:regle]` — alerte insights
    - chaque balise doit exister dans les JSON d'entrée

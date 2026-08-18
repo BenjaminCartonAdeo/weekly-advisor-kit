@@ -353,3 +353,109 @@ def test_cli_parser_defaults_to_dry_run():
 
     args = build_parser().parse_args(["harness-remediate", "--proposal", "proposal.json"])
     assert args.mode == "dry-run"
+
+
+# ---------------------------------------------------------------- v6.0.k F2/F3
+
+
+def test_apply_is_eligible_on_agents_plugins_and_agents_md(tmp_path: Path):
+    """v6.0.k (F2) : apply accepte agents/, plugins/ et AGENTS.md (hors moteur)."""
+    for index, rel in enumerate(
+        (
+            ".opencode/agents/foo/agent.md",
+            ".opencode/plugins/foo.ts",
+            ".opencode/AGENTS.md",
+        )
+    ):
+        project = tmp_path / f"project_{index}"
+        (tmp_path / f"case_{index}").mkdir(parents=True, exist_ok=True)
+        target = project / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("old", encoding="utf-8")
+        cfg = _config(tmp_path / f"case_{index}", project)
+        cfg.harness_auto_fix_rules = ["quality/example-rule"]
+        proposal = _proposal(cfg.output_dir / "proposal.json", path=rel)
+        (cfg.output_dir / f"weekly-harness-digest-{DATE}.json").write_text(
+            json.dumps(
+                {
+                    "inspection": {
+                        "uncategorized": [
+                            {"path": rel, "findings": [{"rule": "quality/example-rule"}]}
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert run(cfg, proposal_path=proposal, mode="apply", anchor=ANCHOR) == EXIT_OK
+        assert target.read_text(encoding="utf-8") == "new", rel
+
+
+def test_apply_on_engine_path_is_never_eligible(tmp_path: Path):
+    """Le moteur himself n'est jamais une cible d'auto-apply."""
+    project = tmp_path / "project"
+    target = project / ".opencode/plugins/weekly-advisor-engine/engine.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("old", encoding="utf-8")
+    cfg = _config(tmp_path, project)
+    cfg.harness_auto_fix_rules = ["quality/example-rule"]
+    proposal = _proposal(
+        cfg.output_dir / "proposal.json",
+        path=".opencode/plugins/weekly-advisor-engine/engine.py",
+    )
+    assert run(cfg, proposal_path=proposal, mode="apply", anchor=ANCHOR) == EXIT_OK
+    result = _result(cfg)
+    assert result["summary"]["blocked"] == 1
+    assert "never auto-apply to the engine" in result["proposals"][0]["reason"]
+
+
+def test_manual_proposal_accepts_null_patch_fields(tmp_path: Path):
+    """v6.0.k (F3) : old_text/new_text null (ou absents) valides hors apply."""
+    project, _target = _project(tmp_path)
+    cfg = _config(tmp_path, project)
+    proposal = cfg.output_dir / "proposal.json"
+    item = {
+        "rule": "quality/example-rule",
+        "path": ".opencode/commands/foo.md",
+        "line": 1,
+        "decision": "manual",
+        "confidence": "low",
+        "description": "needs a human",
+        "rationale": "no safe replacement",
+        "old_text": None,
+        "new_text": None,
+    }
+    proposal.write_text(
+        json.dumps({"schema_version": 1, "date": DATE, "proposals": [item]}),
+        encoding="utf-8",
+    )
+    assert run(cfg, proposal_path=proposal, mode="dry-run", anchor=ANCHOR) == EXIT_OK
+    result = _result(cfg)
+    assert result["summary"]["manual"] == 1
+    assert result["proposals"][0]["status"] == "manual"
+
+
+def test_apply_with_null_old_text_is_blocked(tmp_path: Path):
+    """apply exige toujours un old_text non-vide (string)."""
+    project, _target = _project(tmp_path)
+    cfg = _config(tmp_path, project)
+    proposal = cfg.output_dir / "proposal.json"
+    item = {
+        "rule": "quality/example-rule",
+        "path": ".opencode/commands/foo.md",
+        "line": 1,
+        "decision": "apply",
+        "confidence": "high",
+        "description": "patch",
+        "rationale": "exact text",
+        "old_text": None,
+        "new_text": None,
+    }
+    proposal.write_text(
+        json.dumps({"schema_version": 1, "date": DATE, "proposals": [item]}),
+        encoding="utf-8",
+    )
+    assert run(cfg, proposal_path=proposal, mode="apply", anchor=ANCHOR) == EXIT_OK
+    result = _result(cfg)
+    assert result["summary"]["blocked"] == 1
+    assert "non-empty old_text" in result["proposals"][0]["reason"]

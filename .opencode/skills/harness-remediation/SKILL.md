@@ -25,7 +25,8 @@ puis `weekly_harness_remediate` décide déterministiquement ce qui peut être a
 Écrire d'abord :
 
 ```text
-reports/weekly-harness-remediation-proposals-<date>.json
+reports/current/weekly-harness-remediation-proposals-<date>.json
+(répertoire du run actif — alias stable `runs/current`)
 ```
 
 Puis appeler obligatoirement :
@@ -40,7 +41,7 @@ weekly_harness_remediate({
 Le tool écrit ensuite :
 
 ```text
-reports/weekly-harness-remediation-<date>.json
+reports/current/weekly-harness-remediation-<date>.json
 ```
 
 Le résultat explique chaque décision (`applied`, `proposed`, `manual`, `blocked`,
@@ -79,15 +80,20 @@ Le fichier brut suit ce format :
 
 `apply` n'est admissible que pour une correction mécanique, un remplacement exact et
 une règle explicitement présente dans `harness_auto_fix_rules`. Le tool impose en plus
-la cible `.opencode/skills/` ou `.opencode/commands/`, une seule occurrence et une
-limite de taille.
+la cible `.opencode/AGENTS.md` exact ou `.opencode/{skills,commands,agents,plugins}/`
+(hors `plugins/weekly-advisor-engine/` — le moteur n'est jamais une cible), une seule
+occurrence et une limite de taille (v6.0.k F2).
+
+`old_text`/`new_text` : chaîne non vide obligatoire pour `apply` ; pour `propose`,
+`manual` et `dismiss`, ils peuvent être omis ou `null` (v6.0.k F3).
 
 ## Règles de sécurité
 
 - Ne jamais appliquer automatiquement une règle `security/*`, même avec `confidence=high`.
 - Ne jamais éditer directement un fichier pendant cette étape.
-- Ne jamais modifier `.opencode/opencode.json`, un agent, un plugin, la config moteur,
-  la base SQLite, la CI ou un fichier hors worktree.
+- Ne jamais éditer un fichier directement pendant cette étape : seules les propositions
+  validées par la gate sont appliquées (jamais `.opencode/opencode.json`, jamais le moteur
+  `weekly-advisor-engine/`, jamais la base SQLite, jamais la CI, jamais hors worktree).
 - Ne jamais inventer une correction à partir du seul message du scanner.
 - Une correction sémantique devient `propose` ou `manual`, avec une explication claire.
 - Le mode `dry-run` ne modifie jamais le worktree et sert pour une exécution manuelle.

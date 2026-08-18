@@ -25,6 +25,13 @@ def _load_cfg(args) -> object:
 # ------------------------------------------------------------------ command handlers
 
 
+def _out_dir(cfg, date: str) -> Path:
+    """Active run directory for a dated command (v6.0.k F1); legacy root fallback."""
+    from .run_state import resolve_active_run_dir
+
+    return resolve_active_run_dir(cfg.output_dir, date)
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
@@ -75,7 +82,8 @@ def _cmd_audit_candidates(args, cfg) -> int:
 
     run_time = _parse_anchor(args.anchor)
     date = run_time.strftime("%Y-%m-%d")
-    summary_path = cfg.output_dir / f"weekly-summary-{date}.json"
+    out = _out_dir(cfg, date)
+    summary_path = out / f"weekly-summary-{date}.json"
     if not summary_path.is_file():
         print(
             f"audit-candidates: summary inexistante {summary_path} — lancer run d'abord",
@@ -101,7 +109,7 @@ def _cmd_audit_candidates(args, cfg) -> int:
         "unaudited": unaudited,
         "limit": cfg.audit_max_sessions,
     }
-    out_path = cfg.output_dir / f"weekly-audit-candidates-{date}.json"
+    out_path = out / f"weekly-audit-candidates-{date}.json"
     write_json_atomic(out_path, data)
     print(
         f"audit-candidates: {len(candidates)} candidats ({len(audited)} audités / "
@@ -119,7 +127,8 @@ def _cmd_draft_candidates(args, cfg) -> int:
 
     run_time = _parse_anchor(args.anchor)
     date = run_time.strftime("%Y-%m-%d")
-    findings_path = cfg.output_dir / f"weekly-quality-findings-{date}.json"
+    out = _out_dir(cfg, date)
+    findings_path = out / f"weekly-quality-findings-{date}.json"
     findings = None
     if findings_path.is_file():
         import json as _json
@@ -133,7 +142,7 @@ def _cmd_draft_candidates(args, cfg) -> int:
         "limit": cfg.max_candidates_per_run,
         "findings_file": findings_path.name if findings is not None else None,
     }
-    out_path = cfg.output_dir / f"weekly-draft-candidates-{date}.json"
+    out_path = out / f"weekly-draft-candidates-{date}.json"
     write_json_atomic(out_path, data)
     print(
         f"draft-candidates: {len(candidates)} candidat(s) (plafond {cfg.max_candidates_per_run}) "
@@ -149,7 +158,8 @@ def _cmd_releases(args, cfg) -> int:
 
     data, rc = releases_run(cfg, anchor=args.anchor, lookback_days=args.lookback_days)
     run_time = data["generated_at"]
-    out_path = cfg.output_dir / f"weekly-ecosystem-{run_time[:10]}.json"
+    out = _out_dir(cfg, run_time[:10])
+    out_path = out / f"weekly-ecosystem-{run_time[:10]}.json"
     write_json_atomic(out_path, data)
     print(
         f"releases: new_items={len(data['new_items'])} core_changes={len(data['core_changes'])} file={out_path}",
@@ -166,10 +176,11 @@ def _cmd_watch_context(args, cfg) -> int:
 
     run_time = _parse_anchor(args.anchor)
     date = run_time.strftime("%Y-%m-%d")
+    out = _out_dir(cfg, date)
     ecosystem_path = (
         Path(args.ecosystem).expanduser()
         if args.ecosystem
-        else cfg.output_dir / f"weekly-ecosystem-{date}.json"
+        else out / f"weekly-ecosystem-{date}.json"
     )
     ecosystem, error = load_ecosystem_report(ecosystem_path)
     if ecosystem is None:
@@ -185,7 +196,7 @@ def _cmd_watch_context(args, cfg) -> int:
         generated_at=run_time,
         ecosystem_path=ecosystem_path,
     )
-    out_path = cfg.output_dir / f"weekly-watch-context-{date}.json"
+    out_path = out / f"weekly-watch-context-{date}.json"
     write_json_atomic(out_path, context)
     for warning in context["warnings"]:
         print(f"watch-context: WARNING: {warning}", flush=True)
@@ -209,8 +220,9 @@ def _cmd_watch_validate(args, cfg) -> int:
 
     run_time = _parse_anchor(args.anchor)
     date = run_time.strftime("%Y-%m-%d")
-    context_path = cfg.output_dir / f"weekly-watch-context-{date}.json"
-    raw_path = cfg.output_dir / f"weekly-watch-findings-raw-{date}.json"
+    out = _out_dir(cfg, date)
+    context_path = out / f"weekly-watch-context-{date}.json"
+    raw_path = out / f"weekly-watch-findings-raw-{date}.json"
 
     context, context_error = load_watch_context(context_path)
     if context is None:
@@ -222,7 +234,7 @@ def _cmd_watch_validate(args, cfg) -> int:
         return EXIT_TOTAL_FAILURE
 
     result = validate_findings(raw_findings, context, date=date)
-    out_path = cfg.output_dir / f"weekly-watch-findings-{date}.json"
+    out_path = out / f"weekly-watch-findings-{date}.json"
     write_json_atomic(out_path, result)
     counts = result["validation"]["counts"]
     print(

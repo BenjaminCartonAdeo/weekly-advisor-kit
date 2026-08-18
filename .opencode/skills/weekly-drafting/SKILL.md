@@ -13,7 +13,8 @@ commit direct traçable. Jamais de correction du code applicatif : écriture dan
 
 ## Flux
 
-1. `weekly_draft_candidates` → `weekly-draft-candidates-<date>.json`
+1. `weekly_draft_candidates` → `weekly-draft-candidates-<date>.json` (dans `<output_dir>/runs/current/`,
+   alias stable du run actif)
    (équivalent CLI : `draft-candidates --anchor <ancre>` — l'ancre est gérée par le
    plugin `<output_dir>/anchor-last.txt`, pas de calcul manuel)
    (candidats skill-candidate / command-candidate / command-improvement, sévérité DESC,

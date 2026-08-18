@@ -53,6 +53,10 @@ reste gérée à 100 % par le plugin (`<output_dir>/anchor-last.txt`) : créée 
 
 ## Déroulement (ordre figé, cron hebdomadaire ou `/weekly-review`)
 
+Chaque run écrit **tous ses artefacts** dans `<output_dir>/runs/<date>-<uuid8>/` (annoncé
+par `weekly_run`) ; `runs/current/` est l'alias stable du run actif. Les noms de fichiers
+ci-dessous sont inchangés — ils vivent dans ce répertoire.
+
 | Étape | Action (tool) | Sortie |
 |---|---|---|
 | 0 | `weekly_doctor` — diagnostic du kit, **systématique** (rc 0/1 = OK, 2 = fatale → stopper sans rapport) | texte |

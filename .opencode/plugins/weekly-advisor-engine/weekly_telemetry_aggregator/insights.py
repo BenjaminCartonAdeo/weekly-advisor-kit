@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .config import InsightsConfig, TelemetryConfig
 from .main import EXIT_OK, EXIT_TOTAL_FAILURE
+from .run_state import RUNS_DIR, active_run_meta, resolve_active_run_dir
 from .util import iso as _iso
 from .util import load_json as _load
 from .util import parse_anchor as _parse_anchor
@@ -470,8 +471,15 @@ def _state_previous(output_dir: Path, current_date: str) -> tuple[dict | None, d
     state = _load(output_dir / "previous_run.json")
     if not state or str(state.get("run_date", "")) >= current_date:
         return None, None
-    prev_sum = _load(output_dir / state["summary_file"]) if state.get("summary_file") else None
-    prev_dig = _load(output_dir / state["digest_file"]) if state.get("digest_file") else None
+    # v6.0.k (F1): previous_run.json may point into a runs/<id>/ directory.
+    base = output_dir
+    run_dir = state.get("run_dir")
+    if isinstance(run_dir, str) and run_dir:
+        candidate = output_dir / run_dir
+        if candidate.is_dir():
+            base = candidate
+    prev_sum = _load(base / state["summary_file"]) if state.get("summary_file") else None
+    prev_dig = _load(base / state["digest_file"]) if state.get("digest_file") else None
     if prev_sum is None and prev_dig is None:
         return None, None
     return prev_sum, prev_dig
@@ -485,11 +493,12 @@ def _artifacts_before(output_dir: Path, pattern: str, current_date: str) -> list
     silently degrading lint deltas when only a digest was present).
     """
     found = []
-    for p in sorted(output_dir.glob(pattern)):
-        m = re.search(r"(\d{4}-\d{2}-\d{2})\.json$", p.name)
+    candidates = [*output_dir.glob(pattern), *output_dir.glob(f"{RUNS_DIR}/*/{pattern}")]
+    for path in sorted(candidates):
+        m = re.search(r"(\d{4}-\d{2}-\d{2})\.json$", path.name)
         if m and m.group(1) < current_date:
-            found.append((m.group(1), p))
-    return found
+            found.append((m.group(1), path))
+    return sorted(found)
 
 
 def _discover_previous(pattern: str, current_date: str, output_dir: Path) -> dict | None:
@@ -508,7 +517,8 @@ def run(
 ) -> int:
     run_time = _parse_anchor(anchor)
     date = run_time.strftime("%Y-%m-%d")
-    out = cfg.output_dir
+    root = cfg.output_dir
+    out = resolve_active_run_dir(root, date)
 
     current_path = out / f"weekly-summary-{date}.json"
     current = _load(current_path)
@@ -522,17 +532,17 @@ def run(
 
     # Previous discovery: state file first (P1.2), glob fallback, then explicit
     # baseline summary (P1.1) — first run with real trends.
-    state_summary, state_digest = _state_previous(out, date)
+    state_summary, state_digest = _state_previous(root, date)
     previous = (
         state_summary
         if state_summary is not None
-        else _discover_previous("weekly-summary-*.json", date, out)
+        else _discover_previous("weekly-summary-*.json", date, root)
     )
     current_digest = _load(out / f"weekly-harness-digest-{date}.json")
     previous_digest = (
         state_digest
         if state_digest is not None
-        else _discover_previous("weekly-harness-digest-*.json", date, out)
+        else _discover_previous("weekly-harness-digest-*.json", date, root)
     )
     baseline_used: str | None = None
     if previous is None and (baseline_summary_path or cfg.baseline_summary_path):
@@ -543,7 +553,7 @@ def run(
                 previous, baseline_used = loaded, str(bp)
 
     recent = [current]
-    for _d, p in _artifacts_before(out, "weekly-summary-*.json", date)[::-1]:
+    for _d, p in _artifacts_before(root, "weekly-summary-*.json", date)[::-1]:
         if len(recent) >= 8:
             break
         loaded = _load(p)
@@ -586,18 +596,18 @@ def run(
     out_path = out / f"weekly-insights-{date}.json"
     write_json_atomic(out_path, data)
     # P1.2: persist discovery state for the next run (survives file renames/purges).
-    write_json_atomic(
-        out / "previous_run.json",
-        {
-            "schema_version": 1,
-            "run_date": date,
-            "summary_file": current_path.name,
-            "digest_file": f"weekly-harness-digest-{date}.json"
-            if current_digest is not None
-            else None,
-            "insights_file": out_path.name,
-        },
-    )
+    previous_state: dict = {
+        "schema_version": 2,
+        "run_date": date,
+        "summary_file": current_path.name,
+        "digest_file": f"weekly-harness-digest-{date}.json" if current_digest is not None else None,
+        "insights_file": out_path.name,
+    }
+    run_meta = active_run_meta(root, date)
+    if run_meta:
+        previous_state["run_id"] = run_meta["run_id"]
+        previous_state["run_dir"] = run_meta["run_dir"]
+    write_json_atomic(root / "previous_run.json", previous_state)
     print(
         f"insights: alerts={len(data['alerts'])} maintenance={len(data['maintenance']['findings'])} "
         f"previous={data['previous_run_date']} baseline={baseline_used or 'none'} file={out_path}",

@@ -19,6 +19,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .config import TelemetryConfig
 from .insights import flatten_harness_findings
+from .run_state import active_run_meta, resolve_active_run_dir
 from .util import iso as _iso
 from .util import load_json as _load_json
 from .util import parse_anchor as _parse_anchor
@@ -165,7 +166,7 @@ def report_prep(
     """Render deterministic sections into `weekly-report-draft-<date>.md`."""
     run_time = _parse_anchor(anchor)
     date = run_time.strftime("%Y-%m-%d")
-    out = cfg.output_dir
+    out = resolve_active_run_dir(cfg.output_dir, date)
 
     summary = _load_json(out / f"weekly-summary-{date}.json")
     if summary is None:
@@ -205,8 +206,10 @@ def report_prep(
         "harness_budget": (digest or {}).get("budget"),
         "harness_triggers": (digest or {}).get("triggers"),
         "harness_dependencies": (digest or {}).get("dependencies"),
-        "harness_scope": (digest or {}).get("harness_include"),
+        "harness_scope": (digest or {}).get("harness_scope")
+        or (digest or {}).get("harness_include"),
         "harness_counts": (digest or {}).get("harness_counts"),
+        "run_dir": (active_run_meta(cfg.output_dir, date) or {}).get("run_dir"),
         "harness_remediation": _load_json(out / f"weekly-harness-remediation-{date}.json"),
         "warnings_grouped": _group_warnings(summary.get("warnings", [])),
         "watch_warned": any(
@@ -252,7 +255,7 @@ def report_blocks_draft(
     """
     run_time = _parse_anchor(anchor)
     date = run_time.strftime("%Y-%m-%d")
-    out = cfg.output_dir
+    out = resolve_active_run_dir(cfg.output_dir, date)
 
     summary = _load_json(out / f"weekly-summary-{date}.json")
     if summary is None:
@@ -386,7 +389,7 @@ def report_assemble(
     """Inject the LLM blocks file into the draft → final report."""
     run_time = _parse_anchor(anchor)
     date = run_time.strftime("%Y-%m-%d")
-    out = cfg.output_dir
+    out = resolve_active_run_dir(cfg.output_dir, date)
     warnings: list[str] = []
 
     draft = out / f"weekly-report-draft-{date}.md"

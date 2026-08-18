@@ -9,7 +9,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from helpers import seed_hybrid_file, seed_v1_file, tzutc
+from helpers import active_run_file, seed_hybrid_file, seed_v1_file, tzutc
 
 from weekly_telemetry_aggregator.config import TelemetryConfig
 from weekly_telemetry_aggregator.main import (
@@ -69,7 +69,7 @@ def test_run_writes_summary_and_exit_zero(tmp_path: Path):
     db = _seed_n(tmp_path / "opencode.db", 16)
     cfg = _cfg(tmp_path, db)
     rc = run(cfg, anchor=RUN_TIME.isoformat())
-    out = tmp_path / "weekly-summary-2026-08-12.json"
+    out = active_run_file(tmp_path, "weekly-summary-2026-08-12.json")
     assert out.exists()
     data = json.loads(out.read_text(encoding="utf-8"))
     assert data["schema_version"] == 2
@@ -94,7 +94,9 @@ def test_run_excludes_active_session_with_warning(tmp_path: Path):
     )
     cfg = _cfg(tmp_path, db)
     rc = run(cfg, anchor=RUN_TIME.isoformat())
-    data = json.loads((tmp_path / "weekly-summary-2026-08-12.json").read_text(encoding="utf-8"))
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
     assert data["totals"]["session_count"] == 0
     assert any(w["message"].startswith("session active exclue") for w in data["warnings"])
     assert all("partial" in w for w in data["warnings"])  # champ sérialisé
@@ -126,7 +128,9 @@ def test_run_excludes_advisor_session_silently(tmp_path: Path):
     )
     cfg = _cfg(tmp_path, db)
     run(cfg, anchor=RUN_TIME.isoformat())
-    data = json.loads((tmp_path / "weekly-summary-2026-08-12.json").read_text(encoding="utf-8"))
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
     assert data["totals"]["session_count"] == 1  # advisor not counted, no warning about it
     assert not any("advisor" in w["message"] for w in data["warnings"])
 
@@ -148,7 +152,9 @@ def test_run_prefilters_sessions_updated_before_window(tmp_path: Path):
     )
     cfg = _cfg(tmp_path, db)
     run(cfg, anchor=RUN_TIME.isoformat())
-    data = json.loads((tmp_path / "weekly-summary-2026-08-12.json").read_text(encoding="utf-8"))
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
     assert data["totals"]["session_count"] == 0
     assert data["totals"]["total_cost_usd"] == 0.0
 
@@ -178,17 +184,29 @@ def test_run_missing_pricing_and_cross_check_warnings(tmp_path: Path):
     )
     cfg = _cfg(tmp_path, db)
     run(cfg, anchor=RUN_TIME.isoformat())
-    data = json.loads((tmp_path / "weekly-summary-2026-08-12.json").read_text(encoding="utf-8"))
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
     msgs = [w["message"] for w in data["warnings"]]
     assert any(m.startswith("missing-pricing:") for m in msgs)
     assert any(m.startswith("cross-check mismatch") for m in msgs)
 
 
-def test_run_skips_existing_without_force(tmp_path: Path):
+def test_rerun_same_anchor_creates_fresh_run_dir(tmp_path: Path):
+    """v6.0.k (F1) : re-run même ancre = nouveau répertoire UUID, zéro collision."""
     db = _seed_n(tmp_path / "opencode.db", 16)
     cfg = _cfg(tmp_path, db)
     assert run(cfg, anchor=RUN_TIME.isoformat()) == EXIT_OK
-    assert run(cfg, anchor=RUN_TIME.isoformat()) == EXIT_OK  # idempotent re-run
+    first = active_run_file(tmp_path, "weekly-summary-2026-08-12.json")
+    assert first.exists()
+    assert run(cfg, anchor=RUN_TIME.isoformat()) == EXIT_OK  # nouveau run indépendant
+    runs = sorted(d for d in (tmp_path / "runs").glob("2026-08-12-*") if d.is_dir())
+    assert len(runs) == 2
+    state = json.loads((tmp_path / "run_state.json").read_text(encoding="utf-8"))
+    assert state["run_dir"] in {f"runs/{d.name}" for d in runs}
+    # le run actif (state) contient son summary ; le premier run est intact
+    assert (tmp_path / state["run_dir"] / "weekly-summary-2026-08-12.json").is_file()
+    assert first.exists()  # artefacts du premier run préservés
 
 
 def test_build_usage_read_failure_marks_failed():
@@ -386,7 +404,9 @@ def test_harness_runs_and_writes_digest(tmp_path: Path, monkeypatch):
     assert harness(cfg, anchor=RUN_TIME.isoformat()) == EXIT_OK
     lint_call = [c for c in calls if "harness-lint" in c]
     assert lint_call
-    assert lint_call[0][-1] == str(tmp_path / "weekly-harness-digest-2026-08-12.json")
+    assert lint_call[0][-1] == str(
+        active_run_file(tmp_path, "weekly-harness-digest-2026-08-12.json")
+    )
 
 
 def test_harness_uses_one_temporary_projection_and_merges_scope(tmp_path: Path, monkeypatch):
@@ -441,7 +461,9 @@ def test_harness_uses_one_temporary_projection_and_merges_scope(tmp_path: Path, 
     assert lint_call[0:2] == ["/usr/bin/harness-eval", "harness-lint"]
     assert Path(lint_call[2]) != project
     digest = json.loads(
-        (cfg.output_dir / "weekly-harness-digest-2026-08-12.json").read_text(encoding="utf-8")
+        (active_run_file(cfg.output_dir, "weekly-harness-digest-2026-08-12.json")).read_text(
+            encoding="utf-8"
+        )
     )
     assert digest["inspection"]["uncategorized"][0]["path"] == ".opencode/commands/review.md"
     assert digest["harness_include"]["included_file_count"] == 1
@@ -539,7 +561,9 @@ def test_cross_check_tolerance_silences_small_mismatch(tmp_path: Path):
     )
     cfg = _cfg(tmp_path, db, cross_check_tolerance_pct=0.5)
     run(cfg, anchor=RUN_TIME.isoformat())
-    data = json.loads((tmp_path / "weekly-summary-2026-08-12.json").read_text(encoding="utf-8"))
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
     msgs = [w["message"] for w in data["warnings"]]
     assert not any(m.startswith("cross-check mismatch") for m in msgs)
 
@@ -562,7 +586,9 @@ def test_run_writes_reported_cost_usd(tmp_path: Path):
     )
     cfg = _cfg(tmp_path, db)
     run(cfg, anchor=RUN_TIME.isoformat())
-    data = json.loads((tmp_path / "weekly-summary-2026-08-12.json").read_text(encoding="utf-8"))
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
     assert data["top_sessions_by_cost"][0]["reported_cost_usd_lifetime"] == 0.25
 
 
@@ -609,7 +635,9 @@ def test_run_writes_selection_audit(tmp_path: Path):
     )
     cfg = _cfg(tmp_path, db)
     rc = run(cfg, anchor=RUN_TIME.isoformat())
-    data = json.loads((tmp_path / "weekly-summary-2026-08-12.json").read_text(encoding="utf-8"))
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
     sel = data["selection"]
     assert rc == EXIT_OK
     assert sel["window_touched"] == 4
@@ -652,7 +680,9 @@ def test_run_marks_unflushed_session_and_warns(tmp_path: Path):
     )
     cfg = _cfg(tmp_path, db)
     run(cfg, anchor=RUN_TIME.isoformat())
-    data = json.loads((tmp_path / "weekly-summary-2026-08-12.json").read_text(encoding="utf-8"))
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
     sel = data["selection"]
     statuses = {r["status"] for r in sel["recent"]}
     assert statuses == {"unflushed", "no-activity"}
@@ -681,7 +711,9 @@ def test_run_zero_touched_warning(tmp_path: Path):
     )
     cfg = _cfg(tmp_path, db)
     run(cfg, anchor=RUN_TIME.isoformat())
-    data = json.loads((tmp_path / "weekly-summary-2026-08-12.json").read_text(encoding="utf-8"))
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
     assert data["selection"]["window_touched"] == 0
     assert any("aucune session mise à jour" in w["message"] for w in data["warnings"])
 
@@ -698,7 +730,7 @@ def test_run_period_mismatch_message(tmp_path: Path, capsys):
     rc2 = run(cfg, anchor=(RUN_TIME + timedelta(minutes=5)).isoformat())
     assert rc2 == EXIT_OK
     out = capsys.readouterr().out
-    assert "période" in out or "ancre" in out or "output exists" in out
+    assert "re-run fenêtre" in out  # v6.0.k : même date => nouveau run isolé, informé
 
 
 def test_selection_audit_has_parent_id(tmp_path: Path):
@@ -726,7 +758,9 @@ def test_selection_audit_has_parent_id(tmp_path: Path):
     )
     cfg = _cfg(tmp_path, db)
     run(cfg, anchor=RUN_TIME.isoformat())
-    data = json.loads((tmp_path / "weekly-summary-2026-08-12.json").read_text(encoding="utf-8"))
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
     by_id = {r["session_id"]: r for r in data["selection"]["recent"]}
     assert by_id["ses_child"]["parent_id"] == "ses_parent"
     assert by_id["ses_parent"]["parent_id"] is None
@@ -753,7 +787,9 @@ def test_selection_counts_unflushed(tmp_path: Path):
     seed_v1_file(db, [{"id": "ses_live", "title": "Live", "start": ts, "updated": ts}])
     cfg = _cfg(tmp_path, db)
     run(cfg, anchor=RUN_TIME.isoformat())
-    data = json.loads((tmp_path / "weekly-summary-2026-08-12.json").read_text(encoding="utf-8"))
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
     sel = data["selection"]
     assert sel["excluded_unflushed"] == 1
     assert sel["excluded_no_activity"] == 0
@@ -804,7 +840,9 @@ def test_run_counts_sessions_from_live_table(tmp_path: Path):
     seed_hybrid_file(db, sessions)
     cfg = _cfg(tmp_path, db)
     run(cfg, anchor=RUN_TIME.isoformat())
-    data = json.loads((tmp_path / "weekly-summary-2026-08-12.json").read_text(encoding="utf-8"))
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
     assert data["totals"]["session_count"] == 8
     assert data["selection"]["counted"] == 8
 
@@ -862,7 +900,9 @@ def test_dual_adapter_counts_both_tables(tmp_path: Path):
     assert {"ses_cli_1", "ses_cli_2", "ses_cli_3"} <= ids  # les deux mondes
     cfg = _cfg(tmp_path, db)
     run(cfg, anchor=RUN_TIME.isoformat())
-    data = json.loads((tmp_path / "weekly-summary-2026-08-12.json").read_text(encoding="utf-8"))
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
     assert data["totals"]["session_count"] == 3
     assert data["totals"]["total_cost_usd"] == round(0.1 + 0.2 + 0.3, 6)
 
@@ -904,8 +944,8 @@ def test_self_cost_falls_back_to_weekly_advisor_session(tmp_path: Path, capsys):
     assert "1.2500" in out
 
 
-def test_run_warns_on_window_mismatch(tmp_path: Path, capsys):
-    """v5.30 (H) : summary existant avec fenêtre différente → note dans le message."""
+def test_rerun_same_day_different_window_is_isolated(tmp_path: Path, capsys):
+    """v6.0.k (F1) : même jour + fenêtre différente = runs distincts, pas d'écrasement."""
     db = _seed_n(tmp_path / "opencode.db", 2)
     cfg = _cfg(tmp_path, db)
     cfg.lookback_days = 7
@@ -913,8 +953,12 @@ def test_run_warns_on_window_mismatch(tmp_path: Path, capsys):
     cfg.lookback_days = 14  # même jour, fenêtre différente
     rc = run(cfg, anchor=(RUN_TIME + timedelta(minutes=1)).isoformat())
     assert rc == EXIT_OK
+    runs = sorted(d for d in (tmp_path / "runs").glob("2026-08-12-*") if d.is_dir())
+    assert len(runs) == 2
+    summaries = sorted((tmp_path / "runs").glob("2026-08-12-*/weekly-summary-2026-08-12.json"))
+    assert len(summaries) == 2  # aucune perte (v5.31 c est résolu par design)
     out = capsys.readouterr().out
-    assert "fenêtre existante" in out and "≠ 336h" in out
+    assert "re-run fenêtre" in out
 
 
 def test_windowed_cost_above_lifetime_warns(tmp_path: Path):
@@ -936,7 +980,9 @@ def test_windowed_cost_above_lifetime_warns(tmp_path: Path):
     )
     cfg = _cfg(tmp_path, db)
     run(cfg, anchor=RUN_TIME.isoformat())
-    data = json.loads((tmp_path / "weekly-summary-2026-08-12.json").read_text(encoding="utf-8"))
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
     assert any("windowed cost" in w["message"] for w in data["warnings"])
     mismatch = [w for w in data["warnings"] if "windowed cost" in w["message"]][0]
     assert mismatch["parts_cost"] == 5.0 and mismatch["session_v2_cost"] == 0.4
@@ -975,13 +1021,15 @@ def test_run_lookback_days_override(tmp_path: Path, capsys):
     assert rc == EXIT_OK
     out = capsys.readouterr().out
     assert "fenêtre 21 j" in out
-    data = json.loads((tmp_path / "weekly-summary-2026-08-12.json").read_text(encoding="utf-8"))
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
     assert data["period"]["start"] == (RUN_TIME - timedelta(days=21)).strftime("%Y-%m-%dT%H:%M:%SZ")
     assert cfg.lookback_days == 21  # mutation en mémoire seulement
 
 
-def test_run_force_warns_on_window_mismatch(tmp_path: Path, capsys):
-    """v5.31 (c) : --force avec fenêtre différente avertit de la perte de baseline."""
+def test_rerun_different_window_coexists(tmp_path: Path, capsys):
+    """v6.0.k (F1) : fenêtres différentes = runs distincts ; --force est un no-op informatif."""
     db = _seed_n(tmp_path / "opencode.db", 2)
     cfg = _cfg(tmp_path, db)
     cfg.lookback_days = 7
@@ -989,5 +1037,7 @@ def test_run_force_warns_on_window_mismatch(tmp_path: Path, capsys):
     cfg.lookback_days = 15
     rc = run(cfg, force=True, anchor=RUN_TIME.isoformat())
     assert rc == EXIT_OK
+    runs = sorted(d for d in (tmp_path / "runs").glob("2026-08-12-*") if d.is_dir())
+    assert len(runs) == 2
     out = capsys.readouterr().out
-    assert "baseline insights" in out and "168h ≠ 360h" in out
+    assert "--force sans objet" in out

@@ -1,7 +1,9 @@
 """Deterministic, transaction-safe remediation of harness proposals.
 
 The harness scanner is intentionally read-only with respect to the project.  A
-proposal can only mutate a narrowly allowlisted ``.opencode`` skill or command
+proposal can only mutate an allowlisted ``.opencode`` surface: ``AGENTS.md``,
+``skills/``, ``commands/``, ``agents/`` or ``plugins/`` — the engine itself is
+never eligible (v6.0.k, F2)
 when every gate is satisfied.  Applied changes are kept in memory until a
 temporary-output post-check proves that the proposed finding disappeared; a
 failed post-check restores every changed file.
@@ -22,6 +24,7 @@ from typing import Any
 from . import main as main_module
 from .config import TelemetryConfig
 from .main import EXIT_OK, EXIT_PARTIAL, EXIT_TOTAL_FAILURE, _parse_anchor
+from .run_state import resolve_active_run_dir
 from .writer import write_json_atomic
 
 MAX_PATCH_LINES = 120
@@ -180,10 +183,17 @@ def _resolve_target(project_root: Path, value: object) -> tuple[Path, str]:
         raise ValueError("path must not be absolute or traverse parent directories")
     relative_path = pure.as_posix()
     if not (
-        relative_path.startswith(".opencode/skills/")
+        relative_path == ".opencode/AGENTS.md"
+        or relative_path.startswith(".opencode/skills/")
         or relative_path.startswith(".opencode/commands/")
+        or relative_path.startswith(".opencode/agents/")
+        or relative_path.startswith(".opencode/plugins/")
     ):
-        raise ValueError("path must be under .opencode/skills/ or .opencode/commands/")
+        raise ValueError(
+            "path must be .opencode/AGENTS.md or under .opencode/{skills,commands,agents,plugins}/"
+        )
+    if relative_path.startswith(".opencode/plugins/weekly-advisor-engine/"):
+        raise ValueError("path is inside weekly-advisor-engine — never auto-apply to the engine")
     if relative_path.endswith("/"):
         raise ValueError("path must identify a file")
 
@@ -221,8 +231,8 @@ def _validate_proposal(
     confidence = raw["confidence"]
     description = raw["description"]
     rationale = raw["rationale"]
-    old_text = raw.get("old_text", "")
-    new_text = raw.get("new_text", "")
+    old_text = raw.get("old_text")
+    new_text = raw.get("new_text")
     if not isinstance(rule, str) or not rule:
         return None, "malformed proposal: rule must be a non-empty string"
     if not isinstance(line, int) or isinstance(line, bool) or line < 1:
@@ -231,13 +241,16 @@ def _validate_proposal(
         return None, f"malformed proposal: decision must be one of {sorted(VALID_DECISIONS)}"
     if not isinstance(confidence, str) or confidence not in VALID_CONFIDENCES:
         return None, f"malformed proposal: confidence must be one of {sorted(VALID_CONFIDENCES)}"
-    if not all(isinstance(value, str) for value in (description, rationale, old_text, new_text)):
+    if not isinstance(description, str) or not isinstance(rationale, str):
         return (
             None,
-            "malformed proposal: description, rationale, old_text, and new_text must be strings",
+            "malformed proposal: description and rationale must be strings",
         )
+    for name, value in (("old_text", old_text), ("new_text", new_text)):
+        if value is not None and not isinstance(value, str):
+            return None, f"malformed proposal: {name} must be a string or null"
     if decision == "apply" and not old_text:
-        return None, "malformed proposal: old_text must not be empty for apply"
+        return None, "malformed proposal: apply requires a non-empty old_text string"
 
     try:
         target_path, relative_path = _resolve_target(project_root, path_value)
@@ -622,7 +635,8 @@ def run(
         print(f"harness-remediate: FATAL: project_root cannot be resolved: {exc}", file=sys.stderr)
         return EXIT_TOTAL_FAILURE
 
-    baseline_path = cfg.output_dir / f"weekly-harness-digest-{date}.json"
+    out_dir = resolve_active_run_dir(cfg.output_dir, date)
+    baseline_path = out_dir / f"weekly-harness-digest-{date}.json"
     baseline_digest, _baseline_error = _load_digest(baseline_path)
     baseline_findings = _digest_findings(baseline_digest) if baseline_digest is not None else []
     baseline_keys = {
@@ -687,7 +701,7 @@ def run(
         "counts": {"findings": 0, "files": 0, "rules": 0},
         "reason": "no project changes were requested",
     }
-    result_path = cfg.output_dir / f"weekly-harness-remediation-{date}.json"
+    result_path = out_dir / f"weekly-harness-remediation-{date}.json"
     result: dict[str, Any] = {
         "schema_version": PROPOSAL_SCHEMA_VERSION,
         "date": date,

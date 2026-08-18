@@ -23,7 +23,10 @@ les findings alimentent la revue humaine (fusion, retrait, recalibrage).
 ## Style
 
 Ponytail-audit : **une ligne par finding**, ranked par impact (le plus gros gain d'abord),
-tag action sur chaque finding. Preuve obligatoire dans `evidence_summary` — sans preuve,
+tag action sur chaque finding. `generated_at` : **ancre du run en ISO-8601 UTC** (ex. `2026-08-18T10:39:33Z`, copiée de
+`anchor-last.txt`) — jamais minuit, jamais une date seule.
+
+Preuve obligatoire dans `evidence_summary` — sans preuve,
 écarté à la revue.
 
 ## Catégories
@@ -38,7 +41,8 @@ tag action sur chaque finding. Preuve obligatoire dans `evidence_summary` — sa
 
 ## Sortie
 
-`weekly-coherence-findings-<date>.json` — format findings (category, tag, severity,
+`<output_dir>/runs/current/weekly-coherence-findings-<date>.json` (répertoire du run actif —
+`runs/current` est l'alias stable) — format findings (category, tag, severity,
 description, evidence_summary, recommendation, recommendation_type,
 impact_order_of_magnitude), ranked.
 

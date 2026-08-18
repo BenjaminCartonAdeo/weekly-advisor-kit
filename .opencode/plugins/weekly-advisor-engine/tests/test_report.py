@@ -775,3 +775,61 @@ def test_assemble_missing_draft_message_explicit(tmp_path: Path):
     path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
     assert rc == 2
     assert any("consommé" in w and "report-prep" in w for w in warnings)
+
+
+# ---------------------------------------------------------------- v6.0.k template
+
+
+def test_template_maintenance_and_unscoped_lines_are_not_glued(tmp_path: Path):
+    """v6.0.k : trim_blocks ne colle plus les bullets (§7) ni la ligne unscoped (§5)."""
+    from weekly_telemetry_aggregator.run_state import activate_run
+
+    active = activate_run(tmp_path, DATE, RUN)
+    _write_summary(active.run_dir)
+    # insights avec 2 constats de maintenance + digests enrichis
+    (active.run_dir / f"weekly-insights-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "alerts": [],
+                "maintenance": {
+                    "findings": [
+                        {
+                            "severity": "HIGH",
+                            "description": "first finding",
+                            "recommendation": "fix it",
+                            "evidence_summary": "file:line proof one",
+                        },
+                        {
+                            "severity": "MEDIUM",
+                            "description": "second finding",
+                            "recommendation": "fix it too",
+                            "evidence_summary": "file:line proof two",
+                        },
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (active.run_dir / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "inspection": {"summary": {}},
+                "harness_scope": {
+                    "unscoped_files": [".opencode/a.json", ".opencode/b.json"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    draft, ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None
+    text = draft.read_text(encoding="utf-8")
+    assert "- **[HIGH]** first finding → fix it — preuve : file:line proof one\n" in text
+    assert "\n- **[MEDIUM]** second finding → fix it too — preuve : file:line proof two" in text
+    assert "proof one- **[MEDIUM]" not in text  # plus de collage (trim_blocks)
+    # ligne unscoped non collée à la section suivante (trim_blocks, v6.0.k)
+    assert "b.json\n" in text
+    assert "b.json## 6." not in text
+    # annexe : répertoire du run
+    assert f"`runs/{active.run_id}/`" in text

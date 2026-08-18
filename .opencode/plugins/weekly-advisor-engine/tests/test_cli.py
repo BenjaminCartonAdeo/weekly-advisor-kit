@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from helpers import seed_v1_file, tzutc
+from helpers import active_run_file, seed_v1_file, tzutc
 
 from weekly_telemetry_aggregator.cli import build_parser, main
 
@@ -56,7 +56,7 @@ def test_run_is_default(tmp_path: Path):
     conf = _write_config(tmp_path, db)
     rc = main(["--config", str(conf), "--anchor", RUN_TIME.isoformat()])
     assert rc in (0, 1)
-    assert (tmp_path / "weekly-summary-2026-08-12.json").exists()
+    assert active_run_file(tmp_path, "weekly-summary-2026-08-12.json").exists()
 
 
 def test_run_subcommand_explicit(tmp_path: Path):
@@ -149,7 +149,9 @@ def test_run_lookback_days_override_widens_window(tmp_path: Path):
         ["--config", str(conf), "--anchor", RUN_TIME.isoformat(), "run", "--lookback-days", "21"]
     )
     assert rc in (0, 1)
-    data = json.loads((tmp_path / "weekly-summary-2026-08-12.json").read_text(encoding="utf-8"))
+    data = json.loads(
+        active_run_file(tmp_path, "weekly-summary-2026-08-12.json").read_text(encoding="utf-8")
+    )
     expected_start = (RUN_TIME - __import__("datetime").timedelta(days=21)).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
@@ -183,7 +185,9 @@ def test_audit_candidates_subcommand(tmp_path: Path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "audit-candidates:" in out
-    data = json.loads((tmp_path / "weekly-audit-candidates-2026-08-12.json").read_text())
+    data = json.loads(
+        active_run_file(tmp_path, "weekly-audit-candidates-2026-08-12.json").read_text()
+    )
     assert data["limit"] == 8
     assert len(data["audited"]) <= 8
     assert (

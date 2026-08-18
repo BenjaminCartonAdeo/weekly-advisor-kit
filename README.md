@@ -4,7 +4,8 @@
 
 Revue hebdomadaire automatisée de votre usage d'OpenCode : chaque semaine, le kit
 analyse votre télémétrie locale, surveille l'écosystème des plugins/skills, audite
-vos sessions coûteuses et produit **un rapport unique** `weekly-report-<date>.md`.
+vos sessions coûteuses et produit **un rapport unique** `weekly-report-<date>.md` dans
+le répertoire du run (`reports/runs/<date>-<uuid>/`, alias stable `reports/runs/current/`).
 
 Chaque lundi, il vous dit : combien vous avez dépensé, ce qui a coûté cher et pourquoi,
 quels skills/commands sont inutilisés ou redondants, quoi surveiller dans l'écosystème,
@@ -70,7 +71,7 @@ opencode run --agent weekly-advisor "Lance la revue hebdomadaire"
 ```
 
 - Comptez 10-30 min pour un run complet (télémétrie, réseau et lint compris) ; le rapport est dans
-  `<output_dir>/weekly-report-<date>.md`
+  `<output_dir>/runs/current/weekly-report-<date>.md`
 - Première fois ? Remplacez la dernière commande par
   `opencode run --agent weekly-advisor "Exécute weekly_doctor et donne son verdict"` —
   il valide base, config et binaires avant le premier run
@@ -89,7 +90,8 @@ opencode run --agent weekly-advisor "Lance la revue hebdomadaire"
 ```
 
 Rien d'autre sur PATH : le plugin résout python et `harness-eval`. Le rapport final
-`<output_dir>/weekly-report-<date>.md` est le **signal** du cron (alerte si absent).
+`<output_dir>/runs/current/weekly-report-<date>.md` est le **signal** du cron (alerte si absent) —
+`runs/current` est l'alias stable du run actif (`run_state.json` à la racine de `output_dir`).
 Détails et heartbeat recommandé : [`INSTALL.md`](INSTALL.md) §2.7.
 
 ## Structure

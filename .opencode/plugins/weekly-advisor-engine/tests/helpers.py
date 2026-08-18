@@ -226,3 +226,13 @@ def seed_hybrid_file(path, sessions, *, migrations: int = 42) -> sqlite3.Connect
     conn.execute("UPDATE session_v2 SET time_updated = time_updated - 86400000")
     conn.commit()
     return conn
+
+
+def active_run_file(output_dir, name):
+    """Dated artifact path inside the active run dir (v6.0.k), legacy root fallback."""
+    from pathlib import Path
+
+    from weekly_telemetry_aggregator.run_state import resolve_active_run_dir
+
+    date = "-".join(name.split("-")[-3:]).removesuffix(".json")
+    return resolve_active_run_dir(Path(output_dir), date) / name

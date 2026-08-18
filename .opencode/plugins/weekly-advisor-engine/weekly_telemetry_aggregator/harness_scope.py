@@ -441,6 +441,9 @@ def enrich_harness_digest(
     attach_component_paths(enriched, scope)
     scope_data = scope.to_dict()
     enriched["harness_include"] = scope_data
+    # v6.0.k (F4): explicit `harness_scope` alias — the template and docs read
+    # `harness_scope.unscoped_files`; `harness_include` stays for compatibility.
+    enriched["harness_scope"] = scope_data
     counts = harness_digest_counts(enriched)
     if counts["files_scanned"] is None:
         counts["files_scanned"] = len(scope.included_files)
@@ -449,5 +452,6 @@ def enrich_harness_digest(
     normalized_data = dict(normalized) if isinstance(normalized, Mapping) else {}
     normalized_data.update(counts)
     normalized_data["harness_include"] = scope_data
+    normalized_data["harness_scope"] = scope_data
     enriched["normalized"] = normalized_data
     return enriched

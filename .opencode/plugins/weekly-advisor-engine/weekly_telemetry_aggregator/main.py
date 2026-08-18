@@ -24,9 +24,9 @@ from .harness_scope import (
     resolve_harness_scope,
 )
 from .models import Period, SessionUsage, SkillCatalogEntry, WarningEntry, round6
+from .run_state import activate_run, resolve_active_run_dir
 from .sqlite_reader import DataSourceError, SessionMeta, _to_ms, detect_db
-from .util import iso as _iso
-from .util import load_json, period_hours
+from .util import load_json
 from .util import parse_anchor as _parse_anchor
 from .writer import write_json_atomic, write_summary
 
@@ -414,48 +414,34 @@ def run(
     if extra_warnings:
         summary.warnings = _cap_warnings([*summary.warnings, *extra_warnings])
 
-    out_path = cfg.output_dir / f"weekly-summary-{run_time:%Y-%m-%d}.json"
-    if out_path.exists():
-        existing_start, existing_end = _existing_period(out_path)
-        old_hours = (
-            period_hours(existing_start, existing_end) if existing_start and existing_end else None
+    # v6.0.k (F1): every run gets its own UUID-scoped directory — artifacts of
+    # different runs (same anchor or not) can never collide or overwrite each
+    # other; `--force` has no destructive meaning anymore.
+    date = run_time.strftime("%Y-%m-%d")
+    active = activate_run(cfg.output_dir, date, run_time)
+    same_date_runs = sorted(
+        d.name for d in (cfg.output_dir / "runs").glob(f"{date}-*") if d.is_dir()
+    )
+    if len(same_date_runs) > 1:
+        print(
+            f"telemetry-aggregator: re-run fenêtre {date} — nouveaux artefacts isolés "
+            f"dans runs/{active.run_id} (le run précédent est conservé)",
+            flush=True,
         )
-        if force:
-            # v5.31 (c) : --force avec une fenêtre différente écrase le précédent →
-            # la baseline insights (deltas/spikes) sera perdue.
-            if old_hours is not None and abs(old_hours - cfg.window_hours()) > 1:
-                print(
-                    f"telemetry-aggregator: --force écrase un summary de fenêtre "
-                    f"{old_hours:.0f}h ≠ {cfg.window_hours():.0f}h — la baseline insights "
-                    "du précédent sera perdue (deltas/spikes du prochain run)",
-                    flush=True,
-                )
-        else:
-            window_note = ""
-            if old_hours is not None and abs(old_hours - cfg.window_hours()) > 1:
-                window_note = (
-                    f" — attention: fenêtre existante {old_hours:.0f}h ≠ {cfg.window_hours():.0f}h "
-                    "(K9, v5.30)"
-                )
-            if existing_end and existing_end != _iso(run_time):
-                print(
-                    f"telemetry-aggregator: summary exists with period end {existing_end} "
-                    f"≠ ancre {_iso(run_time)} — ré-exécutez avec la même ancre ou --force (K9){window_note}",
-                    flush=True,
-                )
-            else:
-                print(
-                    f"telemetry-aggregator: output exists: {out_path} (use --force to overwrite){window_note}",
-                    flush=True,
-                )
-            return EXIT_OK  # idempotent re-run: nothing to do is a success
+    if force:
+        print(
+            "telemetry-aggregator: --force sans objet depuis v6.0.k (chaque run écrit "
+            "dans son propre répertoire UUID)",
+            flush=True,
+        )
+    out_path = active.run_dir / f"weekly-summary-{date}.json"
     print("telemetry-aggregator: écriture du summary…", flush=True)
     write_summary(out_path, summary)
 
     print(
         f"telemetry-aggregator: sessions={summary.totals.session_count} "
         f"tokens={summary.totals.total_tokens} cost=${summary.totals.total_cost_usd:.6f} "
-        f"warnings={len(summary.warnings)} file={out_path}",
+        f"warnings={len(summary.warnings)} run_dir={active.run_dir} file={out_path}",
         flush=True,
     )
     return EXIT_PARTIAL if any(w.partial for w in summary.warnings) else EXIT_OK
@@ -639,8 +625,9 @@ def harness(cfg: TelemetryConfig, *, anchor: str | None = None, timeout: int = 9
             )
     except (OSError, subprocess.TimeoutExpired):
         print("harness: WARNING: --version indisponible", flush=True)
-    out_path = cfg.output_dir / f"weekly-harness-digest-{date}.json"
-    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = resolve_active_run_dir(cfg.output_dir, date)
+    out_path = out_dir / f"weekly-harness-digest-{date}.json"
+    out_dir.mkdir(parents=True, exist_ok=True)
     try:
         scope = resolve_harness_scope(cfg.project_root, cfg.harness_include)
         for warning in scope.warnings:

@@ -48,7 +48,7 @@ Fichier : `.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`
 | Clé | Rôle | Valeur commitée |
 |---|---|---|
 | `project_root` | **Chemin ABSOLU du repo audité** — celui qui contient `.opencode/` | placeholder `/path/to/weekly-advisor-kit` ✋ |
-| `output_dir` | Chemin ABSOLU des artefacts (rapports JSON/MD) | placeholder `/path/to/weekly-advisor-kit/reports` ✋ |
+| `output_dir` | Chemin ABSOLU des artefacts (rapports JSON/MD ; chaque run écrit dans `runs/<date>-<uuid8>/`, alias `runs/current`) | placeholder `/path/to/weekly-advisor-kit/reports` ✋ |
 | `harness_include` | Profil et globs allowlistés pour l'étape `harness` | `advisory` (policy + documentation) |
 | `harness_auto_fix_rules` | Règles explicitement autorisées pour l'application automatique | `[]` (aucune) |
 | `harness_auto_fix_max_files` | Nombre maximum de fichiers modifiés par remédiation | `1` |
@@ -110,7 +110,8 @@ opencode run --port 4097 --agent weekly-advisor --model <votre-modèle> \
 ```
 
 - Durée : 30-45 min (12 étapes ; `weekly_harness` ≈ 100 s à elle seule)
-- Artefact attendu : `<output_dir>/weekly-report-<date>.md` — **c'est le signal** du run
+- Artefact attendu : `<output_dir>/runs/current/weekly-report-<date>.md` (le répertoire du run
+  actif — `runs/current/` est un alias stable) — **c'est le signal** du run
 - Si un run a déjà eu lieu aujourd'hui : les données du jour sont exclues des totaux et le
   drafting aura 0 candidat (comportement normal) — pour un run pleinement informatif,
   lancer le premier run un lundi avec une semaine d'historique

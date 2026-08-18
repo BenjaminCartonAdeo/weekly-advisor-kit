@@ -196,7 +196,8 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
 
       weekly_show_session: tool({
         description:
-          "Étape 3 : transcrit une session (show-session) vers <output_dir>/extracts/ et " +
+          "Étape 3 : transcrit une session (show-session) dans le répertoire du run actif " +
+          "(<output_dir>/runs/current/extracts/, fallback <output_dir>/extracts/) et " +
           "retourne le texte structuré. Utiliser après audit-candidates.",
         args: {
           session_id: tool.schema.string().describe("id de session (ses_...)"),
@@ -204,7 +205,11 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
         },
         async execute(args) {
           const { outputDir } = resolveEngine(worktree)
-          const cliArgs = ["show-session", args.session_id, "--extract-dir", path.join(outputDir, "extracts")]
+          // v6.0.k (F1) : extraits dans le run actif (uuid), legacy en fallback.
+          const runBase = fs.existsSync(path.join(outputDir, "current"))
+            ? path.join(outputDir, "current")
+            : outputDir
+          const cliArgs = ["show-session", args.session_id, "--extract-dir", path.join(runBase, "extracts")]
           if (args.include_children) cliArgs.push("--include-children")
           return runCli(worktree, cliArgs, 300_000)
         },

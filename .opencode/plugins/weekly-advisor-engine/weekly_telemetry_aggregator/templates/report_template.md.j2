@@ -143,12 +143,12 @@
 - Périmètre : {{ harness_counts.files_scanned if harness_counts.files_scanned is not none else "n/a" }} fichier(s), {{ harness_counts.components_scanned if harness_counts.components_scanned is not none else "n/a" }} composant(s) inspecté(s) ; findings bruts {{ harness_counts.findings_raw if harness_counts.findings_raw is not none else "n/a" }}, uniques {{ harness_counts.findings_unique if harness_counts.findings_unique is not none else "n/a" }}
 {% endif %}
 {% if harness_scope and harness_scope.unscoped_files %}
-- ⚠ Surfaces `.opencode/` hors allowlist non scannées : {{ harness_scope.unscoped_files|length }} fichier(s), aperçu : {{ harness_scope.unscoped_files[:10]|join(", ") }}{% if harness_scope.unscoped_files|length > 10 %} (+{{ harness_scope.unscoped_files|length - 10 }}){% endif %}
+- ⚠ Surfaces `.opencode/` hors allowlist non scannées : {{ harness_scope.unscoped_files|length }} fichier(s), aperçu : {{ harness_scope.unscoped_files[:10]|join(", ") }}{% if harness_scope.unscoped_files|length > 10 %} (+{{ harness_scope.unscoped_files|length - 10 }}){% endif %}{{ "\n" }}
 {% endif %}
 {% if harness_remediation and harness_remediation.summary %}
 - Remédiation harness : {{ harness_remediation.summary.applied }} appliquée(s), {{ harness_remediation.summary.proposed }} proposée(s), {{ harness_remediation.summary.manual }} manuelle(s), {{ harness_remediation.summary.blocked }} bloquée(s), {{ harness_remediation.summary.rolled_back }} annulée(s)
 {% if harness_remediation.postcheck and harness_remediation.postcheck.status != "not_run" %}
-  - Post-check : {{ harness_remediation.postcheck.status }}{% if harness_remediation.postcheck.reason %} — {{ harness_remediation.postcheck.reason }}{% endif %}
+  - Post-check : {{ harness_remediation.postcheck.status }}{% if harness_remediation.postcheck.reason %} — {{ harness_remediation.postcheck.reason }}{% endif %}{{ "\n" }}
 {% endif %}
 {% endif %}
 {% if harness_top_rules %}
@@ -186,7 +186,7 @@ Règles exclues du top (config `harness_ignored_rules`) : {{ harness_ignored_rul
 {% if ecosystem %}
 - Nouveautés détectées : {{ ecosystem.new_items|length }}
 {% if ecosystem.watch_repos %}
-- Sources suivies (watch) : {{ ecosystem.watch_repos|join(", ") }}{% if ecosystem.watch and ecosystem.watch|length > ecosystem.watch_repos|length %} + {{ ecosystem.watch|map(attribute='name')|reject('in', ecosystem.watch_repos)|join(", ") }}{% endif %}
+- Sources suivies (watch) : {{ ecosystem.watch_repos|join(", ") }}{% if ecosystem.watch and ecosystem.watch|length > ecosystem.watch_repos|length %} + {{ ecosystem.watch|map(attribute='name')|reject('in', ecosystem.watch_repos)|join(", ") }}{% endif %}{{ "\n" }}
 {% if watch_warned %}
   - ⚠ Source GitHub indisponible ce run (réseau / accès repo requis) — activité non vérifiée.
 {% elif watch_items %}
@@ -223,8 +223,7 @@ Règles exclues du top (config `harness_ignored_rules`) : {{ harness_ignored_rul
 {% if insights.maintenance.findings %}
 Constats de maintenance (R1-R4) :
 {% for f in insights.maintenance.findings %}
-- **[{{ f.severity|upper }}]** {{ f.description }} → {{ f.recommendation }}{% if f.evidence_summary %} — preuve : {{ f.evidence_summary[:120] }}{% endif %}
-{% endfor %}
+- **[{{ f.severity|upper }}]** {{ f.description }} → {{ f.recommendation }}{% if f.evidence_summary %} — preuve : {{ f.evidence_summary[:120] }}{% endif %}{{ "\n" }}{% endfor %}
 {% else %}
 *Aucun constat de maintenance.*
 {% endif %}
@@ -235,6 +234,9 @@ Constats de maintenance (R1-R4) :
 ## 8. Annexes
 
 - Artefacts : `weekly-summary-{{ date }}.json`, `weekly-insights-{{ date }}.json`, `weekly-harness-digest-{{ date }}.json`, `weekly-ecosystem-{{ date }}.json`
+{% if run_dir %}
+- Répertoire du run : `{{ run_dir }}/` (alias stable `runs/current/`)
+{% endif %}
 - Coût propre du pipeline (self-cost) : {{ "%.4f"|format(self_cost) if self_cost is not none else "non mesurable" }} $
 - Commits auto-rédigés sur la fenêtre : {{ auto_commits|length }}
 {% for c in auto_commits[:10] %}
@@ -242,7 +244,7 @@ Constats de maintenance (R1-R4) :
 {% endfor %}
 - **{{ pending_auto_commits }}** commits auto-rédigés en attente de revue (du plus vieux que {{ date }})
 {% if summary.skills_targets %}
-- **Skills auto-rédigés et cibles** :{% for name, agents in summary.skills_targets.items() %} `{{ name }}` → {{ agents|join(", ") }}{% if not loop.last %} ;{% endif %}{% endfor %}
+- **Skills auto-rédigés et cibles** :{% for name, agents in summary.skills_targets.items() %} `{{ name }}` → {{ agents|join(", ") }}{% if not loop.last %} ;{% endif %}{{ "\n" }}{% endfor %}
 {% endif %}
 {% if audit_candidates and audit_candidates.unaudited %}
 - **Candidates d'audit non traitées** (plafond {{ audit_candidates.limit }}) : {{ audit_candidates.unaudited|map(attribute='session_id')|join(", ") }}
@@ -250,6 +252,5 @@ Constats de maintenance (R1-R4) :
 {% if warnings_grouped %}
 - Warnings pipeline ({{ summary.warnings|length }}) :
 {% for g in warnings_grouped %}
-  - **×{{ g.count }}** {{ g.message }}{% if g.count > 1 %} — `{{ g.session_ids[:6]|join("`, `") }}{% if g.session_ids|length > 6 %}…{% endif %}`{% endif %}
-{% endfor %}
+  - **×{{ g.count }}** {{ g.message }}{% if g.count > 1 %} — `{{ g.session_ids[:6]|join("`, `") }}{% if g.session_ids|length > 6 %}…{% endif %}`{% endif %}{{ "\n" }}{% endfor %}
 {% endif %}

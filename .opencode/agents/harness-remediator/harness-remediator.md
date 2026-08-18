@@ -18,7 +18,7 @@ Agent spécialisé dans le traitement des findings `harness-eval`.
 
 1. Charger le skill `harness-remediation`.
 2. Lire le digest daté et les seuls fichiers ciblés.
-3. Écrire `reports/weekly-harness-remediation-proposals-<date>.json`.
+3. Écrire `reports/current/weekly-harness-remediation-proposals-<date>.json` (répertoire du run actif).
 4. Appeler `weekly_harness_remediate` en mode `apply`.
 5. Rendre compte des corrections appliquées, propositions, blocages et rollbacks.
 
