@@ -36,8 +36,11 @@
 
 | Session | Statut | Coût ($) | Titre |
 |---|---|---|---|
-{% for r in summary.selection.recent %}
+{% for r in summary.selection.recent if r.get("in_window") %}
 | `{{ r.session_id }}` | {{ r.status }} | {{ "%.4f"|format(r.cost) if r.cost is not none else "n/a" }} | {{ r.title or r.session_id }} |
+{% endfor %}
+{% for r in summary.selection.recent if not r.get("in_window") %}
+| `{{ r.session_id }}` | {{ r.status }} (hors fenêtre) | {{ "%.4f"|format(r.cost) if r.cost is not none else "n/a" }} | {{ r.title or r.session_id }} |
 {% endfor %}
 
 {% endif %}
@@ -214,7 +217,7 @@ Règles exclues du top (config `harness_ignored_rules`) : {{ harness_ignored_rul
 
 {% if insights %}
 {% if insights.alerts %}
-{% for a in insights.alerts %}- **[{{ a.severity|upper }}]** règle `{{ a.rule }}` (seuil {{ a.threshold }}, observé {{ a.observed }})
+{% for a in insights.alerts %}- **[{{ a.severity|upper }}]** règle `{{ a.rule }}` (seuil {{ a.threshold }}, observé {{ a.observed }}{% if a.unit %} {{ a.unit }}{% endif %}{% if a.note %} — {{ a.note }}{% endif %})
 {% endfor %}
 {% else %}
 *Aucune alerte.*
@@ -244,7 +247,7 @@ Constats de maintenance (R1-R4) :
 {% if user_report_path %}
 - **Copie utilisateur** : `{{ user_report_path }}` — fichier réel, écrasé à chaque run (config `report_dir` pour changer l'endroit)
 {% endif %}
-- Coût propre du pipeline (self-cost) : {{ "%.4f"|format(self_cost) if self_cost is not none else "non mesurable" }} ${% if self_cost is not none and self_cost == 0 %} (coût nul — modèle gratuit ou session non retrouvée){% endif %}
+- Coût propre du pipeline (self-cost) : {{ "%.4f"|format(self_cost) if self_cost is not none else "non mesurable" }} ${% if self_cost is not none and self_cost == 0 %} (coût nul — modèle gratuit ou session non retrouvée){% endif %}{% if self_cost_tokens %}, {{ "{:,}".format(self_cost_tokens) }} tokens, {{ self_cost_api_calls }} appels API{% endif %}
 - Commits auto-rédigés sur la fenêtre : {{ auto_commits|length }}
 {% for c in auto_commits[:10] %}
   - `{{ c.hash }}` {{ c.date }} {{ c.subject }}

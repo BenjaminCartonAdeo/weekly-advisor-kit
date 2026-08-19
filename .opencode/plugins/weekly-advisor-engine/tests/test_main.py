@@ -1041,3 +1041,23 @@ def test_rerun_different_window_coexists(tmp_path: Path, capsys):
     assert len(runs) == 2
     out = capsys.readouterr().out
     assert "--force sans objet" in out
+
+
+def test_build_selection_marks_in_window():
+    """P7 : les sessions actives post-fenêtre sont marquées hors fenêtre (§1)."""
+    from weekly_telemetry_aggregator.main import _build_selection
+
+    audit = [
+        {"session_id": "s1", "status": "included", "updated": "2026-08-12T09:00:00Z"},
+        {"session_id": "s2", "status": "active", "updated": "2026-08-19T07:00:00Z"},
+        {"session_id": "s3", "status": "no-activity", "updated": "2026-07-01T00:00:00Z"},
+    ]
+    sel = _build_selection(
+        audit,
+        limit=10,
+        period={"start": "2026-08-05T00:00:00Z", "end": "2026-08-12T23:59:59Z"},
+    )
+    by_id = {r["session_id"]: r for r in sel["recent"]}
+    assert by_id["s1"]["in_window"] is True
+    assert by_id["s2"]["in_window"] is False
+    assert by_id["s3"]["in_window"] is False

@@ -270,8 +270,22 @@ def build_usage(
     )
 
 
+def _parse_iso_ts(value: object) -> datetime | None:
+    """Tolerant ISO-8601 parse (Z→+00:00, naive→UTC); None on garbage."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
 def _build_selection(
-    audit: list[dict], limit: int, known_parent_ids: set[str] | None = None
+    audit: list[dict],
+    limit: int,
+    known_parent_ids: set[str] | None = None,
+    period: dict | None = None,
 ) -> dict:
     """Aggregate the per-session disposition trace into the summary's selection audit.
 
@@ -303,6 +317,22 @@ def _build_selection(
         and (not rec.get("parent_id") or rec["parent_id"] not in included_ids)
     ]
     recent = sorted(audit, key=lambda r: r["updated"], reverse=True)[: max(0, limit)]
+    # v6.0.n : marquage fenêtre — les sessions actives post-fenêtre (runs récents
+    # hors période) restent listées mais séparées dans le rapport (§1).
+    # period peut être un dict (tests/JSON) ou un objet Period du summary.
+    if isinstance(period, dict):
+        period_start, period_end = period.get("start"), period.get("end")
+    else:
+        period_start, period_end = getattr(period, "start", None), getattr(period, "end", None)
+    window_start = _parse_iso_ts(period_start)
+    window_end = _parse_iso_ts(period_end)
+    for rec in recent:
+        ts = _parse_iso_ts(rec.get("updated"))
+        rec["in_window"] = bool(
+            ts is not None
+            and (window_start is None or ts >= window_start)
+            and (window_end is None or ts <= window_end)
+        )
     return {
         "window_touched": len(audit),
         "counted": len(cores),
@@ -421,7 +451,9 @@ def run(
         user_prompt_repeat_min_chars=cfg.user_prompt_repeat_min_chars,
         skill_similarity_min=cfg.skill_similarity_min,
     )
-    summary.selection = _build_selection(audit, cfg.audit_max_sessions, all_ids)
+    summary.selection = _build_selection(
+        audit, cfg.audit_max_sessions, all_ids, period=getattr(summary, "period", None)
+    )
     extra_warnings: list[WarningEntry] = []
     if summary.selection["window_touched"] == 0:
         extra_warnings.append(
@@ -715,8 +747,8 @@ def harness(cfg: TelemetryConfig, *, anchor: str | None = None, timeout: int = 9
     return EXIT_OK
 
 
-def _advisor_cost(cfg: TelemetryConfig) -> tuple[float, str] | None:
-    """(cost_usd, session_id) of the pipeline's own advisor session; None when undetectable.
+def _advisor_cost(cfg: TelemetryConfig) -> dict | None:
+    """Advisor session info: cost, session_id, tokens; None when undetectable.
 
     Shared by `self_cost` (CLI) and the report's self-cost line: title lookup
     first, then the most recent weekly-advisor agent session (v5.30 E).
@@ -744,7 +776,19 @@ def _advisor_cost(cfg: TelemetryConfig) -> tuple[float, str] | None:
         if meta is None:
             return None
         agg = adapter.session_aggregates(meta.session_id)
-        return (agg["cost"] if agg else 0.0), meta.session_id
+        if agg is None:
+            return None
+        tokens = sum(
+            float(agg.get(key) or 0.0)
+            for key in (
+                "tokens_input",
+                "tokens_output",
+                "tokens_reasoning",
+                "tokens_cache_read",
+                "tokens_cache_write",
+            )
+        )
+        return {"cost": agg["cost"], "session_id": meta.session_id, "tokens": tokens}
     finally:
         adapter.conn.close()
 
@@ -759,6 +803,11 @@ def self_cost(cfg: TelemetryConfig, *, anchor: str | None = None) -> int:  # noq
     if found is None:
         print("self-cost: session du pipeline introuvable — coût propre non mesurable (0 $)")
         return EXIT_PARTIAL
-    cost, session_id = found
-    print(f"self-cost: coût propre du pipeline: ${cost:.4f} (session {session_id[:12]})")
+    cost = float(found["cost"])
+    session_id = str(found["session_id"])
+    tokens = int(found.get("tokens") or 0)
+    detail = f"session {session_id[:12]}"
+    if tokens:
+        detail += f", {tokens:,} tokens"
+    print(f"self-cost: coût propre du pipeline: ${cost:.4f} ({detail})")
     return EXIT_OK

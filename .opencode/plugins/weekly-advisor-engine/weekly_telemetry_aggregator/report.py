@@ -75,16 +75,15 @@ def _pending_auto_commits(project_root: Path, cutoff_iso: str) -> int:
     )
 
 
-def _self_cost_value(cfg: TelemetryConfig) -> float | None:
-    """Cost of the pipeline's own advisor session for the report; None when undetectable."""
+def _self_cost_value(cfg: TelemetryConfig) -> dict | None:
+    """Advisor session info {cost, tokens} for the report; None when undetectable."""
     from .main import _advisor_cost
     from .sqlite_reader import DataSourceError
 
     try:
-        found = _advisor_cost(cfg)
+        return _advisor_cost(cfg)
     except DataSourceError:
         return None
-    return found[0] if found else None
 
 
 def _top_models(summary: dict, limit: int = 3) -> list[dict]:
@@ -252,7 +251,8 @@ def report_prep(
         "daily_totals": _complete_daily(summary.get("period", {}), summary.get("daily_totals", [])),
         "auto_commits": git_commits,
         "pending_auto_commits": pending,
-        "self_cost": _self_cost_value(cfg),
+        "self_cost": info["cost"] if (info := _self_cost_value(cfg)) else None,
+        "self_cost_tokens": (info or {}).get("tokens"),
         "user_report_path": _user_report_path(cfg),
     }
 
@@ -303,7 +303,9 @@ def report_blocks_draft(
         lines += ["## Alertes", ""]
         for a in insights["alerts"]:
             lines += [
-                f"- **`{a['rule']}`** ({a['severity']}) : observé {a.get('observed')} vs seuil {a.get('threshold')}",
+                f"- **`{a['rule']}`** ({a['severity']}) : observé {a.get('observed')} vs seuil {a.get('threshold')}"
+                f"{(' ' + str(a.get('unit'))) if a.get('unit') else ''}"
+                f"{(' — ' + str(a.get('note'))) if a.get('note') else ''}",
                 "",
             ]
     findings = (insights or {}).get("maintenance", {}).get("findings", [])
@@ -327,7 +329,8 @@ def report_blocks_draft(
         for f in quality_findings["findings"]:
             lines += [
                 f"- [{f.get('severity', 'low').upper()}] {f.get('category', '?')} — "
-                f"{f.get('description', '')} → {f.get('recommendation', '')}",
+                f"{f.get('description', '')} → {f.get('recommendation', '')}"
+                f"{(' *(repris de ' + str(f.get('carried_from')) + ')*') if f.get('source') == 'carried' else ''}",
                 "",
             ]
     flat = flatten_harness_findings(digest)
