@@ -21,6 +21,8 @@ DEFAULT_HARNESS_INCLUDE_PROFILES: dict[str, tuple[str, ...]] = {
         ".opencode/plugins/*.{js,ts,mjs,cjs}",
         ".opencode/opencode.json",
         ".opencode/opencode.jsonc",
+        ".opencode/context/**/*.md",
+        ".opencode/*.json",
     ),
     # Advisory is deliberately a superset: policy surfaces plus the
     # documentation surfaces that influence skill loading and guidance.
@@ -34,6 +36,8 @@ DEFAULT_HARNESS_INCLUDE_PROFILES: dict[str, tuple[str, ...]] = {
         ".opencode/skills/**/SKILL.md",
         ".opencode/skills/**/references/**/*.md",
         ".opencode/skills/**/examples/**/*",
+        ".opencode/context/**/*.md",
+        ".opencode/*.json",
     ),
 }
 

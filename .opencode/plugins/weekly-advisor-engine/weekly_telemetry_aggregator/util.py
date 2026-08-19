@@ -171,8 +171,17 @@ def root_and_orphan_ids(
 
 
 def relative_path(path: Path, root: Path) -> str:
-    """Stable project-relative POSIX path (shared by watch_context/harness_scope)."""
-    return path.relative_to(root).as_posix()
+    """Stable project-relative POSIX path; absolute posix fallback outside root.
+
+    Single home shared by watch_context/harness_scope (C11): the former
+    watch_context copy had the fallback, the util one raised — the unified
+    version keeps the defensive fallback so a path outside root never crashes
+    a deterministic inventory.
+    """
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 def casefold(value: str) -> str:
@@ -202,6 +211,85 @@ def load_json(path: Path) -> dict | None:
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def load_jsonc(path: Path) -> dict | None:
+    """Read a JSONC dict (comments + trailing commas tolerated); None on failure.
+
+    ``//`` and ``/* */`` comments are stripped string-aware, then trailing
+    commas before a closing bracket are removed.  Strict JSON passes through
+    untouched.  Shared by watch_context (opencode.jsonc plugin declarations,
+    hand-edited ecosystem fixtures) — the docstring "JSONC is accepted" is
+    only true since v6.0.p (C4).
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        data = json.loads(_strip_jsonc(text))
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _strip_jsonc(text: str) -> str:
+    """Remove ``//``/``/* */`` comments (never inside strings) and trailing commas."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    in_string = False
+    while i < n:
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if in_string:
+            out.append(ch)
+            if ch == "\\" and nxt:
+                out.append(nxt)
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+        elif ch == "/" and nxt == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+        elif ch == "/" and nxt == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2
+        elif ch == ",":
+            j = i + 1
+            # Trailing comma before a closer: tolerate comments/whitespace between
+            # the comma and the closing bracket (JSONC fixture style).
+            while j < n:
+                if text[j] in " \t\r\n":
+                    j += 1
+                elif text[j] == "/" and j + 1 < n and text[j + 1] == "/":
+                    j += 2
+                    while j < n and text[j] != "\n":
+                        j += 1
+                elif text[j] == "/" and j + 1 < n and text[j + 1] == "*":
+                    j += 2
+                    while j + 1 < n and not (text[j] == "*" and text[j + 1] == "/"):
+                        j += 1
+                    j += 2
+                else:
+                    break
+            if j < n and text[j] in "]}":
+                i += 1  # trailing comma before a closing bracket: drop it
+            else:
+                out.append(ch)
+                i += 1
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
 
 
 def read_text(path: Path) -> str | None:

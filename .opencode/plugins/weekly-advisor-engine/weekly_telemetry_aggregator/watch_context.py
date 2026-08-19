@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
 
-from .util import casefold, iso, load_json, parse_iso_ts
+from .util import casefold, iso, load_jsonc, parse_iso_ts, relative_path
 
 ExistingState = Literal["absent", "declared", "observed", "unknown"]
 PluginSource = Literal["config", "local_file"]
@@ -163,13 +163,6 @@ def normalize_repo_url(value: str | None) -> str | None:
     return f"https://{host}{path}"
 
 
-def relative_path(path: Path, root: Path) -> str:
-    try:
-        return path.relative_to(root).as_posix()
-    except ValueError:
-        return path.as_posix()
-
-
 def _repo_slug(repo_url: str | None) -> str | None:
     if not repo_url:
         return None
@@ -253,7 +246,7 @@ def _read_plugin_config(
             continue
         available = True
         config_files.append(relative_path(path, project_root))
-        payload = load_json(path)
+        payload = load_jsonc(path)
         if payload is None:
             warnings.append(f"invalid {relative_path(path, project_root)}: JSON illisible")
             continue
@@ -720,7 +713,7 @@ def load_ecosystem_report(path: Path) -> tuple[dict[str, Any] | None, str | None
     a forgiving hand-edited fixture and to share the safe parser.
     """
 
-    payload = load_json(path)
+    payload = load_jsonc(path)
     if payload is None:
         return None, f"cannot read ecosystem report {path}: JSON illisible"
     return dict(payload), None

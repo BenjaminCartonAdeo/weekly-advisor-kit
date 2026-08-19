@@ -85,7 +85,9 @@ def _get_json(client, url: str, *, params: dict | None = None, headers: dict | N
         if attempt:
             time.sleep(_BACKOFF[attempt - 1])
         try:
-            resp = client.get(url, params=params, headers=headers, timeout=None)
+            # C9 (v6.0.p) : timeout hérité du client (httpx.Client(timeout=15)) —
+            # le `timeout=None` périmé désactivait toute borne réseau.
+            resp = client.get(url, params=params, headers=headers)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429 or exc.response.status_code >= 500:
                 last = exc

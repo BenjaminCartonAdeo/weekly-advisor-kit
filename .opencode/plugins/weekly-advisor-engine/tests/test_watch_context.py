@@ -186,3 +186,43 @@ def test_cli_writes_anchor_dated_context(tmp_path: Path, capsys) -> None:
     assert data["date"] == "2026-08-12"
     assert data["market_matches"][0]["existing_state"] == "declared"
     assert "watch-context:" in capsys.readouterr().out
+
+
+def test_jsonc_config_declarations_are_parsed(tmp_path: Path) -> None:
+    """C4 (v6.0.p) : opencode.jsonc (commentaires + virgules finales) déclare les plugins."""
+    root = _project(tmp_path)
+    (root / ".opencode" / "opencode.jsonc").write_text(
+        """{
+          // commentaire JSONC
+          "plugin": [
+            "@tarquinen/opencode-dcp@latest", // virgule finale tolérée
+          ],
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    inventory = inventory_environment(root)
+    assert inventory.config_available is True
+    assert inventory.config_valid is True
+    assert inventory.config_files == [".opencode/opencode.jsonc"]
+    declared = [p for p in inventory.plugins if p.declared]
+    assert [p.npm_package for p in declared] == ["@tarquinen/opencode-dcp"]
+
+    context = build_watch_context(root, {"new_items": []}, generated_at=ANCHOR)
+    assert context["plugin_config"]["valid"] is True
+    assert context["counts"]["declared_plugins"] == 1
+
+
+def test_ecosystem_report_accepts_jsonc(tmp_path: Path) -> None:
+    """C4 (v6.0.p) : la docstring « JSONC is accepted » de load_ecosystem_report est vraie."""
+    from weekly_telemetry_aggregator.watch_context import load_ecosystem_report
+
+    path = tmp_path / "weekly-ecosystem-2026-08-12.json"
+    path.write_text(
+        '{"schema_version": 2, "new_items": [{"name": "sample"}], /* bloc */}\n',
+        encoding="utf-8",
+    )
+    payload, error = load_ecosystem_report(path)
+    assert error is None
+    assert payload["new_items"] == [{"name": "sample"}]

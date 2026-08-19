@@ -496,6 +496,23 @@ def _state_previous(output_dir: Path, current_date: str) -> tuple[dict | None, d
     return prev_sum, prev_dig
 
 
+def _pattern_paths(output_dir: Path, pattern: str) -> list[Path]:
+    """Sorted candidates for a dated artifact: root, run dirs, migrated legacy dirs.
+
+    v6.0.l (E4) migrates pre-v6.0.k root artifacts into ``runs/<id>/legacy/`` —
+    without this third glob a migrated baseline summary/digest becomes invisible
+    to insights and the WoW delta is silently lost on the first run after
+    migration (C2).
+    """
+    return sorted(
+        [
+            *output_dir.glob(pattern),
+            *output_dir.glob(f"{RUNS_DIR}/*/{pattern}"),
+            *output_dir.glob(f"{RUNS_DIR}/*/legacy/{pattern}"),
+        ]
+    )
+
+
 def _artifacts_before(output_dir: Path, pattern: str, current_date: str) -> list[tuple[str, Path]]:
     """Sorted (date, path) artefacts matching <pattern>, strictly older than <date>.
 
@@ -504,8 +521,7 @@ def _artifacts_before(output_dir: Path, pattern: str, current_date: str) -> list
     silently degrading lint deltas when only a digest was present).
     """
     found = []
-    candidates = [*output_dir.glob(pattern), *output_dir.glob(f"{RUNS_DIR}/*/{pattern}")]
-    for path in sorted(candidates):
+    for path in _pattern_paths(output_dir, pattern):
         m = re.search(r"(\d{4}-\d{2}-\d{2})\.json$", path.name)
         if m and m.group(1) < current_date:
             found.append((m.group(1), path))
@@ -526,7 +542,7 @@ def _discover_previous(
     if found:
         return _load(found[-1][1])
     eligible = []
-    for path in sorted([*output_dir.glob(pattern), *output_dir.glob(f"{RUNS_DIR}/*/{pattern}")]):
+    for path in _pattern_paths(output_dir, pattern):
         if exclude_dir is not None and path.parent == exclude_dir:
             continue
         m = re.search(r"(\d{4}-\d{2}-\d{2})\.json$", path.name)

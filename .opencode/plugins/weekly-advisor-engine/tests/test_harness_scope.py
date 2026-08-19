@@ -30,11 +30,12 @@ def test_resolve_scope_matches_strict_and_advisory_profiles(tmp_path: Path):
     _touch(tmp_path, ".opencode/plugins/local.ts")
     _touch(tmp_path, ".opencode/plugins/nested/local.ts")
     _touch(tmp_path, ".opencode/opencode.json")
+    _touch(tmp_path, ".opencode/context/python/standards.md")  # C3 : context/** inclus
     _touch(tmp_path, ".opencode/skills/demo/SKILL.md")
     _touch(tmp_path, ".opencode/skills/demo/references/guide.md")
     _touch(tmp_path, ".opencode/skills/demo/examples/example.txt")
     _touch(tmp_path, ".opencode/skills/demo/README.md")
-    _touch(tmp_path, ".opencode/package.json")
+    _touch(tmp_path, ".opencode/package.json")  # C3 : *.json racine inclus
 
     strict = resolve_harness_scope(tmp_path, HarnessIncludeConfig(default_profile="strict"))
     advisory = resolve_harness_scope(tmp_path, HarnessIncludeConfig(default_profile="advisory"))
@@ -42,11 +43,13 @@ def test_resolve_scope_matches_strict_and_advisory_profiles(tmp_path: Path):
     assert ".opencode/skills/demo/SKILL.md" not in strict.included_files
     assert ".opencode/plugins/local.ts" in strict.included_files
     assert ".opencode/plugins/nested/local.ts" not in strict.included_files
+    assert ".opencode/context/python/standards.md" in strict.included_files
+    assert ".opencode/package.json" in strict.included_files
     assert ".opencode/skills/demo/SKILL.md" in advisory.included_files
     assert ".opencode/skills/demo/references/guide.md" in advisory.included_files
     assert ".opencode/skills/demo/examples/example.txt" in advisory.included_files
     assert ".opencode/skills/demo/README.md" in advisory.unscoped_files
-    assert ".opencode/package.json" in advisory.unscoped_files
+    assert ".opencode/package.json" in advisory.included_files
     assert any("unscoped" in warning for warning in advisory.warnings)
 
 

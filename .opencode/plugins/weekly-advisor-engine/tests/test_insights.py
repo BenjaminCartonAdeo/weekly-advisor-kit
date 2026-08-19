@@ -477,6 +477,20 @@ def test_run_discovers_previous_digest_by_glob(tmp_path: Path):
     assert out["deltas"]["lint_violations_delta_by_rule"] == {"E501": 0, "F841": 1}
 
 
+def test_discover_previous_finds_migrated_legacy_artifacts(tmp_path: Path):
+    """C2 (v6.0.p) : artefacts migrés vers runs/<id>/legacy/ restent la baseline WoW."""
+    from weekly_telemetry_aggregator.insights import _discover_previous
+
+    legacy = tmp_path / "runs" / "2026-08-12-abcd1234" / "legacy"
+    legacy.mkdir(parents=True)
+    (legacy / "weekly-summary-2026-08-05.json").write_text(
+        json.dumps(_summary(("2026-07-29", "2026-08-05"))), encoding="utf-8"
+    )
+    prev = _discover_previous("weekly-summary-*.json", "2026-08-19", tmp_path)
+    assert prev is not None
+    assert prev["period"]["start"] == "2026-07-29"
+
+
 # ============================================================ v5.28 (K5/K7/K8/K11)
 
 

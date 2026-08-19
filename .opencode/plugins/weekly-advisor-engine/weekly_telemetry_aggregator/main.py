@@ -25,7 +25,7 @@ from .harness_scope import (
 )
 from .models import Period, SessionUsage, SkillCatalogEntry, WarningEntry, round6
 from .run_state import activate_run, resolve_active_run_dir
-from .sqlite_reader import DataSourceError, SessionMeta, _to_ms, detect_db
+from .sqlite_reader import MIGRATION_MIN_V1, DataSourceError, SessionMeta, _to_ms, detect_db
 from .util import load_json, parse_iso_ts, root_and_orphan_ids
 from .util import parse_anchor as _parse_anchor
 from .writer import write_json_atomic, write_summary
@@ -570,7 +570,9 @@ def doctor(
         n = migrations if migrations is not None else 0
         if migrations is None:
             warnings.append("compteur de migrations introuvable — schéma non standard")
-        elif (adapter.name == "v1" and n < 42) or (adapter.name == "v2" and n < 1):
+        elif (adapter.name == "v1-dual" and n < MIGRATION_MIN_V1) or (
+            adapter.name == "v2" and n < 1
+        ):
             warnings.append(f"compteur de migrations faible ({n}) — vérifier la version d'OpenCode")
         adapter.conn.close()
         print(f"doctor: base OpenCode détectée: {path} (adaptateur {adapter.name}, migrations={n})")
