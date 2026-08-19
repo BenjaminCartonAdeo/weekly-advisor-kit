@@ -30,7 +30,7 @@ jobs:
         run: uv run ruff check .
       - name: Format
         run: uv run ruff format --check .
-      - name: Tests (224, aucun réseau)
+      - name: Tests (231, aucun réseau)
         run: uv run pytest -q
       - name: Packaging
         run: uv build
@@ -51,4 +51,10 @@ jobs:
         # (ReferenceError: worktree is not defined) — node --check ne le voit pas.
         # Faux moteur + python factice : closure, lookback_days, ancre fraîche/périmée.
         run: node scripts/plugin-smoke.mjs
+        working-directory: .
+
+      - name: Contrat de flux docs ↔ code (G1, 5 surfaces)
+        # Mediation TS→CLI, handlers, artefacts par étape, chaînage d'ordre,
+        # comptes de tests README/INSTALL/ci == collect réel.
+        run: node scripts/check-flow-docs.mjs
         working-directory: .

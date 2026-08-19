@@ -14,11 +14,18 @@ les findings alimentent la revue humaine (fusion, retrait, recalibrage).
 
 ## Entrées
 
-- Catalogue déclaratif : `ls`/`read` de `.opencode/{agents,skills,commands}` + frontmatter
-  (`skill_catalog` du summary)
+- **Inventaire déterministe (source de vérité, étape 2.5)** : `weekly-watch-context-<date>.json`
+  du run — `skills`/`commands`/`agents`/`plugins` + `declared_plugins`/`local_plugins` +
+  `plugin_config.files|available|valid` et `counts` — **lecture seule, zéro re-scan**
+  de `.opencode/` (G2, v6.0.p) ; le frontmatter des items vient du `skill_catalog` du summary
 - Usage réel : `summary.skill_usage` / `command_usage` / `skills_never_loaded`
 - `insights.maintenance` (R1 retire / R3 merge) et le digest harness (triggers/budget)
 - Findings de l'étape 3 (sessions coûteuses → cibles de forcing)
+
+> La passe critique ne refait jamais `ls`/`read` de `.opencode/{agents,skills,commands}`
+> pour établir l'état déclaratif : l'inventaire JSON de l'étape 2.5 est produit par la
+> même exécution du moteur et fait foi. Un re-scan LLM re-dériverait l'état avec une
+> précision moindre et ferait diverger la revue du run qu'elle documente.
 
 ## Style
 
