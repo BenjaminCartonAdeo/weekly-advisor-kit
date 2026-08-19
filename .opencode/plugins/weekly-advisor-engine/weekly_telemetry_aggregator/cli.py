@@ -12,7 +12,8 @@ from pathlib import Path
 
 from . import __version__
 from .config import load_config
-from .main import doctor, run, self_cost
+from .costing import self_cost
+from .main import doctor, run
 
 
 def _load_cfg(args) -> object:
@@ -44,7 +45,6 @@ def _cmd_run(args, cfg) -> int:
     return run(
         cfg,
         anchor=args.anchor,
-        force=args.force,
         top_sessions_limit=args.top_sessions_limit,
         include_subagents=args.include_subagents,
         fail_on_missing_telemetry=args.fail_on_missing_telemetry,
@@ -78,7 +78,7 @@ def _cmd_show_session(args, cfg) -> int:
 def _cmd_audit_candidates(args, cfg) -> int:
     """Partie 3 §2 — sélection déterministe des sessions à auditer (archive JSON)."""
     from .candidates import select_audit_candidates
-    from .main import _parse_anchor
+    from .main import EXIT_TOTAL_FAILURE, _parse_anchor
     from .writer import write_json_atomic
 
     run_time = _parse_anchor(args.anchor)
@@ -91,7 +91,7 @@ def _cmd_audit_candidates(args, cfg) -> int:
             file=sys.stderr,
             flush=True,
         )
-        return 2
+        return EXIT_TOTAL_FAILURE
     import json as _json
 
     summary = _json.loads(summary_path.read_text(encoding="utf-8"))
@@ -379,7 +379,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.set_defaults(
         command="run",
         func=_cmd_run,
-        force=False,
         top_sessions_limit=None,
         include_subagents=None,
         fail_on_missing_telemetry=False,
@@ -395,9 +394,6 @@ def build_parser() -> argparse.ArgumentParser:
         "run",
         parents=[global_parent],
         help="Aggregate OpenCode telemetry into weekly-summary-<date>.json (default)",
-    )
-    p_run.add_argument(
-        "--force", action="store_true", help="Overwrite an existing weekly-summary-<date>.json"
     )
     p_run.add_argument("--top-sessions-limit", type=int, help="Override top_sessions_limit")
     p_run.add_argument(

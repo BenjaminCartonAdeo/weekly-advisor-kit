@@ -742,39 +742,3 @@ def run(
         return EXIT_TOTAL_FAILURE
     print(f"harness-remediate: result {result_path}", flush=True)
     return EXIT_OK if postcheck_result.passed else EXIT_PARTIAL
-
-
-def harness_remediate(
-    cfg: TelemetryConfig,
-    *,
-    proposal_path: Path | str,
-    mode: str = "dry-run",
-    anchor: str | None = None,
-    harness_runner: Callable[..., int] | None = None,
-) -> int:
-    """Compatibility-named wrapper for callers that prefer the command name."""
-    return run(
-        cfg,
-        proposal_path=proposal_path,
-        mode=mode,
-        anchor=anchor,
-        harness_runner=harness_runner,
-    )
-
-
-def remediate(
-    cfg: TelemetryConfig,
-    *,
-    proposal_path: Path | str,
-    mode: str = "dry-run",
-    anchor: str | None = None,
-    harness_runner: Callable[..., int] | None = None,
-) -> int:
-    """Short-name wrapper for programmatic callers of the remediation gate."""
-    return run(
-        cfg,
-        proposal_path=proposal_path,
-        mode=mode,
-        anchor=anchor,
-        harness_runner=harness_runner,
-    )

@@ -54,7 +54,6 @@ def make_usage(
     user_turns: list[str] | None = None,
     context_chars: dict | None = None,
     first_user_text: str | None = None,
-    partial: bool = False,
 ) -> SessionUsage:
     return SessionUsage(
         session_id=sid,
@@ -68,7 +67,6 @@ def make_usage(
         user_turns=list(user_turns or []),
         context_chars=dict(context_chars or {}),
         first_user_text=first_user_text,
-        partial=partial,
     )
 
 

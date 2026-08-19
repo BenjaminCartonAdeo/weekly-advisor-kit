@@ -131,7 +131,7 @@ def resolve_harness_scope(project_root: Path, config: HarnessIncludeConfig) -> H
     excluded and unscoped content is never made visible to the subprocess.
     """
     root = project_root.expanduser().resolve()
-    profile = config.profile
+    profile = config.default_profile
     profile_patterns = config.profiles.get(profile)
     profile_known = profile_patterns is not None
     include_patterns = list(profile_patterns or [])

@@ -20,7 +20,6 @@ import { execFile } from "node:child_process"
 
 const ENGINE_REL = [".opencode", "plugins", "weekly-advisor-engine"]
 const ANCHOR_FILE = "anchor-last.txt"
-const DEFAULT_LOOKBACK_DAYS = 7
 
 // `worktree` est module-scope, affecté à l'init du plugin (v6.0.b) : les factories
 // de tools sont définies au niveau module et leurs closures en dépendent — une
@@ -61,12 +60,6 @@ function resolveEngine(worktree: string): EngineLoc {
   return { engine, python, config, outputDir }
 }
 
-/** Fenêtre du run dérivée de la config (jamais d'édition de config par le plugin). */
-function windowHours(config: Record<string, unknown>): number {
-  const days = config["lookback_days"]
-  return (typeof days === "number" ? days : DEFAULT_LOOKBACK_DAYS) * 24
-}
-
 /**
  * Ancre glissante : créée si absente, conservée dans la même journée (stabilité
  * intra-run : tous les tools du run partagent la même fenêtre), rafraîchie vers
@@ -75,7 +68,7 @@ function windowHours(config: Record<string, unknown>): number {
  * période). Désormais la fenêtre avance chaque jour ; rejouer une fenêtre
  * historique = passer --anchor explicitement (v6.0.n).
  */
-function readOrCreateAnchor(outputDir: string, _windowHours: number): string {
+function readOrCreateAnchor(outputDir: string): string {
   const file = path.join(outputDir, ANCHOR_FILE)
   if (fs.existsSync(file)) {
     const existing = fs.readFileSync(file, "utf8").trim()
@@ -92,10 +85,9 @@ function readOrCreateAnchor(outputDir: string, _windowHours: number): string {
 
 function anchorArg(
   anchor: string | undefined,
-  config: Record<string, unknown>,
   outputDir: string,
 ): string {
-  return anchor ?? readOrCreateAnchor(outputDir, windowHours(config))
+  return anchor ?? readOrCreateAnchor(outputDir)
 }
 
 function runCli(worktree: string, args: string[], timeoutMs: number): Promise<string> {
@@ -137,8 +129,8 @@ function anchorTool(
         : {}),
     },
     async execute(args) {
-      const { config, outputDir } = resolveEngine(worktree)
-      return runCli(worktree, cliArgs(anchorArg(args.anchor, config, outputDir), args.lookback_days), timeoutMs)
+      const { outputDir } = resolveEngine(worktree)
+      return runCli(worktree, cliArgs(anchorArg(args.anchor, outputDir), args.lookback_days), timeoutMs)
     },
   })
 }
@@ -162,9 +154,9 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
   return {
     tool: {
       weekly_run: anchorTool(
-        "Étape 1 du weekly-advisor : collecte télémétrique complète (run --force). " +
+        "Étape 1 du weekly-advisor : collecte télémétrique complète (run). " +
           "Écrit weekly-summary-<date>.json. L'ancre est lue/créée/rafraîchie dans <output_dir>/anchor-last.txt.",
-        (anchor, lookback) => withLookback(["run", "--force", "--anchor", anchor], lookback),
+        (anchor, lookback) => withLookback(["run", "--anchor", anchor], lookback),
         1_800_000,
         true,
       ),
@@ -239,8 +231,8 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
           anchor: tool.schema.string().optional().describe("ISO-8601 override (rare)"),
         },
         async execute(args) {
-          const { config, outputDir } = resolveEngine(worktree)
-          const anchor = anchorArg(args.anchor, config, outputDir)
+          const { outputDir } = resolveEngine(worktree)
+          const anchor = anchorArg(args.anchor, outputDir)
           return runCli(
             worktree,
             [

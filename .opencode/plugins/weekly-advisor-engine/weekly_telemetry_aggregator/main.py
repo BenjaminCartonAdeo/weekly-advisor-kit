@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .aggregator import _cap_warnings, aggregate
@@ -344,7 +344,6 @@ def run(
     cfg: TelemetryConfig,
     *,
     anchor: str | None = None,
-    force: bool = False,
     top_sessions_limit: int | None = None,
     include_subagents: bool | None = None,
     fail_on_missing_telemetry: bool = False,
@@ -458,7 +457,7 @@ def run(
 
     # v6.0.k (F1): every run gets its own UUID-scoped directory — artifacts of
     # different runs (same anchor or not) can never collide or overwrite each
-    # other; `--force` has no destructive meaning anymore.
+    # other; the legacy --force flag (v6.0.p D2) had no meaning anymore.
     date = run_time.strftime("%Y-%m-%d")
     active = activate_run(cfg.output_dir, date, run_time)
     same_date_runs = sorted(
@@ -468,12 +467,6 @@ def run(
         print(
             f"telemetry-aggregator: re-run fenêtre {date} — nouveaux artefacts isolés "
             f"dans runs/{active.run_id} (le run précédent est conservé)",
-            flush=True,
-        )
-    if force:
-        print(
-            "telemetry-aggregator: --force sans objet depuis v6.0.k (chaque run écrit "
-            "dans son propre répertoire UUID)",
             flush=True,
         )
     out_path = active.run_dir / f"weekly-summary-{date}.json"
@@ -727,70 +720,4 @@ def harness(cfg: TelemetryConfig, *, anchor: str | None = None, timeout: int = 9
         print(f"harness: FATAL: exécution impossible: {exc}", file=sys.stderr, flush=True)
         return EXIT_TOTAL_FAILURE
     print(f"harness: digest {out_path} (rc={proc.returncode})", flush=True)
-    return EXIT_OK
-
-
-def _advisor_cost(cfg: TelemetryConfig) -> dict | None:
-    """Advisor session info: cost, session_id, tokens; None when undetectable.
-
-    Shared by `self_cost` (CLI) and the report's self-cost line: title lookup
-    first, then the most recent weekly-advisor agent session (v5.30 E).
-    Raises DataSourceError when no DB is found.
-    """
-    _path, adapter = detect_db(cfg.opencode_db_path)
-    try:
-        meta = adapter.find_session_by_title(cfg.advisor_run_title)
-        if meta is None:
-            # v5.30 (E) : fallback — session la plus récente de l'agent weekly-advisor
-            # (le titre du run peut différer du advisor_run_title si le prompt cron change).
-            best = None
-            for m in adapter.list_sessions(0):
-                if (
-                    m.agent
-                    and "weekly-advisor" in m.agent
-                    and (
-                        best is None
-                        or (m.time_updated or datetime.min.replace(tzinfo=UTC))
-                        > (best.time_updated or datetime.min.replace(tzinfo=UTC))
-                    )
-                ):
-                    best = m
-            meta = best
-        if meta is None:
-            return None
-        agg = adapter.session_aggregates(meta.session_id)
-        if agg is None:
-            return None
-        tokens = sum(
-            float(agg.get(key) or 0.0)
-            for key in (
-                "tokens_input",
-                "tokens_output",
-                "tokens_reasoning",
-                "tokens_cache_read",
-                "tokens_cache_write",
-            )
-        )
-        return {"cost": agg["cost"], "session_id": meta.session_id, "tokens": tokens}
-    finally:
-        adapter.conn.close()
-
-
-def self_cost(cfg: TelemetryConfig, *, anchor: str | None = None) -> int:  # noqa: ARG001
-    """Cost of the pipeline's own run session (Part 1 §12) — the one place the pipeline sees itself."""
-    try:
-        found = _advisor_cost(cfg)
-    except DataSourceError as exc:
-        print(f"self-cost: FATAL: {exc}", file=sys.stderr, flush=True)
-        return EXIT_TOTAL_FAILURE
-    if found is None:
-        print("self-cost: session du pipeline introuvable — coût propre non mesurable (0 $)")
-        return EXIT_PARTIAL
-    cost = float(found["cost"])
-    session_id = str(found["session_id"])
-    tokens = int(found.get("tokens") or 0)
-    detail = f"session {session_id[:12]}"
-    if tokens:
-        detail += f", {tokens:,} tokens"
-    print(f"self-cost: coût propre du pipeline: ${cost:.4f} ({detail})")
     return EXIT_OK

@@ -244,16 +244,6 @@ def test_skill_similar_pairs():
     assert sorted(summary.skill_similar_pairs[0].skills) == ["alpha-helper", "beta-helper"]
 
 
-def test_partial_telemetry_excluded_and_warned():
-    period = _period()
-    good = make_usage("g", [make_step("g", period.start, cost=1.0)])
-    partial = make_usage("p", [make_step("p", period.start, cost=5.0)], partial=True)
-    warnings: list[WarningEntry] = []
-    summary = aggregate([good, partial], period=period, generated_at=period.end, warnings=warnings)
-    assert summary.totals.total_cost_usd == 1.0
-    assert any("partial" in w.message and w.session_id == "p" for w in summary.warnings)
-
-
 def test_orphan_child_counted_in_subagent_totals():
     period = _period()
     orphan = make_usage("o", [make_step("o", period.start, cost=2.0)], parent="missing-parent")

@@ -78,11 +78,11 @@ def _pending_auto_commits(project_root: Path, cutoff_iso: str) -> int:
 
 def _self_cost_value(cfg: TelemetryConfig) -> dict | None:
     """Advisor session info {cost, tokens} for the report; None when undetectable."""
-    from .main import _advisor_cost
+    from .costing import advisor_cost
     from .sqlite_reader import DataSourceError
 
     try:
-        return _advisor_cost(cfg)
+        return advisor_cost(cfg)
     except DataSourceError:
         return None
 

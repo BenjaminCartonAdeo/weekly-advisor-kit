@@ -73,7 +73,6 @@ try {
   const argv = fs.readFileSync(argvLog, "utf8").trim().split(" ")
   check("weekly_run.execute ({lookback_days:21}) → OK", out === "OK", out)
   check("argv run contient --lookback-days 21", argv.includes("--lookback-days") && argv.includes("21"), argv.join(" "))
-  check("argv run contient --force", argv.includes("--force"))
   const anchorLine = fs.readFileSync(path.join(outputDir, "anchor-last.txt"), "utf8").trim()
   check("ancre créée au 1er run", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(anchorLine), anchorLine)
 } catch (err) {

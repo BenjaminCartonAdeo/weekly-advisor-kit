@@ -12,6 +12,7 @@ import pytest
 from helpers import active_run_file, seed_hybrid_file, seed_v1_file, tzutc
 
 from weekly_telemetry_aggregator.config import TelemetryConfig
+from weekly_telemetry_aggregator.costing import self_cost
 from weekly_telemetry_aggregator.main import (
     EXIT_OK,
     EXIT_PARTIAL,
@@ -20,7 +21,6 @@ from weekly_telemetry_aggregator.main import (
     doctor,
     harness,
     run,
-    self_cost,
 )
 from weekly_telemetry_aggregator.models import Period, WarningEntry
 
@@ -909,7 +909,7 @@ def test_dual_adapter_counts_both_tables(tmp_path: Path):
 
 def test_self_cost_falls_back_to_weekly_advisor_session(tmp_path: Path, capsys):
     """v5.30 (E) : self-cost trouve la session agent la plus récente sans titre exact."""
-    from weekly_telemetry_aggregator.main import self_cost
+    from weekly_telemetry_aggregator.costing import self_cost
 
     db = tmp_path / "opencode.db"
     ts = RUN_TIME - timedelta(hours=3)
@@ -1028,19 +1028,17 @@ def test_run_lookback_days_override(tmp_path: Path, capsys):
     assert cfg.lookback_days == 21  # mutation en mémoire seulement
 
 
-def test_rerun_different_window_coexists(tmp_path: Path, capsys):
-    """v6.0.k (F1) : fenêtres différentes = runs distincts ; --force est un no-op informatif."""
+def test_rerun_different_window_coexists(tmp_path: Path):
+    """v6.0.k (F1) : fenêtres différentes = runs distincts (dir UUID par run)."""
     db = _seed_n(tmp_path / "opencode.db", 2)
     cfg = _cfg(tmp_path, db)
     cfg.lookback_days = 7
     run(cfg, anchor=RUN_TIME.isoformat())
     cfg.lookback_days = 15
-    rc = run(cfg, force=True, anchor=RUN_TIME.isoformat())
+    rc = run(cfg, anchor=RUN_TIME.isoformat())
     assert rc == EXIT_OK
     runs = sorted(d for d in (tmp_path / "runs").glob("2026-08-12-*") if d.is_dir())
     assert len(runs) == 2
-    out = capsys.readouterr().out
-    assert "--force sans objet" in out
 
 
 def test_build_selection_marks_in_window():

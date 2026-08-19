@@ -287,15 +287,6 @@ def aggregate(
     skills_targets = {e.name: list(e.target_agents) for e in catalog_entries if e.target_agents}
     all_warnings = list(warnings or [])
 
-    # spec §8: sessions with partial/approximate telemetry are excluded from totals
-    partial = [u.session_id for u in usages if u.partial]
-    if partial:
-        all_warnings.extend(
-            WarningEntry(session_id=sid, message="partial telemetry; excluded from totals")
-            for sid in sorted(partial)
-        )
-    usages = [u for u in usages if not u.partial]
-
     by_id: dict[str, SessionUsage] = {u.session_id: u for u in usages}
     orphan_ids, root_ids = root_and_orphan_ids(
         ((u.session_id, u.parent_id) for u in usages), known_parent_ids=known_parent_ids

@@ -64,8 +64,6 @@ class SessionUsage:
     first_user_text: str | None = None
     #: session_v2 lifetime cost (cross-check reference, v5.28).
     reported_cost_usd_lifetime: float | None = None
-    #: Telemetry partially missing (approximate mode) → excluded from totals.
-    partial: bool = False
 
     @property
     def cost_usd(self) -> float:

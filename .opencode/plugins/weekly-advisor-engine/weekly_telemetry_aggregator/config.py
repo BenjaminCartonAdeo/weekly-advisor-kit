@@ -11,6 +11,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .models import OUTLIER_MIN_SESSIONS
+
 DEFAULT_CONFIG_NAME = "weekly-telemetry-config.json"
 
 DEFAULT_HARNESS_INCLUDE_PROFILES: dict[str, tuple[str, ...]] = {
@@ -102,24 +104,6 @@ class HarnessIncludeConfig:
         default_factory=lambda: list(DEFAULT_HARNESS_EXCLUDE_PATTERNS)
     )
 
-    @property
-    def profile(self) -> str:
-        """Alias for callers that use the shorter profile name."""
-        return self.default_profile
-
-    @profile.setter
-    def profile(self, value: str) -> None:
-        self.default_profile = value
-
-    @property
-    def default_policy(self) -> str:
-        """Alias for configuration files that call the selected profile a policy."""
-        return self.default_profile
-
-    @default_policy.setter
-    def default_policy(self, value: str) -> None:
-        self.default_profile = value
-
 
 @dataclass(slots=True)
 class TelemetryConfig:
@@ -135,7 +119,7 @@ class TelemetryConfig:
     session_outlier_z: float = 3.0
     session_outlier_min_cost_usd: float = 0.5
     #: below this root count, cost_outliers are statistically meaningless (v5.23, configurable v5.28).
-    outlier_min_sessions: int = 15
+    outlier_min_sessions: int = OUTLIER_MIN_SESSIONS
     #: relative tolerance for the parts-vs-session_v2 cross-check (v5.28).
     cross_check_tolerance_pct: float = 0.25
     #: pinned harness-eval version (spec §7 — drift → doctor warning, v5.28).
@@ -247,9 +231,6 @@ def _parse(p: Path) -> TelemetryConfig:
     if isinstance(auto_fix_max_files, int) and not isinstance(auto_fix_max_files, bool):
         cfg.harness_auto_fix_max_files = max(0, auto_fix_max_files)
     include_raw = raw.get("harness_include")
-    top_level_profile = raw.get("harness_include_profile")
-    if isinstance(top_level_profile, str) and top_level_profile:
-        cfg.harness_include.default_profile = top_level_profile
     if isinstance(include_raw, str):
         cfg.harness_include.default_profile = include_raw
     elif isinstance(include_raw, list):
@@ -257,10 +238,7 @@ def _parse(p: Path) -> TelemetryConfig:
             str(x) for x in include_raw
         ]
     elif isinstance(include_raw, dict):
-        profile = include_raw.get(
-            "default_profile",
-            include_raw.get("default_policy", include_raw.get("profile")),
-        )
+        profile = include_raw.get("default_profile")
         if isinstance(profile, str) and profile:
             cfg.harness_include.default_profile = profile
         profiles = include_raw.get("profiles")
