@@ -1,6 +1,6 @@
 [project]
 name = "weekly-advisor"
-version = "0.4.0"
+version = "0.4.1"
 description = "OpenCode weekly advisor pipeline: telemetry aggregation, ecosystem watch, harness lint, insights, deterministic report + CLI — spec opencode-weekly-advisor v6.0"
 readme = "README.md"
 requires-python = ">=3.11"
