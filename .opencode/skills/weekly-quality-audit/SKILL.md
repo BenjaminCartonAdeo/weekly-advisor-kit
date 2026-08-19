@@ -63,7 +63,9 @@ Sélection déterministe en amont (aucun choix de session ici), examen LLM des t
                                            // (règle copyright : pas de copie du transcript)
       "recommendation": "...",
       "recommendation_type": "prompting-habit | environment-change | skill-candidate | command-candidate | command-improvement",
-      "impact_order_of_magnitude": "small | medium | large"
+      "impact_order_of_magnitude": "small | medium | large",
+      "source": "new",                    // new | carried (v6.0.n)
+      "carried_from": "2026-08-16-ace20d4b"  // requis si source=carried (run d'origine)
     }
   ]
 }
@@ -75,3 +77,7 @@ Sélection déterministe en amont (aucun choix de session ici), examen LLM des t
 - Une preuve chiffrée (tokens, coût, répétitions) dans `evidence_summary` si disponible
 - Sélection des sessions déjà faite : l'audit n'ajoute pas de sessions hors `audited`
 - Constats triés : sévérité DESC puis impact
+- **`source` obligatoire** : `new` si le constat émerge de ce run, `carried` si
+  c'est la reprise d'un constat déjà émis (décision tranchée) — dans ce cas
+  `carried_from` = identifiant du run d'origine pour traçabilité ; le rapport
+  affichera « repris de <run> » sur ces constats
