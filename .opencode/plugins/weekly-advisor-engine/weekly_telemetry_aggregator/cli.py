@@ -521,10 +521,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_cd = sub.add_parser(
         "commit-draft",
         parents=[global_parent],
-        help="Validate + commit an auto-drafted skill/command (Partie 4 §7)",
+        help="Validate + commit an auto-drafted skill/command/agent (Partie 4 §7)",
     )
-    p_cd.add_argument("--file", required=True, help="Absolute path to the SKILL.md or command .md")
-    p_cd.add_argument("--kind", choices=("skill", "command", "fix"), required=True)
+    p_cd.add_argument(
+        "--file", required=True, help="Absolute path to the SKILL.md, command or agent .md"
+    )
+    p_cd.add_argument("--kind", choices=("skill", "command", "fix", "agent"), required=True)
     p_cd.set_defaults(func=_cmd_commit_draft)
 
     p_doctor = sub.add_parser(

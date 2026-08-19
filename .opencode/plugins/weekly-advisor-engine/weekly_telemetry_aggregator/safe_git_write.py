@@ -15,7 +15,12 @@ from pathlib import Path
 
 from .config import TelemetryConfig
 
-_MESSAGE_PREFIX = {"skill": "skill:", "command": "command:", "fix": "harness-fix:"}
+_MESSAGE_PREFIX = {
+    "skill": "skill:",
+    "command": "command:",
+    "fix": "harness-fix:",
+    "agent": "agent:",  # v6.0.n : drafts .opencode/agents/ (java-pro.md, ...)
+}
 
 
 def _run_git(cwd: Path, *args: str, timeout: int = 30) -> subprocess.CompletedProcess:

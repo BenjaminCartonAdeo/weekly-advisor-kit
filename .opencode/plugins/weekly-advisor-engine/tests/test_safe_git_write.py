@@ -141,3 +141,26 @@ def test_commit_body_includes_target_agents(tmp_path: Path):
     body = _git(repo, "log", "-1", "--format=%b")
     assert "Cible: agents java-pro, backend-architect" in body
     assert "Source: sessions ses_abc" in body
+
+
+def test_commit_draft_agent_kind(tmp_path: Path):
+    """P4 : les drafts agents (.opencode/agents/) se committent avec le préfixe agent:."""
+    from weekly_telemetry_aggregator.config import TelemetryConfig
+
+    repo = _init_repo(tmp_path)
+    agent_dir = repo / ".opencode" / "agents" / "my-agent"
+    agent_dir.mkdir(parents=True)
+    draft = agent_dir / "my-agent.md"
+    draft.write_text(
+        "---\nname: my-agent\ndescription: Agent de test\n---\n\nCorps du draft.\n",
+        encoding="utf-8",
+    )
+    cfg = TelemetryConfig()
+    cfg.git_name = "advisor"
+    cfg.git_email = "advisor@local"
+    ok, msg = commit_draft(cfg, draft, "agent")
+    assert ok, msg
+    subject = _git(repo, "log", "-1", "--format=%s")
+    assert subject.startswith("agent:my-agent")
+    # le reste du worktree est intact (add scoped)
+    assert _git(repo, "status", "--porcelain") == ""
