@@ -4,7 +4,6 @@ description: Analyse les findings harness-eval et applique uniquement les correc
 mode: primary
 permission:
   read: allow
-  write: allow
   edit: deny
   bash: deny
   task: deny
