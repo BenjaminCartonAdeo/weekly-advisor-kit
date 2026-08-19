@@ -68,17 +68,20 @@ function windowHours(config: Record<string, unknown>): number {
 }
 
 /**
- * Ancre : créée si absente, lue si fraîche (âge ≤ fenêtre), rafraîchie sinon.
- * Sans refresh, une ancre figée à vie gèle la cadence : chaque run rejouerait
- * la même fenêtre (mêmes fichiers de sortie, mêmes deltas).
+ * Ancre glissante : créée si absente, conservée dans la même journée (stabilité
+ * intra-run : tous les tools du run partagent la même fenêtre), rafraîchie vers
+ * maintenant chaque jour. La fraîcheur par « âge ≤ fenêtre » gelait la fenêtre
+ * quand des runs s'enchaînaient en moins de 7 j (chaque run rejouait la même
+ * période). Désormais la fenêtre avance chaque jour ; rejouer une fenêtre
+ * historique = passer --anchor explicitement (v6.0.n).
  */
-function readOrCreateAnchor(outputDir: string, windowHours: number): string {
+function readOrCreateAnchor(outputDir: string, _windowHours: number): string {
   const file = path.join(outputDir, ANCHOR_FILE)
   if (fs.existsSync(file)) {
     const existing = fs.readFileSync(file, "utf8").trim()
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(existing)) {
-      const ageHours = (Date.now() - Date.parse(existing)) / 3_600_000
-      if (ageHours <= windowHours) return existing
+      const today = new Date().toISOString().slice(0, 10)
+      if (existing.slice(0, 10) === today) return existing
     }
   }
   const anchor = new Date().toISOString().replace(/\.\d{3}Z$/, "Z")
@@ -175,7 +178,9 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
 
       weekly_watch_context: anchorTool(
         "Étape 2.5 : inventaire déterministe du worktree et crosswalk marché/existant. " +
-          "Écrit weekly-watch-context-<date>.json.",
+          "Écrit weekly-watch-context-<date>.json. " +
+          "SÉQUENTIEL : nécessite weekly-ecosystem-<date>.json de l'étape 2 — " +
+          "exécuter weekly_releases d'abord, jamais en parallèle.",
         (anchor) => ["watch-context", "--anchor", anchor],
         120_000,
       ),

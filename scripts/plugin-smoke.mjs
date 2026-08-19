@@ -9,8 +9,8 @@
  *   1. instanciation du plugin + `weekly_doctor.execute({})` (closure noArgTool)
  *   2. `weekly_run.execute({ lookback_days: 21 })` (closure anchorTool + arg)
  *   3. propagation CLI : `--lookback-days 21` présent dans les argv du run
- *   4. ancre : créée si absente, conservée si fraîche (âge ≤ fenêtre),
- *      rafraîchie si périmée (cadence hebdo non figée, v6.0.b)
+ *   4. ancre glissante : créée si absente, conservée dans la journée,
+ *      rafraîchie chaque jour (fenêtre jamais figée, v6.0.n)
  *
  * Exit 0 = OK ; sinon message + exit 1 (CI).
  */
@@ -86,12 +86,12 @@ await tools.weekly_run.execute({})
 const argv2 = fs.readFileSync(argvLog, "utf8").trim().split(" ")
 const anchor2 = fs.readFileSync(path.join(outputDir, "anchor-last.txt"), "utf8").trim()
 check(
-  "ancre fraîche conservée (âge ≤ fenêtre)",
+  "ancre du jour conservée (stabilité intra-run)",
   argv2[argv2.indexOf("--anchor") + 1] === anchor2,
   `${argv2.join(" ")} | ${anchor2}`,
 )
 
-// 4b. ancre périmée (30 j > fenêtre 7 j) rafraîchie → nouvelle ancre récente
+// 4b. ancre d'un autre jour rafraîchie → nouvelle ancre récente
 const old = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString().replace(/\.\d{3}Z$/, "Z")
 fs.writeFileSync(path.join(outputDir, "anchor-last.txt"), old)
 fs.writeFileSync(argvLog, "RESET")

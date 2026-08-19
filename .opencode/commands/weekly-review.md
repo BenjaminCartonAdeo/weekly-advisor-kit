@@ -50,7 +50,11 @@ gérée par le plugin via `<output_dir>/anchor-last.txt`, aucun calcul manuel :
 
 La fenêtre se déduit du prompt et se passe en **override de run** (paramètre
 `lookback_days` sur `weekly_run` et `weekly_releases`) — la config JSON n'est
-jamais réécrite :
+jamais réécrite. **Ancre glissante (v6.0.n)** : sans override `anchor`, l'ancre
+est rafraîchie chaque jour (conservée dans la même journée pour la stabilité
+intra-run) — la fenêtre couvre donc toujours `[aujourd'hui - lookback, maintenant]`.
+Rejouer une fenêtre historique = passer `anchor` explicitement (ex. la date du
+run à rejouer).
 
 | Prompt utilisateur | `lookback_days` à passer |
 |---|---|
