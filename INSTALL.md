@@ -49,6 +49,8 @@ Fichier : `.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`
 |---|---|---|
 | `project_root` | **Chemin ABSOLU du repo audité** — celui qui contient `.opencode/` | placeholder `/path/to/weekly-advisor-kit` ✋ |
 | `output_dir` | Chemin ABSOLU des artefacts (rapports JSON/MD ; chaque run écrit dans `runs/<date>-<uuid8>/`, alias `runs/current`) | placeholder `/path/to/weekly-advisor-kit/reports` ✋ |
+| `report_dir` | (optionnel) Répertoire de la **copie utilisateur** du rapport — défaut `~/weekly-reports/weekly-report-latest.md` ; `""` désactive la publication (v6.0.l) | absent → défaut activé |
+| `kit_root` | (optionnel) Worktree du kit pour la synchro best-effort des drafts auto-rédigés (`commit-draft`, v6.0.l) | absent → désactivé |
 | `harness_include` | Profil et globs allowlistés pour l'étape `harness` | `advisory` (policy + documentation) |
 | `harness_auto_fix_rules` | Règles explicitement autorisées pour l'application automatique | `[]` (aucune) |
 | `harness_auto_fix_max_files` | Nombre maximum de fichiers modifiés par remédiation | `1` |

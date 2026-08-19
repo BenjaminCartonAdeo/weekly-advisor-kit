@@ -92,6 +92,9 @@ opencode run --agent weekly-advisor "Lance la revue hebdomadaire"
 Rien d'autre sur PATH : le plugin résout python et `harness-eval`. Le rapport final
 `<output_dir>/runs/current/weekly-report-<date>.md` est le **signal** du cron (alerte si absent) —
 `runs/current` est l'alias stable du run actif (`run_state.json` à la racine de `output_dir`).
+**Pour l'utilisateur** : le rapport est publié automatiquement dans `~/weekly-reports/weekly-report-latest.md`
+(fichier réel, écrasé à chaque run — config `report_dir` pour changer l'endroit) — pas besoin de
+connaître `output_dir` ni `runs/`.
 Détails et heartbeat recommandé : [`INSTALL.md`](INSTALL.md) §2.7.
 
 ## Structure

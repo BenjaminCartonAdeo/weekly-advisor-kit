@@ -13,14 +13,15 @@ critique, drafting, lint harness, insights, cohérence, rapport final.
 ## Déroulement
 
 Les étapes déterministes passent par les tools du plugin (`weekly_*`) — l'ancre est
-gérée par le plugin via `<output_dir>/anchor-last.txt` (créée / rafraîchie si périmée),
-aucun calcul manuel. La fenêtre peut se déduire du prompt (« N semaines » → `N×7`) et
-se passer en override `lookback_days` sur `weekly_run`/`weekly_releases` (v6.0.b) :
+gérée par le plugin via `<output_dir>/anchor-last.txt`, aucun calcul manuel :
 
 0. `weekly_doctor` — diagnostic du kit (2 = fatal → stopper)
 1. `weekly_run` — télémétrie
 2. `weekly_releases` — veille écosystème
 2.5. `weekly_watch_context` — inventaire worktree + crosswalk marché/existant
+   ⚠ **Séquentiel obligatoire** : 2.5 lit l'écosystème de 2 — ne jamais lancer
+   `weekly_releases` et `weekly_watch_context` en parallèle, ni 2.5 avant 2
+   (exit 2 « DÉPENDANCE » sinon)
 3. Audit qualitatif (skill `weekly-quality-audit`) — `weekly_audit_candidates` + `weekly_show_session`
 3.5. Veille critique (skill `weekly-watch-review`) → `weekly-watch-findings-raw-<date>.json`
 3.6. `weekly_watch_validate` — validation déterministe du finding contre le contexte
@@ -39,4 +40,37 @@ se passer en override `lookback_days` sur `weekly_run`/`weekly_releases` (v6.0.b
 - Ne jamais réécrire les JSON produits par le CLI
 - Ne pas auditer au-delà de `audit_max_sessions` ; ne pas écrire plus de
   `max_candidates_per_run` drafts
-- Terminer par : le chemin du rapport final et les alertes les plus sévères
+- Terminer par : le chemin du rapport final (**copie utilisateur**
+  `~/weekly-reports/weekly-report-latest.md` en premier, puis l'archive
+  `runs/current/weekly-report-<date>.md`) et les alertes les plus sévères
+- Le rapport est publié automatiquement vers `~/weekly-reports/` (config
+  `report_dir` pour changer l'endroit) — ne pas déplacer/copier le rapport ailleurs
+
+## Fenêtre du run
+
+La fenêtre se déduit du prompt et se passe en **override de run** (paramètre
+`lookback_days` sur `weekly_run` et `weekly_releases`) — la config JSON n'est
+jamais réécrite :
+
+| Prompt utilisateur | `lookback_days` à passer |
+|---|---|
+| « N semaines » (1, 2, 3…) | `N × 7` (ex. « 3 semaines » → `21`) |
+| « le mois dernier » / « 30 jours » | `30` |
+| Autre ou absent | **défaut** : ne rien passer (config `lookback_days` s'applique, 7 j) — poser une question si ambigu |
+
+## Garde-fous de coût
+
+- **JAMAIS modifier la config moteur** (`weekly-telemetry-config.json`) — les
+  overrides de fenêtre (lookback_days, anchor) se passent en paramètres des tools
+  (`weekly_run`, `weekly_releases`) via les paramètres `lookback_days` et `anchor`
+  (voir tableau « Fenêtre du run » ci-dessus)
+- **Budget d'itérations** : si un tool échoue (plugin bug, ReferenceError), signaler
+  au rapport et passer à l'étape suivante — ne pas passer plus de 3 tours à
+  diagnostiquer un échec tool
+- **Plugin stale** : si un `ReferenceError` mentionne une variable non définie dans le
+  plugin, c'est un module chargé au boot avec du code stale — le fix disque ne s'applique
+  pas avant redémarrage. Constater, signaler au rapport, proposer le restart, **stopper
+  le diagnostic** (ne pas tenter d'éditer/recharger le plugin mid-session)
+- **Mode audit** : quand un choix est ambigu (ex. fenêtre multi-semaines), poser UNE
+  seule question à l'utilisateur avec des options, ne pas explorer le code du plugin
+  pour deviner la sémantique

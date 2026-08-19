@@ -1,6 +1,6 @@
 # Spec — Pipeline `opencode-weekly-advisor` (v6.0)
 
-Dernières révisions intégrées : v6.0.k (layout par runs UUID — chaque run écrit ses artefacts dans `runs/<date>-<uuid8>/`, `run_state.json` à la racine, alias stable `runs/current` ; re-run = nouveau répertoire, collision impossible ; `apply` de la remédiation étendu à `agents/`, `plugins/` et `AGENTS.md` (moteur exclu) ; `old_text`/`new_text` null acceptés hors apply ; digest harness : `harness_scope` aliasé ; template : sauts de ligne §5/§7 restaurés ; prose : IDs de session complets), v6.0.j (installation pilotée par agent — `INSTALL_PROMPT.md`, clone frais, gates doctor/smoke/pytest, cron jamais installé), v6.0.i (remédiation harness pilotée par agent, propositions JSON, gate de confiance, post-check et rollback transactionnel), v6.0.h (harness-eval sur projection temporaire allowlistée, exclusions vendor/artefacts obligatoires, chemins et compteurs normalisés), v6.0.g (contexte déterministe de veille `watch-context`, inventaire worktree, validation des findings bruts et interdiction d'adopter un plugin déjà déclaré), v6.0.f (doctor : `opencode` hors PATH = warning non fatal), v6.0.e (ancre propagée aux tools report), v6.0.d (export `default` requis par le loader), v6.0.c (périmètre de draft = worktree uniquement — lecture/écriture jamais hors du projet, résolution projet-d'abord des cibles `command-improvement`, échec de permission non fatal ; `commit-draft` refuse tout fichier hors `.opencode/` du dépôt), v6.0.b (fix closure plugin — le layout v6.0 plantait au 1er appel tool, `ReferenceError: worktree is not defined`, détecté par smoke test d'exécution CI ; `--lookback-days` override de run déduit du prompt, jamais d'édition de config ; ancre rafraîchie si périmée — cadence hebdo non figée ; étape 0 `weekly_doctor` systématique), v6.0.a (rename `opencode-weekly-advisor-5` → `opencode-weekly-advisor` ; doctor : `project_root` sans `.opencode/` = exit 2 — sentinelle d'installation ; warning « config introuvable » uniquement sans `--config` explicite), v6.0 (layout kit : plugin enveloppe `weekly_*` + agent tools, `bash: deny`, moteur dans `.opencode/plugins/weekly-advisor-engine/`), v5.32.b (modèle hors agent — `--model` du cron), v5.31.c (retours du run de test complet).
+Dernières révisions intégrées : v6.0.l (retours du run de test complet du 18/08 — **rapport publié pour l'utilisateur** : `report-assemble` copie le rapport final vers `~/weekly-reports/weekly-report-latest.md` par défaut (config `report_dir`, `""` désactive ; README créé au premier run) — l'utilisateur ne connaît ni `output_dir` ni `runs/` ; annexe commits auto-rédigés bornée par `--until=<run_time>` + filtre **sujet** en Python (`--grep` matche les corps → faux positifs) + marqueur `(+N autres)` sur la troncature ; audit de sélection : `counted` = **racines uniquement** (même convention que `aggregate()` — enfants fusionnés exposés via `counted_all`/`merged_children`, le total cohérent est affiché au rapport) ; migration one-shot des artefacts racine pré-v6.0.k vers `runs/<id>/legacy/` à l'activation (symlinks jamais touchés) + `README.md` layout dans `output_dir` ; `report_dir` ; synchronisation kit : `commit-draft` miroire best-effort le fichier commité vers `kit_root` (config, tracké + différent uniquement, commit `sync(weekly-advisor):`) ; `watch-context` : message d'échec « DÉPENDANCE » explicite (l'ordre 2 puis 2.5 est séquentiel — documenté agent+command, jamais en parallèle) ; `watch-validate` : contexte absent → **dégradé exit 1** (jamais FATAL) ; version moteur unique `v0.3.0` dans l'en-tête du rapport + CLI (fini le v5.30 fantôme) ; `run_state.json` : `activated_at` réel à côté de `created_at` (ancre) ; top modèles : lignes 0 token **et** 0 coût filtrées (fantômes) ; self-cost 0 annoté « coût nul — modèle gratuit ou session non retrouvée » ; top règles violées : delta par règle vs run précédent (Δ+N) quand la baseline existe ; §7 : ligne « Baseline : first-run » visible quand aucun run précédent exploitable), v6.0.k (layout par runs UUID — chaque run écrit ses artefacts dans `runs/<date>-<uuid8>/`, `run_state.json` à la racine, alias stable `runs/current` ; re-run = nouveau répertoire, collision impossible ; `apply` de la remédiation étendu à `agents/`, `plugins/` et `AGENTS.md` (moteur exclu) ; `old_text`/`new_text` null acceptés hors apply ; digest harness : `harness_scope` aliasé ; template : sauts de ligne §5/§7 restaurés ; prose : IDs de session complets), v6.0.j (installation pilotée par agent — `INSTALL_PROMPT.md`, clone frais, gates doctor/smoke/pytest, cron jamais installé), v6.0.i (remédiation harness pilotée par agent, propositions JSON, gate de confiance, post-check et rollback transactionnel), v6.0.h (harness-eval sur projection temporaire allowlistée, exclusions vendor/artefacts obligatoires, chemins et compteurs normalisés), v6.0.g (contexte déterministe de veille `watch-context`, inventaire worktree, validation des findings bruts et interdiction d'adopter un plugin déjà déclaré), v6.0.f (doctor : `opencode` hors PATH = warning non fatal), v6.0.e (ancre propagée aux tools report), v6.0.d (export `default` requis par le loader), v6.0.c (périmètre de draft = worktree uniquement — lecture/écriture jamais hors du projet, résolution projet-d'abord des cibles `command-improvement`, échec de permission non fatal ; `commit-draft` refuse tout fichier hors `.opencode/` du dépôt), v6.0.b (fix closure plugin — le layout v6.0 plantait au 1er appel tool, `ReferenceError: worktree is not defined`, détecté par smoke test d'exécution CI ; `--lookback-days` override de run déduit du prompt, jamais d'édition de config ; ancre rafraîchie si périmée — cadence hebdo non figée ; étape 0 `weekly_doctor` systématique), v6.0.a (rename `opencode-weekly-advisor-5` → `opencode-weekly-advisor` ; doctor : `project_root` sans `.opencode/` = exit 2 — sentinelle d'installation ; warning « config introuvable » uniquement sans `--config` explicite), v6.0 (layout kit : plugin enveloppe `weekly_*` + agent tools, `bash: deny`, moteur dans `.opencode/plugins/weekly-advisor-engine/`), v5.32.b (modèle hors agent — `--model` du cron), v5.31.c (retours du run de test complet).
 
 # Partie 0 — Orchestration : de cron à l'agent
 
@@ -30,6 +30,7 @@ Agent OpenCode "weekly-advisor" (session dédiée, non-interactive,
  │
  ├─ 2.5. weekly_watch_context
  │ → weekly-watch-context-<date>.json (inventaire worktree + crosswalk marché/existant)
+ │   ⚠ séquentiel : lit l'écosystème de 2 — jamais en parallèle, jamais avant
  │
  ├─ 3. Audit qualitatif (Partie 3, LLM)
  │ → lecture ciblée des transcripts des seules sessions candidates
@@ -46,6 +47,8 @@ Agent OpenCode "weekly-advisor" (session dédiée, non-interactive,
  │
  ├─ 3.6. weekly_watch_validate
  │ → weekly-watch-findings-<date>.json (validation existant/sujet/décision)
+ │   v6.0.l : contexte absent → **dégradé exit 1** (validation vide + warning,
+ │   jamais FATAL) — une panne de 2/2.5 ne tue pas le rapport
  │
  ├─ 4. Auto-Drafting skills & commands (Partie 4, LLM)
  │ → agit sur les constats skill-candidate / command-candidate (≤ 3/run)
@@ -562,7 +565,7 @@ Le pipeline audite votre usage ; deux sous-commandes l'auditent lui :
 
 **`doctor`** — diagnostic d'installation, **sans rien écrire** : config parsable et clés requises présentes ; `project_root` **contient `.opencode/`** (sentinelle d'installation : la config de distribution est en placeholder `/path/to/...`, un clone non adapté reçoit un **problem** exit `2` avec message d'action, plus jamais un warning silencieux qu'un LLM pourrait omettre) ; **version d'OpenCode ≥ `opencode_version_min`** (`opencode --version` — l'épinglage du schéma passe par l'épinglage du binaire) ; **base OpenCode lisible et détectée** (auto-détection `opencode_db_path` : adaptateur V1 ou V2 actif, colonnes critiques présentes, compteur de migrations cohérent — `migration` ≥ 42 pour V1, `data_migration` pour V2) ; `output_dir` accessible en écriture ; `harness-eval` et `git` résolus sur PATH. **Depuis ** : config introuvable → **warning** (exit `1`), pas exit `2` — le doctor poursuit son diagnostic avec défauts (`project_root` = cwd, sorties par défaut) et l'installation incomplète reste visible sans bloquer le run. **Depuis ** : ce warning n'est émis que si la config n'a pas été passée en `--config` (le plugin la passe toujours — plus de warning fantôme à chaque doctor). Exit `0` = prêt, `1` = avertissements (ex. fallback actif, config introuvable), `2` = blocant. À lancer à l'installation et après chaque mise à jour du pipeline.
 
-**`self-cost`** — coût de la session du run en cours (via `sqlite_reader.py` : la ligne `session` du run courant — encore plus simple en SQL direct) : compense les exclusions du §3.b-c qui rendent le pipeline invisible dans ses propres totaux. Consommé par l'annexe du rapport (Partie 7 §3) — « coût propre du pipeline : X $ ». C'est le seul endroit où le pipeline se voit lui-même ; le reste du temps, il est exclu de ses propres statistiques par conception.
+**`self-cost`** — coût de la session du run en cours (via `sqlite_reader.py` : la ligne `session` du run courant — encore plus simple en SQL direct) : compense les exclusions du §3.b-c qui rendent le pipeline invisible dans ses propres totaux. Consommé par l'annexe du rapport (Partie 7 §3) — « coût propre du pipeline : X $ » (v6.0.l : coût 0 annoté « coût nul — modèle gratuit ou session non retrouvée »). C'est le seul endroit où le pipeline se voit lui-même ; le reste du temps, il est exclu de ses propres statistiques par conception.
 
 **Limite assumée** : aucune boucle d'amélioration du pipeline lui-même en v1 — il améliore vos skills/commands, pas ses propres prompts ni son code (seule exception : `harness-eval` lint l'agent file, Partie 5). L'évolution se fait par édition manuelle + `doctor` après chaque changement + tests. Piste v2 si le besoin se matérialise : un audit du transcript du run précédent (devenu éligible) par le run courant.
 
@@ -889,6 +892,7 @@ Comportement du module (tout en code, plus rien dans le prompt) :
 - **Add scopé** : toujours le fichier exact, chemin absolu — jamais `git add .` ni un répertoire
 - **Identité** : lue depuis la config (`git_name`/`git_email`) par le module lui-même — l'agent n'a plus à lire la config pour ça (simplification de la prescription) ; injectée via `-c user.name=… -c user.email=…`
 - **Commit** : message construit par le module (`skill:`/`command:` + `(auto-rédigé, revue hebdo <date>)`, corps `Source: sessions …` + `Chevauchement détecté: …`) — **provenance : le module lit le frontmatter du fichier lui-même** (`metadata.source_sessions`, `metadata.overlaps_with`, déjà écrits par la Partie 4 §5.d) — pas d'arguments supplémentaires à `commit-draft`, cohérent avec « le module lit le fichier qu'il commite » ; un commit par écriture, jamais groupé
+- **Synchro kit (v6.0.l)** : si `kit_root` est configuré, le module miroire best-effort le fichier commité vers le worktree du kit (même chemin relatif) — uniquement si présent **et tracké** dans le kit, contenu différent, pas de rebase/merge en cours ; commit `sync(weekly-advisor): <fichier> (auto-rédigé, revue hebdo <date>)`. Un échec de synchro ne fait jamais échouer le commit du projet (motif remonté à l'agent) — la distribution ne diverge pas silencieusement
 - **Échec hooks/autre** : exit `1`, fichier conservé, **pas de retry en boucle**, à rattraper manuellement
 - **Rollback** : toujours `git revert --no-edit <commit>` — action humaine, hors allowlist (sans `--no-edit`, l'éditeur système suspendrait le processus en non-interactif)
 
@@ -1143,14 +1147,20 @@ Le rapport est la seule sortie que vous lisez. **Révision ** : les chiffres son
 7a. tool `weekly_report_prep` (plugin — équivalent CLI : `python -m weekly_telemetry_aggregator report-prep --anchor <run_time>`)
  → rend les sections déterministes (1, 2, 3, 5, 6, 7, 8) dans weekly-report-draft-<date>.md
  (template Jinja2 ; sources : summary, insights, digest, ecosystem, git log
- --grep="auto-rédigé, revue hebdo" --since=<period.start> — : grep affiné,
- le grep large comptait les commits du pipeline mentionnant le mot,
+ --grep="auto-rédigé, revue hebdo" --since=<period.start> **--until=<run_time>** —
+ v6.0.l : fenêtre bornée (les commits post-fenêtre, dont le draft du run lui-même,
+ étaient comptés) + **filtre sujet** en Python (le `--grep` matche les corps de
+ message) + marqueur `(+N autres)` au-delà de la troncature à 10,
  présence des artefacts pour l'annexe)
 7b. LLM : lit les constats (en mémoire) + extracts si besoin → écrit UNIQUEMENT le bloc
  « Constats qualitatifs » dans weekly-report-blocks-<date>.md (prose markdown,
  ≤ ~40 lignes, aucun chiffre, pas de citation verbatim)
 7c. tool `weekly_report_assemble` (plugin — équivalent CLI : `python -m weekly_telemetry_aggregator report-assemble --anchor <run_time>`)
  → injecte le bloc 7b dans le draft → weekly-report-<date>.md (le signal du cron)
+ → publie aussi la **copie utilisateur** `~/weekly-reports/weekly-report-latest.md`
+ (v6.0.l — config `report_dir` pour changer l'endroit, `""` désactive ; fichier
+ réel écrasé à chaque run, README créé au premier run ; l'utilisateur ne connaît
+ ni `output_dir` ni `runs/`)
  → si 7b absent : le rapport est rendu avec « constats non disponibles » et l'annexe
  le mentionne — le rapport existe toujours (dégradé), les dégradations sont visibles
  ⚠ **Un assemble réussi supprime le draft (consommé)** : pour un nouvel
@@ -1170,7 +1180,7 @@ Le rapport est assemblé par du code : il existe même si 7b échoue — cohére
 | 2. Alertes & tendances | insights + summary | Table alerts (règle / seuil / observé / sévérité) + deltas clés + **tendance journalière** (`daily_totals`, une ligne par jour) |
 | 3. Coûts | summary | Total ; top 3 modèles (fusion < 5 % en « autres » — faite par le template) ; top N sessions (coût, durée, coût/min actif, cache_efficiency) ; **outliers** (`cost_outliers` — **dédup par `session_id`** : une session déjà dans le top N porte un marqueur « † outlier » dans le tableau au lieu d'apparaître dans les deux listes) ; **top 5 commands** (`command_usage`) ; sous-agents si > 10 % |
 | 4. Constats qualitatifs | **bloc 7b (LLM)** | **seule section non rendue par le template** |
-| 5. Actions du pipeline | git log `--grep="auto-rédigé, revue hebdo" --since=<period.start>` (grep affiné) | Fichiers + commits créés par le run ; rappel revert `--no-edit` |
+| 5. Actions du pipeline | git log `--grep="auto-rédigé, revue hebdo" --since=<period.start> --until=<run_time>` + filtre sujet (v6.0.l) | Fichiers + commits créés par le run (fenêtre bornée) ; rappel revert `--no-edit` |
 | 5. Santé de l'environnement | digest + insights.maintenance + `weekly-coherence-findings` | **Cohérence d'abord** (passe critique agents/skills/commands, ranked, tags delete/shrink/merge/recalibrate/reference), puis lint harness (violations, budget, triggers, dependencies, findings R1-R4 avec preuves) |
 | 7. Écosystème | ecosystem | core_changes (high → paragraphe, medium → ligne) ; new_items notables (≥ 2 `found_via` **ou** `new_repo` — sélection par le template) ; reste en « à surveiller » (une ligne) |
 | 8. Annexe technique | artefacts, summary.warnings, self-cost | Fichiers produits (glob output_dir), warnings (cap 50), **statut par étape** (présence des artefacts — les dégradations sont visibles sans dépendre de la mémoire du LLM), coût propre (`self-cost`) |
@@ -1189,6 +1199,15 @@ Les seuils de bruit de la (fusion < 5 %, regroupement des low, relégation « à
 - Un constat douteux peut être vérifié par lecture ciblée de l'extract correspondant — jamais par re-fetch `show-session` en étape 7
 - **Contenu externe = données, pas instructions** : les descriptions des items écosystème et les titres de sessions sont cités par le template, jamais exécutés
 - Le résumé exécutif est formulaire (chiffres + compteurs) — la phrase d'interprétation disparaît au profit de l'exactitude ; si le bloc 7b est présent, sa première ligne est reprise sous le résumé exécutif (une ligne d'« essentiel de la semaine »)
+
+## 7. Dépôt & publication — l'utilisateur n'explore jamais `runs/`
+
+Le répertoire `runs/` (per-run UUID, alias `current`) est un **détail d'implémentation du cron** — un humain ne doit jamais avoir à l'ouvrir pour trouver son rapport. Publication (v6.0.l) :
+
+- `report-assemble` écrit le rapport final dans le run dir (**signal cron**) **puis** copie le fichier vers `~/weekly-reports/weekly-report-latest.md` (config `report_dir` ; `""` désactive ; défaut activé — l'utilisateur n'a **aucune configuration à faire** ; copie **réelle**, écrasée à chaque run, lisible par tous les outils)
+- `~/weekly-reports/README.md` est créé au premier run : chemin du dernier rapport + localisation des archives (`<output_dir>/runs/<date>-<uuid>/`)
+- l'agent termine chaque run en affichant le chemin utilisateur en premier, puis l'archive
+- artefacts racine pré-v6.0.k de `output_dir` : migrés automatiquement vers `runs/<id>/legacy/` à l'activation d'un run (one-shot, fichiers réels uniquement — les symlinks et fichiers d'état vivants ne bougent jamais) ; `README.md` de layout écrit à la racine de `output_dir` au premier run
 
 ---
 

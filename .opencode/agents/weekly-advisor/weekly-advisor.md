@@ -62,7 +62,7 @@ ci-dessous sont inchangés — ils vivent dans ce répertoire.
 | 0 | `weekly_doctor` — diagnostic du kit, **systématique** (rc 0/1 = OK, 2 = fatale → stopper sans rapport) | texte |
 | 1 | `weekly_run` (5-15 min — lancer en arrière-plan et poller si timeout) | `weekly-summary-<date>.json` |
 | 2 | `weekly_releases` (réseau ; warnings sources tolérés) | `weekly-ecosystem-<date>.json` |
-| 2.5 | `weekly_watch_context` (worktree uniquement ; warnings d'inventaire tolérés) | `weekly-watch-context-<date>.json` |
+| 2.5 | `weekly_watch_context` (worktree uniquement ; warnings d'inventaire tolérés) — ⚠ **séquentiel après 2** : il lit l'écosystème écrit par 2 ; jamais en parallèle, jamais avant (exit 2 « DÉPENDANCE » sinon) | `weekly-watch-context-<date>.json` |
 | 3 | **Skill `weekly-quality-audit`** : `weekly_audit_candidates` → `weekly_show_session` → constats | `weekly-quality-findings-<date>.json` |
 | 3.5 | **Skill `weekly-watch-review`** : veille critique croisée (marché × existant × findings), écrit le brut | `weekly-watch-findings-raw-<date>.json` |
 | 3.6 | `weekly_watch_validate` — validation déterministe des findings contre le contexte | `weekly-watch-findings-<date>.json` |
@@ -73,12 +73,17 @@ ci-dessous sont inchangés — ils vivent dans ce répertoire.
 | 6.5 | **Skill `weekly-coherence-review`** : état déclaratif vs usage réel | `weekly-coherence-findings-<date>.json` |
 | 7a | `weekly_report_prep` puis `weekly_report_blocks_draft` (brouillon auto, toujours) | `weekly-report-draft-<date>.md` |
 | 7b | **Skill `weekly-report-prose`** : prose optionnelle (contrat anti-hallucination) | `weekly-report-blocks-<date>.md` |
-| 7c | `weekly_report_assemble` → **le signal du cron** ; ⚠ un assemble réussi **supprime le draft** : relancer `weekly_report_prep` avant un nouvel assemble | `weekly-report-<date>.md` |
+| 7c | `weekly_report_assemble` → **le signal du cron** ; publie la **copie utilisateur** `~/weekly-reports/weekly-report-latest.md` (config `report_dir`) ; ⚠ un assemble réussi **supprime le draft** : relancer `weekly_report_prep` avant un nouvel assemble | `weekly-report-<date>.md` |
 | 8 | `weekly_self_cost` (annexe du rapport) | texte |
 
 Après l'étape 3.5, appeler obligatoirement `weekly_watch_validate` avant l'étape 4.
 Le rapport, les insights et les étapes suivantes lisent uniquement le findings final,
 jamais le fichier `weekly-watch-findings-raw-<date>.json`.
+
+**Rapport final** : terminer par le chemin de la **copie utilisateur**
+(`~/weekly-reports/weekly-report-latest.md` par défaut, config `report_dir`) en
+premier, puis l'archive (`runs/current/weekly-report-<date>.md`), puis les alertes
+les plus sévères.
 
 Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sans rapport**.
 
