@@ -10,6 +10,7 @@ from __future__ import annotations
 import difflib
 
 from .sqlite_reader import SchemaAdapter
+from .util import descendants_by_parent
 
 #: Compaction threshold: N >= 3 similar consecutive calls of the same tool (Partie 0 §3).
 COMPACT_MIN = 3
@@ -22,22 +23,10 @@ TEXT_CAP = 400
 
 
 def _children_ids(adapter: SchemaAdapter, session_id: str) -> list[str]:
-    """All descendant session ids (BFS on parent_id), in discovery order."""
-    by_parent: dict[str, list[str]] = {}
-    for m in adapter.list_sessions(0):
-        if m.parent_id:
-            by_parent.setdefault(m.parent_id, []).append(m.session_id)
-    out: list[str] = []
-    seen = {session_id}
-    queue = list(by_parent.get(session_id, []))
-    while queue:
-        sid = queue.pop(0)
-        if sid in seen:
-            continue
-        seen.add(sid)
-        out.append(sid)
-        queue.extend(by_parent.get(sid, []))
-    return out
+    """All descendant session ids (indexed BFS shared with aggregator, util)."""
+    return descendants_by_parent(
+        ((m.session_id, m.parent_id) for m in adapter.list_sessions(0)), session_id
+    )
 
 
 def _render_part(part) -> str:

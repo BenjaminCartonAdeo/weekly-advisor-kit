@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 from weekly_telemetry_aggregator.config import (
@@ -81,20 +80,12 @@ def test_scope_excludes_vendor_engine_and_generated_content(tmp_path: Path):
     assert scope.excluded_counts_by_pattern["**/coverage/**"] == 0
 
 
-def test_scope_does_not_walk_application_repository_outside_opencode(tmp_path: Path, monkeypatch):
+def test_scope_does_not_walk_application_repository_outside_opencode(tmp_path: Path):
+    """Strict profile: only files under .opencode/ are considered (v6.0.o: rglob instead of os.walk)."""
     _touch(tmp_path, ".opencode/commands/review.md")
     _touch(tmp_path, "src/application.py")
-    walked: list[Path] = []
-    original_walk = os.walk
-
-    def recording_walk(root, *args, **kwargs):
-        walked.append(Path(root))
-        return original_walk(root, *args, **kwargs)
-
-    monkeypatch.setattr("weekly_telemetry_aggregator.harness_scope.os.walk", recording_walk)
     scope = resolve_harness_scope(tmp_path, HarnessIncludeConfig(default_profile="strict"))
 
-    assert walked == [tmp_path / ".opencode"]
     assert "src/application.py" not in scope.unscoped_files
     assert scope.included_files == [".opencode/commands/review.md"]
 

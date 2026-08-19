@@ -25,6 +25,7 @@ from . import main as main_module
 from .config import TelemetryConfig
 from .main import EXIT_OK, EXIT_PARTIAL, EXIT_TOTAL_FAILURE, _parse_anchor
 from .run_state import resolve_active_run_dir
+from .util import iter_digest_findings
 from .writer import write_json_atomic
 
 MAX_PATCH_LINES = 120
@@ -311,73 +312,23 @@ def _status_for_non_apply(decision: str) -> tuple[str, str]:
     return "dismissed", "proposal is explicitly dismissed"
 
 
-def _normalise_digest_path(value: object) -> str | None:
-    """Convert harness output paths to project-relative POSIX paths."""
-    if not isinstance(value, str) or not value:
-        return None
-    normalized = value.replace("\\", "/")
-    marker = normalized.find(".opencode/")
-    if marker >= 0:
-        return normalized[marker:]
-    if normalized == ".opencode":
-        return normalized
-    return normalized.removeprefix("./")
-
-
 def _digest_findings(digest: Mapping[str, Any]) -> list[dict[str, str | None]]:
-    """Extract rule/path records from top-level and component harness findings."""
+    """Extract rule/path records from top-level and component harness findings.
+
+    Projection of util.iter_digest_findings: explicit findings pass through
+    (normalized paths), rules[] fallback rows are kept only when their rule has
+    no detailed finding in the same component.
+    """
     findings: list[dict[str, str | None]] = []
-    uncategorized_files = digest.get("uncategorized_files")
-
-    def add_finding(value: Mapping[str, Any], component_path: str | None) -> None:
-        rule_value = value.get("rule") or value.get("id")
-        if not isinstance(rule_value, str) or not rule_value:
-            rule_value = "unknown"
-        path = _normalise_digest_path(value.get("path") or component_path)
-        findings.append({"rule": rule_value, "path": path})
-
-    top_level = digest.get("findings")
-    if isinstance(top_level, list):
-        for value in top_level:
-            if isinstance(value, Mapping):
-                add_finding(value, None)
-
-    inspection = digest.get("inspection")
-    if not isinstance(inspection, Mapping):
-        return findings
-    for section in ("command", "claude_md", "uncategorized"):
-        components = inspection.get(section)
-        if not isinstance(components, list):
-            continue
-        for index, component in enumerate(components):
-            if not isinstance(component, Mapping):
-                continue
-            component_path = _normalise_digest_path(component.get("path"))
-            if (
-                component_path is None
-                and section == "uncategorized"
-                and isinstance(uncategorized_files, list)
-                and index < len(uncategorized_files)
-            ):
-                component_path = _normalise_digest_path(uncategorized_files[index])
-            detailed_rules: set[str] = set()
-            component_findings = component.get("findings")
-            if isinstance(component_findings, list):
-                for value in component_findings:
-                    if isinstance(value, Mapping):
-                        add_finding(value, component_path)
-                        rule_value = value.get("rule") or value.get("id")
-                        if isinstance(rule_value, str):
-                            detailed_rules.add(rule_value)
-            rules = component.get("rules")
-            if isinstance(rules, list):
-                for value in rules:
-                    if not isinstance(value, Mapping) or value.get("result") in (None, "pass"):
-                        continue
-                    rule_value = value.get("rule")
-                    rule = str(rule_value) if rule_value else "unknown"
-                    if rule not in detailed_rules:
-                        findings.append({"rule": rule, "path": component_path})
+    detailed_rules: dict[tuple[str, int], set[str]] = {}
+    for rec in iter_digest_findings(digest):
+        key = (str(rec["section"]), int(rec["component_index"]))
+        rule = str(rec["rule"])
+        if rec["detailed"]:
+            findings.append({"rule": rule, "path": rec["path"]})
+            detailed_rules.setdefault(key, set()).add(rule)
+        elif rule not in detailed_rules.get(key, set()):
+            findings.append({"rule": rule, "path": rec["path"]})
     return findings
 
 

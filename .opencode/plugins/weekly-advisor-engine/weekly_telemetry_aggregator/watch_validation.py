@@ -19,6 +19,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .util import casefold
 from .watch_context import normalize_npm_package, normalize_repo_url
 
 INPUT_CATEGORIES = frozenset({"adopt", "improve-existing", "token-saver", "ignore"})
@@ -37,10 +38,6 @@ _RESERVED_TOP_LEVEL_KEYS = {
     "rejected_findings",
     "validation",
 }
-
-
-def _casefold(value: str) -> str:
-    return value.strip().casefold()
 
 
 def _non_empty_text(value: object) -> str | None:
@@ -88,7 +85,7 @@ def _subject_identities(subject: object) -> set[tuple[str, str]]:
             if normalized is not None:
                 identities.add((key, normalized))
         else:
-            identities.add((key, _casefold(text)))
+            identities.add((key, casefold(text)))
     return identities
 
 
@@ -113,7 +110,7 @@ def _market_item_identities(item: Mapping[str, Any]) -> set[tuple[str, str]]:
 
     name = _non_empty_text(item.get("name"))
     if name is not None:
-        identities.add(("name", _casefold(name)))
+        identities.add(("name", casefold(name)))
         if not any(identity[0] == "npm_package" for identity in identities):
             found_via = item.get("found_via")
             if _is_values(found_via) and any(
@@ -138,9 +135,9 @@ def _market_sort_key(item: Mapping[str, Any]) -> tuple[str, str, str, str]:
     state_text = state if isinstance(state, str) and state in _STATE_PRIORITY else "unknown"
     return (
         str(_STATE_PRIORITY[state_text]),
-        _casefold(str(item.get("name") or "")),
-        _casefold(str(item.get("npm_package") or "")),
-        _casefold(str(item.get("repo_url") or "")),
+        casefold(str(item.get("name") or "")),
+        casefold(str(item.get("npm_package") or "")),
+        casefold(str(item.get("repo_url") or "")),
     )
 
 

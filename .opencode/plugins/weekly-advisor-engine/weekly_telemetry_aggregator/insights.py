@@ -16,9 +16,9 @@ from .config import InsightsConfig, TelemetryConfig
 from .main import EXIT_OK, EXIT_TOTAL_FAILURE
 from .run_state import RUNS_DIR, active_run_meta, resolve_active_run_dir
 from .util import iso as _iso
+from .util import iter_digest_findings, parse_iso_ts, period_hours, robust_z
 from .util import load_json as _load
 from .util import parse_anchor as _parse_anchor
-from .util import period_hours, robust_z
 from .writer import write_json_atomic
 
 DEFAULT_CATALOG_COUNT = 0
@@ -167,10 +167,7 @@ def compute(
     month_start = run_time - timedelta(days=30)
     month_cost = 0.0
     for s in recent_summaries:
-        try:
-            gen = datetime.fromisoformat(s["generated_at"].replace("Z", "+00:00"))
-        except (KeyError, ValueError):
-            gen = run_time
+        gen = parse_iso_ts(s.get("generated_at")) or run_time
         if month_start <= gen <= run_time:
             month_cost += s.get("totals", {}).get("total_cost_usd", 0.0)
     if month_cost > insights_cfg.monthly_budget_usd:
@@ -426,56 +423,46 @@ def _digest_violations(digest: dict | None, ignored_rules: list[str] | None = No
 def flatten_harness_findings(digest: dict | None) -> list[dict]:
     """Normalize a real harness-eval 7.9.0 digest into a flat findings list.
 
-    Real digests carry findings per component under
-    `inspection.{command,claude_md,uncategorized}[i].findings` ({rule, severity,
-    message}) — the top-level `findings` list is empty in practice (v5.28, P4.1).
-    Deduplication is PER COMPONENT (rule+message), so a rule violated in N files
-    counts N times. Non-pass `rules[]` entries are added as fallback only when no
-    detailed finding exists for that rule anywhere.
+    Projection of util.iter_digest_findings.  Real digests carry findings per
+    component under `inspection.{command,claude_md,uncategorized}[i].findings`
+    ({rule, severity, message}) — the top-level `findings` list is empty in
+    practice (v5.28, P4.1).  Deduplication is PER COMPONENT (rule+message), so
+    a rule violated in N files counts N times.  Non-pass `rules[]` entries are
+    added as fallback only when no detailed finding exists for that rule
+    anywhere.
     """
-    if not isinstance(digest, dict):
-        return []
     out: list[dict] = []
     finding_rules: set[str] = set()
     fallback_seen: set[str] = set()
-
-    def _from_finding(f: dict, seen: set[tuple[str, str]]) -> None:
-        rule = str(f.get("rule") or f.get("id") or "unknown")
-        key = (rule, str(f.get("message") or f.get("detail") or ""))
+    seen_top: set[tuple[str, str]] = set()
+    seen_components: dict[tuple[str, int], set[tuple[str, str]]] = {}
+    for rec in iter_digest_findings(digest):
+        if not rec["detailed"]:
+            rule = str(rec["rule"])
+            if rule in finding_rules or rule in fallback_seen:
+                continue
+            fallback_seen.add(rule)
+            out.append({"rule": rule, "severity": "", "message": ""})
+            continue
+        key = (str(rec["rule"]), str(rec["message"]))
+        seen = (
+            seen_top
+            if rec["section"] == "top"
+            else seen_components.setdefault(
+                (str(rec["section"]), int(rec["component_index"])), set()
+            )
+        )
         if key in seen:
-            return
+            continue
         seen.add(key)
         out.append(
             {
-                "rule": rule,
-                "severity": str(f.get("severity") or ""),
-                "message": str(f.get("message") or f.get("detail") or ""),
+                "rule": str(rec["rule"]),
+                "severity": str(rec["severity"]),
+                "message": str(rec["message"]),
             }
         )
-        finding_rules.add(rule)
-
-    seen_top: set[tuple[str, str]] = set()
-    for f in digest.get("findings", []) if isinstance(digest.get("findings"), list) else []:
-        if isinstance(f, dict):
-            _from_finding(f, seen_top)
-    for section in ("command", "claude_md", "uncategorized"):
-        comps = digest.get("inspection", {}).get(section)
-        if not isinstance(comps, list):
-            continue
-        for comp in comps:
-            if not isinstance(comp, dict):
-                continue
-            seen_comp: set[tuple[str, str]] = set()
-            for f in comp.get("findings", []) if isinstance(comp.get("findings"), list) else []:
-                if isinstance(f, dict):
-                    _from_finding(f, seen_comp)
-            for r in comp.get("rules", []) if isinstance(comp.get("rules"), list) else []:
-                if isinstance(r, dict) and r.get("result") not in (None, "pass"):
-                    rule = str(r.get("rule") or "unknown")
-                    if rule in finding_rules or rule in fallback_seen:
-                        continue
-                    fallback_seen.add(rule)
-                    out.append({"rule": rule, "severity": "", "message": ""})
+        finding_rules.add(str(rec["rule"]))
     return out
 
 

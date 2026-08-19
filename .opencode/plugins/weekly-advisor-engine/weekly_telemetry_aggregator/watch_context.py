@@ -13,7 +13,6 @@ another persistence format or a cross-run state file.
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -22,7 +21,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
 
-from .util import iso
+from .util import casefold, iso, load_json, parse_iso_ts
 
 ExistingState = Literal["absent", "declared", "observed", "unknown"]
 PluginSource = Literal["config", "local_file"]
@@ -72,10 +71,6 @@ class EnvironmentInventory:
     config_valid: bool = False
     directories: dict[str, bool] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
-
-
-def _casefold(value: str) -> str:
-    return value.strip().casefold()
 
 
 def normalize_npm_package(value: str | None) -> str | None:
@@ -168,111 +163,7 @@ def normalize_repo_url(value: str | None) -> str | None:
     return f"https://{host}{path}"
 
 
-def parse_jsonc(text: str) -> Any:
-    """Parse JSON or JSONC text safely, supporting comments and trailing commas.
-
-    A small state-machine parser is used instead of regular expressions so
-    ``//`` in URLs and comment-like characters inside JSON strings are kept
-    intact.  The function raises :class:`json.JSONDecodeError` for malformed
-    input, just like :func:`json.loads`.
-    """
-
-    return json.loads(_remove_jsonc_syntax(text))
-
-
-def load_jsonc(path: Path) -> Any:
-    """Read and parse a JSON/JSONC file without consulting any other path."""
-
-    return parse_jsonc(path.read_text(encoding="utf-8"))
-
-
-def _remove_jsonc_syntax(text: str) -> str:
-    without_comments: list[str] = []
-    in_string = False
-    escaped = False
-    line_comment = False
-    block_comment = False
-    index = 0
-    while index < len(text):
-        char = text[index]
-        next_char = text[index + 1] if index + 1 < len(text) else ""
-        if line_comment:
-            if char in "\r\n":
-                line_comment = False
-                without_comments.append(char)
-            else:
-                without_comments.append(" ")
-            index += 1
-            continue
-        if block_comment:
-            if char == "*" and next_char == "/":
-                block_comment = False
-                without_comments.extend((" ", " "))
-                index += 2
-            else:
-                without_comments.append(char if char in "\r\n" else " ")
-                index += 1
-            continue
-        if in_string:
-            without_comments.append(char)
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            index += 1
-            continue
-        if char == '"':
-            in_string = True
-            without_comments.append(char)
-            index += 1
-        elif char == "/" and next_char == "/":
-            line_comment = True
-            without_comments.extend((" ", " "))
-            index += 2
-        elif char == "/" and next_char == "*":
-            block_comment = True
-            without_comments.extend((" ", " "))
-            index += 2
-        else:
-            without_comments.append(char)
-            index += 1
-
-    cleaned = "".join(without_comments)
-    result: list[str] = []
-    in_string = False
-    escaped = False
-    for index, char in enumerate(cleaned):
-        if in_string:
-            result.append(char)
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-            result.append(char)
-            continue
-        if char == ",":
-            lookahead = index + 1
-            while lookahead < len(cleaned) and cleaned[lookahead].isspace():
-                lookahead += 1
-            if lookahead < len(cleaned) and cleaned[lookahead] in "}]":
-                result.append(" ")
-                continue
-        result.append(char)
-    return "".join(result)
-
-
-loads_jsonc = parse_jsonc
-read_jsonc = load_jsonc
-
-
-def _relative(path: Path, root: Path) -> str:
+def relative_path(path: Path, root: Path) -> str:
     try:
         return path.relative_to(root).as_posix()
     except ValueError:
@@ -356,19 +247,18 @@ def _read_plugin_config(
         try:
             exists = path.is_file()
         except OSError as exc:
-            warnings.append(f"cannot inspect {_relative(path, project_root)}: {exc}")
+            warnings.append(f"cannot inspect {relative_path(path, project_root)}: {exc}")
             continue
         if not exists:
             continue
         available = True
-        config_files.append(_relative(path, project_root))
-        try:
-            payload = load_jsonc(path)
-        except (OSError, json.JSONDecodeError) as exc:
-            warnings.append(f"invalid {_relative(path, project_root)}: {exc}")
+        config_files.append(relative_path(path, project_root))
+        payload = load_json(path)
+        if payload is None:
+            warnings.append(f"invalid {relative_path(path, project_root)}: JSON illisible")
             continue
         if not isinstance(payload, Mapping):
-            warnings.append(f"invalid {_relative(path, project_root)}: root must be an object")
+            warnings.append(f"invalid {relative_path(path, project_root)}: root must be an object")
             continue
         valid = True
         declarations = payload.get("plugin", [])
@@ -377,15 +267,17 @@ def _read_plugin_config(
         if not isinstance(declarations, Sequence) or isinstance(declarations, (bytes, bytearray)):
             valid = False
             warnings.append(
-                f"invalid {_relative(path, project_root)}: plugin must be an array of strings"
+                f"invalid {relative_path(path, project_root)}: plugin must be an array of strings"
             )
             continue
         for declaration in declarations:
             if isinstance(declaration, str) and declaration.strip():
-                records.append(parse_plugin_spec(declaration, path=_relative(path, project_root)))
+                records.append(
+                    parse_plugin_spec(declaration, path=relative_path(path, project_root))
+                )
             else:
                 warnings.append(
-                    f"ignored non-string plugin declaration in {_relative(path, project_root)}"
+                    f"ignored non-string plugin declaration in {relative_path(path, project_root)}"
                 )
     if not available:
         warnings.append("plugin config not found under .opencode/ (opencode.json/opencode.jsonc)")
@@ -426,7 +318,7 @@ def _local_plugin_records(project_root: Path) -> tuple[list[PluginRecord], list[
             PluginRecord(
                 name=name,
                 source="local_file",
-                path=_relative(path, project_root),
+                path=relative_path(path, project_root),
                 identities=identities,
                 declared=False,
             )
@@ -463,7 +355,7 @@ def _markdown_records(
         name = parent_name if (skill or parent_identity) and parent_name else stem
         identities = _unique_identities((name,) if skill else (name, stem, path.name, parent_name))
         records.append(
-            FileRecord(name=name, path=_relative(path, project_root), identities=identities)
+            FileRecord(name=name, path=relative_path(path, project_root), identities=identities)
         )
     return records, True, warnings
 
@@ -572,14 +464,14 @@ def _market_identifiers(item: Mapping[str, Any]) -> tuple[str | None, str | None
     identities: set[str] = set()
     name = item.get("name")
     if isinstance(name, str) and name.strip():
-        identities.add(_casefold(name))
+        identities.add(casefold(name))
     if npm_package:
         identities.add(npm_package)
     if repo_url:
         identities.add(repo_url.casefold())
         slug = _repo_slug(repo_url)
         if slug:
-            identities.add(_casefold(slug))
+            identities.add(casefold(slug))
     return npm_package, repo_url, identities
 
 
@@ -616,7 +508,7 @@ def _config_evidence(
         if (
             not item_npm
             and not item_repo
-            and any(_casefold(identity) in item_identities for identity in record.identities)
+            and any(casefold(identity) in item_identities for identity in record.identities)
         ):
             evidence.append(
                 {
@@ -659,7 +551,7 @@ def _observed_evidence(
                 (
                     identity
                     for identity in record.identities
-                    if _casefold(identity) in item_identities
+                    if casefold(identity) in item_identities
                 ),
                 None,
             )
@@ -774,12 +666,8 @@ def build_watch_context(
         )
         generated = iso(run_time)
     else:
-        generated = str(generated_at)
-        try:
-            parsed = datetime.fromisoformat(generated.replace("Z", "+00:00"))
-            run_time = parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
-        except ValueError:
-            run_time = datetime.now(UTC)
+        parsed = parse_iso_ts(str(generated_at))
+        run_time = parsed.astimezone(UTC) if parsed is not None else datetime.now(UTC)
     environment = _environment_items(inventory)
     market_matches = [_match_market_item(item, inventory) for item in _ecosystem_items(ecosystem)]
     market_matches.sort(
@@ -832,10 +720,7 @@ def load_ecosystem_report(path: Path) -> tuple[dict[str, Any] | None, str | None
     a forgiving hand-edited fixture and to share the safe parser.
     """
 
-    try:
-        payload = load_jsonc(path)
-    except (OSError, json.JSONDecodeError) as exc:
-        return None, f"cannot read ecosystem report {path}: {exc}"
-    if not isinstance(payload, dict):
-        return None, f"ecosystem report root must be an object: {path}"
+    payload = load_json(path)
+    if payload is None:
+        return None, f"cannot read ecosystem report {path}: JSON illisible"
     return dict(payload), None

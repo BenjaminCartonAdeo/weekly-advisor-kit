@@ -36,6 +36,7 @@ import httpx
 from .config import apply_lookback_override
 from .util import iso as _iso
 from .util import parse_anchor as _parse_anchor
+from .util import parse_iso_ts
 
 #: Canonical found_via ordering — also the processing order of the new-item sources.
 FOUND_VIA_ORDER = [
@@ -71,16 +72,6 @@ URL_RELEASES = "https://api.github.com/repos/anomalyco/opencode/releases"
 
 class SourceError(Exception):
     """One watch source ultimately failed; the run continues (warning, non-fatal)."""
-
-
-def _parse_date(value: str | None) -> datetime | None:
-    """Parse an ISO-8601 timestamp (optional Z suffix); None on garbage/absent."""
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
 
 
 def _get_json(client, url: str, *, params: dict | None = None, headers: dict | None = None):
@@ -180,7 +171,7 @@ def _fetch_npm(client, start: datetime, end: datetime) -> list[dict]:
         package = obj.get("package") if isinstance(obj, dict) else None
         if not isinstance(package, dict):
             continue
-        published = _parse_date(package.get("date"))
+        published = parse_iso_ts(package.get("date"))
         if published is None or not (start <= published <= end):
             continue
         links = package.get("links")
@@ -220,10 +211,10 @@ def _fetch_github_topics(
     for repo in repos:
         if not isinstance(repo, dict):
             continue
-        pushed = _parse_date(repo.get("pushed_at"))
+        pushed = parse_iso_ts(repo.get("pushed_at"))
         if pushed is None or not (start <= pushed <= end):
             continue
-        created = _parse_date(repo.get("created_at"))
+        created = parse_iso_ts(repo.get("created_at"))
         items.append(
             {
                 "name": str(repo.get("full_name") or ""),
@@ -283,7 +274,7 @@ def _fetch_mcp(client, start: datetime, end: datetime) -> list[dict]:
         status = str(inner.get("status") or official.get("status") or "")
         if status == "deleted":
             continue
-        published = _parse_date(official.get("publishedAt") or inner.get("publishedAt"))
+        published = parse_iso_ts(official.get("publishedAt") or inner.get("publishedAt"))
         if published is None or not (start <= published <= end):
             continue
         items.append(
@@ -334,7 +325,7 @@ def _fetch_releases(
     for release in releases:
         if not isinstance(release, dict):
             continue
-        published = _parse_date(release.get("published_at"))
+        published = parse_iso_ts(release.get("published_at"))
         if published is None or not (start <= published <= end):
             continue
         in_window += 1
@@ -468,10 +459,9 @@ def _rss_date(value: str | None):
     """Date d'un flux RSS/Atom : RFC822 (pubDate) ou ISO (updated/published)."""
     if not value:
         return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        pass
+    parsed = parse_iso_ts(value)
+    if parsed is not None:
+        return parsed
     try:
         return parsedate_to_datetime(value)
     except (TypeError, ValueError):
@@ -583,7 +573,7 @@ def _fetch_watch_repos(
         for release in releases if isinstance(releases, list) else []:
             if not isinstance(release, dict):
                 continue
-            published = _parse_date(release.get("published_at"))
+            published = parse_iso_ts(release.get("published_at"))
             if published is None or not (start <= published <= end):
                 continue
             tag = str(release.get("tag_name") or release.get("name") or "")
@@ -601,7 +591,7 @@ def _fetch_watch_repos(
                 }
             )
         if not emitted:
-            publish = _parse_date(info.get("pushed_at")) if isinstance(info, dict) else None
+            publish = parse_iso_ts(info.get("pushed_at")) if isinstance(info, dict) else None
             if publish is not None and start <= publish <= end:
                 items.append(
                     {
@@ -632,15 +622,15 @@ def _fetch_watch_repos(
                     c
                     for c in commits
                     if isinstance(c, dict)
-                    and _parse_date(((c.get("commit") or {}).get("author") or {}).get("date"))
+                    and parse_iso_ts(((c.get("commit") or {}).get("author") or {}).get("date"))
                     is not None
                 ]
                 if in_window:
                     latest = max(
                         in_window,
-                        key=lambda c: _parse_date(c["commit"]["author"]["date"]),
+                        key=lambda c: parse_iso_ts(c["commit"]["author"]["date"]),
                     )
-                    last_commit = _parse_date(latest["commit"]["author"]["date"])
+                    last_commit = parse_iso_ts(latest["commit"]["author"]["date"])
                     items.append(
                         {
                             "name": display_name,
@@ -824,7 +814,7 @@ def _finalize_items(items: dict[str, dict]) -> list[dict]:
         )
     result.sort(
         key=lambda item: (
-            -(_parse_date(item["published_at"]) or datetime(1970, 1, 1, tzinfo=UTC)).timestamp(),
+            -(parse_iso_ts(item["published_at"]) or datetime(1970, 1, 1, tzinfo=UTC)).timestamp(),
             item["name"],
         )
     )

@@ -35,7 +35,7 @@ from .models import (
     WeeklySummary,
     round6,
 )
-from .util import robust_z
+from .util import descendants_by_parent, robust_z, root_and_orphan_ids
 
 #: Gaps strictly below this threshold count as "active" time (5 minutes).
 ACTIVE_GAP_LIMIT = timedelta(minutes=5)
@@ -87,18 +87,11 @@ def session_duration(usage: SessionUsage) -> tuple[int, int]:
 
 
 def _descendants(by_id: dict[str, SessionUsage], root: SessionUsage) -> list[SessionUsage]:
-    """All direct/indirect children of a root session (BFS on parent_id)."""
-    children: list[SessionUsage] = []
-    queue = [root.session_id]
-    seen: set[str] = {root.session_id}
-    while queue:
-        sid = queue.pop()
-        for u in by_id.values():
-            if u.parent_id == sid and u.session_id not in seen:
-                seen.add(u.session_id)
-                children.append(u)
-                queue.append(u.session_id)
-    return children
+    """All direct/indirect children of a root session (indexed BFS, util)."""
+    ids = descendants_by_parent(
+        ((u.session_id, u.parent_id) for u in by_id.values()), root.session_id
+    )
+    return [by_id[sid] for sid in ids]
 
 
 def normalize_prompt(text: str) -> str:
@@ -304,13 +297,9 @@ def aggregate(
     usages = [u for u in usages if not u.partial]
 
     by_id: dict[str, SessionUsage] = {u.session_id: u for u in usages}
-    orphan_ids = {
-        u.session_id
-        for u in usages
-        if u.parent_id is not None
-        and u.parent_id not in by_id
-        and (known_parent_ids is None or u.parent_id not in known_parent_ids)
-    }
+    orphan_ids, root_ids = root_and_orphan_ids(
+        ((u.session_id, u.parent_id) for u in usages), known_parent_ids=known_parent_ids
+    )
     for sid in sorted(orphan_ids):
         all_warnings.append(
             WarningEntry(
@@ -319,11 +308,7 @@ def aggregate(
             )
         )
     children = [u for u in usages if u.parent_id is not None and u.parent_id in by_id]
-    roots = [
-        u
-        for u in usages
-        if u.session_id not in orphan_ids and (u.parent_id is None or u.parent_id not in by_id)
-    ]
+    roots = [u for u in usages if u.session_id in root_ids]
     children_ids = {u.session_id for u in children}
 
     # ---- totals (roots + children merged once) + per-root aggregated rows ----

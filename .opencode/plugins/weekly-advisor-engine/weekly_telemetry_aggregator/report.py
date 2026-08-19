@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import subprocess
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -24,6 +24,7 @@ from .run_state import active_run_meta, resolve_active_run_dir
 from .util import iso as _iso
 from .util import load_json as _load_json
 from .util import parse_anchor as _parse_anchor
+from .util import parse_iso_ts
 from .util import read_text as _load_text
 
 
@@ -127,11 +128,12 @@ def _complete_daily(period: dict, daily: list[dict]) -> list[dict]:
     Le bucketing ne produit que les jours avec activité — le lecteur pouvait croire
     à des trous de données. On complète la période avec des entrées à zéro.
     """
-    try:
-        start = datetime.fromisoformat(period.get("start", "").replace("Z", "+00:00")).date()
-        end = datetime.fromisoformat(period.get("end", "").replace("Z", "+00:00")).date()
-    except ValueError:
+    start = parse_iso_ts(period.get("start"))
+    end = parse_iso_ts(period.get("end"))
+    if start is None or end is None:
         return daily
+    start = start.date()
+    end = end.date()
     by_date = {d.get("date"): d for d in daily}
     out: list[dict] = []
     cur = start

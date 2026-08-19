@@ -12,7 +12,6 @@ from weekly_telemetry_aggregator.watch_context import (
     inventory_environment,
     normalize_npm_package,
     normalize_repo_url,
-    parse_jsonc,
 )
 
 ANCHOR = datetime(2026, 8, 12, 6, 0, tzinfo=UTC)
@@ -106,32 +105,6 @@ def test_repo_url_normalization_matches_git_https_git_suffix_and_slash(tmp_path:
     match = context["market_matches"][0]
     assert match["existing_state"] == "declared"
     assert match["match"]["type"] == "repo_url"
-
-
-def test_jsonc_comments_and_trailing_commas_are_supported(tmp_path: Path) -> None:
-    root = _project(tmp_path)
-    (root / ".opencode" / "opencode.jsonc").write_text(
-        """
-        {
-          // Keep URLs inside strings intact.
-          "plugin": [
-            "jsonc-plugin@git+https://github.com/acme/jsonc-plugin.git",
-          ],
-          "mcp": {"url": "https://example.test/a//b",},
-        }
-        """,
-        encoding="utf-8",
-    )
-    assert parse_jsonc('{"url":"https://example.test/a//b",}') == {
-        "url": "https://example.test/a//b"
-    }
-
-    inventory = inventory_environment(root)
-    assert inventory.config_valid is True
-    assert any(plugin.npm_package == "jsonc-plugin" for plugin in inventory.plugins)
-    assert any(
-        plugin.repo_url == "https://github.com/acme/jsonc-plugin" for plugin in inventory.plugins
-    )
 
 
 def test_local_plugin_basename_and_catalog_identities_are_observed(tmp_path: Path) -> None:

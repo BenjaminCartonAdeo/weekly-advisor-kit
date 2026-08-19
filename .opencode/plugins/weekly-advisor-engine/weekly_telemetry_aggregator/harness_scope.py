@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .config import DEFAULT_HARNESS_EXCLUDE_PATTERNS, HarnessIncludeConfig
+from .util import relative_path
 
 
 @dataclass(slots=True)
@@ -113,21 +114,13 @@ def _matches(rel_path: str, pattern: str) -> bool:
 
 
 def _iter_regular_files(root: Path) -> Iterator[Path]:
-    """Yield regular, non-symlink files below ``root`` without following dirs."""
+    """Yield regular, non-symlink files below ``root`` (rglob ne suit pas les symlinks de dossiers)."""
     if not root.is_dir():
         return
-    for directory, _dirnames, filenames in os.walk(root, followlinks=False):
-        current = Path(directory)
-        for filename in filenames:
-            path = current / filename
-            if path.is_symlink() or not path.is_file():
-                continue
-            yield path
-
-
-def _relative(path: Path, root: Path) -> str:
-    """Return a stable project-relative POSIX path."""
-    return path.relative_to(root).as_posix()
+    for path in root.rglob("*"):
+        if path.is_symlink() or not path.is_file():
+            continue
+        yield path
 
 
 def resolve_harness_scope(project_root: Path, config: HarnessIncludeConfig) -> HarnessScope:
@@ -157,7 +150,7 @@ def resolve_harness_scope(project_root: Path, config: HarnessIncludeConfig) -> H
     opencode_root = root / ".opencode"
     all_files = sorted(
         (
-            f".opencode/{_relative(path, opencode_root)}"
+            f".opencode/{relative_path(path, opencode_root)}"
             for path in _iter_regular_files(opencode_root)
         ),
         key=str,

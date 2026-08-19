@@ -337,34 +337,91 @@ def _session_aggregates(conn: sqlite3.Connection, table: str, session_id: str) -
     }
 
 
-class V1Adapter(SchemaAdapter):
-    """opencode.db — session_v2 / message / part / migration (Drizzle, >= 42)."""
+class DualAdapter(SchemaAdapter):
+    """opencode.db — `session` + `session_v2` metadata over `part`/`message` telemetry.
 
-    name = "v1"
+    Single adapter for the modern client (v5.29 root cause: the client keeps
+    TWO live metadata stores — CLI sessions live in `session` (+ persisted
+    `part`/`message` telemetry), server/demon sessions live in `session_v2`
+    (no persisted parts → `unflushed`); picking either table alone hides the
+    other world's week).  `session` is optional: pre-dual bases (session_v2
+    only) degrade to session_v2 reads — the former V1Adapter is folded here
+    (audit v6.0.o).
+    """
+
+    name = "v1-dual"
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
+        self._has_session = True
 
     def check_schema(self) -> None:
-        _require_tables(self.conn, ["session_v2", "message", "part", "migration"])
+        _require_tables(self.conn, ["session_v2", "part", "message", "migration"])
         _require_columns(self.conn, "session_v2", _SESSION_V2_COLUMNS)
         _require_columns(self.conn, "part", ["session_id", "data", "time_created"])
         # NB: the real schema stores part.type inside data JSON, not in a column.
         _require_columns(self.conn, "message", ["session_id", "data", "time_created"])
         count = self.conn.execute("SELECT COUNT(*) FROM migration").fetchone()[0]
         if count < MIGRATION_MIN_V1:
-            raise SchemaError(f"migration count {count} < {MIGRATION_MIN_V1} (V1 schema pin)")
+            raise SchemaError(f"migration count {count} < {MIGRATION_MIN_V1} (v1-dual pin)")
+        row = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session'"
+        ).fetchone()
+        self._has_session = row is not None
+        if self._has_session:
+            _require_columns(
+                self.conn,
+                "session",
+                [
+                    "id",
+                    "parent_id",
+                    "title",
+                    "model",
+                    "agent",
+                    "cost",
+                    "time_created",
+                    "time_updated",
+                ],
+            )
 
     def latest_updated_ms(self) -> int:
-        row = self.conn.execute("SELECT MAX(time_updated) AS t FROM session_v2").fetchone()
-        return int(row["t"] or 0)
+        if not self._has_session:
+            row = self.conn.execute("SELECT MAX(time_updated) AS t FROM session_v2").fetchone()
+            return int(row["t"] or 0)
+        row = self.conn.execute(
+            "SELECT MAX(t) AS m FROM ("
+            "SELECT MAX(time_updated) AS t FROM session "
+            "UNION ALL SELECT MAX(time_updated) FROM session_v2)"
+        ).fetchone()
+        return int(row["m"] or 0)
 
     def list_sessions(self, since_ms: int) -> list[SessionMeta]:
+        if not self._has_session:
+            rows = self.conn.execute(
+                "SELECT * FROM session_v2 WHERE time_updated >= ? ORDER BY time_updated DESC",
+                (since_ms,),
+            ).fetchall()
+            return [_row_to_meta(r) for r in rows]
+        cols = _META_COLS
         rows = self.conn.execute(
-            "SELECT * FROM session_v2 WHERE time_updated >= ? ORDER BY time_updated DESC",
-            (since_ms,),
+            f"SELECT {cols} FROM ("
+            f"SELECT {cols} FROM session WHERE time_updated >= ? "
+            f"UNION ALL "
+            f"SELECT {cols} FROM session_v2 WHERE time_updated >= ?) "
+            "ORDER BY time_updated DESC",
+            (since_ms, since_ms),
         ).fetchall()
-        return [_row_to_meta(r) for r in rows]
+        seen: set[str] = set()
+        metas: list[SessionMeta] = []
+        for row in rows:  # time_updated DESC → première occurrence = la plus fraîche
+            sid = str(row["id"])
+            if sid in seen:
+                continue
+            seen.add(sid)
+            metas.append(_row_to_meta(row))
+        return metas
+
+    # ---- telemetry: part/message readers shared by every opencode.db schema ----
 
     def has_telemetry_rows(self, session_id: str) -> bool:
         row = self.conn.execute(
@@ -470,7 +527,12 @@ class V1Adapter(SchemaAdapter):
         return counts
 
     def session_aggregates(self, session_id: str) -> dict | None:
-        return _session_aggregates(self.conn, "session_v2", session_id)
+        tables = ("session", "session_v2") if self._has_session else ("session_v2",)
+        for tbl in tables:
+            agg = _session_aggregates(self.conn, tbl, session_id)
+            if agg is not None:
+                return agg
+        return None
 
     def session_parts(self, session_id: str) -> list[PartRecord]:
         records: list[PartRecord] = []
@@ -515,75 +577,12 @@ class V1Adapter(SchemaAdapter):
         return records
 
     def find_session_by_title(self, title: str) -> SessionMeta | None:
-        row = self.conn.execute(
-            "SELECT * FROM session_v2 WHERE title = ? ORDER BY time_updated DESC LIMIT 1",
-            (title,),
-        ).fetchone()
-        return _row_to_meta(row) if row else None
-
-
-class DualAdapter(V1Adapter):
-    """Metadata from `session` ∪ `session_v2`, telemetry from `part`/`message` (v5.29).
-
-    Root cause fix: the client keeps TWO live metadata stores — CLI sessions
-    (`opencode run`/TUI) live in `session` (+ `part`/`message` telemetry),
-    server/demon sessions live in `session_v2` (no persisted parts → `unflushed`).
-    Picking either table alone hides the other world's week. This adapter unions
-    both (dedup by id, freshest row wins) and reuses V1 telemetry readers.
-    """
-
-    name = "v1-dual"
-
-    def check_schema(self) -> None:
-        _require_tables(self.conn, ["session", "session_v2", "part", "message", "migration"])
-        _require_columns(self.conn, "session_v2", _SESSION_V2_COLUMNS)
-        _require_columns(
-            self.conn,
-            "session",
-            ["id", "parent_id", "title", "model", "agent", "cost", "time_created", "time_updated"],
-        )
-        _require_columns(self.conn, "part", ["session_id", "data", "time_created"])
-        _require_columns(self.conn, "message", ["session_id", "data", "time_created"])
-        count = self.conn.execute("SELECT COUNT(*) FROM migration").fetchone()[0]
-        if count < MIGRATION_MIN_V1:
-            raise SchemaError(f"migration count {count} < {MIGRATION_MIN_V1} (v1-dual pin)")
-
-    def latest_updated_ms(self) -> int:
-        row = self.conn.execute(
-            "SELECT MAX(t) AS m FROM ("
-            "SELECT MAX(time_updated) AS t FROM session "
-            "UNION ALL SELECT MAX(time_updated) FROM session_v2)"
-        ).fetchone()
-        return int(row["m"] or 0)
-
-    def list_sessions(self, since_ms: int) -> list[SessionMeta]:
-        cols = _META_COLS
-        rows = self.conn.execute(
-            f"SELECT {cols} FROM ("
-            f"SELECT {cols} FROM session WHERE time_updated >= ? "
-            f"UNION ALL "
-            f"SELECT {cols} FROM session_v2 WHERE time_updated >= ?) "
-            "ORDER BY time_updated DESC",
-            (since_ms, since_ms),
-        ).fetchall()
-        seen: set[str] = set()
-        metas: list[SessionMeta] = []
-        for row in rows:  # time_updated DESC → première occurrence = la plus fraîche
-            sid = str(row["id"])
-            if sid in seen:
-                continue
-            seen.add(sid)
-            metas.append(_row_to_meta(row))
-        return metas
-
-    def session_aggregates(self, session_id: str) -> dict | None:
-        for tbl in ("session", "session_v2"):
-            agg = _session_aggregates(self.conn, tbl, session_id)
-            if agg is not None:
-                return agg
-        return None
-
-    def find_session_by_title(self, title: str) -> SessionMeta | None:
+        if not self._has_session:
+            row = self.conn.execute(
+                "SELECT * FROM session_v2 WHERE title = ? ORDER BY time_updated DESC LIMIT 1",
+                (title,),
+            ).fetchone()
+            return _row_to_meta(row) if row else None
         cols = _META_COLS
         rows = self.conn.execute(
             f"SELECT {cols} FROM ("
@@ -836,7 +835,7 @@ def open_database(path: Path) -> sqlite3.Connection:
 #: for active sessions → naive sort would keep V1 (first) and read the mirror,
 #: hiding every session that only exists in `session` (v5.29, root cause of
 #: "0 session sur une semaine").
-_ADAPTER_PRIORITY = {"v2": 0, "v1-dual": 1, "v1": 2}
+_ADAPTER_PRIORITY = {"v2": 0, "v1-dual": 1}
 
 
 def detect_db(value: str) -> tuple[Path, SchemaAdapter]:
@@ -845,7 +844,7 @@ def detect_db(value: str) -> tuple[Path, SchemaAdapter]:
     `value == "auto"` → `<XDG_DATA_HOME>/opencode/opencode.db` then
     `opencode-next.db`; among schema-valid candidates the one with the most
     recent `MAX(time_updated)` wins, ties broken by live-adapter priority
-    (v2 > v1-dual > v1). No valid candidate → DataSourceError.
+    (v2 > v1-dual). No valid candidate → DataSourceError.
     """
     if value != "auto":
         candidates = [Path(value).expanduser()]
@@ -858,7 +857,7 @@ def detect_db(value: str) -> tuple[Path, SchemaAdapter]:
     for path in candidates:
         if not path.is_file():
             continue
-        for adapter_cls in (V1Adapter, V2Adapter, DualAdapter):
+        for adapter_cls in (DualAdapter, V2Adapter):
             conn = None
             try:
                 conn = open_database(path)
@@ -871,7 +870,7 @@ def detect_db(value: str) -> tuple[Path, SchemaAdapter]:
     if not matches:
         searched = ", ".join(str(p) for p in candidates)
         raise DataSourceError(f"no valid OpenCode database found (searched: {searched})")
-    # latest DESC, puis priorité ASC (v2 > v1-dual > v1-live > v1) — un reverse=True
+    # latest DESC, puis priorité ASC (v2 > v1-dual) — un reverse=True
     # inverserait aussi la priorité et laisserait le miroir gagner l'égalité.
     matches.sort(key=lambda m: (-m[0], _ADAPTER_PRIORITY.get(m[2].name, 3)))
     _latest, path, adapter = matches[0]

@@ -9,8 +9,175 @@ from __future__ import annotations
 
 import json
 import statistics
+from collections.abc import Iterable, Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+
+
+def parse_iso_ts(value: object) -> datetime | None:
+    """Tolerant ISO-8601 parse (Z→+00:00, naive→UTC); None on garbage/absent.
+
+    Single home for the fromisoformat snippets previously copy-pasted across
+    main/releases/report/watch_context/insights (audit v6.0.o).
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def descendants_by_parent(records: Iterable[tuple[str, str | None]], root_id: str) -> list[str]:
+    """BFS over parent_id links: (id, parent_id) pairs → descendant ids, discovery order.
+
+    Shared by aggregator (root subtrees) and transcript (child session render);
+    the old per-module copies differed in order and complexity (O(n²) scan in
+    aggregator) — one indexed BFS for all (audit v6.0.o).
+    """
+    by_parent: dict[str, list[str]] = {}
+    for sid, parent in records:
+        if parent:
+            by_parent.setdefault(parent, []).append(sid)
+    out: list[str] = []
+    seen = {root_id}
+    queue = list(by_parent.get(root_id, []))
+    while queue:
+        sid = queue.pop(0)
+        if sid in seen:
+            continue
+        seen.add(sid)
+        out.append(sid)
+        queue.extend(by_parent.get(sid, []))
+    return out
+
+
+def normalise_digest_path(value: object) -> str | None:
+    """Convert harness output paths to project-relative POSIX paths."""
+    if not isinstance(value, str) or not value:
+        return None
+    normalized = value.replace("\\", "/")
+    marker = normalized.find(".opencode/")
+    if marker >= 0:
+        return normalized[marker:]
+    if normalized == ".opencode":
+        return normalized
+    return normalized.removeprefix("./")
+
+
+def _finding_record(
+    value: Mapping[str, Any], component_path: str | None, section: str, component_index: int
+) -> dict[str, Any]:
+    rule_value = value.get("rule") or value.get("id")
+    return {
+        "rule": str(rule_value or "unknown"),
+        "severity": str(value.get("severity") or ""),
+        "message": str(value.get("message") or value.get("detail") or ""),
+        "path": normalise_digest_path(value.get("path") or component_path),
+        "component_path": component_path,
+        "section": section,
+        "component_index": component_index,
+        "detailed": True,
+    }
+
+
+def iter_digest_findings(digest: object) -> Iterator[dict[str, Any]]:
+    """Shared walk over a harness digest (fix-candidates + lint flatten).
+
+    Yields one record per explicit finding and per rules[] fallback row, in
+    digest order (top level, then each inspection component).  Per-level dedup
+    stays in the consumers: flatten keeps (rule, message) once per top level
+    and once per component, remediation drops rules[] rows whose rule already
+    has a detailed finding in the same component.  Each record carries
+    rule/severity/message/path/component_path/section/component_index/detailed.
+    """
+    if not isinstance(digest, Mapping):
+        return
+    uncategorized_files = digest.get("uncategorized_files")
+    top = digest.get("findings")
+    if isinstance(top, list):
+        for value in top:
+            if isinstance(value, Mapping):
+                yield _finding_record(value, None, "top", -1)
+    inspection = digest.get("inspection")
+    if not isinstance(inspection, Mapping):
+        return
+    for section in ("command", "claude_md", "uncategorized"):
+        components = inspection.get(section)
+        if not isinstance(components, list):
+            continue
+        for index, component in enumerate(components):
+            if not isinstance(component, Mapping):
+                continue
+            component_path = normalise_digest_path(component.get("path"))
+            if (
+                component_path is None
+                and section == "uncategorized"
+                and isinstance(uncategorized_files, list)
+                and index < len(uncategorized_files)
+            ):
+                component_path = normalise_digest_path(uncategorized_files[index])
+            comp_findings = component.get("findings")
+            if isinstance(comp_findings, list):
+                for value in comp_findings:
+                    if isinstance(value, Mapping):
+                        yield _finding_record(value, component_path, section, index)
+            rules = component.get("rules")
+            if isinstance(rules, list):
+                for value in rules:
+                    if not isinstance(value, Mapping) or value.get("result") in (None, "pass"):
+                        continue
+                    yield {
+                        "rule": str(value.get("rule") or "unknown"),
+                        "severity": "",
+                        "message": "",
+                        "path": component_path,
+                        "component_path": component_path,
+                        "section": section,
+                        "component_index": index,
+                        "detailed": False,
+                    }
+
+
+def root_and_orphan_ids(
+    records: Iterable[tuple[str, str | None]],
+    *,
+    known_parent_ids: set[str] | None = None,
+) -> tuple[set[str], set[str]]:
+    """Split (id, parent_id) pairs into (orphan_ids, root_ids).
+
+    Shared by aggregator and the selection audit — the old per-module copies
+    of this decision drifted (audit v6.0.o). An orphan = child whose parent is
+    neither in the set nor known; a root = not an orphan, parent absent or
+    outside the set.
+    """
+    records = list(records)
+    included_ids = {sid for sid, _parent in records}
+    orphan_ids = {
+        sid
+        for sid, parent in records
+        if parent is not None
+        and parent not in included_ids
+        and (known_parent_ids is None or parent not in known_parent_ids)
+    }
+    root_ids = {
+        sid
+        for sid, parent in records
+        if sid not in orphan_ids and (parent is None or parent not in included_ids)
+    }
+    return orphan_ids, root_ids
+
+
+def relative_path(path: Path, root: Path) -> str:
+    """Stable project-relative POSIX path (shared by watch_context/harness_scope)."""
+    return path.relative_to(root).as_posix()
+
+
+def casefold(value: str) -> str:
+    """strip + casefold, shared by watch_context/watch_validation identity keys."""
+    return value.strip().casefold()
 
 
 def iso(dt: datetime) -> str:

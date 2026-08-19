@@ -26,7 +26,7 @@ from .harness_scope import (
 from .models import Period, SessionUsage, SkillCatalogEntry, WarningEntry, round6
 from .run_state import activate_run, resolve_active_run_dir
 from .sqlite_reader import DataSourceError, SessionMeta, _to_ms, detect_db
-from .util import load_json
+from .util import load_json, parse_iso_ts, root_and_orphan_ids
 from .util import parse_anchor as _parse_anchor
 from .writer import write_json_atomic, write_summary
 
@@ -270,17 +270,6 @@ def build_usage(
     )
 
 
-def _parse_iso_ts(value: object) -> datetime | None:
-    """Tolerant ISO-8601 parse (Z→+00:00, naive→UTC); None on garbage."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
-    except ValueError:
-        return None
-
-
 def _build_selection(
     audit: list[dict],
     limit: int,
@@ -300,22 +289,14 @@ def _build_selection(
     for rec in audit:
         counts[rec["status"]] = counts.get(rec["status"], 0) + 1
     included = [rec for rec in audit if rec["status"] == "included"]
-    included_ids = {rec["session_id"] for rec in included}
-    # Même logique d'orphelins que aggregate(): un enfant dont le parent n'est
-    # ni dans la fenêtre ni connu en base n'est fusionné nulle part.
-    orphan_ids = {
-        rec["session_id"]
-        for rec in included
-        if rec.get("parent_id")
-        and rec["parent_id"] not in included_ids
-        and (known_parent_ids is None or rec["parent_id"] not in known_parent_ids)
-    }
-    cores = [
-        rec
-        for rec in included
-        if rec["session_id"] not in orphan_ids
-        and (not rec.get("parent_id") or rec["parent_id"] not in included_ids)
-    ]
+    # Même logique d'orphelins que aggregate() (util.root_and_orphan_ids): un
+    # enfant dont le parent n'est ni dans la fenêtre ni connu en base n'est
+    # fusionné nulle part.
+    orphan_ids, root_ids = root_and_orphan_ids(
+        ((r["session_id"], r.get("parent_id")) for r in included),
+        known_parent_ids=known_parent_ids,
+    )
+    cores = [rec for rec in included if rec["session_id"] in root_ids]
     recent = sorted(audit, key=lambda r: r["updated"], reverse=True)[: max(0, limit)]
     # v6.0.n : marquage fenêtre — les sessions actives post-fenêtre (runs récents
     # hors période) restent listées mais séparées dans le rapport (§1).
@@ -324,10 +305,10 @@ def _build_selection(
         period_start, period_end = period.get("start"), period.get("end")
     else:
         period_start, period_end = getattr(period, "start", None), getattr(period, "end", None)
-    window_start = _parse_iso_ts(period_start)
-    window_end = _parse_iso_ts(period_end)
+    window_start = parse_iso_ts(period_start)
+    window_end = parse_iso_ts(period_end)
     for rec in recent:
-        ts = _parse_iso_ts(rec.get("updated"))
+        ts = parse_iso_ts(rec.get("updated"))
         rec["in_window"] = bool(
             ts is not None
             and (window_start is None or ts >= window_start)
