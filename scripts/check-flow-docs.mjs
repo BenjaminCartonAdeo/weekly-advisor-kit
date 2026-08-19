@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Contrat de flux docs ↔ code (G1, v6.0.p) — 5 surfaces vérifiées statiquement.
+ * Contrat de flux docs ↔ code (G1, v6.0.p) — 6 surfaces vérifiées statiquement.
  *
  *  1. Tools TS → sous-commandes CLI : chaque outil du plugin invoque une
  *     sous-commande réelle du moteur (aucun argv fantôme).
@@ -12,6 +12,10 @@
  *     TS existent aussi côté moteur (watch-context → ecosystem ; assemble → draft).
  *  5. Comptes de tests : README == INSTALL == ci.yml == pytest --collect-only
  *     réel (dérive C10 : les trois documents disaient 171/177/224).
+ *  6. Étapes commande ↔ agent : les tokens d'outils (`weekly_*`) du
+ *     « Déroulement » de la commande /weekly-review sont EXACTEMENT ceux du
+ *     tableau de l'agent weekly-advisor, dans le même ordre (dérive observée :
+ *     sémantique d'ancre contradictoire commande/agent, ré-alignée en v6.0.p).
  *
  * Zéro dépendance (node stdlib). Lancé par la CI après pytest ; exit 0/1.
  */
@@ -202,5 +206,29 @@ if (collected !== null && docsCounts.length > 0) {
   ok(`collect réel (${collected}) == docs (${docsCounts[0]})`, collected === docsCounts[0])
 }
 
-console.log(failures === 0 ? "\nFLOW-DOCS OK — contrat de flux 5 surfaces vérifié" : `\n${failures} échec(s)`)
+// ------------------------------------------------------------------ surface 6
+
+// Étapes commande ↔ agent : les tokens d'outils (weekly_*) du « Déroulement » de
+// la commande /weekly-review doivent être EXACTEMENT ceux du tableau de l'agent
+// weekly-advisor, dans le même ordre. Empêche la re-divergence des deux
+// présentations du flux (dérive observée : sémantique d'ancre contradictoire).
+const AGENT_FILE = path.join(ROOT, ".opencode", "agents", "weekly-advisor", "weekly-advisor.md")
+const COMMAND_FILE = path.join(ROOT, ".opencode", "commands", "weekly-review.md")
+const TOKEN_RE = /weekly_[a-z_]+/g
+function sectionTools(src, fromHeader, toHeader) {
+  const start = src.indexOf(fromHeader)
+  const end = src.indexOf(toHeader, start + 1)
+  const section = start === -1 || end === -1 ? "" : src.slice(start, end)
+  return [...new Set(section.match(TOKEN_RE) ?? [])]
+}
+console.log("— Surface 6 : étapes commande ↔ agent (ordre figé)")
+const agentTools = sectionTools(read(AGENT_FILE), "| Étape | Action (tool) | Sortie |", "## Invariants")
+const commandTools = sectionTools(read(COMMAND_FILE), "## Déroulement", "## Règles")
+ok(
+  "commande et agent déclarent les mêmes outils d'étapes, dans le même ordre",
+  JSON.stringify(agentTools) === JSON.stringify(commandTools),
+  `agent: [${agentTools.join(", ")}] | commande: [${commandTools.join(", ")}]`,
+)
+
+console.log(failures === 0 ? "\nFLOW-DOCS OK — contrat de flux 6 surfaces vérifié" : `\n${failures} échec(s)`)
 process.exit(failures === 0 ? 0 : 1)

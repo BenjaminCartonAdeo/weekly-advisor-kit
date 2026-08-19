@@ -10,23 +10,26 @@ Lance la revue hebdomadaire complète de l'usage OpenCode, dans l'ordre figé de
 spec `opencode-weekly-advisor` v6.0 : télémétrie, veille, audit qualitatif, veille
 critique, drafting, lint harness, insights, cohérence, rapport final.
 
+La procédure de référence (tableau des étapes : tools, sorties, détails) est
+l'agent `weekly-advisor` (`.opencode/agents/weekly-advisor/weekly-advisor.md`).
+L'ancre est gérée par le plugin via `<output_dir>/anchor-last.txt` — aucun calcul
+manuel.
+
 ## Déroulement
 
-Les étapes déterministes passent par les tools du plugin (`weekly_*`) — l'ancre est
-gérée par le plugin via `<output_dir>/anchor-last.txt`, aucun calcul manuel :
+Ordre figé, exécution directe dans la session courante — jamais de dispatch en
+subagent (tool `task`) : le weekly-advisor est déjà l'orchestrateur.
 
-0. `weekly_doctor` — diagnostic du kit (2 = fatal → stopper)
-1. `weekly_run` — télémétrie
+0. `weekly_doctor` — diagnostic du kit (2 = fatal → stopper sans rapport)
+1. `weekly_run` — télémétrie (5-15 min : lancer en arrière-plan et poller si timeout)
 2. `weekly_releases` — veille écosystème
-2.5. `weekly_watch_context` — inventaire worktree + crosswalk marché/existant
-   ⚠ **Séquentiel obligatoire** : 2.5 lit l'écosystème de 2 — ne jamais lancer
-   `weekly_releases` et `weekly_watch_context` en parallèle, ni 2.5 avant 2
-   (exit 2 « DÉPENDANCE » sinon)
+2.5. `weekly_watch_context` — inventaire worktree ; ⚠ **séquentiel après 2** (jamais
+    en parallèle, jamais avant — exit 2 « DÉPENDANCE »)
 3. Audit qualitatif (skill `weekly-quality-audit`) — `weekly_audit_candidates` + `weekly_show_session`
-3.5. Veille critique (skill `weekly-watch-review`) → `weekly-watch-findings-raw-<date>.json`
-3.6. `weekly_watch_validate` — validation déterministe du finding contre le contexte
+3.5. Veille critique (skill `weekly-watch-review`) → brut `weekly-watch-findings-raw-<date>.json`
+3.6. `weekly_watch_validate` — validation déterministe, obligatoire avant l'étape 4
 4. Auto-drafting (skill `weekly-drafting`) — `weekly_draft_candidates` + `weekly_commit_draft`
-5. `weekly_harness` — lint `.opencode/`
+5. `weekly_harness` — lint `.opencode/` (rc 0/1 = OK)
 5.5. Remédiation harness (skill `harness-remediation`) — propositions puis `weekly_harness_remediate`
 6. `weekly_insights` — deltas, alertes, maintenance
 6.5. Cohérence environnement (skill `weekly-coherence-review`)
@@ -36,19 +39,19 @@ gérée par le plugin via `<output_dir>/anchor-last.txt`, aucun calcul manuel :
 
 ## Règles
 
-- **Exécution directe obligatoire** : la revue s'exécute dans la session courante, dans
-  l'ordre figé ci-dessus. **Jamais de dispatch en subagent** (tool `task`) pour lancer la
-  revue — le weekly-advisor est déjà l'orchestrateur ; une tentative de dispatch via
-  `task` gaspillait ~3 tours avant l'exécution directe lors du run du 2026-08-16
-- Exit 2 (fatal) à une étape → stopper sans rapport
-- Ne jamais réécrire les JSON produits par le CLI
+- Exit 2 (fatal) à une étape → stopper sans rapport ; un échec de tool n'arrête pas
+  le run (constater, signaler au rapport, continuer — exit 1 partiel)
+- Ne jamais réécrire les JSON produits par le CLI ; ne jamais modifier la config
+  moteur (`weekly-telemetry-config.json`) — overrides en paramètres des tools
 - Ne pas auditer au-delà de `audit_max_sessions` ; ne pas écrire plus de
   `max_candidates_per_run` drafts
 - Terminer par : le chemin du rapport final (**copie utilisateur**
   `~/weekly-reports/weekly-report-latest.md` en premier, puis l'archive
   `runs/current/weekly-report-<date>.md`) et les alertes les plus sévères
-- Le rapport est publié automatiquement vers `~/weekly-reports/` (config
-  `report_dir` pour changer l'endroit) — ne pas déplacer/copier le rapport ailleurs
+- Garde-fous de coût : max 3 tours pour diagnostiquer un échec tool ; plugin stale
+  (ReferenceError) → constater, signaler, proposer le restart, **stopper le
+  diagnostic** ; choix ambigu (ex. fenêtre multi-semaines) → poser UNE seule
+  question, ne pas explorer le code du plugin
 
 ## Fenêtre du run
 
@@ -65,20 +68,3 @@ run à rejouer).
 | « N semaines » (1, 2, 3…) | `N × 7` (ex. « 3 semaines » → `21`) |
 | « le mois dernier » / « 30 jours » | `30` |
 | Autre ou absent | **défaut** : ne rien passer (config `lookback_days` s'applique, 7 j) — poser une question si ambigu |
-
-## Garde-fous de coût
-
-- **JAMAIS modifier la config moteur** (`weekly-telemetry-config.json`) — les
-  overrides de fenêtre (lookback_days, anchor) se passent en paramètres des tools
-  (`weekly_run`, `weekly_releases`) via les paramètres `lookback_days` et `anchor`
-  (voir tableau « Fenêtre du run » ci-dessus)
-- **Budget d'itérations** : si un tool échoue (plugin bug, ReferenceError), signaler
-  au rapport et passer à l'étape suivante — ne pas passer plus de 3 tours à
-  diagnostiquer un échec tool
-- **Plugin stale** : si un `ReferenceError` mentionne une variable non définie dans le
-  plugin, c'est un module chargé au boot avec du code stale — le fix disque ne s'applique
-  pas avant redémarrage. Constater, signaler au rapport, proposer le restart, **stopper
-  le diagnostic** (ne pas tenter d'éditer/recharger le plugin mid-session)
-- **Mode audit** : quand un choix est ambigu (ex. fenêtre multi-semaines), poser UNE
-  seule question à l'utilisateur avec des options, ne pas explorer le code du plugin
-  pour deviner la sémantique

@@ -49,7 +49,8 @@ qualitatives (audit, veille, drafting, cohérence, prose) chargent chacune un sk
 
 La config JSON n'est jamais réécrite ; l'override est en mémoire pour le run. L'ancre
 reste gérée à 100 % par le plugin (`<output_dir>/anchor-last.txt`) : créée si absente,
-**rafraîchie si périmée** (âge > fenêtre du run) — aucun calcul calendaire LLM.
+**rafraîchie chaque jour** (conservée dans la même journée pour la stabilité intra-run,
+v6.0.n) — aucun calcul calendaire LLM.
 
 ## Déroulement (ordre figé, cron hebdomadaire ou `/weekly-review`)
 
