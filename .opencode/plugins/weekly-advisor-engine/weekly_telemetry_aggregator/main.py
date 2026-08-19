@@ -270,15 +270,44 @@ def build_usage(
     )
 
 
-def _build_selection(audit: list[dict], limit: int) -> dict:
-    """Aggregate the per-session disposition trace into the summary's selection audit."""
+def _build_selection(
+    audit: list[dict], limit: int, known_parent_ids: set[str] | None = None
+) -> dict:
+    """Aggregate the per-session disposition trace into the summary's selection audit.
+
+    v6.0.l (E2) : ``counted`` = **racines comptées**, même convention que
+    ``aggregate()`` — les enfants dont le parent est dans la fenêtre sont
+    fusionnés dans leur racine, jamais comptés individuellement (fini le
+    28 vs 29 : le rapport compte 28 racines et expose les enfants fusionnés
+    séparément). ``counted_all`` garde le décompte brut des enregistrements
+    inclus, ``merged_children`` la différence.
+    """
     counts: dict[str, int] = {}
     for rec in audit:
         counts[rec["status"]] = counts.get(rec["status"], 0) + 1
+    included = [rec for rec in audit if rec["status"] == "included"]
+    included_ids = {rec["session_id"] for rec in included}
+    # Même logique d'orphelins que aggregate(): un enfant dont le parent n'est
+    # ni dans la fenêtre ni connu en base n'est fusionné nulle part.
+    orphan_ids = {
+        rec["session_id"]
+        for rec in included
+        if rec.get("parent_id")
+        and rec["parent_id"] not in included_ids
+        and (known_parent_ids is None or rec["parent_id"] not in known_parent_ids)
+    }
+    cores = [
+        rec
+        for rec in included
+        if rec["session_id"] not in orphan_ids
+        and (not rec.get("parent_id") or rec["parent_id"] not in included_ids)
+    ]
     recent = sorted(audit, key=lambda r: r["updated"], reverse=True)[: max(0, limit)]
     return {
         "window_touched": len(audit),
-        "counted": counts.get("included", 0),
+        "counted": len(cores),
+        "counted_all": len(included),
+        "merged_children": len(included) - len(cores),
         "excluded_active": counts.get("active", 0),
         "excluded_advisor": counts.get("advisor", 0),
         "excluded_no_activity": counts.get("no-activity", 0),
@@ -392,7 +421,7 @@ def run(
         user_prompt_repeat_min_chars=cfg.user_prompt_repeat_min_chars,
         skill_similarity_min=cfg.skill_similarity_min,
     )
-    summary.selection = _build_selection(audit, cfg.audit_max_sessions)
+    summary.selection = _build_selection(audit, cfg.audit_max_sessions, all_ids)
     extra_warnings: list[WarningEntry] = []
     if summary.selection["window_touched"] == 0:
         extra_warnings.append(

@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .util import load_json
@@ -23,6 +24,16 @@ RUNS_DIR = "runs"
 RUN_STATE_FILE = "run_state.json"
 CURRENT_SYMLINK = "current"
 STATE_SCHEMA_VERSION = 1
+
+_LAYOUT_README = """# reports/ — layout du pipeline `weekly-advisor`
+
+- `runs/<date>-<uuid8>/` — artefacts complets de chaque run (source de vérité)
+- `runs/current/` — alias symlink vers le run actif (signal cron/CI)
+- `~/weekly-reports/weekly-report-latest.md` — **copie du rapport pour l'utilisateur**
+  (chemin par défaut, config `report_dir` pour le changer, `""` pour désactiver)
+- `run_state.json` / `previous_run.json` / `anchor-last.txt` — état du pipeline (ne pas éditer)
+- `legacy/` (dans le run dir) — artefacts racine pré-v6.0.k migrés automatiquement
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,8 +64,12 @@ def activate_run(output_dir: Path, date: str, run_time: datetime) -> ActiveRun:
         "run_date": date,
         "run_dir": f"{RUNS_DIR}/{run_id}",
         "created_at": run_time.isoformat(),
+        #: heure réelle de création du run dir (v6.0.l) — created_at reste l'ancre.
+        "activated_at": datetime.now(UTC).isoformat(),
     }
     _write_ok(output_dir / RUN_STATE_FILE, state)
+    _migrate_legacy_root(output_dir, run_dir)
+    _ensure_layout_readme(output_dir)
     _update_current_link(output_dir, run_dir)
     return ActiveRun(run_id=run_id, run_date=date, run_dir=run_dir)
 
@@ -103,3 +118,39 @@ def _update_current_link(output_dir: Path, run_dir: Path) -> None:
         link.symlink_to(run_dir, target_is_directory=True)
     except OSError:
         pass  # filesystems without symlink support still resolve via run_state.json
+
+
+def _migrate_legacy_root(output_dir: Path, run_dir: Path) -> None:
+    """One-shot v6.0.l (E4) : artefacts racine pré-v6.0.k → ``runs/<id>/legacy/``.
+
+    Seuls les **fichiers réels** `weekly-*` sont déplacés — jamais les symlinks
+    (liens stables du rapport) ni les fichiers d'état vivants (`run_state.json`,
+    `previous_run.json`, `anchor-last.txt`). Best-effort : un échec de déplacement
+    n'empêche pas le run.
+    """
+    legacy = run_dir / "legacy"
+    moved = 0
+    for p in sorted(output_dir.glob("weekly-*")):
+        if p.is_symlink() or not p.is_file():
+            continue
+        try:
+            legacy.mkdir(parents=True, exist_ok=True)
+            p.rename(legacy / p.name)
+            moved += 1
+        except OSError:
+            continue
+    if moved:
+        print(
+            f"run_state: migration legacy — {moved} artefact(s) racine -> "
+            f"{legacy.relative_to(output_dir)}",
+            flush=True,
+        )
+
+
+def _ensure_layout_readme(output_dir: Path) -> None:
+    """Write `<output_dir>/README.md` once (v6.0.l) — l'utilisateur sait où chercher."""
+    readme = output_dir / "README.md"
+    if readme.exists():
+        return
+    with suppress(OSError):
+        readme.write_text(_LAYOUT_README, encoding="utf-8")

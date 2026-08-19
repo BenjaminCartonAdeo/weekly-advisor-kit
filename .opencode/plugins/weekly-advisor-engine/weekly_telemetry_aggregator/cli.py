@@ -10,6 +10,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from . import __version__
 from .config import load_config
 from .main import doctor, run, self_cost
 
@@ -184,8 +185,14 @@ def _cmd_watch_context(args, cfg) -> int:
     )
     ecosystem, error = load_ecosystem_report(ecosystem_path)
     if ecosystem is None:
+        # v6.0.l (E6) : l'ordre des étapes est documenté (2 puis 2.5) ; si la
+        # dépendance manque quand même, le message explique la reprise — exit 2
+        # conservé car watch-validate/pipeline ont besoin du contexte produit ici.
         print(
-            f"watch-context: FATAL: {error} — lancer releases d'abord", file=sys.stderr, flush=True
+            f"watch-context: DÉPENDANCE: {error} — exécuter weekly_releases d'abord, "
+            "puis relancer watch-context (ordre d'étapes requis, pas une fatalité moteur)",
+            file=sys.stderr,
+            flush=True,
         )
         return EXIT_TOTAL_FAILURE
 
@@ -226,8 +233,15 @@ def _cmd_watch_validate(args, cfg) -> int:
 
     context, context_error = load_watch_context(context_path)
     if context is None:
-        print(f"watch-validate: FATAL: {context_error}", file=sys.stderr, flush=True)
-        return EXIT_TOTAL_FAILURE
+        # v6.0.l (E6) : contexte absent → validation dégradée (exit 1), jamais
+        # FATAL — l'écosystème est une entrée optionnelle du run (une panne
+        # releases/watch-context ne doit pas tuer le rapport).
+        print(
+            f"watch-validate: WARNING: {context_error} — validation dégradée "
+            "(contexte absent, recommandations non vérifiées)",
+            file=sys.stderr,
+            flush=True,
+        )
     raw_findings, raw_error = load_raw_findings(raw_path)
     if raw_findings is None:
         print(f"watch-validate: FATAL: {raw_error}", file=sys.stderr, flush=True)
@@ -330,7 +344,7 @@ def _cmd_self_cost(args, cfg) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="weekly-telemetry-aggregator",
-        description="Pipeline opencode-weekly-advisor v5.31 — télémétrie, veille, insights, cohérence, rapport.",
+        description=f"Pipeline opencode-weekly-advisor v{__version__} — télémétrie, veille, insights, cohérence, rapport (spec v6.0.l).",
     )
     parser.add_argument(
         "--config",

@@ -17,6 +17,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from . import __version__
 from .config import TelemetryConfig
 from .insights import flatten_harness_findings
 from .run_state import active_run_meta, resolve_active_run_dir
@@ -44,14 +45,22 @@ def _git_log_raw(project_root: Path, *args: str) -> list[str]:
     return proc.stdout.splitlines()
 
 
-def _git_log(project_root: Path, since_iso: str) -> list[dict]:
-    """Auto-redige commits inside the window: [{hash, date, subject}]."""
+def _git_log(project_root: Path, since_iso: str, until_iso: str | None = None) -> list[dict]:
+    """Auto-redige commits inside the window: [{hash, date, subject}] (v6.0.l, E1).
+
+    Two v6.0.l fixes: the window is now bounded by ``--until`` (previously the
+    log ran from window start to *now*, so commits of later runs — even the
+    current run's own draft — were counted "sur la fenêtre"); and the match is
+    enforced on the **subject** in Python because ``--grep`` matches full commit
+    messages (a spec/doc commit whose body mentions the phrase was counted).
+    """
+    args = ["--since=" + since_iso, "--format=%h|%ad|%s", "--date=short"]
+    if until_iso:
+        args.append("--until=" + until_iso)
     rows = []
-    for line in _git_log_raw(
-        project_root, "--since=" + since_iso, "--format=%h|%ad|%s", "--date=short"
-    ):
+    for line in _git_log_raw(project_root, *args):
         parts = line.split("|", 2)
-        if len(parts) == 3:
+        if len(parts) == 3 and "auto-rédigé, revue hebdo" in parts[2]:
             rows.append({"hash": parts[0], "date": parts[1], "subject": parts[2]})
     return rows
 
@@ -80,7 +89,13 @@ def _self_cost_value(cfg: TelemetryConfig) -> float | None:
 
 def _top_models(summary: dict, limit: int = 3) -> list[dict]:
     """Top-N by cost with <5% models fused into 'autres' (spec: by code, not LLM)."""
-    models = [m for m in summary.get("by_model", [])]
+    # v6.0.l (E9) : les lignes 0 token ET 0 coût sont des fantômes de sélection
+    # (sessions aux steps vides) — elles n'apportent aucun signal au top modèles.
+    models = [
+        m
+        for m in summary.get("by_model", [])
+        if m.get("total_tokens", 0) > 0 or m.get("total_cost_usd", 0.0) > 0
+    ]
     models.sort(key=lambda m: (-m.get("total_cost_usd", 0.0), m.get("model", "")))
     total_cost = sum(m.get("total_cost_usd", 0.0) for m in models)
     if total_cost <= 0:
@@ -177,14 +192,21 @@ def report_prep(
     ecosystem = _load_json(out / f"weekly-ecosystem-{date}.json")
     findings = _load_json(out / f"weekly-quality-findings-{date}.json")
 
-    git_commits = _git_log(cfg.project_root, _iso(run_time - timedelta(hours=cfg.window_hours())))
+    git_commits = _git_log(
+        cfg.project_root,
+        _iso(run_time - timedelta(hours=cfg.window_hours())),
+        _iso(run_time),
+    )
     pending = _pending_auto_commits(
         cfg.project_root,
         _iso(run_time - timedelta(weeks=cfg.review_window_weeks)),
     )
+    # v6.0.l (E11) : delta par règle vs run précédent (null en first-run).
+    lint_delta = ((insights or {}).get("deltas") or {}).get("lint_violations_delta_by_rule") or {}
 
     ctx = {
         "date": date,
+        "engine_version": __version__,
         "period": summary.get("period", {}),
         "summary": summary,
         "insights": insights,
@@ -195,7 +217,11 @@ def report_prep(
         "top_sessions": summary.get("top_sessions_by_cost", []),
         "harness_ignored_rules": list(cfg.harness_ignored_rules),
         "harness_top_rules": [
-            {"rule": rule, "count": count}
+            {
+                "rule": rule,
+                "count": count,
+                "delta": lint_delta.get(rule),
+            }
             for rule, count in _top_harness_rules(digest, cfg.harness_ignored_rules)
         ],
         "cost_outliers_state": summary.get("cost_outliers_state", "computed"),
@@ -227,6 +253,7 @@ def report_prep(
         "auto_commits": git_commits,
         "pending_auto_commits": pending,
         "self_cost": _self_cost_value(cfg),
+        "user_report_path": _user_report_path(cfg),
     }
 
     env = Environment(
@@ -383,6 +410,45 @@ def validate_llm_blocks(text: str, findings: dict | None, insights: dict | None)
     return violations, coverage
 
 
+def _user_report_path(cfg: TelemetryConfig) -> str:
+    """Chemin utilisateur du rapport (v6.0.l, P2) — '' si publication désactivée."""
+    raw = cfg.report_dir
+    if raw == "":
+        return ""
+    target_dir = Path(raw).expanduser() if raw else Path.home() / "weekly-reports"
+    return str(target_dir / "weekly-report-latest.md")
+
+
+def _publish_user_report(cfg: TelemetryConfig, final_path: Path) -> str:
+    """Copie du rapport final vers le répertoire utilisateur (v6.0.l, P2).
+
+    Défaut ``~/weekly-reports/weekly-report-latest.md`` : un fichier **réel**,
+    écrasé à chaque run, que l'utilisateur trouve sans connaître ``output_dir``
+    ni ``runs/``. Config ``report_dir`` pour changer l'endroit, ``""`` pour
+    désactiver. Best-effort : un échec n'invalide jamais l'archive du run dir.
+    """
+    raw = cfg.report_dir
+    if raw == "":
+        return 'report-assemble: publication utilisateur désactivée (report_dir="")'
+    target_dir = Path(raw).expanduser() if raw else Path.home() / "weekly-reports"
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / "weekly-report-latest.md"
+        target.write_text(final_path.read_text(encoding="utf-8"), encoding="utf-8")
+        readme = target_dir / "README.md"
+        if not readme.exists():
+            readme.write_text(
+                "# weekly-reports\n\n"
+                "- `weekly-report-latest.md` — dernier rapport hebdomadaire "
+                "(date et ancre en en-tête)\n"
+                f"- Archives datées : `{cfg.output_dir}/runs/<date>-<uuid>/`\n",
+                encoding="utf-8",
+            )
+        return f"report-assemble: copie utilisateur -> {target}"
+    except OSError as exc:
+        return f"report-assemble: WARNING: publication utilisateur impossible: {exc}"
+
+
 def report_assemble(
     cfg: TelemetryConfig, *, anchor: str | None = None
 ) -> tuple[Path | None, list[str], int]:
@@ -465,4 +531,5 @@ def report_assemble(
     final_path.write_text(final_text, encoding="utf-8")
     if replacement is not None:
         final_path.with_name(f"weekly-report-draft-{date}.md").unlink(missing_ok=True)
+    print(_publish_user_report(cfg, final_path), flush=True)
     return final_path, warnings, 0

@@ -1,10 +1,10 @@
 [project]
 name = "weekly-advisor"
-version = "0.2.0"
+version = "0.3.0"
 description = "OpenCode weekly advisor pipeline: telemetry aggregation (Part 1) + ecosystem watch (Part 2) — spec opencode-weekly-advisor v6.0"
 readme = "README.md"
 requires-python = ">=3.11"
-license = "MIT"
+license = { text = "MIT" }
 dependencies = ["httpx>=0.26", "jinja2>=3.1"]
 
 [project.optional-dependencies]
@@ -14,11 +14,11 @@ dev = ["pytest>=8.0.0", "ruff>=0.1.0"]
 weekly-telemetry-aggregator = "weekly_telemetry_aggregator.cli:main"
 
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["weekly_telemetry_aggregator", "weekly_telemetry_aggregator.templates"]
+packages = ["weekly_telemetry_aggregator"]
 
 [tool.setuptools.package-data]
 weekly_telemetry_aggregator = ["templates/*.j2"]

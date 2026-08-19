@@ -1,6 +1,6 @@
 # Rapport hebdomadaire OpenCode — {{ date }}
 
-> Généré par le pipeline `weekly-advisor` v5.30. Sections 1-3, 5-8 : déterministes
+> Généré par le pipeline `weekly-advisor` v{{ engine_version }} (spec v6.0.l). Sections 1-3, 5-8 : déterministes
 > (parties 1/2/6/7). Section 4 : constats qualitatifs de l'agent (partie 3/4).
 
 ## Synthèse
@@ -32,7 +32,7 @@
 {% if summary.selection and summary.selection.window_touched %}
 ### Audit de sélection — pourquoi ce compte ?
 
-{{ summary.selection.window_touched }} sessions touchées dans la fenêtre : **{{ summary.selection.counted }} comptées** (racines + enfants fusionnés), {{ summary.selection.excluded_active }} exclues actives (télémétrie incomplète), {{ summary.selection.excluded_no_activity }} sans télémétrie dans la fenêtre, {{ summary.selection.excluded_unflushed }} non persistées en DB (client actif), {{ summary.selection.excluded_advisor }} sessions advisor, {{ summary.selection.excluded_error }} en erreur de lecture.
+{{ summary.selection.window_touched }} sessions touchées dans la fenêtre : **{{ summary.selection.counted }} comptées** (racines{% if summary.selection.merged_children and summary.selection.merged_children > 0 %}, {{ summary.selection.merged_children }} enfant(s) fusionné(s) dans les racines{% endif %}), {{ summary.selection.excluded_active }} exclues actives (télémétrie incomplète), {{ summary.selection.excluded_no_activity }} sans télémétrie dans la fenêtre, {{ summary.selection.excluded_unflushed }} non persistées en DB (client actif), {{ summary.selection.excluded_advisor }} sessions advisor, {{ summary.selection.excluded_error }} en erreur de lecture.
 
 | Session | Statut | Coût ($) | Titre |
 |---|---|---|---|
@@ -154,7 +154,7 @@
 {% if harness_top_rules %}
 Top règles violées :
 {% for r in harness_top_rules %}
-  - `{{ r.rule }}` — {{ r.count }} violation(s)
+  - `{{ r.rule }}` — {{ r.count }} violation(s){% if r.delta is not none %} (Δ{% if r.delta >= 0 %}+{% endif %}{{ r.delta }} vs run précédent){% endif %}
 {% endfor %}
 {% endif %}
 {% if harness_ignored_rules %}
@@ -220,6 +220,10 @@ Règles exclues du top (config `harness_ignored_rules`) : {{ harness_ignored_rul
 *Aucune alerte.*
 {% endif %}
 
+{% if insights.baseline == "first-run" %}
+- **Baseline** : first-run — aucun run précédent exploitable, les deltas WoW ne sont pas calculés ce run.
+{% endif %}
+
 {% if insights.maintenance.findings %}
 Constats de maintenance (R1-R4) :
 {% for f in insights.maintenance.findings %}
@@ -237,11 +241,17 @@ Constats de maintenance (R1-R4) :
 {% if run_dir %}
 - Répertoire du run : `{{ run_dir }}/` (alias stable `runs/current/`)
 {% endif %}
-- Coût propre du pipeline (self-cost) : {{ "%.4f"|format(self_cost) if self_cost is not none else "non mesurable" }} $
+{% if user_report_path %}
+- **Copie utilisateur** : `{{ user_report_path }}` — fichier réel, écrasé à chaque run (config `report_dir` pour changer l'endroit)
+{% endif %}
+- Coût propre du pipeline (self-cost) : {{ "%.4f"|format(self_cost) if self_cost is not none else "non mesurable" }} ${% if self_cost is not none and self_cost == 0 %} (coût nul — modèle gratuit ou session non retrouvée){% endif %}
 - Commits auto-rédigés sur la fenêtre : {{ auto_commits|length }}
 {% for c in auto_commits[:10] %}
   - `{{ c.hash }}` {{ c.date }} {{ c.subject }}
 {% endfor %}
+{% if auto_commits|length > 10 %}
+  - _(+{{ auto_commits|length - 10 }} autres sur la fenêtre — liste tronquée)_
+{% endif %}
 - **{{ pending_auto_commits }}** commits auto-rédigés en attente de revue (du plus vieux que {{ date }})
 {% if summary.skills_targets %}
 - **Skills auto-rédigés et cibles** :{% for name, agents in summary.skills_targets.items() %} `{{ name }}` → {{ agents|join(", ") }}{% if not loop.last %} ;{% endif %}{{ "\n" }}{% endfor %}

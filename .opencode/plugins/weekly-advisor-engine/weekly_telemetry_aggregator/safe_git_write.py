@@ -112,6 +112,57 @@ def _ensure_opencode_scope(root: Path, file_path: Path) -> tuple[bool, str]:
     return True, "ok"
 
 
+def _sync_kit_draft(cfg: TelemetryConfig, root: Path, file_path: Path) -> tuple[bool, str]:
+    """Miroir best-effort d'un draft commité vers le worktree du kit (v6.0.l, E5).
+
+    La distribution (``cfg.kit_root``) ne doit pas diverger silencieusement des
+    drafts auto-rédigés. Règles : fichier présent **et tracké** dans le kit,
+    contenu différent, pas de merge/rebase en cours. Un échec de synchro ne
+    fait jamais échouer le commit du projet — le motif revient à l'agent.
+    """
+    kit = cfg.kit_root
+    if kit is None:
+        return False, ""
+    try:
+        rel = file_path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False, "draft hors worktree — sync kit impossible"
+    target = kit / rel
+    if not target.is_file():
+        return False, f"{rel} absent du kit — sync ignoré"
+    tracked = _run_git(kit, "ls-files", "--error-unmatch", "--", str(rel))
+    if tracked.returncode != 0:
+        return False, f"{rel} non suivi par le kit — sync ignoré"
+    if target.read_bytes() == file_path.read_bytes():
+        return False, f"{rel} déjà synchronisé avec le kit"
+    for marker in ("rebase-merge", "rebase-apply", "MERGE_HEAD"):
+        if (kit / ".git" / marker).exists():
+            return False, f"{marker} dans le kit — sync reporté"
+    try:
+        target.write_bytes(file_path.read_bytes())
+    except OSError as exc:
+        return False, f"écriture kit impossible: {exc}"
+    add = _run_git(kit, "add", "--", str(rel))
+    if add.returncode != 0:
+        return False, f"git add kit échoué: {add.stderr.strip()}"
+    commit = _run_git(
+        kit,
+        "-c",
+        f"user.name={cfg.git_name}",
+        "-c",
+        f"user.email={cfg.git_email}",
+        "commit",
+        "--no-edit",
+        "-m",
+        f"sync(weekly-advisor): {file_path.name} (auto-rédigé, revue hebdo {datetime.now(UTC).strftime('%Y-%m-%d')})",
+        "--",
+        str(rel),
+    )
+    if commit.returncode != 0:
+        return False, f"commit kit échoué: {commit.stderr.strip()}"
+    return True, f"synchro kit {rel} (HEAD {commit.stdout.strip().splitlines()[0][:10]})"
+
+
 def commit_draft(cfg: TelemetryConfig, file_path: Path, kind: str) -> tuple[bool, str]:
     """Validate + pre-checks + scoped add + commit. Returns (ok, message)."""
     if kind not in _MESSAGE_PREFIX:
@@ -168,4 +219,8 @@ def commit_draft(cfg: TelemetryConfig, file_path: Path, kind: str) -> tuple[bool
     )
     if commit.returncode != 0:
         return False, f"commit échoué: {commit.stderr.strip()}"
-    return True, f"{file_path.name} committé (HEAD {commit.stdout.strip().splitlines()[0][:10]})"
+    sync_ok, sync_note = _sync_kit_draft(cfg, root, file_path)
+    msg = f"{file_path.name} committé (HEAD {commit.stdout.strip().splitlines()[0][:10]})"
+    if sync_note:
+        msg += f" ; {sync_note}"
+    return True, msg
