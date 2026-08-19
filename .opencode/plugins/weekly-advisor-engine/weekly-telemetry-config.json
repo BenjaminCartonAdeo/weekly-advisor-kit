@@ -24,7 +24,9 @@
         ".opencode/commands/**/*.md",
         ".opencode/plugins/*.{js,ts,mjs,cjs}",
         ".opencode/opencode.json",
-        ".opencode/opencode.jsonc"
+        ".opencode/opencode.jsonc",
+        ".opencode/context/**/*.md",
+        ".opencode/*.json"
       ],
       "advisory": [
         ".opencode/AGENTS.md",
@@ -35,7 +37,9 @@
         ".opencode/opencode.jsonc",
         ".opencode/skills/**/SKILL.md",
         ".opencode/skills/**/references/**/*.md",
-        ".opencode/skills/**/examples/**/*"
+        ".opencode/skills/**/examples/**/*",
+        ".opencode/context/**/*.md",
+        ".opencode/*.json"
       ]
     },
     "exclude_patterns": [
@@ -74,7 +78,8 @@
     "cost_wow_pct_max": 15.0,
     "lint_violations_max": 10,
     "never_loaded_runs_threshold": 4,
-    "cache_write_zero_runs": 2
+    "cache_write_zero_runs": 2,
+    "lint_coverage_min": 0.7
   },
   "watch_repos": [],
   "watch": [

@@ -75,6 +75,8 @@ class InsightsConfig:
     cache_hit_rate_min: float = 0.6
     cost_wow_pct_max: float = 15.0
     lint_violations_max: int = 10
+    #: part des surfaces .opencode/ hors allowlist tolérée avant alerte (v6.0.n).
+    lint_coverage_min: float = 0.70
     never_loaded_runs_threshold: int = 4
     #: consecutive runs with cache_write_tokens == 0 before alerting (v5.28).
     cache_write_zero_runs: int = 2
@@ -340,6 +342,9 @@ def _parse(p: Path) -> TelemetryConfig:
     )
     cfg.insights.lint_violations_max = int(
         ins.get("lint_violations_max", cfg.insights.lint_violations_max)
+    )
+    cfg.insights.lint_coverage_min = float(
+        ins.get("lint_coverage_min", cfg.insights.lint_coverage_min)
     )
     cfg.insights.never_loaded_runs_threshold = int(
         ins.get("never_loaded_runs_threshold", cfg.insights.never_loaded_runs_threshold)

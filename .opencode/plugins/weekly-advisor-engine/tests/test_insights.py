@@ -706,3 +706,105 @@ def test_daily_spike_z_capped_when_mad_zero():
     assert spikes
     assert max(a["observed"] for a in spikes) <= DAILY_SPIKE_Z_CAP
     assert any("MAD≈0" in a.get("note", "") for a in spikes)
+
+
+# ============================================================ v6.0.n (ancre glissante)
+
+
+def test_discover_previous_prefers_strictly_older(tmp_path: Path):
+    """P2 : un summary de date strictement antérieure reste prioritaire."""
+    from weekly_telemetry_aggregator.insights import _discover_previous
+
+    runs = tmp_path / "runs"
+    older = runs / "2026-08-14-aaa"
+    current = runs / "2026-08-16-aaa"
+    same_prev = runs / "2026-08-16-bbb"
+    for d in (older, current, same_prev):
+        d.mkdir(parents=True)
+    (older / "weekly-summary-2026-08-14.json").write_text(
+        json.dumps({"run": "older"}), encoding="utf-8"
+    )
+    (current / "weekly-summary-2026-08-16.json").write_text(
+        json.dumps({"run": "current"}), encoding="utf-8"
+    )
+    (same_prev / "weekly-summary-2026-08-16.json").write_text(
+        json.dumps({"run": "same-date"}), encoding="utf-8"
+    )
+    found = _discover_previous("weekly-summary-*.json", "2026-08-16", tmp_path, exclude_dir=current)
+    assert found == {"run": "older"}
+
+
+def test_discover_previous_fallback_same_date_outside_current_run(tmp_path: Path):
+    """P2 : sans antérieur strict, le plus récent même-date hors run courant est pris."""
+    from weekly_telemetry_aggregator.insights import _discover_previous
+
+    runs = tmp_path / "runs"
+    current = runs / "2026-08-16-aaa"
+    same_prev = runs / "2026-08-16-bbb"
+    dirty = runs / "2026-08-16-ccc"
+    for d in (current, same_prev, dirty):
+        d.mkdir(parents=True)
+    (current / "weekly-summary-2026-08-16.json").write_text(
+        json.dumps({"run": "current"}), encoding="utf-8"
+    )
+    (same_prev / "weekly-summary-2026-08-16.json").write_text(
+        json.dumps({"run": "same-date"}), encoding="utf-8"
+    )
+    (dirty / "weekly-summary-2026-08-16.json").write_text(
+        json.dumps({"run": "same-date-2"}), encoding="utf-8"
+    )
+    found = _discover_previous("weekly-summary-*.json", "2026-08-16", tmp_path, exclude_dir=current)
+    assert found == {"run": "same-date-2"}
+
+
+def test_run_lint_coverage_alert_when_allowlist_narrow(tmp_path: Path):
+    """P8 : alerte lint_coverage quand la part hors allowlist dépasse le seuil."""
+    from weekly_telemetry_aggregator.config import TelemetryConfig
+    from weekly_telemetry_aggregator.main import EXIT_OK
+
+    date = "2026-08-12"
+    (tmp_path / f"weekly-summary-{date}.json").write_text(
+        json.dumps(_summary(("2026-08-05", date), generated_at=f"{date}T00:00:00Z")),
+        encoding="utf-8",
+    )
+    digest = {
+        "inspection": {"summary": {"total": 5}},
+        "harness_scope": {"include_patterns": [], "unscoped_file_count": 30},
+    }
+    (tmp_path / f"weekly-harness-digest-{date}.json").write_text(
+        json.dumps(digest), encoding="utf-8"
+    )
+    cfg = TelemetryConfig()
+    cfg.output_dir = tmp_path
+    cfg.project_root = tmp_path
+    assert run(cfg, anchor=RUN.isoformat()) == EXIT_OK
+    out = json.loads((tmp_path / f"weekly-insights-{date}.json").read_text(encoding="utf-8"))
+    alert = next((a for a in out["alerts"] if a["rule"] == "lint_coverage"), None)
+    assert alert is not None
+    assert alert["threshold"] == 0.7
+    assert alert["observed"] < 0.7
+
+
+def test_run_lint_coverage_no_alert_when_allowlist_wide(tmp_path: Path):
+    """P8 : au-dessus du seuil, pas d'alerte lint_coverage."""
+    from weekly_telemetry_aggregator.config import TelemetryConfig
+    from weekly_telemetry_aggregator.main import EXIT_OK
+
+    date = "2026-08-12"
+    (tmp_path / f"weekly-summary-{date}.json").write_text(
+        json.dumps(_summary(("2026-08-05", date), generated_at=f"{date}T00:00:00Z")),
+        encoding="utf-8",
+    )
+    digest = {
+        "inspection": {"summary": {"total": 5}},
+        "harness_scope": {"include_patterns": [], "unscoped_file_count": 1},
+    }
+    (tmp_path / f"weekly-harness-digest-{date}.json").write_text(
+        json.dumps(digest), encoding="utf-8"
+    )
+    cfg = TelemetryConfig()
+    cfg.output_dir = tmp_path
+    cfg.project_root = tmp_path
+    assert run(cfg, anchor=RUN.isoformat()) == EXIT_OK
+    out = json.loads((tmp_path / f"weekly-insights-{date}.json").read_text(encoding="utf-8"))
+    assert all(a["rule"] != "lint_coverage" for a in out["alerts"])

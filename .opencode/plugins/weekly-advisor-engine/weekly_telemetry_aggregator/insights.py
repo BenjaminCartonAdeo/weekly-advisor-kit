@@ -245,9 +245,33 @@ def compute(
                 "rule": "lint_violations_max",
                 "threshold": insights_cfg.lint_violations_max,
                 "observed": lint_total,
+                "unit": "findings",
                 "severity": "medium",
             }
         )
+
+    # ---- couverture lint (v6.0.n) : surfaces .opencode/ hors allowlist ----
+    digest_scope = (current_digest or {}).get("harness_scope") or {}
+    unscoped = digest_scope.get("unscoped_file_count")
+    inspected_total = (current_digest or {}).get("inspection", {}).get("summary", {}).get("total")
+    if (
+        current_digest is not None
+        and isinstance(unscoped, int)
+        and isinstance(inspected_total, int)
+        and inspected_total + unscoped > 0
+    ):
+        coverage = inspected_total / (inspected_total + unscoped)
+        if coverage < insights_cfg.lint_coverage_min:
+            alerts.append(
+                {
+                    "rule": "lint_coverage",
+                    "threshold": insights_cfg.lint_coverage_min,
+                    "observed": round(coverage, 2),
+                    "unit": "surfaces scannées",
+                    "note": f"{inspected_total} scannées, {unscoped} hors allowlist",
+                    "severity": "low",
+                }
+            )
 
     # ---- maintenance R1-R4 (findings initialisés avant l'alerte cache K8) ----
     findings: list[dict] = []
@@ -501,12 +525,29 @@ def _artifacts_before(output_dir: Path, pattern: str, current_date: str) -> list
     return sorted(found)
 
 
-def _discover_previous(pattern: str, current_date: str, output_dir: Path) -> dict | None:
-    """Most recent artefact strictly older than the current run (spec §2)."""
+def _discover_previous(
+    pattern: str, current_date: str, output_dir: Path, exclude_dir: Path | None = None
+) -> dict | None:
+    """Most recent artefact usable as previous run (spec §2).
+
+    Primary: artefacts strictly older than the current run date. Fallback
+    (v6.0.n): most recent same-date artefact outside the current run dir —
+    covers back-to-back runs sharing the same anchor day (tests, reruns),
+    which the date-strict search silently skipped.
+    """
     found = _artifacts_before(output_dir, pattern, current_date)
-    if not found:
+    if found:
+        return _load(found[-1][1])
+    eligible = []
+    for path in sorted([*output_dir.glob(pattern), *output_dir.glob(f"{RUNS_DIR}/*/{pattern}")]):
+        if exclude_dir is not None and path.parent == exclude_dir:
+            continue
+        m = re.search(r"(\d{4}-\d{2}-\d{2})\.json$", path.name)
+        if m:
+            eligible.append((m.group(1), path))
+    if not eligible:
         return None
-    return _load(found[-1][1])
+    return _load(sorted(eligible)[-1][1])
 
 
 def run(
@@ -536,13 +577,13 @@ def run(
     previous = (
         state_summary
         if state_summary is not None
-        else _discover_previous("weekly-summary-*.json", date, root)
+        else _discover_previous("weekly-summary-*.json", date, root, exclude_dir=out)
     )
     current_digest = _load(out / f"weekly-harness-digest-{date}.json")
     previous_digest = (
         state_digest
         if state_digest is not None
-        else _discover_previous("weekly-harness-digest-*.json", date, root)
+        else _discover_previous("weekly-harness-digest-*.json", date, root, exclude_dir=out)
     )
     baseline_used: str | None = None
     if previous is None and (baseline_summary_path or cfg.baseline_summary_path):
