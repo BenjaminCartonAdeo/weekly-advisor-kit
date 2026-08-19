@@ -360,6 +360,15 @@ def test_cli_parser_defaults_to_dry_run():
 
 def test_apply_is_eligible_on_agents_plugins_and_agents_md(tmp_path: Path):
     """v6.0.k (F2) : apply accepte agents/, plugins/ et AGENTS.md (hors moteur)."""
+
+    def fake_harness(post_cfg: TelemetryConfig, *, anchor: str | None = None) -> int:
+        _ = anchor
+        digest = {"inspection": {"uncategorized": []}}
+        (post_cfg.output_dir / f"weekly-harness-digest-{DATE}.json").write_text(
+            json.dumps(digest), encoding="utf-8"
+        )
+        return EXIT_OK
+
     for index, rel in enumerate(
         (
             ".opencode/agents/foo/agent.md",
@@ -387,7 +396,16 @@ def test_apply_is_eligible_on_agents_plugins_and_agents_md(tmp_path: Path):
             ),
             encoding="utf-8",
         )
-        assert run(cfg, proposal_path=proposal, mode="apply", anchor=ANCHOR) == EXIT_OK
+        assert (
+            run(
+                cfg,
+                proposal_path=proposal,
+                mode="apply",
+                anchor=ANCHOR,
+                harness_runner=fake_harness,
+            )
+            == EXIT_OK
+        )
         assert target.read_text(encoding="utf-8") == "new", rel
 
 
