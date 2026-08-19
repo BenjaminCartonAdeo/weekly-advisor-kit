@@ -36,6 +36,10 @@ gérée par le plugin via `<output_dir>/anchor-last.txt`, aucun calcul manuel :
 
 ## Règles
 
+- **Exécution directe obligatoire** : la revue s'exécute dans la session courante, dans
+  l'ordre figé ci-dessus. **Jamais de dispatch en subagent** (tool `task`) pour lancer la
+  revue — le weekly-advisor est déjà l'orchestrateur ; une tentative de dispatch via
+  `task` gaspillait ~3 tours avant l'exécution directe lors du run du 2026-08-16
 - Exit 2 (fatal) à une étape → stopper sans rapport
 - Ne jamais réécrire les JSON produits par le CLI
 - Ne pas auditer au-delà de `audit_max_sessions` ; ne pas écrire plus de
