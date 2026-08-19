@@ -107,5 +107,5 @@ Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sa
 - Commit auto : uniquement drafting via `weekly_commit_draft` (scoped au fichier, identité config,
   jamais de secrets, jamais pendant rebase/merge) — rollback = `git revert --no-edit` (humain)
 - Fichiers écrits par l'agent : findings bruts `weekly-watch-findings-raw-<date>.json`, propositions
-  `weekly-harness-remediation-proposals-<date>.json`, autres findings `weekly-*-findings-<date>.json`, `extracts/`,
+  `weekly-harness-remediation-proposals-<date>.json`, autres findings `weekly-*-findings-<date>.json`, `<output_dir>/runs/current/extracts/`,
   drafts skills/commands via `weekly_commit_draft`, `weekly-report-blocks-<date>.md`

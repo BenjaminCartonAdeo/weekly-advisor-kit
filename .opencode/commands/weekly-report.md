@@ -1,12 +1,14 @@
 ---
-description: "Résume le dernier rapport hebdomadaire du pipeline weekly-advisor (<output_dir>/weekly-report-*.md le plus récent) — synthèse, alertes, constats, actions."
+description: "Résume le dernier rapport hebdomadaire du pipeline weekly-advisor (copie utilisateur <report_dir>/weekly-report-latest.md, sinon l'archive runs/*/ la plus récente) — synthèse, alertes, constats, actions."
 ---
 
 # Dernier rapport hebdomadaire
 
-Trouve le rapport le plus récent dans `<output_dir>/weekly-report-*.md` — output_dir de la
-config du moteur (`.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`) —
-(glob, tri par date décroissante) et résume-le pour une lecture rapide.
+Trouve le rapport le plus récent — en priorité la **copie utilisateur**
+`~/weekly-reports/weekly-report-latest.md` (config `report_dir` du moteur,
+`.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`), sinon la
+dernière des archives `runs/*/weekly-report-*.md` (glob, tri par date décroissante,
+`legacy/` inclus) — et résume-le pour une lecture rapide.
 
 ## Sortie attendue
 
@@ -25,3 +27,5 @@ config du moteur (`.opencode/plugins/weekly-advisor-engine/weekly-telemetry-conf
 - Les nombres proviennent du rapport (rendu par le template) : les citer tels quels,
   sans les recalculer
 - Si le rapport date de plus de 10 jours : le mentionner (« rapport périmé de N jours »)
+- Ne pas confondre copie utilisateur et archive : la copie est le signal canonique du
+  dernier run complet ; les archives `runs/<date>-<uuid8>/` sont l'historique

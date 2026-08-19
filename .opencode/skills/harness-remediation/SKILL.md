@@ -25,7 +25,7 @@ puis `weekly_harness_remediate` décide déterministiquement ce qui peut être a
 Écrire d'abord :
 
 ```text
-reports/current/weekly-harness-remediation-proposals-<date>.json
+<output_dir>/runs/current/weekly-harness-remediation-proposals-<date>.json
 (répertoire du run actif — alias stable `runs/current`)
 ```
 
@@ -41,7 +41,7 @@ weekly_harness_remediate({
 Le tool écrit ensuite :
 
 ```text
-reports/current/weekly-harness-remediation-<date>.json
+<output_dir>/runs/current/weekly-harness-remediation-<date>.json
 ```
 
 Le résultat explique chaque décision (`applied`, `proposed`, `manual`, `blocked`,

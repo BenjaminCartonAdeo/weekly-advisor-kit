@@ -19,7 +19,7 @@ commit direct traçable. Jamais de correction du code applicatif : écriture dan
    plugin `<output_dir>/anchor-last.txt`, pas de calcul manuel)
    (candidats skill-candidate / command-candidate / command-improvement, sévérité DESC,
    plafonné par `max_candidates_per_run`)
-2. Pour chaque candidat : lire `extracts/transcript-extract-<session_id>.md`
+2. Pour chaque candidat : lire `<output_dir>/runs/current/extracts/transcript-extract-<session_id>.md`
    (fallback `weekly_show_session`), **généraliser (jamais verbatim)**, rédiger le fichier
 3. Vérifier le chevauchement vs `.opencode/skills/*/SKILL.md` + `.opencode/commands/*.md` →
    **si `overlaps_with` non vide ⇒ NE PAS committer** : constat `environment-change`

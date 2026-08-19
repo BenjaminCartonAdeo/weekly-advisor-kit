@@ -29,7 +29,7 @@ Tous les artefacts du run sont dans `<output_dir>/runs/current/` (alias stable d
 Le skill écrit uniquement le brouillon LLM dans :
 
 ```text
-reports/current/weekly-watch-findings-raw-<date>.json
+<output_dir>/runs/current/weekly-watch-findings-raw-<date>.json
 ```
 
 Il ne écrit jamais directement `weekly-watch-findings-<date>.json` : ce fichier est
