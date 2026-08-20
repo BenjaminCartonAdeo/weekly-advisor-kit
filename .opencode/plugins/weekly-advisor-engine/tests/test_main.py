@@ -799,7 +799,7 @@ def test_selection_counts_unflushed(tmp_path: Path):
 
 
 def test_detect_prefers_live_session_table(tmp_path: Path):
-    """Le schéma post-migration (metadata `session` + telemetry `part`) est détecté en v1-dual."""
+    """Le schéma post-migration (metadata `session` + telemetry `part`) est détecté par l'adaptateur unifié."""
     from weekly_telemetry_aggregator.sqlite_reader import detect_db
 
     db = tmp_path / "opencode.db"
@@ -817,7 +817,7 @@ def test_detect_prefers_live_session_table(tmp_path: Path):
         ],
     )
     path, adapter = detect_db(str(db))
-    assert adapter.name == "v1-dual"
+    assert adapter.name == "opencode"
     assert adapter.latest_updated_ms() > 0
 
 
@@ -848,7 +848,7 @@ def test_run_counts_sessions_from_live_table(tmp_path: Path):
 
 
 def test_dual_adapter_counts_both_tables(tmp_path: Path):
-    """v1-dual : les sessions CLI (`session`) ET serveur (`session_v2`) sont comptées."""
+    """Adaptateur unifié : les sessions CLI (`session`) ET serveur (`session_v2`) sont comptées."""
     import sqlite3
 
     from weekly_telemetry_aggregator.sqlite_reader import detect_db
@@ -894,7 +894,7 @@ def test_dual_adapter_counts_both_tables(tmp_path: Path):
     conn.close()
 
     path, adapter = detect_db(str(db))
-    assert adapter.name == "v1-dual"
+    assert adapter.name == "opencode"
     metas = adapter.list_sessions(0)
     ids = {m.session_id for m in metas}
     assert {"ses_cli_1", "ses_cli_2", "ses_cli_3"} <= ids  # les deux mondes
@@ -905,6 +905,76 @@ def test_dual_adapter_counts_both_tables(tmp_path: Path):
     )
     assert data["totals"]["session_count"] == 3
     assert data["totals"]["total_cost_usd"] == round(0.1 + 0.2 + 0.3, 6)
+
+
+def test_detect_v1_session_only(tmp_path: Path):
+    """OpenCode V1 (table `session` seule, sans session_v2) est détecté (v6.x).
+
+    Régression : l'ancien DualAdapter exigeait session_v2 et rejetait les bases
+    V1 pures (ex. Nicolas, opencode 1.18.19). L'adaptateur unifié accepte
+    `session` OU `session_v2` (ou les deux).
+    """
+    import sqlite3
+
+    from weekly_telemetry_aggregator.sqlite_reader import detect_db
+
+    db = tmp_path / "opencode.db"
+    ts = RUN_TIME - timedelta(hours=2)
+    ts_ms = int(ts.timestamp() * 1000)
+    conn = sqlite3.connect(str(db))
+    conn.executescript(
+        """
+        CREATE TABLE session (
+            id TEXT PRIMARY KEY, parent_id TEXT, title TEXT, model TEXT, agent TEXT,
+            directory TEXT, cost REAL, tokens_input REAL, tokens_output REAL,
+            tokens_reasoning REAL, tokens_cache_read REAL, tokens_cache_write REAL,
+            time_created INTEGER, time_updated INTEGER
+        );
+        CREATE TABLE part (session_id TEXT, data TEXT, time_created INTEGER);
+        CREATE TABLE message (session_id TEXT, data TEXT, time_created INTEGER);
+        CREATE TABLE migration (id INTEGER PRIMARY KEY);
+        """
+    )
+    conn.execute("INSERT INTO migration (id) VALUES (0)")
+    conn.execute(
+        "INSERT INTO session (id, parent_id, title, model, agent, directory, cost, "
+        "tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, "
+        "tokens_cache_write, time_created, time_updated) "
+        "VALUES (?, NULL, 'V1 only', '{}', NULL, NULL, 0.0, 0,0,0,0,0, ?, ?)",
+        ("ses_v1", ts_ms, ts_ms),
+    )
+    conn.execute(
+        "INSERT INTO part (session_id, data, time_created) VALUES (?, ?, ?)",
+        ("ses_v1", '{"type":"step-finish","cost":0.5,"tokens":{"input":5,"output":1}}', ts_ms),
+    )
+    conn.commit()
+    conn.close()
+
+    path, adapter = detect_db(str(db))
+    assert adapter.name == "opencode"
+    # V1 pur : uniquement la table `session`.
+    assert adapter._session_tables == ["session"]
+    metas = adapter.list_sessions(0)
+    assert {m.session_id for m in metas} == {"ses_v1"}
+
+
+def test_detect_non_opencode_db_raises_clear_error(tmp_path: Path):
+    """Une base non-OpenCode lève DataSourceError avec family/path exploitables."""
+    import sqlite3
+
+    from weekly_telemetry_aggregator.sqlite_reader import DataSourceError, detect_db
+
+    db = tmp_path / "opencode.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE unrelated (id INTEGER)")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(DataSourceError) as exc:
+        detect_db(str(db))
+    assert exc.value.path is not None
+    assert isinstance(exc.value.family, str)
+    assert "non reconnu" in str(exc.value)
 
 
 def test_self_cost_falls_back_to_weekly_advisor_session(tmp_path: Path, capsys):

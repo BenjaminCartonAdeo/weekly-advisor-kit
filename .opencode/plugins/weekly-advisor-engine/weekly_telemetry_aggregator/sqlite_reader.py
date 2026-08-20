@@ -1,15 +1,18 @@
 """Direct SQLite access to the local OpenCode storage (Part 1 §2, v5.16+).
 
-Transport: no SDK, no server. The CLI reads `opencode.db` (V1 schema, living) or
+Transport: no SDK, no server. The CLI reads `opencode.db` (V1 schema) or
 `opencode-next.db` (V2 schema) directly, read-only.
 
 Schemas (verified août 2026, spec §7.1):
-- V1: session_v2 (metadata + aggregates), message (data JSON per message),
-  part (data JSON: step-finish with cost + tokens.cache{read,write}; tool with
-  name + state; text with data.text), migration (Drizzle, >= 42 rows).
-- V2: session, session_message (typed: user -> data.text, assistant -> content[]),
-  event (session.step.ended.1 -> cost + tokens.cache{read,write},
-  session.tool.called.1 -> {name, input}), data_migration.
+- OpenCode V1 (`opencode`, `opencode.db`): session metadata in `session`;
+  telemetry in `part`/`message`; events in `event` keyed by `aggregate_id`
+  (joined to `event_sequence`). `migration` (Drizzle) tracks the schema version.
+- OpenCode V2 (`opencode2` / OpenCode 2.0, `opencode-next.db`): session metadata
+  in `session_v2`; the same `part`/`message`/`event`(aggregate_id) layout;
+  `data_migration` tracks the schema version.
+- Real event shape is `aggregate_id`/`seq`/`type`/`data` on BOTH versions
+  (never `session_id`/`time_created`). The unified OpenCodeAdapter accepts
+  either session table and reads telemetry from `part`/`message`.
 
 All queries are windowed per session (indexed), never full scans.
 """
@@ -28,8 +31,8 @@ from .models import StepFinish
 #: Minimal Drizzle migration count for the V1 schema (schema pin, v5.27).
 MIGRATION_MIN_V1 = 42
 
-#: session_v2 metadata columns (V1 + dual schema checks).
-_SESSION_V2_COLUMNS = [
+#: session metadata columns shared by `session` (V1) and `session_v2` (V2).
+_SESSION_COLUMNS = [
     "id",
     "parent_id",
     "title",
@@ -45,7 +48,7 @@ _SESSION_V2_COLUMNS = [
     "time_updated",
 ]
 
-#: DualAdapter SELECT list (metadata union of session/session_v2).
+#: OpenCodeAdapter SELECT list (metadata union of session/session_v2).
 _META_COLS = (
     "id, parent_id, title, model, agent, directory, cost, tokens_input, "
     "tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write, "
@@ -58,7 +61,16 @@ class SchemaError(Exception):
 
 
 class DataSourceError(Exception):
-    """No usable OpenCode database found (blocking, exit 2)."""
+    """No usable OpenCode database found (blocking, exit 2).
+
+    Carries the offending ``path`` and detected ``family`` so callers (doctor)
+    can render an actionable, user-facing message instead of a generic string.
+    """
+
+    def __init__(self, message: str, *, path: str | None = None, family: str | None = None):
+        super().__init__(message)
+        self.path = path
+        self.family = family
 
 
 def _iso_from_ms(ms: int) -> datetime:
@@ -337,83 +349,71 @@ def _session_aggregates(conn: sqlite3.Connection, table: str, session_id: str) -
     }
 
 
-class DualAdapter(SchemaAdapter):
-    """opencode.db — `session` + `session_v2` metadata over `part`/`message` telemetry.
+class OpenCodeAdapter(SchemaAdapter):
+    """Unified reader for OpenCode V1 and V2 (v6.x).
 
-    Single adapter for the modern client (v5.29 root cause: the client keeps
-    TWO live metadata stores — CLI sessions live in `session` (+ persisted
-    `part`/`message` telemetry), server/demon sessions live in `session_v2`
-    (no persisted parts → `unflushed`); picking either table alone hides the
-    other world's week).  `session` is optional: pre-dual bases (session_v2
-    only) degrade to session_v2 reads — the former V1Adapter is folded here
-    (audit v6.0.o).
+    OpenCode V1 (`opencode`, `opencode.db`) stores session metadata in `session`;
+    OpenCode V2 (`opencode2` / OpenCode 2.0, `opencode-next.db`) stores it in
+    `session_v2`. Both keep telemetry in `part`/`message` and events in `event`
+    keyed by `aggregate_id` (joined to `event_sequence`) — NEVER `session_id`.
+
+    We accept whichever session table(s) exist (session, session_v2, or both)
+    and union them, so both the CLI and server/daemon session worlds are read.
+    The migration count is read as an advisory signal only (no hard floor).
     """
 
-    name = "v1-dual"
+    name = "opencode"
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
-        self._has_session = True
+        self._session_tables: list[str] = []
 
     def check_schema(self) -> None:
-        _require_tables(self.conn, ["session_v2", "part", "message", "migration"])
-        _require_columns(self.conn, "session_v2", _SESSION_V2_COLUMNS)
+        tables = {
+            r[0]
+            for r in self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        # session metadata: session (V1) and/or session_v2 (V2) — at least one.
+        session_tables = [t for t in ("session_v2", "session") if t in tables]
+        if not session_tables:
+            raise SchemaError("missing tables: session/session_v2")
+        # Telemetry is read from part/message (shared by both OpenCode versions).
+        _require_tables(self.conn, ["part", "message"])
         _require_columns(self.conn, "part", ["session_id", "data", "time_created"])
         # NB: the real schema stores part.type inside data JSON, not in a column.
         _require_columns(self.conn, "message", ["session_id", "data", "time_created"])
-        count = self.conn.execute("SELECT COUNT(*) FROM migration").fetchone()[0]
-        if count < MIGRATION_MIN_V1:
-            raise SchemaError(f"migration count {count} < {MIGRATION_MIN_V1} (v1-dual pin)")
-        row = self.conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session'"
-        ).fetchone()
-        self._has_session = row is not None
-        if self._has_session:
-            _require_columns(
-                self.conn,
-                "session",
-                [
-                    "id",
-                    "parent_id",
-                    "title",
-                    "model",
-                    "agent",
-                    "cost",
-                    "time_created",
-                    "time_updated",
-                ],
-            )
+        # migration tracking present (advisory; no hard version floor). The
+        # adapter never reads it, so either table is accepted.
+        if not ({"migration", "data_migration"} & tables):
+            raise SchemaError("no migration table (migration/data_migration)")
+        for st in session_tables:
+            _require_columns(self.conn, st, _SESSION_COLUMNS)
+        self._session_tables = session_tables
 
     def latest_updated_ms(self) -> int:
-        if not self._has_session:
-            row = self.conn.execute("SELECT MAX(time_updated) AS t FROM session_v2").fetchone()
-            return int(row["t"] or 0)
-        row = self.conn.execute(
-            "SELECT MAX(t) AS m FROM ("
-            "SELECT MAX(time_updated) AS t FROM session "
-            "UNION ALL SELECT MAX(time_updated) FROM session_v2)"
-        ).fetchone()
+        if not self._session_tables:
+            return 0
+        sub = " UNION ALL ".join(
+            f"SELECT time_updated FROM {t}" for t in self._session_tables
+        )
+        row = self.conn.execute(f"SELECT MAX(time_updated) AS m FROM ({sub})").fetchone()
         return int(row["m"] or 0)
 
     def list_sessions(self, since_ms: int) -> list[SessionMeta]:
-        if not self._has_session:
-            rows = self.conn.execute(
-                "SELECT * FROM session_v2 WHERE time_updated >= ? ORDER BY time_updated DESC",
-                (since_ms,),
-            ).fetchall()
-            return [_row_to_meta(r) for r in rows]
-        cols = _META_COLS
+        if not self._session_tables:
+            return []
+        query = " UNION ALL ".join(
+            f"SELECT {_META_COLS} FROM {t} WHERE time_updated >= ?"
+            for t in self._session_tables
+        )
         rows = self.conn.execute(
-            f"SELECT {cols} FROM ("
-            f"SELECT {cols} FROM session WHERE time_updated >= ? "
-            f"UNION ALL "
-            f"SELECT {cols} FROM session_v2 WHERE time_updated >= ?) "
-            "ORDER BY time_updated DESC",
-            (since_ms, since_ms),
+            query, tuple([since_ms] * len(self._session_tables))
         ).fetchall()
         seen: set[str] = set()
         metas: list[SessionMeta] = []
-        for row in rows:  # time_updated DESC → première occurrence = la plus fraîche
+        for row in rows:  # time_updated DESC in each leg; dedupe keeps first
             sid = str(row["id"])
             if sid in seen:
                 continue
@@ -421,7 +421,7 @@ class DualAdapter(SchemaAdapter):
             metas.append(_row_to_meta(row))
         return metas
 
-    # ---- telemetry: part/message readers shared by every opencode.db schema ----
+    # ---- telemetry: part/message readers shared by V1 + V2 ----
 
     def has_telemetry_rows(self, session_id: str) -> bool:
         row = self.conn.execute(
@@ -446,10 +446,23 @@ class DualAdapter(SchemaAdapter):
                 out.append((int(row["time_created"]), data))
         return out
 
+    def _parts_of_type_all(
+        self, session_id: str, start_ms: int, end_ms: int
+    ) -> list[tuple[int, dict]]:
+        """Every part row in window (data.type kept), for context/lint walks."""
+        return [
+            (int(row["time_created"]), _json_obj(row["data"]))
+            for row in self.conn.execute(
+                "SELECT data, time_created FROM part WHERE session_id = ? "
+                "AND time_created >= ? AND time_created <= ? ORDER BY time_created",
+                (session_id, start_ms, end_ms),
+            )
+        ]
+
     def _parts_of_type(
         self, session_id: str, ptype: str, start_ms: int, end_ms: int
     ) -> list[tuple[int, dict]]:
-        """part rows whose data.type == ptype (the real V1 schema keeps type inside data)."""
+        """part rows whose data.type == ptype (the real schema keeps type inside data)."""
         return [
             (ts, data)
             for ts, data in self._parts_of_type_all(session_id, start_ms, end_ms)
@@ -488,19 +501,6 @@ class DualAdapter(SchemaAdapter):
                 turns.append(text)
         return turns
 
-    def _parts_of_type_all(
-        self, session_id: str, start_ms: int, end_ms: int
-    ) -> list[tuple[int, dict]]:
-        """Every part row in window (data.type kept), for context/lint walks."""
-        return [
-            (int(row["time_created"]), _json_obj(row["data"]))
-            for row in self.conn.execute(
-                "SELECT data, time_created FROM part WHERE session_id = ? "
-                "AND time_created >= ? AND time_created <= ? ORDER BY time_created",
-                (session_id, start_ms, end_ms),
-            )
-        ]
-
     def session_context_chars(self, session_id: str, start_ms: int, end_ms: int) -> dict[str, int]:
         counts = {"file": 0, "tool_result": 0, "text": 0, "reasoning": 0}
         for _ts, data in self._parts_of_type_all(session_id, start_ms, end_ms):
@@ -527,8 +527,7 @@ class DualAdapter(SchemaAdapter):
         return counts
 
     def session_aggregates(self, session_id: str) -> dict | None:
-        tables = ("session", "session_v2") if self._has_session else ("session_v2",)
-        for tbl in tables:
+        for tbl in self._session_tables:
             agg = _session_aggregates(self.conn, tbl, session_id)
             if agg is not None:
                 return agg
@@ -577,238 +576,15 @@ class DualAdapter(SchemaAdapter):
         return records
 
     def find_session_by_title(self, title: str) -> SessionMeta | None:
-        if not self._has_session:
-            row = self.conn.execute(
-                "SELECT * FROM session_v2 WHERE title = ? ORDER BY time_updated DESC LIMIT 1",
-                (title,),
-            ).fetchone()
-            return _row_to_meta(row) if row else None
-        cols = _META_COLS
+        if not self._session_tables:
+            return None
+        query = " UNION ALL ".join(
+            f"SELECT {_META_COLS} FROM {t} WHERE title = ?" for t in self._session_tables
+        )
         rows = self.conn.execute(
-            f"SELECT {cols} FROM ("
-            f"SELECT {cols} FROM session WHERE title = ? "
-            f"UNION ALL "
-            f"SELECT {cols} FROM session_v2 WHERE title = ?) "
-            "ORDER BY time_updated DESC LIMIT 1",
-            (title, title),
+            query, tuple([title] * len(self._session_tables))
         ).fetchall()
         return _row_to_meta(rows[0]) if rows else None
-
-
-class V2Adapter(SchemaAdapter):
-    """opencode-next.db — session / session_message / event / data_migration."""
-
-    name = "v2"
-
-    def __init__(self, conn: sqlite3.Connection):
-        self.conn = conn
-
-    def check_schema(self) -> None:
-        _require_tables(self.conn, ["session", "session_message", "event", "data_migration"])
-        _require_columns(
-            self.conn,
-            "session",
-            [
-                "id",
-                "parent_id",
-                "title",
-                "model",
-                "agent",
-                "cost",
-                "tokens_input",
-                "tokens_output",
-                "tokens_reasoning",
-                "tokens_cache_read",
-                "tokens_cache_write",
-                "time_created",
-                "time_updated",
-            ],
-        )
-        _require_columns(
-            self.conn, "session_message", ["session_id", "type", "data", "time_created"]
-        )
-        _require_columns(self.conn, "event", ["session_id", "type", "data", "time_created"])
-
-    def latest_updated_ms(self) -> int:
-        row = self.conn.execute("SELECT MAX(time_updated) AS t FROM session").fetchone()
-        return int(row["t"] or 0)
-
-    def list_sessions(self, since_ms: int) -> list[SessionMeta]:
-        rows = self.conn.execute(
-            "SELECT * FROM session WHERE time_updated >= ? ORDER BY time_updated DESC",
-            (since_ms,),
-        ).fetchall()
-        return [_row_to_meta(r) for r in rows]
-
-    def has_telemetry_rows(self, session_id: str) -> bool:
-        row = self.conn.execute(
-            "SELECT EXISTS(SELECT 1 FROM session_message WHERE session_id=? LIMIT 1) AS p, "
-            "EXISTS(SELECT 1 FROM event WHERE session_id=? LIMIT 1) AS m",
-            (session_id, session_id),
-        ).fetchone()
-        return bool(row and (row["p"] or row["m"]))
-
-    def _assistant_messages(
-        self, session_id: str, start_ms: int, end_ms: int
-    ) -> list[tuple[int, dict]]:
-        out: list[tuple[int, dict]] = []
-        for row in self.conn.execute(
-            "SELECT data, time_created FROM session_message WHERE session_id = ? AND type = 'assistant' "
-            "AND time_created >= ? AND time_created <= ? ORDER BY time_created",
-            (session_id, start_ms, end_ms),
-        ):
-            out.append((int(row["time_created"]), _json_obj(row["data"])))
-        return out
-
-    def _step_events(self, session_id: str, start_ms: int, end_ms: int) -> list[tuple[int, dict]]:
-        out: list[tuple[int, dict]] = []
-        for row in self.conn.execute(
-            "SELECT data, time_created FROM event WHERE session_id = ? AND type = 'session.step.ended.1' "
-            "AND time_created >= ? AND time_created <= ? ORDER BY time_created",
-            (session_id, start_ms, end_ms),
-        ):
-            out.append((int(row["time_created"]), _json_obj(row["data"])))
-        return out
-
-    def session_steps(self, session_id: str, start_ms: int, end_ms: int) -> list:
-        return _steps_from_records(
-            session_id,
-            self._step_events(session_id, start_ms, end_ms),
-            self._assistant_messages(session_id, start_ms, end_ms),
-        )
-
-    def _tool_events(self, session_id: str, start_ms: int, end_ms: int) -> list[tuple[int, dict]]:
-        out: list[tuple[int, dict]] = []
-        for row in self.conn.execute(
-            "SELECT data, time_created FROM event WHERE session_id = ? AND type = 'session.tool.called.1' "
-            "AND time_created >= ? AND time_created <= ? ORDER BY time_created",
-            (session_id, start_ms, end_ms),
-        ):
-            out.append((int(row["time_created"]), _json_obj(row["data"])))
-        return out
-
-    def session_tools(self, session_id: str, start_ms: int, end_ms: int) -> tuple[dict, dict, dict]:
-        return _tally_tools(
-            (str(data.get("name") or "unknown"), data.get("input"))
-            for _ts, data in self._tool_events(session_id, start_ms, end_ms)
-        )
-
-    def session_user_turns(self, session_id: str, start_ms: int, end_ms: int) -> list[str]:
-        turns: list[str] = []
-        for row in self.conn.execute(
-            "SELECT data FROM session_message WHERE session_id = ? AND type = 'user' "
-            "AND time_created >= ? AND time_created <= ? ORDER BY time_created",
-            (session_id, start_ms, end_ms),
-        ):
-            data = _json_obj(row["data"])
-            text = data.get("text") if isinstance(data.get("text"), str) else None
-            if text is None and isinstance(data.get("text"), dict):
-                text = data["text"].get("text")
-            if isinstance(text, str) and text.strip():
-                turns.append(text)
-        return turns
-
-    def session_context_chars(self, session_id: str, start_ms: int, end_ms: int) -> dict[str, int]:
-        counts = {"file": 0, "tool_result": 0, "text": 0, "reasoning": 0}
-        for _ts, data in self._assistant_messages(session_id, start_ms, end_ms):
-            for block in data.get("content") or []:
-                if not isinstance(block, dict):
-                    continue
-                btype = block.get("type")
-                if btype == "file":
-                    path = block.get("filePath") or block.get("path") or ""
-                    counts["file"] += len(str(path))
-                elif btype == "tool":
-                    output = block.get("output") or block.get("result") or ""
-                    counts["tool_result"] += len(str(output)) if output is not None else 0
-                elif btype == "text":
-                    counts["text"] += len(str(block.get("text") or ""))
-                elif btype == "reasoning":
-                    counts["reasoning"] += len(str(block.get("text") or ""))
-        for _ts, data in self._tool_events(session_id, start_ms, end_ms):
-            raw_input = data.get("input")
-            counts["tool_result"] += (
-                len(json.dumps(raw_input, ensure_ascii=False, default=str))
-                if raw_input is not None
-                else 0
-            )
-        return counts
-
-    def session_aggregates(self, session_id: str) -> dict | None:
-        return _session_aggregates(self.conn, "session", session_id)
-
-    def session_parts(self, session_id: str) -> list[PartRecord]:
-        records: list[PartRecord] = []
-        for row in self.conn.execute(
-            "SELECT type, data, time_created FROM session_message WHERE session_id = ? ORDER BY time_created",
-            (session_id,),
-        ):
-            mtype = row["type"]
-            data = _json_obj(row["data"])
-            ts = _iso_from_ms(int(row["time_created"]))
-            if mtype == "user":
-                text = data.get("text") if isinstance(data.get("text"), str) else None
-                if text is None and isinstance(data.get("text"), dict):
-                    text = data["text"].get("text")
-                records.append(PartRecord(ts=ts, kind="user", text=str(text or "")))
-            elif mtype == "assistant":
-                for block in data.get("content") or []:
-                    if not isinstance(block, dict):
-                        continue
-                    btype = block.get("type")
-                    if btype == "text":
-                        records.append(
-                            PartRecord(ts=ts, kind="assistant", text=str(block.get("text") or ""))
-                        )
-                    elif btype == "file":
-                        records.append(
-                            PartRecord(ts=ts, kind="file", text=str(block.get("filePath") or ""))
-                        )
-                    elif btype == "tool":
-                        records.append(
-                            PartRecord(
-                                ts=ts,
-                                kind="tool",
-                                tool_name=str(block.get("name") or "unknown"),
-                                tool_input=json.dumps(
-                                    block.get("input"), ensure_ascii=False, default=str
-                                )[:2000],
-                                tool_output=str(block.get("output") or "")[:2000],
-                            )
-                        )
-                    elif btype == "reasoning":
-                        records.append(
-                            PartRecord(ts=ts, kind="reasoning", text=str(block.get("text") or ""))
-                        )
-        for row in self.conn.execute(
-            "SELECT type, data, time_created FROM event WHERE session_id = ? ORDER BY time_created",
-            (session_id,),
-        ):
-            etype = row["type"]
-            data = _json_obj(row["data"])
-            ts = _iso_from_ms(int(row["time_created"]))
-            if etype == "session.step.ended.1":
-                records.append(PartRecord(ts=ts, kind="step-finish", cost=data.get("cost")))
-            elif etype == "session.tool.called.1":
-                records.append(
-                    PartRecord(
-                        ts=ts,
-                        kind="tool",
-                        tool_name=str(data.get("name") or "unknown"),
-                        tool_input=json.dumps(data.get("input"), ensure_ascii=False, default=str)[
-                            :2000
-                        ],
-                    )
-                )
-        records.sort(key=lambda r: r.ts)
-        return records
-
-    def find_session_by_title(self, title: str) -> SessionMeta | None:
-        row = self.conn.execute(
-            "SELECT * FROM session WHERE title = ? ORDER BY time_updated DESC LIMIT 1",
-            (title,),
-        ).fetchone()
-        return _row_to_meta(row) if row else None
 
 
 def open_database(path: Path) -> sqlite3.Connection:
@@ -830,21 +606,72 @@ def open_database(path: Path) -> sqlite3.Connection:
     return conn
 
 
-#: Tie-break priority at equal MAX(time_updated): live/event-sourced adapters
-#: beat the stale mirror. The client updates `session_v2` AND `session` in sync
-#: for active sessions → naive sort would keep V1 (first) and read the mirror,
-#: hiding every session that only exists in `session` (v5.29, root cause of
-#: "0 session sur une semaine").
-_ADAPTER_PRIORITY = {"v2": 0, "v1-dual": 1}
+def _classify_db(conn: sqlite3.Connection) -> dict:
+    """Best-effort signature of an OpenCode DB for actionable diagnostics.
+
+    Names the schema family (v1 `session`, v2 `session_v2`, or unknown) and the
+    migration counters so the doctor can render a precise, user-facing message
+    instead of a generic "no valid database" (v6.x).
+    """
+    try:
+        tables = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+    except sqlite3.Error:
+        return {
+            "tables": [],
+            "family": "inaccessible",
+            "session_tables": [],
+            "event_shape": "?",
+            "migration": None,
+            "data_migration": None,
+        }
+
+    info: dict[str, object] = {
+        "tables": sorted(tables),
+        "family": "inconnu",
+        "session_tables": [t for t in ("session_v2", "session") if t in tables],
+        "event_shape": "?",
+        "migration": None,
+        "data_migration": None,
+    }
+    for tbl in ("migration", "data_migration"):
+        if tbl in tables:
+            try:
+                info[tbl] = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+            except sqlite3.Error:
+                info[tbl] = "?"
+
+    if "event" in tables:
+        ev = {r[1] for r in conn.execute("PRAGMA table_info(event)").fetchall()}
+        if {"aggregate_id", "seq"} <= ev:
+            info["event_shape"] = "aggregate_id/seq (courant)"
+        elif "session_id" in ev:
+            info["event_shape"] = "session_id (legacy?)"
+        else:
+            info["event_shape"] = "inconnu"
+
+    if "session_v2" in tables and "session" in tables:
+        info["family"] = "v1+v2 (session + session_v2)"
+    elif "session_v2" in tables:
+        info["family"] = "v2 (session_v2)"
+    elif "session" in tables:
+        info["family"] = "v1 (session)"
+    elif tables:
+        info["family"] = "schéma OpenCode non reconnu"
+    return info
 
 
 def detect_db(value: str) -> tuple[Path, SchemaAdapter]:
-    """Auto-detect (or pin) the OpenCode DB and its schema adapter (v5.24).
+    """Auto-detect (or pin) the OpenCode DB and its schema adapter.
 
     `value == "auto"` → `<XDG_DATA_HOME>/opencode/opencode.db` then
     `opencode-next.db`; among schema-valid candidates the one with the most
-    recent `MAX(time_updated)` wins, ties broken by live-adapter priority
-    (v2 > v1-dual). No valid candidate → DataSourceError.
+    recent `MAX(time_updated)` wins. No valid candidate → DataSourceError with
+    an actionable, schema-aware message (v6.x).
     """
     if value != "auto":
         candidates = [Path(value).expanduser()]
@@ -854,10 +681,12 @@ def detect_db(value: str) -> tuple[Path, SchemaAdapter]:
         candidates = [base / "opencode.db", base / "opencode-next.db"]
 
     matches: list[tuple[int, Path, SchemaAdapter]] = []
+    existing: list[Path] = []
     for path in candidates:
         if not path.is_file():
             continue
-        for adapter_cls in (DualAdapter, V2Adapter):
+        existing.append(path)
+        for adapter_cls in (OpenCodeAdapter,):
             conn = None
             try:
                 conn = open_database(path)
@@ -867,14 +696,46 @@ def detect_db(value: str) -> tuple[Path, SchemaAdapter]:
             except (SchemaError, sqlite3.Error, OSError):
                 if conn is not None:
                     conn.close()
-    if not matches:
-        searched = ", ".join(str(p) for p in candidates)
-        raise DataSourceError(f"no valid OpenCode database found (searched: {searched})")
-    # latest DESC, puis priorité ASC (v2 > v1-dual) — un reverse=True
-    # inverserait aussi la priorité et laisserait le miroir gagner l'égalité.
-    matches.sort(key=lambda m: (-m[0], _ADAPTER_PRIORITY.get(m[2].name, 3)))
-    _latest, path, adapter = matches[0]
-    for _ms, other_path, other in matches[1:]:
-        if other_path != path:
-            other.conn.close()
-    return path, adapter
+    if matches:
+        matches.sort(key=lambda m: -m[0])
+        _latest, path, adapter = matches[0]
+        for _ms, other_path, other in matches[1:]:
+            if other_path != path:
+                other.conn.close()
+        return path, adapter
+
+    # --- No usable candidate: build an actionable, schema-aware error. ---
+    searched = ", ".join(str(p) for p in candidates)
+    if not existing:
+        raise DataSourceError(
+            "Aucune base OpenCode trouvée aux emplacements testés "
+            f"({searched}). Lancez 'opencode' ou 'opencode2' une fois pour "
+            "initialiser la base, ou renseignez opencode_db_path dans "
+            "weekly-telemetry-config.json.",
+            path=None,
+            family=None,
+        )
+    path = existing[0]
+    try:
+        probe = open_database(path)
+        sig = _classify_db(probe)
+        probe.close()
+    except (sqlite3.Error, OSError) as exc:
+        raise DataSourceError(
+            f"Base trouvée en {path} mais illisible ({exc}). Vérifiez les "
+            "permissions ou qu'OpenCode ne verrouille pas la base.",
+            path=str(path),
+            family=None,
+        ) from exc
+    sess = ", ".join(sig["session_tables"]) or "aucune"
+    raise DataSourceError(
+        f"Base OpenCode trouvée en {path} mais schéma non reconnu par le kit. "
+        f"Famille: {sig['family']}. Tables session: {sess}. event: "
+        f"{sig['event_shape']}. Migrations: migration={sig['migration']}, "
+        f"data_migration={sig['data_migration']}. Le kit lit "
+        f"session/session_v2 + part/message. Vérifiez que c'est une base OpenCode "
+        f"(opencode.db V1 ou opencode-next.db V2) ; sinon pointez opencode_db_path "
+        f"dessus.",
+        path=str(path),
+        family=sig["family"],
+    )
