@@ -977,6 +977,70 @@ def test_detect_non_opencode_db_raises_clear_error(tmp_path: Path):
     assert "non reconnu" in str(exc.value)
 
 
+def test_parse_tool_invocation_and_file_shapes(tmp_path: Path):
+    """Forward-compat v1.18.19+ : tool-invocation + file (filename/url/source.path)."""
+    import sqlite3
+
+    from weekly_telemetry_aggregator.sqlite_reader import detect_db
+
+    db = tmp_path / "opencode.db"
+    ts = RUN_TIME - timedelta(hours=2)
+    ts_ms = int(ts.timestamp() * 1000)
+    conn = sqlite3.connect(str(db))
+    conn.executescript(
+        """
+        CREATE TABLE session (
+            id TEXT PRIMARY KEY, parent_id TEXT, title TEXT, model TEXT, agent TEXT,
+            directory TEXT, cost REAL, tokens_input REAL, tokens_output REAL,
+            tokens_reasoning REAL, tokens_cache_read REAL, tokens_cache_write REAL,
+            time_created INTEGER, time_updated INTEGER
+        );
+        CREATE TABLE part (session_id TEXT, data TEXT, time_created INTEGER);
+        CREATE TABLE message (session_id TEXT, data TEXT, time_created INTEGER);
+        CREATE TABLE migration (id INTEGER PRIMARY KEY);
+        """
+    )
+    conn.execute("INSERT INTO migration (id) VALUES (0)")
+    conn.execute(
+        "INSERT INTO session (id, parent_id, title, model, agent, directory, cost, "
+        "tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, "
+        "tokens_cache_write, time_created, time_updated) "
+        "VALUES (?, NULL, 'NewShape', '{}', NULL, NULL, 0.0, 0,0,0,0,0, ?, ?)",
+        ("ses_new", ts_ms, ts_ms),
+    )
+    conn.execute(
+        "INSERT INTO part (session_id, data, time_created) VALUES (?, ?, ?)",
+        (
+            "ses_new",
+            '{"type":"tool-invocation","toolInvocation":{"state":"result","toolName":"myTool","args":{"x":1},"result":"done"}}',
+            ts_ms,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO part (session_id, data, time_created) VALUES (?, ?, ?)",
+        (
+            "ses_new",
+            '{"type":"file","filename":"foo/bar.md","url":"file:///x/foo/bar.md",'
+            '"source":{"text":{"value":"@foo/bar.md","start":0,"end":9},"type":"file","path":"foo/bar.md"}}',
+            ts_ms,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    path, adapter = detect_db(str(db))
+    assert adapter.name == "opencode"
+
+    tool_calls, _arg_chars, _skills = adapter.session_tools("ses_new", 0, 9_999_999_999_999)
+    assert tool_calls.get("myTool") == 1, f"tool name not parsed: {tool_calls}"
+
+    parts = {p.kind: p for p in adapter.session_parts("ses_new")}
+    assert parts["tool"].tool_name == "myTool"
+    assert parts["tool"].tool_input == '{"x": 1}'
+    assert parts["tool"].tool_output == "done"
+    assert parts["file"].text == "foo/bar.md"
+
+
 def test_self_cost_falls_back_to_weekly_advisor_session(tmp_path: Path, capsys):
     """v5.30 (E) : self-cost trouve la session agent la plus récente sans titre exact."""
     from weekly_telemetry_aggregator.costing import self_cost

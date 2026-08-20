@@ -264,6 +264,40 @@ def _tally_tools(records) -> tuple[dict[str, int], dict[str, int], dict[str, int
     return tool_calls, tool_arg_chars, skills
 
 
+def _tool_name_and_io(data):
+    """Extract (name, input, output) from a tool part in EITHER OpenCode shape.
+
+    Old client / benjamin: {"type":"tool","tool":<name>,"state":{"status","input","output"}}
+    v1.18.19+: {"type":"tool-invocation","toolInvocation":{"state","toolName","args","result"}}
+    """
+    inv = data.get("toolInvocation")
+    if isinstance(inv, dict):
+        name = str(inv.get("toolName") or data.get("tool") or "unknown")
+        return name, inv.get("args"), inv.get("result")
+    state = data.get("state") if isinstance(data.get("state"), dict) else data
+    name = str(data.get("tool") or state.get("name") or data.get("name") or "unknown")
+    raw_input = state.get("input") if "input" in state else data.get("input")
+    output = state.get("output") or state.get("result") or data.get("output")
+    return name, raw_input, output
+
+
+def _file_path(data):
+    """Canonical file path from a file part in EITHER OpenCode shape.
+
+    Old: {"type":"file","filePath":...,"path":...}
+    v1.18.19+: {"type":"file","filename":...,"url":"file://...","source":{"text":{"path":...}}}
+    """
+    pth = data.get("filePath") or data.get("path")
+    if pth:
+        return str(pth)
+    src = data.get("source")
+    if isinstance(src, dict):
+        st = src.get("text") if isinstance(src.get("text"), dict) else None
+        if isinstance(st, dict) and st.get("path"):
+            return str(st["path"])
+    return str(data.get("filename") or data.get("url") or "")
+
+
 def _merge_step_records(records, messages) -> list[tuple[int, dict, str, float | None]]:
     """[(ts, tokens, model, cost)] — each step record merged with its closest assistant
     message (two-pointer, tie → earlier); untouched when no message is near."""
@@ -444,15 +478,22 @@ class OpenCodeAdapter(SchemaAdapter):
     def _parts_of_type_all(
         self, session_id: str, start_ms: int, end_ms: int
     ) -> list[tuple[int, dict]]:
-        """Every part row in window (data.type kept), for context/lint walks."""
-        return [
-            (int(row["time_created"]), _json_obj(row["data"]))
-            for row in self.conn.execute(
-                "SELECT data, time_created FROM part WHERE session_id = ? "
-                "AND time_created >= ? AND time_created <= ? ORDER BY time_created",
-                (session_id, start_ms, end_ms),
-            )
-        ]
+        """Every part row in window, for context/lint walks.
+
+        Canonicalises the v1.18.19+ `tool-invocation` part type to `tool` so the
+        rest of the reader stays shape-agnostic.
+        """
+        out = []
+        for row in self.conn.execute(
+            "SELECT data, time_created FROM part WHERE session_id = ? "
+            "AND time_created >= ? AND time_created <= ? ORDER BY time_created",
+            (session_id, start_ms, end_ms),
+        ):
+            data = _json_obj(row["data"])
+            if data.get("type") == "tool-invocation":
+                data["type"] = "tool"
+            out.append((int(row["time_created"]), data))
+        return out
 
     def _parts_of_type(
         self, session_id: str, ptype: str, start_ms: int, end_ms: int
@@ -469,10 +510,19 @@ class OpenCodeAdapter(SchemaAdapter):
     ) -> list[tuple[int, dict]]:
         return self._parts_of_type(session_id, "step-finish", start_ms, end_ms)
 
+    def _step_start_parts(
+        self, session_id: str, start_ms: int, end_ms: int
+    ) -> list[tuple[int, dict]]:
+        return self._parts_of_type(session_id, "step-start", start_ms, end_ms)
+
     def session_steps(self, session_id: str, start_ms: int, end_ms: int) -> list:
+        # v1.18.19+ drops the `step-finish` part; steps are marked by `step-start`.
+        step_parts = self._step_finish_parts(session_id, start_ms, end_ms)
+        if not step_parts:
+            step_parts = self._step_start_parts(session_id, start_ms, end_ms)
         return _steps_from_records(
             session_id,
-            self._step_finish_parts(session_id, start_ms, end_ms),
+            step_parts,
             self._assistant_messages(session_id, start_ms, end_ms),
         )
 
@@ -482,9 +532,7 @@ class OpenCodeAdapter(SchemaAdapter):
     def session_tools(self, session_id: str, start_ms: int, end_ms: int) -> tuple[dict, dict, dict]:
         records = []
         for _ts, data in self._tool_parts(session_id, start_ms, end_ms):
-            state = data.get("state") if isinstance(data.get("state"), dict) else data
-            name = str(data.get("tool") or state.get("name") or data.get("name") or "unknown")
-            raw_input = state.get("input") if "input" in state else data.get("input")
+            name, raw_input, _output = _tool_name_and_io(data)
             records.append((name, raw_input))
         return _tally_tools(records)
 
@@ -501,17 +549,9 @@ class OpenCodeAdapter(SchemaAdapter):
         for _ts, data in self._parts_of_type_all(session_id, start_ms, end_ms):
             ptype = data.get("type") or "text"
             if ptype == "file":
-                path = data.get("filePath") or data.get("path") or data.get("file") or ""
-                counts["file"] += len(str(path))
+                counts["file"] += len(_file_path(data))
             elif ptype == "tool":
-                state = data.get("state") if isinstance(data.get("state"), dict) else data
-                output = (
-                    state.get("output")
-                    or state.get("result")
-                    or data.get("output")
-                    or data.get("result")
-                    or ""
-                )
+                _name, _inp, output = _tool_name_and_io(data)
                 counts["tool_result"] += len(str(output)) if output is not None else 0
             elif ptype == "text":
                 text = data.get("text")
@@ -535,15 +575,14 @@ class OpenCodeAdapter(SchemaAdapter):
             (session_id,),
         ):
             data = _json_obj(row["data"])
+            if data.get("type") == "tool-invocation":
+                data["type"] = "tool"
             ptype = data.get("type") or "text"
             ts = _iso_from_ms(int(row["time_created"]))
             if ptype == "step-finish":
                 records.append(PartRecord(ts=ts, kind="step-finish", cost=data.get("cost")))
             elif ptype == "tool":
-                state = data.get("state") if isinstance(data.get("state"), dict) else data
-                name = str(data.get("tool") or state.get("name") or data.get("name") or "unknown")
-                raw_input = state.get("input") if "input" in state else data.get("input")
-                output = state.get("output") or state.get("result") or data.get("output") or ""
+                name, raw_input, output = _tool_name_and_io(data)
                 records.append(
                     PartRecord(
                         ts=ts,
@@ -566,8 +605,7 @@ class OpenCodeAdapter(SchemaAdapter):
                     )
                 )
             elif ptype == "file":
-                path = data.get("filePath") or data.get("path") or ""
-                records.append(PartRecord(ts=ts, kind="file", text=str(path)))
+                records.append(PartRecord(ts=ts, kind="file", text=_file_path(data)))
         return records
 
     def find_session_by_title(self, title: str) -> SessionMeta | None:
