@@ -395,9 +395,7 @@ class OpenCodeAdapter(SchemaAdapter):
     def latest_updated_ms(self) -> int:
         if not self._session_tables:
             return 0
-        sub = " UNION ALL ".join(
-            f"SELECT time_updated FROM {t}" for t in self._session_tables
-        )
+        sub = " UNION ALL ".join(f"SELECT time_updated FROM {t}" for t in self._session_tables)
         row = self.conn.execute(f"SELECT MAX(time_updated) AS m FROM ({sub})").fetchone()
         return int(row["m"] or 0)
 
@@ -405,12 +403,9 @@ class OpenCodeAdapter(SchemaAdapter):
         if not self._session_tables:
             return []
         query = " UNION ALL ".join(
-            f"SELECT {_META_COLS} FROM {t} WHERE time_updated >= ?"
-            for t in self._session_tables
+            f"SELECT {_META_COLS} FROM {t} WHERE time_updated >= ?" for t in self._session_tables
         )
-        rows = self.conn.execute(
-            query, tuple([since_ms] * len(self._session_tables))
-        ).fetchall()
+        rows = self.conn.execute(query, tuple([since_ms] * len(self._session_tables))).fetchall()
         seen: set[str] = set()
         metas: list[SessionMeta] = []
         for row in rows:  # time_updated DESC in each leg; dedupe keeps first
@@ -581,9 +576,7 @@ class OpenCodeAdapter(SchemaAdapter):
         query = " UNION ALL ".join(
             f"SELECT {_META_COLS} FROM {t} WHERE title = ?" for t in self._session_tables
         )
-        rows = self.conn.execute(
-            query, tuple([title] * len(self._session_tables))
-        ).fetchall()
+        rows = self.conn.execute(query, tuple([title] * len(self._session_tables))).fetchall()
         return _row_to_meta(rows[0]) if rows else None
 
 
@@ -616,9 +609,7 @@ def _classify_db(conn: sqlite3.Connection) -> dict:
     try:
         tables = {
             r[0]
-            for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
     except sqlite3.Error:
         return {
