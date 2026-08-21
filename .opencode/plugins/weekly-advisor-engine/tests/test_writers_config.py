@@ -35,6 +35,9 @@ def test_config_defaults(tmp_path: Path):
         DEFAULT_HARNESS_INCLUDE_PROFILES["strict"]
     )
     assert ".opencode/skills/**/SKILL.md" in cfg.harness_include.profiles["advisory"]
+    # v6.1 : rapport HTML autonome — None → défaut <project_root>/reports/html.
+    assert cfg.html_report_dir is None
+    assert cfg.open_browser is True
 
 
 def test_config_json_overrides(tmp_path: Path):
@@ -46,6 +49,8 @@ def test_config_json_overrides(tmp_path: Path):
                 "opencode_db_path": "/x/db/opencode.db",
                 "lookback_days": 3,
                 "output_dir": "~/reports",
+                "html_report_dir": "~/reports/html",
+                "open_browser": False,
                 "top_sessions_limit": 2,
                 "include_subagents": False,
                 "advisor_run_title": "Revue X",
@@ -66,6 +71,8 @@ def test_config_json_overrides(tmp_path: Path):
     assert cfg.opencode_db_path == "/x/db/opencode.db"
     assert cfg.lookback_days == 3
     assert cfg.output_dir == Path("~/reports").expanduser()
+    assert cfg.html_report_dir == "~/reports/html"
+    assert cfg.open_browser is False
     assert cfg.top_sessions_limit == 2
     assert cfg.include_subagents is False
     assert cfg.advisor_run_title == "Revue X"
@@ -77,6 +84,15 @@ def test_config_json_overrides(tmp_path: Path):
     assert cfg.insights.weekly_budget_usd == 10
     assert cfg.insights.daily_spike_z_min == 2.2
     assert cfg.audit.cost_per_active_minute_min == 0.9
+
+
+def test_config_html_report_dir_disabled(tmp_path: Path):
+    """v6.1 : html_report_dir="" désactive la génération HTML (ex-sémantique report_dir)."""
+    conf = tmp_path / "config.json"
+    conf.write_text(json.dumps({"html_report_dir": ""}))
+    cfg = load_config(conf)
+    assert cfg.html_report_dir == ""
+    assert cfg.open_browser is True  # inchangé par défaut
 
 
 def test_apply_lookback_override_memory_only():

@@ -1,0 +1,1215 @@
+{# Rapport hebdomadaire OpenCode — page HTML autonome (v6.1, redesign UX). #}
+{# Contexte : dict complet de report_prep + payload_json (str, déjà sécurisé) + quality_html (Markup). #}
+{% set totals = ((summary or {}).get("totals") or {}) %}
+{% set selection = ((summary or {}).get("selection") or {}) %}
+{% set deltas = ((insights or {}).get("deltas") or {}) %}
+{% set alerts = (((insights or {}).get("alerts")) or []) %}
+{% set maintenance = (((insights or {}).get("maintenance")) or {}) %}
+{% set tool_usage = ((summary or {}).get("tool_usage") or []) %}
+{% set skill_usage = ((summary or {}).get("skill_usage") or []) %}
+{% set command_usage = ((summary or {}).get("command_usage") or []) %}
+{% set cost_outliers = ((summary or {}).get("cost_outliers") or []) %}
+{% set outlier_ids = outliers if outliers else [] %}
+{% set self_cost_v = self_cost if self_cost is defined else none %}
+{% set pending_v = pending_auto_commits if pending_auto_commits is defined else none %}
+{% set period_ = (period or {}) %}
+{% set severities = alerts|map(attribute='severity')|select|unique|sort|list %}
+
+{# ---- Macros de formatage fr-FR (sortie échappée par autoescape, sauf markup statique des macros) ---- #}
+{% macro usd(v) -%}
+{%- if v is none -%}<span class="muted">n/a</span>
+{%- else -%}{{ "{:,.2f}".format(v)|replace(",", "\u202f")|replace(".", ",") }}&#8239;$
+{%- endif -%}
+{%- endmacro %}
+{% macro intfr(v) -%}
+{%- if v is none -%}<span class="muted">n/a</span>
+{%- else -%}{{ "{:,}".format(v)|replace(",", "\u202f") }}
+{%- endif -%}
+{%- endmacro %}
+{% macro compact(v) -%}
+{%- if v is none -%}<span class="muted">n/a</span>
+{%- elif v >= 1000000 -%}{{ "{:.1f}".format(v / 1000000)|replace(".", ",") }}&#8239;M
+{%- elif v >= 1000 -%}{{ "{:.1f}".format(v / 1000)|replace(".", ",") }}&#8239;k
+{%- else -%}{{ v }}
+{%- endif -%}
+{%- endmacro %}
+{% macro pct(v) -%}
+{%- if v is none -%}<span class="muted">n/a</span>
+{%- else -%}{{ "{:.1f}".format(v * 100)|replace(".", ",") }}&#8239;%
+{%- endif -%}
+{%- endmacro %}
+{% macro secnum(n) -%}<span class="secnum" aria-hidden="true">{{ n }}</span>{%- endmacro %}
+{% macro toggle(sec_id) -%}<button class="toggle" aria-expanded="true" aria-controls="{{ sec_id }}-body"
+    aria-label="Replier/déplier la section"></button>{%- endmacro %}
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rapport hebdomadaire OpenCode — {{ date }}</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23177a34'/%3E%3Cpath d='M4 11.5V7.5M8 11.5V4.5M12 11.5V9' stroke='%23fff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+/* ---------- Design tokens ---------- */
+:root {
+  --bg: #f3f4f6; --bg-soft: #eaecf0; --fg: #191b1f; --muted: #5d6470;
+  --card: #ffffff; --border: #dee1e7; --border-strong: #c8cdd6;
+  --accent: #157031; --accent-strong: #0f5a26; --accent-soft: #e3f2e7;
+  --crit-fg: #a3201a; --crit-bg: #fbeae8;
+  --warn-fg: #7a5000; --warn-bg: #fcf2da;
+  --info-fg: #16568f; --info-bg: #e6f0fa;
+  --tag-bg: #ecedf1;
+  --shadow: 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.08);
+  --shadow-hover: 0 6px 16px rgba(16,24,40,.12);
+  --nav-h: 46px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121317; --bg-soft: #181a20; --fg: #e7e8ec; --muted: #9aa0ab;
+    --card: #1b1d23; --border: #2c2f37; --border-strong: #3c404b;
+    --accent: #74c27d; --accent-strong: #93d69b; --accent-soft: #1d2b21;
+    --crit-fg: #f2b1ab; --crit-bg: #3c2421;
+    --warn-fg: #ecc67c; --warn-bg: #342b16;
+    --info-fg: #a4cef3; --info-bg: #1d2c3c;
+    --tag-bg: #272a33;
+    --shadow: 0 1px 2px rgba(0,0,0,.45);
+    --shadow-hover: 0 6px 18px rgba(0,0,0,.55);
+  }
+}
+/* ---------- Base ---------- */
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg); color: var(--fg); line-height: 1.6; font-size: 15.5px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+::selection { background: var(--accent-soft); }
+/* ---------- Header ---------- */
+header.page { max-width: 1060px; margin: 0 auto; padding: 30px 20px 10px; }
+header.page h1 { margin: 0 0 6px; font-size: clamp(1.5rem, 1.15rem + 1.2vw, 2rem);
+  letter-spacing: -0.02em; line-height: 1.2; }
+header.page .subtitle { margin: 0 0 10px; color: var(--muted); font-size: 0.92rem; }
+.meta-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.meta-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem;
+  color: var(--muted); background: var(--card); border: 1px solid var(--border);
+  border-radius: 999px; padding: 4px 12px; }
+.meta-chip strong { color: var(--fg); font-weight: 600; }
+.meta-chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+/* ---------- Sommaire ---------- */
+nav#toc { position: sticky; top: 0; z-index: 20; background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
+nav#toc .toc-inner { max-width: 1060px; margin: 0 auto; padding: 8px 20px;
+  display: flex; flex-wrap: wrap; gap: 2px 6px; }
+nav#toc a { color: var(--muted); text-decoration: none; font-size: 0.86rem;
+  padding: 6px 10px; border-radius: 999px; border: 1px solid transparent; white-space: nowrap; }
+nav#toc a:hover { color: var(--fg); background: var(--bg-soft); }
+nav#toc a.active { color: var(--accent-strong); background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent); font-weight: 600; }
+/* ---------- Sections cartes ---------- */
+main { max-width: 1060px; margin: 0 auto; padding: 16px 20px 40px; }
+section.section { background: var(--card); border: 1px solid var(--border);
+  border-radius: 14px; box-shadow: var(--shadow); margin: 18px 0; padding: 6px 22px 18px;
+  scroll-margin-top: calc(var(--nav-h) + 12px);
+  transition: box-shadow .18s ease, transform .18s ease; }
+section.section:hover { box-shadow: var(--shadow-hover); }
+section.section > h2 { display: flex; align-items: center; gap: 10px;
+  font-size: 1.22rem; letter-spacing: -0.01em; margin: 10px 0 4px;
+  border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+.secnum { display: inline-flex; align-items: center; justify-content: center;
+  min-width: 1.7em; height: 1.7em; border-radius: 8px; background: var(--accent-soft);
+  color: var(--accent-strong); font-size: 0.82em; font-weight: 700; }
+button.toggle { appearance: none; background: none; border: none; cursor: pointer;
+  color: var(--muted); width: 36px; height: 36px; margin: -4px 2px -4px -10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 9px; flex: none; }
+button.toggle::before { content: ""; width: 9px; height: 9px; margin-top: -4px;
+  border-right: 2px solid currentColor; border-bottom: 2px solid currentColor;
+  transform: rotate(45deg); transition: transform .18s ease; }
+section.collapsed button.toggle::before { transform: rotate(-45deg); margin-top: 4px; }
+button.toggle:hover { background: var(--bg-soft); color: var(--fg); }
+section.collapsed .section-body { display: none; }
+h3 { font-size: 1.02rem; margin: 22px 0 8px; letter-spacing: -0.01em; }
+/* ---------- KPI dashboard ---------- */
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+  gap: 12px; margin: 12px 0 6px; }
+.kpi { background: var(--bg-soft); border: 1px solid var(--border); border-radius: 12px;
+  padding: 12px 14px; min-width: 0; }
+.kpi .k-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--muted); font-weight: 700; }
+.kpi .k-value { font-size: 1.45rem; font-weight: 750; line-height: 1.25; margin-top: 3px;
+  font-variant-numeric: tabular-nums; letter-spacing: -0.02em; white-space: nowrap; }
+.kpi .k-sub { font-size: 0.78rem; color: var(--muted); margin-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kpi .k-sub b { color: var(--fg); font-weight: 600; }
+.k-delta { font-size: 0.8rem; font-weight: 650; margin-left: 6px; }
+.k-delta.good { color: var(--accent-strong); }
+.k-delta.bad { color: var(--crit-fg); }
+.synth-notes { margin: 10px 0 0; }
+/* ---------- Tableaux ---------- */
+.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px;
+  margin: 8px 0; }
+table { border-collapse: separate; border-spacing: 0; width: 100%; margin: 0;
+  font-size: 0.87rem; }
+.table-wrap table { margin: 0; }
+th, td { padding: 8px 12px; text-align: left; vertical-align: top;
+  border-bottom: 1px solid var(--border); }
+tr > :last-child { border-right: none; }
+thead th { position: sticky; top: var(--nav-h); z-index: 5; background: var(--bg-soft);
+  cursor: pointer; user-select: none; white-space: nowrap; font-size: 0.78rem;
+  text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+  border-bottom: 1px solid var(--border-strong); }
+thead th::after { content: "⇅"; opacity: .3; font-size: .85em; margin-left: 4px; }
+thead th[aria-sort] { color: var(--accent-strong); }
+thead th[aria-sort]::after { opacity: 1; }
+thead th[aria-sort="ascending"]::after { content: "↑"; }
+thead th[aria-sort="descending"]::after { content: "↓"; }
+tbody tr:nth-child(even) { background: color-mix(in srgb, var(--bg-soft) 55%, transparent); }
+tbody tr:hover { background: var(--accent-soft); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+code { background: var(--tag-bg); border-radius: 5px; padding: 1px 6px;
+  font-size: 0.84em; word-break: break-all; }
+ul.kv { list-style: none; padding-left: 0; margin: 10px 0; }
+ul.kv li { padding: 4px 0; border-bottom: 1px dashed color-mix(in srgb, var(--border) 60%, transparent); }
+ul.kv li:last-child { border-bottom: none; }
+ul.plain li { margin: 6px 0; }
+.muted { color: var(--muted); font-style: italic; }
+/* ---------- Pills, tags, chips ---------- */
+.pill { display: inline-block; border-radius: 999px; padding: 2px 10px;
+  font-size: 0.73rem; font-weight: 700; vertical-align: middle; letter-spacing: .04em; }
+.pill-critical, .pill-crit, .pill-high { background: var(--crit-bg); color: var(--crit-fg); }
+.pill-warning, .pill-medium { background: var(--warn-bg); color: var(--warn-fg); }
+.pill-info, .pill-low { background: var(--info-bg); color: var(--info-fg); }
+.tag { display: inline-block; background: var(--tag-bg); border-radius: 6px;
+  padding: 1px 7px; font-size: 0.78em; font-weight: 600; font-family: ui-monospace, monospace; }
+.tag-f { background: var(--accent-soft); color: var(--accent-strong); }
+.tag-m { background: var(--info-bg); color: var(--info-fg); }
+.tag-a { background: var(--warn-bg); color: var(--warn-fg); }
+.filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 12px 0 6px; font-size: 0.86rem; }
+.filter-row label { color: var(--muted); }
+.filter-row input[type="number"] { width: 120px; padding: 7px 10px;
+  border: 1px solid var(--border-strong); border-radius: 8px; background: var(--card);
+  color: var(--fg); font: inherit; font-size: 0.86rem; }
+.chip { border: 1px solid var(--border-strong); background: var(--card); color: var(--fg);
+  border-radius: 999px; padding: 6px 14px; font-size: 0.82rem; cursor: pointer;
+  transition: background .15s ease, color .15s ease; }
+.chip:hover { background: var(--bg-soft); }
+.chip.active { background: var(--accent); border-color: var(--accent);
+  color: #fff; font-weight: 650; }
+.result-count { font-size: 0.8rem; color: var(--muted); margin-left: auto; }
+.prose p { margin: 10px 0; }
+/* ---------- Graphiques ---------- */
+.chart { margin: 14px 0; overflow-x: auto; padding: 4px 0; }
+.chart svg { min-width: 340px; width: 100%; height: auto; display: block; }
+.chart .bar { fill: var(--accent); }
+.chart .bar:hover { fill: var(--accent-strong); }
+.chart .axis { stroke: var(--border-strong); stroke-width: 1; }
+.chart .grid { stroke: var(--border); stroke-width: 1; stroke-dasharray: 2 4; }
+.chart .mean { stroke: var(--crit-fg); stroke-width: 1.4; stroke-dasharray: 6 4; opacity: .75; }
+.chart .lbl { fill: var(--muted); font-size: 11px; }
+.chart .val { fill: var(--fg); font-size: 11px; font-weight: 600; }
+.chart .mean-lbl { fill: var(--crit-fg); font-size: 10.5px; font-weight: 600; }
+/* ---------- Composants sections 4-5-6 ---------- */
+.legend { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 10px 0 2px;
+  font-size: 0.83rem; color: var(--muted); }
+.legend b { color: var(--fg); font-weight: 650; }
+.prose { max-width: 76ch; }
+.prose p { margin: 12px 0; }
+.cat-strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
+.cat-pill { display: inline-flex; align-items: center; gap: 8px; background: var(--bg-soft);
+  border: 1px solid var(--border); border-radius: 999px; padding: 5px 13px 5px 9px;
+  font-size: 0.8rem; }
+.cat-pill .bar-mini { width: 48px; height: 6px; border-radius: 3px;
+  background: var(--border); overflow: hidden; }
+.cat-pill .bar-mini i { display: block; height: 100%; background: var(--accent); }
+.status-banner { display: flex; align-items: center; gap: 10px; border-radius: 10px;
+  padding: 11px 15px; margin: 12px 0 4px; font-size: 0.92rem; font-weight: 600; }
+.status-banner.ok { background: var(--accent-soft); color: var(--accent-strong); }
+.status-banner.warn { background: var(--warn-bg); color: var(--warn-fg); }
+.status-banner.crit { background: var(--crit-bg); color: var(--crit-fg); }
+.stack-bar { display: flex; height: 16px; border-radius: 8px; overflow: hidden;
+  margin: 10px 0 6px; border: 1px solid var(--border); max-width: 520px; }
+.stack-bar i { display: block; height: 100%; }
+.stack-bar .seg-always { background: var(--accent); }
+.stack-bar .seg-demand { background: var(--bg-soft); }
+.stack-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 0.8rem;
+  color: var(--muted); margin-bottom: 8px; }
+.stack-legend b { color: var(--fg); }
+.stack-legend .swatch { display: inline-block; width: 10px; height: 10px;
+  border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.stat-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.stat-chip { border: 1px solid var(--border); border-radius: 10px; padding: 7px 13px;
+  font-size: 0.82rem; background: var(--bg-soft); }
+.stat-chip b { font-size: 1rem; margin-right: 5px; font-variant-numeric: tabular-nums; }
+.finding-card, .rec-card { border: 1px solid var(--border); border-radius: 10px;
+  padding: 11px 15px; margin: 10px 0; background: var(--card); }
+.finding-card { border-left: 3px solid var(--info-fg); }
+.rec-card { border-left: 3px solid var(--warn-fg); }
+.rec-card.sev-info, .rec-card.sev-low { border-left-color: var(--info-fg); }
+.rec-card.sev-critical, .rec-card.sev-high { border-left-color: var(--crit-fg); }
+.f-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.f-desc, .r-desc { margin: 7px 0 2px; }
+.f-evidence, .r-evidence { font-size: 0.8rem; color: var(--muted); margin: 3px 0; }
+.f-action, .r-action { font-size: 0.87rem; margin: 7px 0 0; padding-top: 7px;
+  border-top: 1px dashed var(--border); }
+.f-action::before, .r-action::before { content: "→ "; color: var(--accent-strong); font-weight: 700; }
+.item-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(235px, 1fr));
+  gap: 10px; margin: 10px 0; }
+.item-card { border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px;
+  background: var(--bg-soft); }
+.item-card .i-name { font-weight: 650; margin-bottom: 2px; }
+.item-card .i-desc { font-size: 0.82rem; color: var(--muted); margin: 4px 0 7px; }
+.src-chip { display: inline-block; font-size: 0.72rem; background: var(--tag-bg);
+  border-radius: 5px; padding: 1px 7px; margin: 2px 4px 0 0; color: var(--muted); }
+.timeline { list-style: none; padding-left: 0; margin: 10px 0; }
+.timeline li { position: relative; padding: 0 0 16px 28px; }
+.timeline li::before { content: ""; position: absolute; left: 6px; top: 6px;
+  width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
+.timeline li::after { content: ""; position: absolute; left: 10px; top: 19px; bottom: -2px;
+  width: 1px; background: var(--border); }
+.timeline li:last-child::after { display: none; }
+.timeline .t-ver { font-weight: 700; }
+.timeline .t-date { font-size: 0.78rem; color: var(--muted); margin-left: 8px; }
+.timeline .t-sum { display: block; font-size: 0.87rem; margin: 3px 0 4px; }
+/* ---------- Footer ---------- */
+footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 0 20px 34px;
+  color: var(--muted); font-size: 0.8rem; }
+/* ---------- Mouvement & impression ---------- */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+@media print {
+  nav#toc, button.toggle, .filter-row { display: none !important; }
+  body { background: #fff; font-size: 12px; }
+  section.section { box-shadow: none; border-color: #bbb; break-inside: avoid-page; }
+  .section-body { display: block !important; }
+  thead th { position: static; }
+}
+@media (max-width: 640px) {
+  header.page, main, footer.pagefoot { padding-left: 14px; padding-right: 14px; }
+  section.section { padding-left: 14px; padding-right: 14px; }
+  .kpi .k-value { font-size: 1.2rem; }
+  nav#toc .toc-inner { gap: 2px; }
+}
+</style>
+</head>
+<body>
+<header class="page">
+  <h1>Rapport hebdomadaire OpenCode</h1>
+  <p class="subtitle">Revue d'usage générée par le pipeline weekly-advisor v{{ engine_version }}</p>
+  <div class="meta-chips">
+    <span class="meta-chip"><span class="dot" aria-hidden="true"></span>
+      Période&nbsp;: <strong>{{ period_.get("start", "n/a") }} → {{ period_.get("end", "n/a") }}</strong></span>
+    <span class="meta-chip">Rapport du <strong>{{ date }}</strong></span>
+    <span class="meta-chip">{{ alerts|length }} alerte(s)</span>
+  </div>
+</header>
+
+<nav id="toc" aria-label="Sommaire">
+  <div class="toc-inner">
+    <a href="#synthese">Synthèse</a>
+    <a href="#vue-ensemble">Vue d'ensemble</a>
+    <a href="#couts">Coûts &amp; modèles</a>
+    <a href="#telemetrie">Télémétrie</a>
+    <a href="#qualitatif">Constats qualitatifs</a>
+    <a href="#sante">Santé harness</a>
+    <a href="#veille">Veille</a>
+    <a href="#alertes">Alertes &amp; annexes</a>
+  </div>
+</nav>
+
+<main>
+
+<section id="synthese" class="section">
+  <h2>{{ toggle("synthese") }} Synthèse</h2>
+  <div class="section-body" id="synthese-body">
+    <div class="kpi-grid">
+      <div class="kpi">
+        <div class="k-label">Coût total</div>
+        <div class="k-value">{{ usd(totals.get("total_cost_usd")) }}</div>
+        <div class="k-sub">{% if self_cost_v is not none %}dont pipeline&nbsp;: <b>{{ usd(self_cost_v) }}</b>{% else %}self-cost non mesuré{% endif %}</div>
+      </div>
+      <div class="kpi">
+        <div class="k-label">Tokens</div>
+        <div class="k-value">{{ compact(totals.get("total_tokens")) }}</div>
+        <div class="k-sub">{% if totals.get("total_tokens") is not none %}{{ intfr(totals.get("total_tokens")) }} au total{% endif %}</div>
+      </div>
+      <div class="kpi">
+        <div class="k-label">Sessions</div>
+        <div class="k-value">{{ totals.get("session_count", "—") }}</div>
+        <div class="k-sub">{% if selection.get("window_touched") %}<b>{{ selection.get("window_touched") }}</b> touchées · {{ selection.get("merged_children", 0) }} fusionnées{% endif %}</div>
+      </div>
+      <div class="kpi">
+        <div class="k-label">Cache hit</div>
+        <div class="k-value">{{ pct(totals.get("cache_hit_rate")) }}
+          {%- if deltas.get("cache_hit_rate_delta") is not none %}
+          {%- set d = deltas["cache_hit_rate_delta"] * 100 -%}
+          <span class="k-delta {{ 'good' if d >= 0 else 'bad' }}">{{ "▲" if d >= 0 else "▼"}} {{ "%+.1f"|format(d)|replace(".", ",") }}&nbsp;pts</span>
+          {%- endif %}</div>
+        <div class="k-sub">vs run précédent</div>
+      </div>
+      <div class="kpi">
+        <div class="k-label">Alertes</div>
+        <div class="k-value" {% if alerts %}style="color: var(--crit-fg)"{% endif %}>{{ alerts|length }}</div>
+        <div class="k-sub">{% if alerts %}{{ alerts|map(attribute='rule')|join(", ")|truncate(38) }}{% else %}aucune{% endif %}</div>
+      </div>
+      <div class="kpi">
+        <div class="k-label">Veille</div>
+        <div class="k-value">{{ ((ecosystem or {}).get("new_items") or [])|length }}</div>
+        <div class="k-sub">{% if (ecosystem or {}).get("watch_repos") %}repos&nbsp;: <b>{{ ecosystem.watch_repos|length }}</b>{% else %}non active{% endif %}</div>
+      </div>
+    </div>
+    {% if digest and harness_top_rules %}
+    <p class="synth-notes muted">Lint harness&nbsp;: <code>{{ harness_top_rules[0].get("rule") }}</code>
+      — {{ harness_top_rules[0].get("count") }} violation(s) (détail §Santé harness).</p>
+    {% endif %}
+  </div>
+</section>
+
+<section id="vue-ensemble" class="section">
+  <h2>{{ toggle("vue-ensemble") }} {{ secnum(1) }} Vue d'ensemble</h2>
+  <div class="section-body" id="vue-ensemble-body">
+    <ul class="kv">
+      <li>Sessions (racines)&nbsp;: <strong>{{ totals.get("session_count", "n/a") }}</strong></li>
+      <li>Coût total&nbsp;: <strong>{{ usd(totals.get("total_cost_usd")) }}</strong></li>
+      <li>Tokens totaux&nbsp;: {{ intfr(totals.get("total_tokens")) }}
+        · cache hit <strong>{{ pct(totals.get("cache_hit_rate")) }}</strong>
+        (read={{ intfr(totals.get("cache_read_tokens")) }} /
+        write={{ intfr(totals.get("cache_write_tokens")) }})</li>
+      {% if deltas.get("cache_hit_rate_delta") is not none %}
+      <li>Delta cache hit vs run précédent&nbsp;: {{ "%+.1f"|format(deltas["cache_hit_rate_delta"] * 100)|replace(".", ",") }}&nbsp;pts</li>
+      {% endif %}
+      <li>Cost outliers&nbsp;:
+        {% if cost_outliers_state in ("computed", "computed:small-sample") %}<strong>calculés</strong> (état <code>{{ cost_outliers_state }}</code>) — liste en §Coûts
+        {% else %}<strong>non calculés</strong> (état <code>{{ cost_outliers_state or "n/a" }}</code>){% endif %}</li>
+      <li>Warnings pipeline&nbsp;: {{ ((summary or {}).get("warnings") or [])|length }}</li>
+    </ul>
+
+    {% if selection.get("window_touched") %}
+    <h3>Audit de sélection — pourquoi ce compte ?</h3>
+    <p>{{ selection.get("window_touched") }} sessions touchées dans la fenêtre :
+      <strong>{{ selection.get("counted", "n/a") }} comptées</strong> (racines{% if selection.get("merged_children") %}, {{ selection.get("merged_children") }} enfant(s) fusionné(s){% endif %}),
+      {{ selection.get("excluded_active", 0) }} exclues actives,
+      {{ selection.get("excluded_no_activity", 0) }}, sans télémétrie,
+      {{ selection.get("excluded_unflushed", 0) }} non persistées,
+      {{ selection.get("excluded_advisor", 0) }} sessions advisor,
+      {{ selection.get("excluded_error", 0) }} en erreur de lecture.</p>
+    <div class="table-wrap"><table class="sortable">
+      <thead><tr><th scope="col">Session</th><th scope="col">Statut</th><th scope="col" class="num">Coût ($)</th><th scope="col">Titre</th></tr></thead>
+      <tbody>
+        {% for r in (selection.get("recent") or []) %}
+        <tr>
+          <td><code>{{ r.get("session_id") }}</code></td>
+          <td>{{ r.get("status") }}{% if not r.get("in_window") %} <span class="muted">(hors fenêtre)</span>{% endif %}</td>
+          <td class="num" data-value="{{ r.get('cost') }}">{{ usd(r.get("cost")) }}</td>
+          <td>{{ r.get("title") or r.get("session_id") }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% endif %}
+
+    <h3>Répartition journalière</h3>
+    <div class="chart" id="chart-daily"></div>
+    <div class="table-wrap"><table class="sortable">
+      <thead><tr><th scope="col">Date</th><th scope="col" class="num">Coût ($)</th><th scope="col" class="num">Tokens</th><th scope="col" class="num">Cache hit</th></tr></thead>
+      <tbody>
+        {% for d in daily_totals or [] %}
+        <tr>
+          <td>{{ d.get("date") }}</td>
+          <td class="num" data-value="{{ d.get('cost_usd') }}">{{ usd(d.get("cost_usd")) }}</td>
+          <td class="num" data-value="{{ d.get('total_tokens') }}">{{ intfr(d.get("total_tokens")) }}</td>
+          <td class="num" data-value="{{ d.get('cache_hit_rate') }}">{{ pct(d.get("cache_hit_rate")) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+  </div>
+</section>
+
+<section id="couts" class="section">
+  <h2>{{ toggle("couts") }} {{ secnum(2) }} Coûts &amp; modèles</h2>
+  <div class="section-body" id="couts-body">
+    <h3>Top modèles</h3>
+    <div class="chart" id="chart-models"></div>
+    <div class="table-wrap"><table class="sortable">
+      <thead><tr><th scope="col">Modèle</th><th scope="col" class="num">Sessions</th><th scope="col" class="num">Tokens</th><th scope="col" class="num">Coût ($)</th></tr></thead>
+      <tbody>
+        {% for m in models_top or [] %}
+        <tr>
+          <td>{{ m.get("model") }}</td>
+          <td class="num" data-value="{{ m.get('session_count') }}">{{ m.get("session_count", "n/a") }}</td>
+          <td class="num" data-value="{{ m.get('total_tokens') }}">{{ compact(m.get("total_tokens")) }}</td>
+          <td class="num" data-value="{{ m.get('total_cost_usd') }}">{{ usd(m.get("total_cost_usd")) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+
+    {% if cost_outliers %}
+    <h3>Outliers de coût (z-score robuste)</h3>
+    <ul class="plain">
+      {% for o in cost_outliers %}
+      <li><strong><code>{{ o.get("session_id") }}</code></strong>&nbsp;: {{ usd(o.get("cost_usd")) }}
+        (z={{ "%.2f"|format(o["z_score"])|replace(".", ",") if o.get("z_score") is not none else "n/a" }})</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    <h3>Sessions les plus coûteuses</h3>
+    <div class="filter-row">
+      <label for="filter-session-cost">Filtre coût minimum ($)&nbsp;:</label>
+      <input type="number" id="filter-session-cost" min="0" step="0.01" placeholder="ex. 5">
+      <span class="result-count" id="count-top-sessions" aria-live="polite"></span>
+    </div>
+    <div class="table-wrap"><table class="sortable" id="table-top-sessions">
+      <thead><tr><th scope="col">Session</th><th scope="col" class="num">Coût ($)</th><th scope="col" class="num">Tokens</th><th scope="col" class="num">Durée</th><th scope="col" class="num">Actif</th><th scope="col" class="num">$/min actif</th><th scope="col" class="num">Appels API</th></tr></thead>
+      <tbody>
+        {% for s in top_sessions or [] %}
+        <tr data-cost="{{ s.get('cost_usd') if s.get('cost_usd') is not none else 0 }}">
+          <td>{{ s.get("title_or_topic") or s.get("session_id") }}{% if outlier_ids and s.get("session_id") in outlier_ids %} <span class="pill pill-crit">OUTLIER</span>{% endif %}
+            <br><code>{{ s.get("session_id") }}</code></td>
+          <td class="num" data-value="{{ s.get('cost_usd') }}">{{ usd(s.get("cost_usd")) }}</td>
+          <td class="num" data-value="{{ s.get('total_tokens') }}">{{ compact(s.get("total_tokens")) }}</td>
+          <td class="num" data-value="{{ s.get('duration_seconds') }}">{{ compact(s.get("duration_seconds")) }}</td>
+          <td class="num" data-value="{{ s.get('active_time_seconds') }}">{{ compact(s.get("active_time_seconds")) }}</td>
+          <td class="num" data-value="{{ s.get('cost_per_active_minute') }}">{{ "%.2f"|format(s["cost_per_active_minute"])|replace(".", ",") if s.get("cost_per_active_minute") is not none else "n/a" }}</td>
+          <td class="num" data-value="{{ s.get('api_call_count') }}">{{ s.get("api_call_count", "n/a") }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    <p class="muted">Cache eff. et sous-agents : voir payload JSON embarqué (clé <code>top_sessions_by_cost</code>).</p>
+  </div>
+</section>
+
+<section id="telemetrie" class="section">
+  <h2>{{ toggle("telemetrie") }} {{ secnum(3) }} Télémétrie &amp; usage de l'environnement</h2>
+  <div class="section-body" id="telemetrie-body">
+    <h3>Outils</h3>
+    {% if tool_usage %}
+    <div class="chart" id="chart-tools"></div>
+    <div class="table-wrap"><table class="sortable">
+      <thead><tr><th scope="col">Outil</th><th scope="col" class="num">Appels</th><th scope="col" class="num">Tokens estimés</th></tr></thead>
+      <tbody>
+        {% for t in tool_usage %}
+        <tr>
+          <td>{{ t.get("tool") }}</td>
+          <td class="num" data-value="{{ t.get('call_count') }}">{{ intfr(t.get("call_count")) }}</td>
+          <td class="num" data-value="{{ t.get('estimated_input_tokens') }}">{{ compact(t.get("estimated_input_tokens")) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}
+    <p class="muted">Aucune activité outil mesurée sur la fenêtre.</p>
+    {% endif %}
+
+    <h3>Skills chargés</h3>
+    {% if skill_usage %}
+    <ul class="plain">
+      {% for sk in skill_usage %}
+      <li><code>{{ sk.get("skill") }}</code> × {{ sk.get("load_count", "n/a") }} ({{ sk.get("sessions_used_in", "n/a") }} session(s))</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">Aucun skill chargé.</p>
+    {% endif %}
+    {% if (summary or {}).get("skills_never_loaded") %}
+    <p><strong>Skills jamais chargés</strong> (catalogue {{ summary.get("skill_catalog_count", "n/a") }})&nbsp;:
+      {{ summary.skills_never_loaded|join(", ") }}</p>
+    {% endif %}
+
+    <h3>Commandes slash</h3>
+    {% if command_usage %}
+    <ul class="plain">
+      {% for c in command_usage %}
+      <li><code>/{{ c.get("command") }}</code> × {{ c.get("call_count", "n/a") }} ({{ c.get("sessions_used_in", "n/a") }} session(s))</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">Aucune commande slash mesurée.</p>
+    {% endif %}
+
+    {% if (summary or {}).get("user_prompt_repeats") %}
+    <h3>Prompts utilisateur répétés</h3>
+    <ul class="plain">
+      {% for r in summary.user_prompt_repeats %}
+      <li>« {{ r.get("normalized_preview") }} » × {{ r.get("count", "n/a") }} (moy. {{ r.get("avg_chars", "n/a") }} car., ex. <code>{{ r.get("session_id") }}</code>)</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if (summary or {}).get("subagent_totals") %}
+    {% set sub = summary.subagent_totals %}
+    <h3>Sous-agents</h3>
+    <p>{{ sub.get("child_session_count", 0) }} session(s) enfant ·
+      {{ usd(sub.get("total_cost_usd")) }}</p>
+    {% if sub.get("by_agent_type") %}
+    <div class="table-wrap"><table class="sortable">
+      <thead><tr><th scope="col">Type d'agent</th><th scope="col" class="num">Sessions</th><th scope="col" class="num">Coût ($)</th></tr></thead>
+      <tbody>
+        {% for a in sub.by_agent_type %}
+        <tr>
+          <td>{{ a.get("agent_type") or a.get("agent") or "?" }}</td>
+          <td class="num" data-value="{{ a.get('session_count') }}">{{ a.get("session_count", "n/a") }}</td>
+          <td class="num" data-value="{{ a.get('cost_usd') }}">{{ usd(a.get("cost_usd")) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% endif %}
+    {% endif %}
+  </div>
+</section>
+
+<section id="qualitatif" class="section">
+  <h2>{{ toggle("qualitatif") }} {{ secnum(4) }} Constats qualitatifs (agent)</h2>
+  <div class="section-body" id="qualitatif-body">
+    {% if quality_html %}
+    <div class="legend">
+      <span><span class="tag tag-f">F</span> <b>fait</b> observé (session source)</span>
+      <span><span class="tag tag-m">M</span> <b>mesure</b> chiffrée</span>
+      <span><span class="tag tag-a">A</span> <b>action</b> recommandée</span>
+    </div>
+    <div class="cat-strip" id="quality-cats" hidden></div>
+    <div class="filter-row" id="quality-filter" hidden>
+      <span class="muted">Filtrer par catégorie :</span>
+      <span id="quality-chips" class="filter-row"></span>
+    </div>
+    <div class="prose" id="quality-content">{{ quality_html }}</div>
+    {% else %}
+    <p class="muted">Aucun bloc qualitatif ce run.</p>
+    {% endif %}
+  </div>
+</section>
+
+<section id="sante" class="section">
+  <h2>{{ toggle("sante") }} {{ secnum(5) }} Santé de l'environnement (harness + cohérence)</h2>
+  <div class="section-body" id="sante-body">
+    {% if coherence_findings and (coherence_findings.get("findings") or []) %}
+    <h3>Cohérence de l'environnement (passe critique)</h3>
+    {% for f in coherence_findings.findings %}
+    <div class="finding-card">
+      <div class="f-head"><span class="tag">{{ f.get("tag") or f.get("category") or "?" }}</span></div>
+      <p class="f-desc">{{ f.get("description") }}</p>
+      {% if f.get("evidence_summary") %}<p class="f-evidence">preuve : {{ f.evidence_summary[:110] }}</p>{% endif %}
+      <p class="f-action">{{ f.get("recommendation") }}</p>
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    {% if digest %}
+    {% set inspection = (((digest or {}).get("inspection") or {}).get("summary")) or {} %}
+    {% set insp_errors = inspection.get("errors", 0) or 0 %}
+    {% set insp_warnings = inspection.get("warnings", 0) or 0 %}
+    <div class="status-banner {{ 'crit' if insp_errors else ('warn' if insp_warnings else 'ok') }}" role="status">
+      {%- if insp_errors %}✗ Inspection harness : {{ insp_errors }} erreur(s), {{ insp_warnings }} warning(s)
+      {%- elif insp_warnings %}⚠ Inspection harness : {{ insp_warnings }} warning(s), aucune erreur
+      {%- else %}✓ Inspection harness : aucun problème détecté{% endif -%}
+    </div>
+    <ul class="kv">
+      {% if harness_counts %}
+      <li>Périmètre : {{ harness_counts.get("files_scanned", "n/a") }} fichier(s),
+        {{ harness_counts.get("components_scanned", "n/a") }} composant(s) inspecté(s) ;
+        findings bruts {{ harness_counts.get("findings_raw", "n/a") }},
+        uniques {{ harness_counts.get("findings_unique", "n/a") }}</li>
+      {% endif %}
+      {% if harness_scope and (harness_scope.get("unscoped_files") or []) %}
+      <li>⚠ Surfaces <code>.opencode/</code> hors allowlist non scannées :
+        {{ harness_scope.unscoped_files|length }} fichier(s), aperçu :
+        {{ harness_scope.unscoped_files[:10]|join(", ") }}{% if harness_scope.unscoped_files|length > 10 %} (+{{ harness_scope.unscoped_files|length - 10 }}){% endif %}</li>
+      {% endif %}
+      {% if harness_triggers %}
+      <li>Triggers : {{ harness_triggers.get("skill_count", "n/a") }} skills,
+        {{ (harness_triggers.get("overlaps") or [])|length }} chevauchement(s)</li>
+      {% endif %}
+      {% if harness_dependencies %}
+      <li>Dépendances : {{ harness_dependencies.get("total_edges", "n/a") }} arêtes,
+        {{ (harness_dependencies.get("broken") or [])|length }} cassée(s)</li>
+      {% endif %}
+    </ul>
+
+    {% if harness_remediation and harness_remediation.get("summary") %}
+    {% set rem = harness_remediation.summary %}
+    <h3>Remédiation harness</h3>
+    <div class="stat-chips" role="list" aria-label="Bilan de remédiation harness">
+      <span class="stat-chip" role="listitem"><b>{{ rem.get("applied", 0) }}</b> appliquée(s)</span>
+      <span class="stat-chip" role="listitem"><b>{{ rem.get("proposed", 0) }}</b> proposée(s)</span>
+      <span class="stat-chip" role="listitem"><b>{{ rem.get("manual", 0) }}</b> manuelle(s)</span>
+      <span class="stat-chip" role="listitem"><b>{{ rem.get("blocked", 0) }}</b> bloquée(s)</span>
+      <span class="stat-chip" role="listitem"><b>{{ rem.get("rolled_back", 0) }}</b> annulée(s)</span>
+      {% if harness_remediation.get("postcheck") and harness_remediation.postcheck.get("status") != "not_run" %}
+      <span class="stat-chip" role="listitem">post-check&nbsp;: <b>{{ harness_remediation.postcheck.get("status") }}</b>{% if harness_remediation.postcheck.get("reason") %} — {{ harness_remediation.postcheck.get("reason") }}{% endif %}</span>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% if harness_budget %}
+    {% set hb_always = harness_budget.get("always_loaded") or 0 %}
+    {% set hb_demand = harness_budget.get("on_demand") or 0 %}
+    {% set hb_share = (hb_always * 100 / (hb_always + hb_demand))|round(1) if (hb_always + hb_demand) else 0 %}
+    <h3>Budget de contexte harness</h3>
+    <div class="stack-bar" role="img" aria-label="Répartition des composants chargés : {{ hb_share }}% always-loaded">
+      <i class="seg-always" style="width: {{ hb_share }}%"></i>
+      <i class="seg-demand" style="width: {{ 100 - hb_share }}%"></i>
+    </div>
+    <div class="stack-legend">
+      <span><span class="swatch" style="background: var(--accent)"></span>always-loaded&nbsp;: <b>{{ hb_always }}</b></span>
+      <span><span class="swatch" style="background: var(--bg-soft); border: 1px solid var(--border-strong)"></span>on-demand&nbsp;: <b>{{ hb_demand }}</b></span>
+      <span>part&nbsp;: <b>{{ "%d"|format(hb_share) }}%</b></span>
+      {% if harness_budget.get("total_tokens") is not none %}<span>tokens&nbsp;: <b>{{ intfr(harness_budget.get("total_tokens")) }}</b></span>{% endif %}
+      {% if harness_budget.get("heaviest") %}<span>plus lourd&nbsp;: <code>{{ harness_budget.get("heaviest") }}</code></span>{% endif %}
+    </div>
+    {% endif %}
+    {% if harness_top_rules %}
+    <h3>Top règles violées</h3>
+    <div class="chart" id="chart-rules"></div>
+    <div class="table-wrap"><table class="sortable">
+      <thead><tr><th scope="col">Règle</th><th scope="col" class="num">Violations</th><th scope="col" class="num">Δ vs run précédent</th></tr></thead>
+      <tbody>
+        {% for r in harness_top_rules %}
+        <tr>
+          <td><code>{{ r.get("rule") }}</code></td>
+          <td class="num" data-value="{{ r.get('count') }}">{{ r.get("count", "n/a") }}</td>
+          <td class="num" data-value="{{ r.get('delta') }}">{{ "%+d"|format(r["delta"]) if r.get("delta") is not none else "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% endif %}
+    {% if harness_ignored_rules %}
+    <p class="muted">Règles exclues du top (config <code>harness_ignored_rules</code>) :
+      {{ harness_ignored_rules|join(", ") }} — bruit structurel non compté.</p>
+    {% endif %}
+    {% else %}
+    <p class="muted">Digest harness absent ce run (étape 5 non exécutée ou fichier manquant).</p>
+    {% endif %}
+  </div>
+</section>
+
+<section id="veille" class="section">
+  <h2>{{ toggle("veille") }} {{ secnum(6) }} Veille — recommandations &amp; nouveautés</h2>
+  <div class="section-body" id="veille-body">
+    {% if watch_findings and (watch_findings.get("findings") or []) %}
+    <h3>Recommandations (regard critique — jamais d'installation automatique)</h3>
+    {% for f in watch_findings.findings %}
+    <div class="rec-card sev-{{ f.get('severity') or 'info' }}">
+      <div class="f-head"><span class="pill pill-{{ f.get('severity') or 'info' }}">{{ (f.get("severity") or "?")|upper }}</span>
+        <strong>{{ f.get("category") }}</strong></div>
+      <p class="r-desc">{{ f.get("description") }}</p>
+      {% if f.get("evidence_summary") %}<p class="r-evidence">preuve : {{ f.evidence_summary[:120] }}</p>{% endif %}
+      <p class="r-action">{{ f.get("recommendation") }}</p>
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    {% if ecosystem %}
+    <ul class="kv">
+      <li>Nouveautés détectées : {{ ((ecosystem or {}).get("new_items") or [])|length }}</li>
+      {% if (ecosystem or {}).get("watch_repos") %}
+      <li>Sources suivies (watch) : {{ ecosystem.watch_repos|join(", ") }}</li>
+      {% endif %}
+    </ul>
+    {% if watch_warned %}
+    <p class="muted">⚠ Source GitHub indisponible ce run (réseau / accès repo requis) — activité non vérifiée.</p>
+    {% elif watch_items %}
+    <div class="item-grid">
+      {% for item in watch_items %}
+      <div class="item-card">
+        <div class="i-name">{{ item.get("name") }}</div>
+        <div class="i-desc">{{ (item.get("description") or "")[:120] }}</div>
+        <div>{% for src in (item.get("found_via") or []) %}<span class="src-chip">{{ src }}</span>{% endfor %}<span class="src-chip">{{ item.get("category") }}</span></div>
+      </div>
+      {% endfor %}
+    </div>
+    {% elif (ecosystem or {}).get("watch_repos") %}
+    <p class="muted">Aucune activité sur la fenêtre (dernier push hors période).</p>
+    {% endif %}
+    {% set new_items = ((ecosystem or {}).get("new_items") or [])[:5] %}
+    {% if new_items %}
+    <h3>Nouveautés écosystème</h3>
+    <div class="item-grid">
+      {% for item in new_items %}
+      <div class="item-card">
+        <div class="i-name">{{ item.get("name") }}</div>
+        <div class="i-desc">{{ (item.get("description") or "")[:120] }}</div>
+        <div>{% for src in (item.get("found_via") or []) %}<span class="src-chip">{{ src }}</span>{% endfor %}<span class="src-chip">{{ item.get("category") }}</span></div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if (ecosystem or {}).get("core_changes") %}
+    <h3>Évolutions du cœur</h3>
+    <ul class="timeline">
+      {% for c in ecosystem.core_changes[:5] %}
+      <li><span class="t-ver">v{{ c.get("version") }}</span><span class="t-date">{{ c.get("date") }}</span>
+        <span class="t-sum">{{ (c.get("summary") or "")[:200] }}</span>
+        <span class="src-chip">{{ c.get("relevance_flag") }}</span></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% elif not (watch_findings and (watch_findings.get("findings") or [])) %}
+    <p class="muted">Veille non réalisée ce run.</p>
+    {% endif %}
+  </div>
+</section>
+
+<section id="alertes" class="section">
+  <h2>{{ toggle("alertes") }} {{ secnum(7) }} Alertes &amp; maintenance · {{ secnum(8) }} Annexes</h2>
+  <div class="section-body" id="alertes-body">
+    {% if insights %}
+    {% if alerts %}
+    <h3>Alertes</h3>
+    <div class="filter-row" id="alert-filter">
+      <span class="muted">Sévérité :</span>
+      <button class="chip active" data-sev="all">Toutes</button>
+      {% for sv in severities %}
+      <button class="chip" data-sev="{{ sv }}">{{ sv }}</button>
+      {% endfor %}
+      <span class="result-count" id="count-alerts" aria-live="polite"></span>
+    </div>
+    <div class="table-wrap"><table class="sortable" id="table-alerts">
+      <thead><tr><th scope="col">Sévérité</th><th scope="col">Règle</th><th scope="col">Seuil</th><th scope="col" class="num">Observé</th><th scope="col">Note</th></tr></thead>
+      <tbody>
+        {% for a in alerts %}
+        <tr data-sev="{{ a.get('severity') or 'info' }}">
+          <td><span class="pill pill-{{ a.get('severity') or 'info' }}">{{ (a.get("severity") or "?")|upper }}</span></td>
+          <td><code>{{ a.get("rule") }}</code></td>
+          <td>{{ a.get("threshold", "n/a") }}</td>
+          <td class="num">{% if a.get("unit") == "$" %}{{ usd(a.get("observed")) }}{% else %}{{ a.get("observed", "n/a") }}{% if a.get("unit") %}&nbsp;{{ a.get("unit") }}{% endif %}{% endif %}</td>
+          <td>{{ a.get("note") or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}
+    <p class="muted">Aucune alerte.</p>
+    {% endif %}
+
+    {% if (insights or {}).get("baseline") == "first-run" %}
+    <p><strong>Baseline</strong> : first-run — aucun run précédent exploitable, deltas WoW non calculés ce run.</p>
+    {% endif %}
+
+    {% if (maintenance or {}).get("findings") %}
+    <h3>Constats de maintenance (R1-R4)</h3>
+    <ul class="plain">
+      {% for f in maintenance.findings %}
+      <li><span class="pill pill-{{ f.get('severity') or 'info' }}">{{ (f.get("severity") or "?")|upper }}</span>
+        {{ f.get("description") }} → {{ f.get("recommendation") }}
+        {% if f.get("evidence_summary") %}<span class="muted">(preuve : {{ f.evidence_summary[:120] }})</span>{% endif %}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">Aucun constat de maintenance.</p>
+    {% endif %}
+    {% else %}
+    <p class="muted">Insights non générés ce run.</p>
+    {% endif %}
+
+    <h3>Annexes</h3>
+    <ul class="kv">
+      <li>Artefacts : <code>weekly-summary-{{ date }}.json</code>, <code>weekly-insights-{{ date }}.json</code>,
+        <code>weekly-harness-digest-{{ date }}.json</code>, <code>weekly-ecosystem-{{ date }}.json</code></li>
+      {% if run_dir %}
+      <li>Répertoire du run : <code>{{ run_dir }}/</code> (alias stable <code>runs/current/</code>)</li>
+      {% endif %}
+      <li>Coût propre du pipeline (self-cost)&nbsp;:
+        {% if self_cost_v is not none %}{{ usd(self_cost_v) }}{% if self_cost_v == 0 %} (coût nul — modèle gratuit ou session non retrouvée){% endif %}
+          {% if self_cost_tokens %}, {{ intfr(self_cost_tokens) }} tokens{% endif %}
+        {% else %}non mesurable{% endif %}</li>
+      <li>Commits auto-rédigés sur la fenêtre : {{ (auto_commits or [])|length }}
+        {% if auto_commits %}
+        <ul class="plain">
+          {% for c in auto_commits[:10] %}
+          <li><code>{{ c.get("hash") }}</code> {{ c.get("date") }} {{ c.get("subject") }}</li>
+          {% endfor %}
+          {% if auto_commits|length > 10 %}
+          <li class="muted">(+{{ auto_commits|length - 10 }} autres sur la fenêtre — liste tronquée)</li>
+          {% endif %}
+        </ul>
+        {% endif %}</li>
+      {% if pending_v is not none %}
+      <li><strong>{{ pending_v }}</strong> commit(s) auto-rédigé(s) en attente de revue</li>
+      {% endif %}
+      {% if (summary or {}).get("skills_targets") %}
+      <li>Skills auto-rédigés et cibles :
+        {% for name, agents in summary.skills_targets.items() %}<code>{{ name }}</code> → {{ agents|join(", ") }}{% if not loop.last %} ; {% endif %}{% endfor %}</li>
+      {% endif %}
+      {% if audit_candidates and (audit_candidates.get("unaudited") or []) %}
+      <li>Candidates d'audit non traitées (plafond {{ audit_candidates.get("limit", "n/a") }}) :
+        {{ audit_candidates.unaudited|map(attribute='session_id')|join(", ") }}</li>
+      {% endif %}
+    </ul>
+    {% if warnings_grouped %}
+    <h3>Warnings pipeline ({{ ((summary or {}).get("warnings") or [])|length }})</h3>
+    <ul class="plain">
+      {% for g in warnings_grouped %}
+      <li><strong>×{{ g.get("count") }}</strong> {{ g.get("message") }}
+        {% if g.get("count", 0) > 1 %}— <code>{{ (g.get("session_ids") or [])[:6]|join("`, `") }}{% if (g.get("session_ids") or [])|length > 6 %}…{% endif %}</code>{% endif %}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+</section>
+
+</main>
+
+<footer class="pagefoot">
+  Page autonome générée depuis les artefacts du run — données complètes dans le payload JSON embarqué.
+</footer>
+
+<script type="application/json" id="weekly-payload">{{ payload_json | safe }}</script>
+<script>
+"use strict";
+(() => {
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+  // ---- Payload ----
+  let payload = {};
+  try {
+    payload = JSON.parse($("#weekly-payload").textContent);
+  } catch (err) {
+    payload = {};
+  }
+
+  // ---- Formatage fr-FR ----
+  const nfNum = new Intl.NumberFormat("fr-FR");
+  const fmtMoney = (v) => new Intl.NumberFormat("fr-FR", {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  }).format(Number(v) || 0) + "\u202f$";
+  const fmtMoneyShort = (v) => {
+    const n = Number(v) || 0;
+    return (Math.abs(n) >= 100 ? new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 })
+      : new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })).format(n) + "\u202f$";
+  };
+  const fmtInt = (v) => nfNum.format(Number(v) || 0);
+
+  // ---- Sections repliables (état en sessionStorage) ----
+  const COLLAPSED_KEY = "wa-html-collapsed-sections";
+  const readCollapsed = () => {
+    try {
+      return new Set(JSON.parse(window.sessionStorage.getItem(COLLAPSED_KEY) || "[]"));
+    } catch (err) {
+      return new Set();
+    }
+  };
+  let collapsed = readCollapsed();
+  const saveCollapsed = () => {
+    try {
+      window.sessionStorage.setItem(COLLAPSED_KEY, JSON.stringify([...collapsed]));
+    } catch (err) {
+      /* stockage indisponible : état non persisté */
+    }
+  };
+  $$("section.section").forEach((sec) => {
+    const btn = $(".toggle", sec);
+    if (!btn || !sec.id) return;
+    const apply = () => {
+      sec.classList.toggle("collapsed", collapsed.has(sec.id));
+      btn.setAttribute("aria-expanded", String(!collapsed.has(sec.id)));
+    };
+    btn.addEventListener("click", () => {
+      if (collapsed.has(sec.id)) collapsed.delete(sec.id);
+      else collapsed.add(sec.id);
+      saveCollapsed();
+      apply();
+    });
+    apply();
+  });
+
+  // ---- Sommaire sticky : section active surlignée ----
+  const tocLinks = $$("#toc a");
+  const linkById = new Map(
+    tocLinks.map((a) => [a.getAttribute("href").slice(1), a])
+  );
+  const setActive = (id) => {
+    tocLinks.forEach((a) => a.classList.toggle("active", a === linkById.get(id)));
+  };
+  if ("IntersectionObserver" in window) {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((en) => {
+          if (en.isIntersecting) setActive(en.target.id);
+        });
+      },
+      { rootMargin: "-15% 0px -70% 0px" }
+    );
+    linkById.forEach((_, id) => {
+      const target = document.getElementById(id);
+      if (target) observer.observe(target);
+    });
+  }
+
+  // ---- Compteurs de résultats filtrés ----
+  const refreshCount = (tableSel, counterSel, label) => {
+    const counter = $(counterSel);
+    if (!counter) return;
+    const visible = $$(tableSel + " tbody tr").filter((tr) => !tr.hidden).length;
+    counter.textContent = visible + " " + label;
+  };
+
+  // ---- Tableaux triables (clic en-tête) ----
+  const sortValue = (cell) => {
+    if (!cell) return "";
+    const raw = cell.dataset.value !== undefined ? cell.dataset.value : cell.textContent;
+    const cleaned = String(raw).replace(/\s|\u202f|\u00a0/g, "").replace(",", ".");
+    const num = parseFloat(cleaned.replace(/[^\d.\-]/g, ""));
+    return Number.isNaN(num) ? String(raw).trim().toLowerCase() : num;
+  };
+  $$("table.sortable").forEach((table) => {
+    const headers = $$("thead th", table);
+    headers.forEach((th, idx) => {
+      th.setAttribute("role", "button");
+      th.tabIndex = 0;
+      const sortTable = () => {
+        const tbody = $("tbody", table);
+        if (!tbody) return;
+        const dir = th.getAttribute("data-dir") === "asc" ? "desc" : "asc";
+        headers.forEach((other) => {
+          other.removeAttribute("aria-sort");
+          other.removeAttribute("data-dir");
+        });
+        th.setAttribute("data-dir", dir);
+        th.setAttribute("aria-sort", dir === "asc" ? "ascending" : "descending");
+        const rows = $$("tr", tbody);
+        rows.sort((ra, rb) => {
+          const va = sortValue(ra.children[idx]);
+          const vb = sortValue(rb.children[idx]);
+          const cmp =
+            typeof va === "number" && typeof vb === "number"
+              ? va - vb
+              : String(va).localeCompare(String(vb), "fr");
+          return dir === "asc" ? cmp : -cmp;
+        });
+        rows.forEach((row) => tbody.appendChild(row));
+      };
+      th.addEventListener("click", sortTable);
+      th.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") {
+          ev.preventDefault();
+          sortTable();
+        }
+      });
+    });
+  });
+
+  // ---- Filtre sessions top par coût (seuil min) ----
+  const costInput = $("#filter-session-cost");
+  if (costInput) {
+    costInput.addEventListener("input", () => {
+      const min = parseFloat(costInput.value);
+      $$("#table-top-sessions tbody tr").forEach((tr) => {
+        const cost = parseFloat(tr.dataset.cost || "0");
+        tr.hidden = Number.isFinite(min) && cost < min;
+      });
+      refreshCount("#table-top-sessions", "#count-top-sessions", "session(s) affichée(s)");
+    });
+    refreshCount("#table-top-sessions", "#count-top-sessions", "session(s) affichée(s)");
+  }
+
+  // ---- Filtre alertes par sévérité ----
+  const alertFilter = $("#alert-filter");
+  if (alertFilter) {
+    alertFilter.addEventListener("click", (ev) => {
+      const chip = ev.target.closest(".chip");
+      if (!chip) return;
+      $$(".chip", alertFilter).forEach((c) => c.classList.toggle("active", c === chip));
+      const sev = chip.dataset.sev;
+      $$("#table-alerts tbody tr").forEach((tr) => {
+        tr.hidden = sev !== "all" && tr.dataset.sev !== sev;
+      });
+      refreshCount("#table-alerts", "#count-alerts", "alerte(s) affichée(s)");
+    });
+    refreshCount("#table-alerts", "#count-alerts", "alerte(s) affichée(s)");
+  }
+
+  // ---- Constats qualitatifs : distribution par catégorie + filtre ----
+  const qContent = $("#quality-content");
+  const qFilter = $("#quality-filter");
+  if (qContent) {
+    const cats = new Map();
+    $$("p", qContent).forEach((p) => {
+      const badge = $(".tag-f", p);
+      if (!badge) return;
+      const match = /#([\w\u00C0-\u024F-]+)/.exec(badge.textContent);
+      if (!match) return;
+      p.dataset.category = match[1];
+      cats.set(match[1], (cats.get(match[1]) || 0) + 1);
+    });
+    if (cats.size > 0) {
+      const strip = $("#quality-cats");
+      if (strip) {
+        strip.hidden = false;
+        const maxCount = Math.max(...cats.values());
+        [...cats.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .forEach(([cat, n]) => {
+            const pill = document.createElement("span");
+            pill.className = "cat-pill";
+            const bar = document.createElement("span");
+            bar.className = "bar-mini";
+            const fill = document.createElement("i");
+            fill.style.width = Math.round((n / maxCount) * 100) + "%";
+            bar.appendChild(fill);
+            pill.appendChild(bar);
+            pill.appendChild(document.createTextNode(cat + " · " + n));
+            strip.appendChild(pill);
+          });
+      }
+    }
+    if (cats.size > 1 && qFilter) {
+      qFilter.hidden = false;
+      const chipsBox = $("#quality-chips", qFilter);
+      const makeChip = (label, cat) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "chip" + (cat === null ? " active" : "");
+        b.textContent = label;
+        b.dataset.cat = cat === null ? "all" : cat;
+        return b;
+      };
+      chipsBox.appendChild(makeChip("Toutes", null));
+      [...cats.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .forEach(([cat, n]) => chipsBox.appendChild(makeChip(cat + " (" + n + ")", cat)));
+      chipsBox.addEventListener("click", (ev) => {
+        const chip = ev.target.closest(".chip");
+        if (!chip) return;
+        $$(".chip", chipsBox).forEach((c) => c.classList.toggle("active", c === chip));
+        const cat = chip.dataset.cat;
+        $$("p", qContent).forEach((p) => {
+          p.hidden = cat !== "all" && p.dataset.category !== cat;
+        });
+      });
+    }
+  }
+
+  // ---- Graphiques SVG faits main ----
+  const NS = "http://www.w3.org/2000/svg";
+  const svgEl = (name, attrs = {}, text) => {
+    const node = document.createElementNS(NS, name);
+    Object.keys(attrs).forEach((k) => node.setAttribute(k, String(attrs[k])));
+    if (text !== undefined && text !== null) node.textContent = text;
+    return node;
+  };
+  const truncate = (text, max) =>
+    text.length > max ? text.slice(0, max - 1) + "…" : text;
+
+  const dailyChart = (container, days) => {
+    if (!container || !Array.isArray(days) || days.length === 0) {
+      if (container) container.remove();
+      return;
+    }
+    const padL = 56, padB = 34, padT = 20;
+    const barW = Math.min(72, Math.max(36, 640 / days.length));
+    const width = Math.max(360, padL + days.length * barW + 24);
+    const height = 240;
+    const values = days.map((d) => Number(d.cost_usd) || 0);
+    const max = Math.max(...values, 1e-9);
+    const mean = values.reduce((acc, v) => acc + v, 0) / values.length;
+    const meanY = height - padB - ((height - padB - padT) * mean) / max;
+    const svg = svgEl("svg", {
+      viewBox: "0 0 " + width + " " + height,
+      role: "img",
+      "aria-label": "Coût quotidien de la fenêtre (ligne pointillée rouge = moyenne)",
+    });
+    // Grille horizontale (quartiles visuels)
+    [0.25, 0.5, 0.75].forEach((frac) => {
+      const gy = padT + (height - padB - padT) * frac;
+      svg.appendChild(svgEl("line", {
+        x1: padL, y1: gy, x2: width - 10, y2: gy, class: "grid",
+      }));
+    });
+    svg.appendChild(svgEl("line", { x1: padL, y1: height - padB, x2: width - 10, y2: height - padB, class: "axis" }));
+    svg.appendChild(svgEl("line", { x1: padL, y1: padT, x2: padL, y2: height - padB, class: "axis" }));
+    const step = (width - padL - 24) / days.length;
+    days.forEach((d, i) => {
+      const v = values[i];
+      const h = ((height - padB - padT) * v) / max;
+      const x = padL + i * step + step * 0.18;
+      const bw = step * 0.64;
+      const rect = svgEl("rect", {
+        x: x,
+        y: height - padB - h,
+        width: bw,
+        height: v > 0 ? Math.max(h, 1.5) : 0,
+        rx: 4,
+        class: "bar",
+      });
+      rect.appendChild(svgEl("title", {}, d.date + " — " + fmtMoney(v)));
+      svg.appendChild(rect);
+      if (v > 0 && step >= 26) {
+        svg.appendChild(svgEl("text", {
+          x: x + bw / 2, y: height - padB - h - 5,
+          "text-anchor": "middle", class: "val",
+        }, fmtMoneyShort(v)));
+      }
+      const day = String(d.date || "").split("-");
+      const label = day.length === 3 ? day[2] + "/" + day[1] : d.date;
+      svg.appendChild(svgEl("text", {
+        x: x + bw / 2, y: height - padB + 14,
+        "text-anchor": "middle", class: "lbl",
+      }, label));
+    });
+    // Ligne de moyenne
+    svg.appendChild(svgEl("line", {
+      x1: padL, y1: meanY, x2: width - 10, y2: meanY, class: "mean",
+    }));
+    svg.appendChild(svgEl("text", {
+      x: width - 12, y: meanY - 5, "text-anchor": "end", class: "mean-lbl",
+    }, "moy. " + fmtMoneyShort(mean)));
+    container.replaceChildren(svg);
+  };
+
+  const hBarChart = (container, items, opts) => {
+    if (!container) return;
+    if (!Array.isArray(items) || items.length === 0) {
+      container.remove();
+      return;
+    }
+    const rowH = 32, padT = 8, padL = 170, padR = 104;
+    const width = 680;
+    const height = padT + items.length * rowH + 8;
+    const values = items.map((it) => Number(it[opts.valueKey]) || 0);
+    const max = Math.max(...values, 1e-9);
+    const svg = svgEl("svg", {
+      viewBox: "0 0 " + width + " " + height,
+      role: "img",
+      "aria-label": opts.label,
+    });
+    items.forEach((it, i) => {
+      const y = padT + i * rowH;
+      const v = values[i];
+      const w = ((width - padL - padR) * v) / max;
+      svg.appendChild(svgEl("text", {
+        x: padL - 8, y: y + 19, "text-anchor": "end", class: "lbl",
+      }, truncate(String(it[opts.labelKey] ?? "?"), 26)));
+      const rectW = v > 0 ? Math.max(w, 2) : 0;
+      svg.appendChild(svgEl("rect", {
+        x: padL, y: y + 5, width: rectW, height: rowH - 13, rx: 4, class: "bar",
+      }));
+      svg.appendChild(svgEl("title", {}, String(it[opts.labelKey] ?? "?") + " — " + opts.fmt(v)));
+      svg.appendChild(svgEl("text", {
+        x: padL + rectW + 6, y: y + 19, class: "val",
+      }, opts.fmt(v)));
+    });
+    container.replaceChildren(svg);
+  };
+
+  dailyChart($("#chart-daily"), payload.daily_totals);
+  hBarChart($("#chart-models"), payload.models_top, {
+    labelKey: "model", valueKey: "total_cost_usd", fmt: fmtMoney,
+    label: "Coût par modèle",
+  });
+  hBarChart($("#chart-tools"), payload.tool_usage, {
+    labelKey: "tool", valueKey: "call_count", fmt: fmtInt,
+    label: "Usage des outils (appels)",
+  });
+  hBarChart($("#chart-rules"), payload.harness_top_rules, {
+    labelKey: "rule", valueKey: "count", fmt: fmtInt,
+    label: "Top règles violées (occurrences)",
+  });
+})();
+</script>
+</body>
+</html>

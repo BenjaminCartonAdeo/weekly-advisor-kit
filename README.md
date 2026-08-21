@@ -92,9 +92,12 @@ opencode run --agent weekly-advisor "Lance la revue hebdomadaire"
 Rien d'autre sur PATH : le plugin résout python et `harness-eval`. Le rapport final
 `<output_dir>/runs/current/weekly-report-<date>.md` est le **signal** du cron (alerte si absent) —
 `runs/current` est l'alias stable du run actif (`run_state.json` à la racine de `output_dir`).
-**Pour l'utilisateur** : le rapport est publié automatiquement dans `~/weekly-reports/weekly-report-latest.md`
-(fichier réel, écrasé à chaque run — config `report_dir` pour changer l'endroit) — pas besoin de
-connaître `output_dir` ni `runs/`.
+**Pour l'utilisateur** : un **rapport HTML autonome** (un seul fichier, zéro CDN) est publié
+à chaque run dans `<project_root>/reports/html/` — `weekly-report-<date>.html` (historique)
+et `weekly-report-latest.html` (écrasé à chaque run ; config `html_report_dir` pour changer
+l'endroit, `""` pour désactiver) — pas besoin de connaître `output_dir` ni `runs/`. Il
+s'ouvre automatiquement dans le navigateur à la fin du run (`open_browser: false`, ou
+variable d'environnement `WEEKLY_NO_BROWSER=1` pour un cron headless).
 Détails et heartbeat recommandé : [`INSTALL.md`](INSTALL.md) §2.7.
 
 ## Structure
@@ -139,10 +142,10 @@ racine/
 ```sh
 # le projet uv (pyproject + uv.lock) vit dans le dossier moteur
 cd .opencode/plugins/weekly-advisor-engine
-uv run pytest -q             # 237 tests
+uv run pytest -q             # 253 tests
 uv run ruff check .          # lint
 uv run ruff format --check . # format
 ```
 
 CI GitHub Actions (`.github/workflows/ci.yml`) : install lockfile `--frozen`, lint,
-format, 237 tests, packaging et syntaxe du plugin TS — vérifiés sur chaque push/PR.
+format, 253 tests, packaging et syntaxe du plugin TS — vérifiés sur chaque push/PR.

@@ -29,8 +29,8 @@ _LAYOUT_README = """# reports/ — layout du pipeline `weekly-advisor`
 
 - `runs/<date>-<uuid8>/` — artefacts complets de chaque run (source de vérité)
 - `runs/current/` — alias symlink vers le run actif (signal cron/CI)
-- `~/weekly-reports/weekly-report-latest.md` — **copie du rapport pour l'utilisateur**
-  (chemin par défaut, config `report_dir` pour le changer, `""` pour désactiver)
+- `<project_root>/reports/html/` — **rapport HTML pour l'utilisateur**
+  (chemin par défaut, config `html_report_dir` pour le changer, `""` pour désactiver)
 - `run_state.json` / `previous_run.json` / `anchor-last.txt` — état du pipeline (ne pas éditer)
 - `legacy/` (dans le run dir) — artefacts racine pré-v6.0.k migrés automatiquement
 """

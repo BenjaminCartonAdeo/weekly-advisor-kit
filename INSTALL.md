@@ -49,7 +49,8 @@ Fichier : `.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`
 |---|---|---|
 | `project_root` | **Chemin ABSOLU du repo audité** — celui qui contient `.opencode/` | placeholder `/path/to/weekly-advisor-kit` ✋ |
 | `output_dir` | Chemin ABSOLU des artefacts (rapports JSON/MD ; chaque run écrit dans `runs/<date>-<uuid8>/`, alias `runs/current`) | placeholder `/path/to/weekly-advisor-kit/reports` ✋ |
-| `report_dir` | (optionnel) Répertoire de la **copie utilisateur** du rapport — défaut `~/weekly-reports/weekly-report-latest.md` ; `""` désactive la publication (v6.0.l) | absent → défaut activé |
+| `html_report_dir` | (optionnel) Dossier du **rapport HTML autonome** publié à chaque assemble — défaut `<project_root>/reports/html` (`weekly-report-latest.html` + copie datée) ; `""` désactive la génération (v6.1) | absent → défaut activé |
+| `open_browser` | Ouverture automatique du rapport HTML dans le navigateur après l'assemble — mettre `false`, ou poser la variable d'environnement `WEEKLY_NO_BROWSER=1` pour un cron headless | `true` |
 | `kit_root` | (optionnel) Worktree du kit pour la synchro best-effort des drafts auto-rédigés (`commit-draft`, v6.0.l) | absent → désactivé |
 | `harness_include` | Profil et globs allowlistés pour l'étape `harness` | `advisory` (policy + documentation) |
 | `harness_auto_fix_rules` | Règles explicitement autorisées pour l'application automatique | `[]` (aucune) |
@@ -92,7 +93,7 @@ run cron (mesuré v5.32).
 
 ```sh
 cd .opencode/plugins/weekly-advisor-engine
-uv run pytest -q     # 237 tests — tout doit passer
+uv run pytest -q     # 253 tests — tout doit passer
 cd ../../..
 opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"

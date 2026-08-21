@@ -143,10 +143,11 @@ class TelemetryConfig:
     advisor_run_title: str = "Lance la revue hebdomadaire"
     git_name: str = "Weekly Advisor"
     git_email: str = "weekly-advisor@localhost"
-    #: copie du rapport final pour l'utilisateur (v6.0.l) — None → ~/weekly-reports ;
-    #: "" → publication désactivée. L'utilisateur n'a jamais à configurer : le défaut
-    #: est le home, accessible et lisible sans connaître output_dir ni runs/.
-    report_dir: str | None = None
+    #: rapport HTML autonome (v6.1) — None → défaut `<project_root>/reports/html` ;
+    #: "" → génération HTML désactivée. Même sémantique que l'ancien report_dir.
+    html_report_dir: str | None = None
+    #: ouverture automatique du rapport HTML dans le navigateur après assemble (v6.1).
+    open_browser: bool = True
     #: worktree du kit (distribution) — sync best-effort des drafts auto-rédigés (v6.0.l).
     kit_root: Path | None = None
     release_keywords: list[str] = field(
@@ -292,9 +293,12 @@ def _parse(p: Path) -> TelemetryConfig:
         cfg.project_root = _expand(raw["project_root"])
     if raw.get("output_dir"):
         cfg.output_dir = _expand(raw["output_dir"])
-    if "report_dir" in raw:
-        # None/absent → défaut ~/weekly-reports ; "" explicite → désactivé.
-        cfg.report_dir = raw["report_dir"]
+    if "html_report_dir" in raw:
+        # None/absent → défaut <project_root>/reports/html ; "" explicite → désactivé.
+        v = raw["html_report_dir"]
+        cfg.html_report_dir = None if v is None else str(v)
+    if "open_browser" in raw:
+        cfg.open_browser = bool(raw["open_browser"])
     if raw.get("kit_root"):
         cfg.kit_root = _expand(raw["kit_root"])
 

@@ -833,3 +833,43 @@ def test_template_maintenance_and_unscoped_lines_are_not_glued(tmp_path: Path):
     assert "b.json## 6." not in text
     # annexe : répertoire du run
     assert f"`runs/{active.run_id}/`" in text
+
+
+def test_assemble_renders_html_with_injected_quality_block(tmp_path: Path, monkeypatch):
+    """report_assemble branche le renderer HTML avec le bloc effectivement injecté."""
+    _write_summary(tmp_path)
+    _write_auto_blocks(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    seen: dict = {}
+
+    def fake_render(cfg_, *, anchor, ctx, quality_block):
+        seen.update(anchor=anchor, ctx=ctx, quality_block=quality_block)
+        return tmp_path / "html" / f"weekly-report-{DATE}.html"
+
+    monkeypatch.setattr("weekly_telemetry_aggregator.report.render_html_report", fake_render)
+    opened: list[Path | None] = []
+    monkeypatch.setattr(
+        "weekly_telemetry_aggregator.report.open_html_report",
+        lambda cfg_, path: opened.append(path),
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert rc == 0 and final_path is not None
+    # le bloc passé au renderer est exactement celui injecté dans le MD final
+    auto_text = (tmp_path / f"weekly-report-blocks-auto-{DATE}.md").read_text(encoding="utf-8")
+    assert seen["quality_block"] == auto_text
+    assert seen["ctx"] is not None and seen["ctx"]["date"] == DATE
+    assert seen["anchor"] == RUN.isoformat()
+    # auto-open branché avec le chemin retourné par le renderer
+    assert opened == [tmp_path / "html" / f"weekly-report-{DATE}.html"]
+
+
+def test_assemble_html_disabled_is_silent_noop(tmp_path: Path):
+    """html_report_dir="" → aucun rendu HTML, assemble OK sans erreur."""
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    cfg.html_report_dir = ""  # génération HTML désactivée
+    report_prep(cfg, anchor=RUN.isoformat())
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert rc == 0 and final_path is not None
+    assert not (tmp_path / "reports").exists()

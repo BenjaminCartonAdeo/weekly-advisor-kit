@@ -244,9 +244,6 @@ Constats de maintenance (R1-R4) :
 {% if run_dir %}
 - Répertoire du run : `{{ run_dir }}/` (alias stable `runs/current/`)
 {% endif %}
-{% if user_report_path %}
-- **Copie utilisateur** : `{{ user_report_path }}` — fichier réel, écrasé à chaque run (config `report_dir` pour changer l'endroit)
-{% endif %}
 - Coût propre du pipeline (self-cost) : {{ "%.4f"|format(self_cost) if self_cost is not none else "non mesurable" }} ${% if self_cost is not none and self_cost == 0 %} (coût nul — modèle gratuit ou session non retrouvée){% endif %}{% if self_cost_tokens %}, {{ "{:,}".format(self_cost_tokens) }} tokens, {{ self_cost_api_calls }} appels API{% endif %}
 - Commits auto-rédigés sur la fenêtre : {{ auto_commits|length }}
 {% for c in auto_commits[:10] %}

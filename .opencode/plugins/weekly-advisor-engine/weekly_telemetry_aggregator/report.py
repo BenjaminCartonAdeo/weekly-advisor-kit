@@ -19,6 +19,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from . import __version__
 from .config import TelemetryConfig
+from .html_report import open_html_report, render_html_report
 from .insights import flatten_harness_findings
 from .run_state import active_run_meta, resolve_active_run_dir
 from .util import iso as _iso
@@ -177,17 +178,23 @@ def _top_harness_rules(
     ).most_common(n)
 
 
-def report_prep(
+def build_report_context(
     cfg: TelemetryConfig, *, anchor: str | None = None
-) -> tuple[Path | None, dict | None]:
-    """Render deterministic sections into `weekly-report-draft-<date>.md`."""
+) -> dict | None:
+    """Construit le ctx Jinja du rapport (v6.1) — partagé par prep et assemble.
+
+    Reconstruit intégralement depuis les artefacts JSON du run actif à chaque
+    appel : prep et assemble tournent comme sous-commandes CLI séparées, il n'y
+    a donc aucune persistance inter-process. Retourne None si la summary du run
+    est absente (le rapport HTML est alors silencieusement ignoré).
+    """
     run_time = _parse_anchor(anchor)
     date = run_time.strftime("%Y-%m-%d")
     out = resolve_active_run_dir(cfg.output_dir, date)
 
     summary = _load_json(out / f"weekly-summary-{date}.json")
     if summary is None:
-        return None, None
+        return None
 
     insights = _load_json(out / f"weekly-insights-{date}.json")
     digest = _load_json(out / f"weekly-harness-digest-{date}.json")
@@ -256,9 +263,20 @@ def report_prep(
         "pending_auto_commits": pending,
         "self_cost": info["cost"] if (info := _self_cost_value(cfg)) else None,
         "self_cost_tokens": (info or {}).get("tokens"),
-        "user_report_path": _user_report_path(cfg),
     }
+    return ctx
 
+
+def report_prep(
+    cfg: TelemetryConfig, *, anchor: str | None = None
+) -> tuple[Path | None, dict | None]:
+    """Render deterministic sections into `weekly-report-draft-<date>.md`."""
+    ctx = build_report_context(cfg, anchor=anchor)
+    if ctx is None:
+        return None, None
+
+    date = ctx["date"]
+    out = resolve_active_run_dir(cfg.output_dir, date)
     env = Environment(
         loader=FileSystemLoader(str(Path(__file__).parent / "templates")),
         autoescape=select_autoescape(("html",)),
@@ -416,45 +434,6 @@ def validate_llm_blocks(text: str, findings: dict | None, insights: dict | None)
     return violations, coverage
 
 
-def _user_report_path(cfg: TelemetryConfig) -> str:
-    """Chemin utilisateur du rapport (v6.0.l, P2) — '' si publication désactivée."""
-    raw = cfg.report_dir
-    if raw == "":
-        return ""
-    target_dir = Path(raw).expanduser() if raw else Path.home() / "weekly-reports"
-    return str(target_dir / "weekly-report-latest.md")
-
-
-def _publish_user_report(cfg: TelemetryConfig, final_path: Path) -> str:
-    """Copie du rapport final vers le répertoire utilisateur (v6.0.l, P2).
-
-    Défaut ``~/weekly-reports/weekly-report-latest.md`` : un fichier **réel**,
-    écrasé à chaque run, que l'utilisateur trouve sans connaître ``output_dir``
-    ni ``runs/``. Config ``report_dir`` pour changer l'endroit, ``""`` pour
-    désactiver. Best-effort : un échec n'invalide jamais l'archive du run dir.
-    """
-    raw = cfg.report_dir
-    if raw == "":
-        return 'report-assemble: publication utilisateur désactivée (report_dir="")'
-    target_dir = Path(raw).expanduser() if raw else Path.home() / "weekly-reports"
-    try:
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / "weekly-report-latest.md"
-        target.write_text(final_path.read_text(encoding="utf-8"), encoding="utf-8")
-        readme = target_dir / "README.md"
-        if not readme.exists():
-            readme.write_text(
-                "# weekly-reports\n\n"
-                "- `weekly-report-latest.md` — dernier rapport hebdomadaire "
-                "(date et ancre en en-tête)\n"
-                f"- Archives datées : `{cfg.output_dir}/runs/<date>-<uuid>/`\n",
-                encoding="utf-8",
-            )
-        return f"report-assemble: copie utilisateur -> {target}"
-    except OSError as exc:
-        return f"report-assemble: WARNING: publication utilisateur impossible: {exc}"
-
-
 def report_assemble(
     cfg: TelemetryConfig, *, anchor: str | None = None
 ) -> tuple[Path | None, list[str], int]:
@@ -537,5 +516,15 @@ def report_assemble(
     final_path.write_text(final_text, encoding="utf-8")
     if replacement is not None:
         final_path.with_name(f"weekly-report-draft-{date}.md").unlink(missing_ok=True)
-    print(_publish_user_report(cfg, final_path), flush=True)
+
+    # v6.1 : rapport HTML autonome, best-effort (échec → warning + None, jamais
+    # fatal). Le ctx est reconstruit depuis les artefacts — prep et assemble
+    # tournent comme sous-commandes CLI séparées — et le bloc qualité injecté
+    # ci-dessus (prose LLM validée ou fallback auto) alimente la section 4.
+    ctx = build_report_context(cfg, anchor=anchor)
+    if ctx is not None:
+        html_path = render_html_report(
+            cfg, anchor=anchor, ctx=ctx, quality_block=replacement
+        )
+        open_html_report(cfg, html_path)
     return final_path, warnings, 0

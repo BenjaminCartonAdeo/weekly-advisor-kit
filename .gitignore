@@ -8,7 +8,12 @@ __pycache__/
 *.egg-info/
 
 # artefacts du pipeline (jamais versionnés — reçus par le cron)
-reports/
+# (`reports/*` plutôt que `reports/` : une négation ne peut pas réinclure
+# sous un répertoire exclu entier)
+reports/*
 .opencode/plugins/weekly-advisor-engine/reports/
+# exception : rapport HTML autonome tracké dans le repo (v6.1)
+!reports/html/
+!reports/html/**
 *.log
 dist/

@@ -45,8 +45,8 @@ subagent (tool `task`) : le weekly-advisor est déjà l'orchestrateur.
   moteur (`weekly-telemetry-config.json`) — overrides en paramètres des tools
 - Ne pas auditer au-delà de `audit_max_sessions` ; ne pas écrire plus de
   `max_candidates_per_run` drafts
-- Terminer par : le chemin du rapport final (**copie utilisateur**
-  `~/weekly-reports/weekly-report-latest.md` en premier, puis l'archive
+- Terminer par : le chemin du rapport final (**rapport HTML**
+  `<project_root>/reports/html/weekly-report-latest.html` en premier, puis l'archive
   `runs/current/weekly-report-<date>.md`) et les alertes les plus sévères
 - Garde-fous de coût : max 3 tours pour diagnostiquer un échec tool ; plugin stale
   (ReferenceError) → constater, signaler, proposer le restart, **stopper le

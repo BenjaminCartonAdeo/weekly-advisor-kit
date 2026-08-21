@@ -74,17 +74,17 @@ ci-dessous sont inchangés — ils vivent dans ce répertoire.
 | 6.5 | **Skill `weekly-coherence-review`** : état déclaratif vs usage réel | `weekly-coherence-findings-<date>.json` |
 | 7a | `weekly_report_prep` puis `weekly_report_blocks_draft` (brouillon auto, toujours) | `weekly-report-draft-<date>.md` |
 | 7b | **Skill `weekly-report-prose`** : prose optionnelle (contrat anti-hallucination) | `weekly-report-blocks-<date>.md` |
-| 7c | `weekly_report_assemble` → **le signal du cron** ; publie la **copie utilisateur** `~/weekly-reports/weekly-report-latest.md` (config `report_dir`) ; ⚠ un assemble réussi **supprime le draft** : relancer `weekly_report_prep` avant un nouvel assemble | `weekly-report-<date>.md` |
+| 7c | `weekly_report_assemble` → **le signal du cron** ; génère le **rapport HTML autonome** dans `<project_root>/reports/html/` (`weekly-report-latest.html` + copie datée ; config `html_report_dir`, `""` désactive ; ouvert dans le navigateur sauf `WEEKLY_NO_BROWSER=1`) ; ⚠ un assemble réussi **supprime le draft** : relancer `weekly_report_prep` avant un nouvel assemble | `weekly-report-<date>.md` |
 | 8 | `weekly_self_cost` (annexe du rapport) | texte |
 
 Après l'étape 3.5, appeler obligatoirement `weekly_watch_validate` avant l'étape 4.
 Le rapport, les insights et les étapes suivantes lisent uniquement le findings final,
 jamais le fichier `weekly-watch-findings-raw-<date>.json`.
 
-**Rapport final** : terminer par le chemin de la **copie utilisateur**
-(`~/weekly-reports/weekly-report-latest.md` par défaut, config `report_dir`) en
-premier, puis l'archive (`runs/current/weekly-report-<date>.md`), puis les alertes
-les plus sévères.
+**Rapport final** : terminer par le chemin du **rapport HTML**
+(`<project_root>/reports/html/weekly-report-latest.html` par défaut, config
+`html_report_dir`) en premier, puis l'archive (`runs/current/weekly-report-<date>.md`),
+puis les alertes les plus sévères.
 
 Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sans rapport**.
 
