@@ -33,14 +33,36 @@ fs.mkdirSync(venvBin, { recursive: true })
 fs.mkdirSync(outputDir, { recursive: true })
 
 const argvLog = path.join(fakeRoot, "argv.log")
-// python factice : journalise ses argv, répond OK, sort 0 (jamais d'appel réseau).
-const fakePython = path.join(venvBin, "python")
-fs.writeFileSync(
-  fakePython,
-  `#!/bin/sh\necho "$@" > "${argvLog}"\necho "OK"\nexit 0\n`,
-  { mode: 0o755 },
-  "utf8",
-)
+// Faux python : journalise ses argv, répond OK, sort 0 (jamais d'appel réseau).
+// POSIX : script sh à l'emplacement venv attendu par le plugin. Windows : un sh
+// est inexécutable via execFile (ENOENT) — on passe par le VRAI interpréteur
+// (WEEKLY_PYTHON) et un mini-package moteur qui journalise ses argv.
+const isWin = process.platform === "win32"
+if (isWin) {
+  const { execFileSync } = await import("node:child_process")
+  const realPython = execFileSync("python", ["-c", "import sys; print(sys.executable)"], {
+    encoding: "utf8",
+  }).trim()
+  const pkg = path.join(engine, "weekly_telemetry_aggregator")
+  fs.mkdirSync(pkg, { recursive: true })
+  fs.writeFileSync(path.join(pkg, "__init__.py"), "", "utf8")
+  fs.writeFileSync(
+    path.join(pkg, "__main__.py"),
+    'import sys, os\nlog = os.environ.get("SMOKE_ARGV_LOG")\n'
+      + 'open(log, "w", encoding="utf-8").write(" ".join(sys.argv[1:]) + "\\n")\nprint("OK")\n',
+    "utf8",
+  )
+  process.env.SMOKE_ARGV_LOG = argvLog
+  process.env.WEEKLY_PYTHON = realPython
+} else {
+  const fakePython = path.join(venvBin, "python")
+  fs.writeFileSync(
+    fakePython,
+    `#!/bin/sh\necho "$@" > "${argvLog}"\necho "OK"\nexit 0\n`,
+    { mode: 0o755 },
+    "utf8",
+  )
+}
 // config minimale — fenêtre 7 j (aucune édition de config dans le test, comme au runtime)
 fs.writeFileSync(
   path.join(engine, "weekly-telemetry-config.json"),
