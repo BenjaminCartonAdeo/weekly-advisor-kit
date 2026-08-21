@@ -625,7 +625,7 @@ def open_database(path: Path) -> sqlite3.Connection:
     shm = path.with_suffix(suffix + "-shm")
     if not (wal.exists() or shm.exists()):
         try:
-            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+            conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
         except sqlite3.OperationalError:
             conn = sqlite3.connect(str(path), timeout=5)
             conn.execute("PRAGMA query_only=ON")
@@ -697,17 +697,28 @@ def _classify_db(conn: sqlite3.Connection) -> dict:
 def detect_db(value: str) -> tuple[Path, SchemaAdapter]:
     """Auto-detect (or pin) the OpenCode DB and its schema adapter.
 
-    `value == "auto"` → `<XDG_DATA_HOME>/opencode/opencode.db` then
-    `opencode-next.db`; among schema-valid candidates the one with the most
-    recent `MAX(time_updated)` wins. No valid candidate → DataSourceError with
-    an actionable, schema-aware message (v6.x).
+    `value == "auto"` → `<XDG_DATA_HOME>/opencode/` then `%LOCALAPPDATA%/opencode/`
+    (Windows), each probed for `opencode.db` then `opencode-next.db`; candidates
+    are deduplicated in stable order, and among schema-valid ones the one with
+    the most recent `MAX(time_updated)` wins. No valid candidate →
+    DataSourceError with an actionable, schema-aware message (v6.x).
     """
     if value != "auto":
         candidates = [Path(value).expanduser()]
     else:
         xdg = Path(os.environ.get("XDG_DATA_HOME", "~/.local/share")).expanduser()
-        base = xdg / "opencode"
-        candidates = [base / "opencode.db", base / "opencode-next.db"]
+        bases = [xdg / "opencode"]
+        localappdata = os.environ.get("LOCALAPPDATA")
+        if localappdata:
+            bases.append(Path(localappdata) / "opencode")
+        candidates = []
+        seen: set[str] = set()
+        for base in bases:
+            for name in ("opencode.db", "opencode-next.db"):
+                candidate = base / name
+                if str(candidate) not in seen:
+                    seen.add(str(candidate))
+                    candidates.append(candidate)
 
     matches: list[tuple[int, Path, SchemaAdapter]] = []
     existing: list[Path] = []

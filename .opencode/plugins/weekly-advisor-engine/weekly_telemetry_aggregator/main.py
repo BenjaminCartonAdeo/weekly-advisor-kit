@@ -537,9 +537,10 @@ def doctor(
                 warnings.append("project_root non résoluble — chemins à vérifier")
 
     try:
-        proc = subprocess.run(
-            [opencode_bin, "--version"], capture_output=True, text=True, timeout=15
-        )
+        # Windows : shutil.which résout "opencode" → "opencode.cmd"/".exe" (un
+        # argv nu n'est pas exécutable tel quel via subprocess sans shell).
+        resolved = shutil.which(opencode_bin) or opencode_bin
+        proc = subprocess.run([resolved, "--version"], capture_output=True, text=True, timeout=15)
         version = (proc.stdout or proc.stderr).strip()
     except (OSError, subprocess.TimeoutExpired):
         # Non fatal (v6.0.f) : le run est lancé PAR opencode (binaire absolu du cron) et

@@ -14,7 +14,11 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: .opencode/plugins/weekly-advisor-engine
@@ -30,12 +34,12 @@ jobs:
         run: uv run ruff check .
       - name: Format
         run: uv run ruff format --check .
-      - name: Tests (234, aucun réseau)
+      - name: Tests (237, aucun réseau)
         run: uv run pytest -q
       - name: Packaging
         run: uv build
       - name: Wheel content (template inclus)
-        run: unzip -l dist/*.whl | grep -q "templates/report_template.md.j2"
+        run: uv run python -c "import zipfile,glob,sys; names=zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist(); sys.exit(0 if 'templates/report_template.md.j2' in names else 1)"
 
       - name: Plugin TS (syntaxe)
         run: node --check .opencode/plugins/weekly-advisor.ts

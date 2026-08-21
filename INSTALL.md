@@ -92,7 +92,7 @@ run cron (mesuré v5.32).
 
 ```sh
 cd .opencode/plugins/weekly-advisor-engine
-uv run pytest -q     # 234 tests — tout doit passer
+uv run pytest -q     # 237 tests — tout doit passer
 cd ../../..
 opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"
@@ -135,6 +135,23 @@ PATH=/home/<TOI>/.local/bin:/usr/local/bin:/usr/bin:/bin
   le log contient la cause
 - **Heartbeat externe recommandé** (ex. healthchecks.io) pingé en début de run : seul
   maillon qui alerte si le cron lui-même ne tourne pas (spéc §0.5)
+
+### 2.8 Windows
+
+Support natif : le plugin résout l'interpréteur Python dans cet ordre — `WEEKLY_PYTHON`,
+puis `<moteur>/.venv/Scripts/python.exe` (layout venv Windows), puis `.venv/bin/python`
+(POSIX/WSL). Le venv créé par `uv sync` vit donc en `.venv\Scripts\` sans action de votre
+côté, et les flux stdout/stderr sont forcés en UTF-8.
+
+- **Secours** : si le venv vit ailleurs, définir `WEEKLY_PYTHON=C:\chemin\vers\python.exe`
+- **Planification** (équivalent du cron §2.7, une ligne) :
+
+```powershell
+schtasks /Create /SC WEEKLY /D LUN /ST 06:00 /TN weekly-advisor /TR "opencode run --port 4096 --agent weekly-advisor --model <votre-modele> --dir C:\Dev\weekly-advisor-kit \"Lance la revue hebdomadaire\""
+```
+
+- **WSL** : déjà couvert par la doc Linux (§2) — sous WSL, ignorez cette section et suivez
+  les étapes POSIX (le venv sera en `.venv/bin/python`, détecté automatiquement).
 
 ## 3. Mise à jour
 

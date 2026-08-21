@@ -6,7 +6,8 @@
  *
  * Résolution des chemins (toutes dérivées du worktree, zéro config absolue) :
  *   - moteur : <worktree>/.opencode/plugins/weekly-advisor-engine
- *   - python : $WEEKLY_PYTHON ?? <moteur>/.venv/bin/python (venv du projet moteur)
+ *   - python : $WEEKLY_PYTHON ?? <moteur>/.venv/Scripts/python.exe (Windows)
+ *              ?? <moteur>/.venv/bin/python (POSIX) — venv du projet moteur
  *   - config : <moteur>/weekly-telemetry-config.json (relue à chaque appel)
  *   - ancre  : <output_dir>/anchor-last.txt — lue si fraîche (âge ≤ fenêtre du run),
  *              rafraîchie vers maintenant si périmée, créée si absente (v6.0.b).
@@ -36,14 +37,20 @@ interface EngineLoc {
 
 function resolveEngine(worktree: string): EngineLoc {
   const engine = path.join(worktree, ...ENGINE_REL)
-  const python =
-    process.env.WEEKLY_PYTHON ?? path.join(engine, ".venv", "bin", "python")
+  // Résolution cross-platform : premier candidat existant gagnant (Windows pose
+  // le venv en .venv\Scripts\python.exe, POSIX en .venv/bin/python).
+  const candidates = [
+    process.env.WEEKLY_PYTHON,
+    path.join(engine, ".venv", "Scripts", "python.exe"),
+    path.join(engine, ".venv", "bin", "python"),
+  ].filter((p): p is string => typeof p === "string" && p.length > 0)
+  const python = candidates.find((p) => fs.existsSync(p))
   if (!fs.existsSync(engine)) {
     throw new Error(`moteur introuvable: ${engine} (structure du kit corrompue)`)
   }
-  if (!fs.existsSync(python)) {
+  if (!python) {
     throw new Error(
-      `venv introuvable: ${python} — exécuter depuis la racine du kit : uv sync --project .opencode/plugins/weekly-advisor-engine --all-extras`,
+      `interpréteur Python introuvable (candidats testés: ${candidates.join(", ")}) — définir WEEKLY_PYTHON ou créer le venv : uv sync --project .opencode/plugins/weekly-advisor-engine --all-extras`,
     )
   }
   // config : <moteur>/weekly-telemetry-config.json (même résolution que le CLI)
@@ -96,7 +103,13 @@ function runCli(worktree: string, args: string[], timeoutMs: number): Promise<st
     execFile(
       python,
       ["-m", "weekly_telemetry_aggregator", ...args],
-      { cwd: engine, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 },
+      {
+        cwd: engine,
+        timeout: timeoutMs,
+        maxBuffer: 64 * 1024 * 1024,
+        // Windows : forcer UTF-8 côté Python (consoles cp1252/cp850 sinon).
+        env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
+      },
       (err, stdout, stderr) => {
         if (!err) return resolve(stdout.trim())
         const detail = (stderr || stdout || "").trim().split("\n").slice(-12).join("\n")

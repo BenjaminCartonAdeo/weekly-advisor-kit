@@ -541,6 +541,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows : forcer UTF-8 sur stdout/stderr (consoles cp1252/cp850 sinon) ;
+    # no-op sur les plateformes déjà UTF-8.
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="replace")
     args = build_parser().parse_args(argv)
     cfg = _load_cfg(args)
     return args.func(args, cfg)
