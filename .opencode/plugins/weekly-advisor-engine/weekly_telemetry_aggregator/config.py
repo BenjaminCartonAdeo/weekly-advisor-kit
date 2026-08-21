@@ -122,7 +122,9 @@ class TelemetryConfig:
     outlier_min_sessions: int = OUTLIER_MIN_SESSIONS
     #: relative tolerance for the parts-vs-session_v2 cross-check (v5.28).
     cross_check_tolerance_pct: float = 0.25
-    #: pinned harness-eval version (spec §7 — drift → doctor warning, v5.28).
+    #: harness-eval MINIMUM requis (v6.1.a — plancher et non pin exact : les
+    #: versions supérieures sont acceptées ; la compatibilité du digest est
+    #: validée par structure au chargement, spec §7).
     harness_eval_version: str = "7.9.0"
     #: harness rules excluded from top-rules/lint counts (noise reduction, v5.28).
     harness_ignored_rules: list[str] = field(default_factory=list)

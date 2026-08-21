@@ -11,6 +11,7 @@ a silent gap.
 from __future__ import annotations
 
 import subprocess
+import sys
 from collections import Counter
 from datetime import timedelta
 from pathlib import Path
@@ -19,6 +20,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from . import __version__
 from .config import TelemetryConfig
+from .harness_scope import harness_digest_problems
 from .html_report import open_html_report, render_html_report
 from .insights import flatten_harness_findings
 from .run_state import active_run_meta, resolve_active_run_dir
@@ -198,6 +200,9 @@ def build_report_context(
 
     insights = _load_json(out / f"weekly-insights-{date}.json")
     digest = _load_json(out / f"weekly-harness-digest-{date}.json")
+    for digest_problem in harness_digest_problems(digest):
+        print(f"report: WARNING: {digest_problem}", file=sys.stderr, flush=True)
+        digest = None
     ecosystem = _load_json(out / f"weekly-ecosystem-{date}.json")
     findings = _load_json(out / f"weekly-quality-findings-{date}.json")
 
@@ -310,6 +315,9 @@ def report_blocks_draft(
         return None, ["summary inexistante — lancer run d'abord"], 2
     insights = _load_json(out / f"weekly-insights-{date}.json")
     digest = _load_json(out / f"weekly-harness-digest-{date}.json")
+    for digest_problem in harness_digest_problems(digest):
+        print(f"report: WARNING: {digest_problem}", file=sys.stderr, flush=True)
+        digest = None
     quality_findings = _load_json(out / f"weekly-quality-findings-{date}.json")
 
     lines = [

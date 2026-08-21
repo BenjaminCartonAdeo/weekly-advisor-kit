@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .config import InsightsConfig, TelemetryConfig
+from .harness_scope import harness_digest_problems
 from .main import EXIT_OK, EXIT_TOTAL_FAILURE
 from .run_state import RUNS_DIR, active_run_meta, resolve_active_run_dir
 from .util import iso as _iso
@@ -583,6 +584,13 @@ def run(
         else _discover_previous("weekly-summary-*.json", date, root, exclude_dir=out)
     )
     current_digest = _load(out / f"weekly-harness-digest-{date}.json")
+    for digest_problem in harness_digest_problems(current_digest):
+        print(
+            f"insights: WARNING: {digest_problem} — volet harness dégradé",
+            file=sys.stderr,
+            flush=True,
+        )
+        current_digest = None
     previous_digest = (
         state_digest
         if state_digest is not None

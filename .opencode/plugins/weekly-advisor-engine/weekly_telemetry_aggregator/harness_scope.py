@@ -424,6 +424,32 @@ def harness_digest_counts(digest: Mapping[str, object]) -> dict[str, int | None]
     }
 
 
+def harness_digest_problems(digest: object) -> list[str]:
+    """Structural guard for a harness-eval digest (v6.1.a).
+
+    The engine requires only a *minimum* tool version, so format compatibility
+    is enforced by shape instead of an exact pin: a mapping carrying an
+    ``inspection`` mapping or a non-empty ``rules``/``findings`` list is
+    consumable.  Anything else yields a problem string mentioning the likely
+    cause so callers degrade loudly (warning + None) rather than misparse.
+    """
+    if not isinstance(digest, Mapping):
+        return ["digest harness absent ou illisible"]
+    inspection = digest.get("inspection")
+    rules = digest.get("rules")
+    findings = digest.get("findings")
+    if (
+        isinstance(inspection, Mapping)
+        or (isinstance(rules, list) and bool(rules))
+        or (isinstance(findings, list) and bool(findings))
+    ):
+        return []
+    return [
+        "digest harness sans 'inspection'/'rules'/'findings' exploitables — "
+        "format incompatible (harness-eval plus récent que le kit ?)"
+    ]
+
+
 def enrich_harness_digest(
     digest: Mapping[str, object], scope: HarnessScope, projection_root: Path
 ) -> dict[str, Any]:

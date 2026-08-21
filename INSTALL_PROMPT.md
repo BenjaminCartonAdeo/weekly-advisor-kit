@@ -44,10 +44,11 @@ adapte sa configuration à ce repo, valide l'installation par des portes déterm
 | `uv` | ≥ 0.4 | `uv --version` |
 | `python3` | ≥ 3.11 | `python3 --version` |
 | `node` | ≥ 18 | `node --version` |
-| `harness-eval` | 7.9.0 (épinglé) | `harness-eval --version` doit afficher `7.9.x` |
+| `harness-eval` | ≥ 7.9.0 | `harness-eval --version` doit afficher `7.9` ou plus |
 | `opencode` | ≥ 1.18 | `opencode --version` — **manquant = warning non fatal** (le doctor le signale) |
 
-Si `harness-eval` est absent ou ≠ 7.9.x : `uv tool install harness-eval`, puis revérifier.
+Si `harness-eval` est absent ou < 7.9 : `uv tool install harness-eval`, puis revérifier
+(versions supérieures à 7.9 acceptées — v6.1.a).
 Si `opencode` est absent : continuer avec un warning dans le rapport.
 
 ## 5. Étapes — ordre figé, arrêt immédiat dès qu'une condition attendue n'est pas remplie

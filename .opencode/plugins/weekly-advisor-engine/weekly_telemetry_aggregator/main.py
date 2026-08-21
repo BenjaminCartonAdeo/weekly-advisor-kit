@@ -589,16 +589,27 @@ def doctor(
                 f"{tool} absent du PATH (rien n'est lancé, mais l'étape correspondante sera dégradée)"
             )
 
-    # Version pin check (spec §7) — drift makes lint deltas non-comparable.
+    # Version minimum (v6.1.a — plancher, pas un pin : les versions supérieures
+    # sont acceptées ; la compatibilité du format est garantie par la validation
+    # de structure du digest au chargement, spec §7).
     if shutil.which("harness-eval") is not None and cfg.harness_eval_version:
         try:
             proc = subprocess.run(
                 ["harness-eval", "--version"], capture_output=True, encoding="utf-8", timeout=15
             )
             version = (proc.stdout or proc.stderr).strip()
-            if version and cfg.harness_eval_version not in version:
+            installed = _version_tuple(version)
+            required = _version_tuple(cfg.harness_eval_version)
+            if installed is not None and required is not None:
+                if installed < required:
+                    warnings.append(
+                        f"harness-eval {version} < minimum requis {cfg.harness_eval_version}"
+                        " — mettre à jour : uv tool install --upgrade harness-eval"
+                    )
+            elif version and cfg.harness_eval_version not in version:
                 warnings.append(
-                    f"harness-eval {version} ≠ pin {cfg.harness_eval_version} — dérive de version (spec §7)"
+                    f"harness-eval --version illisible ({version!r})"
+                    f" — attendu ≥ {cfg.harness_eval_version}"
                 )
         except (OSError, subprocess.TimeoutExpired):
             warnings.append("harness-eval --version indisponible")
@@ -660,9 +671,13 @@ def harness(cfg: TelemetryConfig, *, anchor: str | None = None, timeout: int = 9
     try:
         vp = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=15)
         version = (vp.stdout or vp.stderr).strip()
-        if version and cfg.harness_eval_version and cfg.harness_eval_version not in version:
+        installed = _version_tuple(version)
+        required = _version_tuple(cfg.harness_eval_version) if cfg.harness_eval_version else None
+        if installed is not None and required is not None and installed < required:
             print(
-                f"harness: WARNING: version {version} ≠ pin {cfg.harness_eval_version}", flush=True
+                f"harness: WARNING: harness-eval {version} < minimum requis "
+                f"{cfg.harness_eval_version} — résultat non garanti",
+                flush=True,
             )
     except (OSError, subprocess.TimeoutExpired):
         print("harness: WARNING: --version indisponible", flush=True)

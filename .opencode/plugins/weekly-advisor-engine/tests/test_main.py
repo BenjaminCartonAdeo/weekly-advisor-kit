@@ -525,7 +525,7 @@ def test_harness_unexpected_rc_is_total_failure(tmp_path: Path, monkeypatch):
     assert harness(cfg, anchor=RUN_TIME.isoformat()) == EXIT_TOTAL_FAILURE
 
 
-def test_doctor_warns_on_harness_version_drift(tmp_path: Path, monkeypatch, capsys):
+def test_doctor_warns_below_harness_minimum(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.setattr(
         "shutil.which", lambda name: "/usr/bin/harness-eval" if name == "harness-eval" else None
     )
@@ -540,7 +540,35 @@ def test_doctor_warns_on_harness_version_drift(tmp_path: Path, monkeypatch, caps
     cfg.harness_eval_version = "7.9.0"
     doctor(cfg)
     out = capsys.readouterr().out
-    assert "dérive de version" in out
+    assert "minimum requis" in out
+
+
+def test_doctor_accepts_newer_harness_version(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "shutil.which", lambda name: "/usr/bin/harness-eval" if name == "harness-eval" else None
+    )
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda args, **kwargs: (
+            _FakeProc(0, stdout="harness-eval 8.2.0\n") if "--version" in args else _FakeProc(0)
+        ),
+    )
+    cfg = _cfg(tmp_path, tmp_path / "opencode.db")
+    cfg.project_root = tmp_path
+    cfg.harness_eval_version = "7.9.0"
+    doctor(cfg)
+    out = capsys.readouterr().out
+    assert "harness-eval" not in out
+
+
+def test_harness_digest_problems_flags_incompatible_shape():
+    from weekly_telemetry_aggregator.harness_scope import harness_digest_problems
+
+    assert harness_digest_problems({"inspection": {"summary": {"errors": 0}}}) == []
+    assert harness_digest_problems({"rules": [{"rule": "x"}]}) == []
+    problems = harness_digest_problems({"unexpected": True})
+    assert len(problems) == 1 and "incompatible" in problems[0]
+    assert harness_digest_problems(None) != []
 
 
 def test_cross_check_tolerance_silences_small_mismatch(tmp_path: Path):

@@ -16,7 +16,7 @@ Temps total : ~10 min (hors run complet de test : 30-45 min).
 |---|---|---|---|
 | `opencode` | ≥ 1.18 | `curl -fsSL https://opencode.ai/install \| bash` | `opencode --version` |
 | `uv` | — | `curl -LsSf https://astral.sh/uv/install.sh \| sh` | `uv --version` |
-| `harness-eval` | 7.9.0 (épinglé) | `uv tool install harness-eval` — paquet **PyPI**, pas npm | `harness-eval --version` (le doctor alerte en cas de dérive) |
+| `harness-eval` | ≥ 7.9.0 | `uv tool install harness-eval` — paquet **PyPI**, pas npm | `harness-eval --version` (versions supérieures acceptées ; le doctor alerte sous le minimum) |
 | `git`, `python` | ≥ 3.11 | gestionnaire du poste | `git --version`, `python3 --version` |
 | `bun` | optionnel | framework officiel | **non requis au runtime** — utile seulement pour éditer le plugin TS (typages `@opencode-ai/plugin`) ; opencode fournit le module au chargement |
 
@@ -93,7 +93,7 @@ run cron (mesuré v5.32).
 
 ```sh
 cd .opencode/plugins/weekly-advisor-engine
-uv run pytest -q     # 253 tests — tout doit passer
+uv run pytest -q     # 255 tests — tout doit passer
 cd ../../..
 opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"

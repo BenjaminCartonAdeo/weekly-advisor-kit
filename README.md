@@ -37,7 +37,7 @@ des skills dédiés et des contrats anti-hallucination.
 | 3 · Audit qualitatif | sessions candidates (coût, outliers, boucles, cache, prompts répétés) → constats archivés | skill `weekly-quality-audit` |
 | 3.5 · Veille critique | marché × environnement × constats → recommandations adopt / improve / ignore | skill `weekly-watch-review` |
 | 4 · Auto-drafting | candidats skills/commands → rédaction + commit sécurisé et scoped | skill `weekly-drafting` + `weekly_commit_draft` |
-| 5 · Lint | `harness-eval` sur une projection allowlistée de `.opencode/` (version épinglée) | `weekly_harness` (déterministe) |
+| 5 · Lint | `harness-eval` sur une projection allowlistée de `.opencode/` (version minimum) | `weekly_harness` (déterministe) |
 | 5.5 · Remédiation | findings harness → décisions et corrections bornées, sans commit automatique | skill `harness-remediation` + `weekly_harness_remediate` |
 | 6 · Insights | deltas vs semaine précédente, alertes budget/cache/spikes, maintenance R1-R4 | `weekly_insights` (déterministe) |
 | 6.5 · Cohérence | état déclaratif (skills/agents) vs usage réel | skill `weekly-coherence-review` |
@@ -139,17 +139,19 @@ racine/
   à jour du kit — `weekly_doctor` diagnostique base, config et binaires.
 - **Veille (étape 2)** : dépend d'APIs publiques (npm, GitHub, registre MCP) — rate-limits
   possibles, warnings par source tolérés, le run continue.
-- **`harness-eval` épinglé** (7.9.0) : toute dérive de version est signalée par le doctor.
+- **`harness-eval` minimum 7.9.0** (v6.1.a) : les versions supérieures sont acceptées sans avertissement —
+  la compatibilité du format est garantie par la validation de structure du digest au chargement
+  (volet harness dégradé avec message explicite si le format change).
 
 ## Développement
 
 ```sh
 # le projet uv (pyproject + uv.lock) vit dans le dossier moteur
 cd .opencode/plugins/weekly-advisor-engine
-uv run pytest -q             # 253 tests
+uv run pytest -q             # 255 tests
 uv run ruff check .          # lint
 uv run ruff format --check . # format
 ```
 
 CI GitHub Actions (`.github/workflows/ci.yml`) : install lockfile `--frozen`, lint,
-format, 253 tests, packaging et syntaxe du plugin TS — vérifiés sur chaque push/PR.
+format, 255 tests, packaging et syntaxe du plugin TS — vérifiés sur chaque push/PR.
