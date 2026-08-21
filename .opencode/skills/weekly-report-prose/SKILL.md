@@ -49,5 +49,7 @@ maintenance non vides). Sinon, NE PAS créer le fichier (le brouillon auto suffi
 ## Après écriture
 
 `report-assemble` injecte le bloc dans le draft → `weekly-report-<date>.md` (le signal
-du cron). ⚠ Un assemble réussi **supprime le draft (consommé)** : pour un nouvel assemble
+du cron) **et rend le rapport HTML interactif** (`reports/html/weekly-report-latest.html`,
+v6.1 — ton bloc y apparaît section « Constats qualitatifs » avec légende F/M/A et
+distribution par catégorie). ⚠ Un assemble réussi **supprime le draft (consommé)** : pour un nouvel assemble
 (ex. après édition du bloc), relancer `report-prep` d'abord — sinon erreur « draft inexistant ».

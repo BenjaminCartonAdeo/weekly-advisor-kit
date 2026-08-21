@@ -4,8 +4,11 @@
 
 Revue hebdomadaire automatisée de votre usage d'OpenCode : chaque semaine, le kit
 analyse votre télémétrie locale, surveille l'écosystème des plugins/skills, audite
-vos sessions coûteuses et produit **un rapport unique** `weekly-report-<date>.md` dans
-le répertoire du run (`reports/runs/<date>-<uuid>/`, alias stable `reports/runs/current/`).
+vos sessions coûteuses et produit **un rapport HTML interactif** — `weekly-report-<date>.html`
+dans `<projet>/reports/html/` (page autonome : dashboard KPI, filtres, graphiques, dark
+mode — ouverte automatiquement dans votre navigateur en fin de run), avec archive MD
+`weekly-report-<date>.md` dans le répertoire du run (`reports/runs/<date>-<uuid>/`,
+alias stable `reports/runs/current/`).
 
 Chaque lundi, il vous dit : combien vous avez dépensé, ce qui a coûté cher et pourquoi,
 quels skills/commands sont inutilisés ou redondants, quoi surveiller dans l'écosystème,
@@ -70,8 +73,9 @@ $EDITOR .opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json
 opencode run --agent weekly-advisor "Lance la revue hebdomadaire"
 ```
 
-- Comptez 10-30 min pour un run complet (télémétrie, réseau et lint compris) ; le rapport est dans
-  `<output_dir>/runs/current/weekly-report-<date>.md`
+- Comptez 10-30 min pour un run complet (télémétrie, réseau et lint compris) ; à la fin,
+  le **rapport HTML s'ouvre dans votre navigateur** (`<project_root>/reports/html/weekly-report-latest.html`)
+  — l'archive MD reste dans `<output_dir>/runs/current/weekly-report-<date>.md`
 - Première fois ? Remplacez la dernière commande par
   `opencode run --agent weekly-advisor "Exécute weekly_doctor et donne son verdict"` —
   il valide base, config et binaires avant le premier run

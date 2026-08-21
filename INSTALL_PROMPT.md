@@ -1,6 +1,6 @@
 # INSTALL_PROMPT.md — Installation autonome du kit weekly-advisor
 
-kit_version: 6.0.i
+kit_version: 6.1
 source_repo: https://github.com/BenjaminCartonAdeo/weekly-advisor-kit
 clone_url: https://github.com/BenjaminCartonAdeo/weekly-advisor-kit.git
 
@@ -9,7 +9,7 @@ clone_url: https://github.com/BenjaminCartonAdeo/weekly-advisor-kit.git
 
 ## 1. Mission
 
-Installe le kit weekly-advisor (version `6.0.i` ci-dessus) dans le repo local `<TARGET>`,
+Installe le kit weekly-advisor (version `6.1` ci-dessus) dans le repo local `<TARGET>`,
 adapte sa configuration à ce repo, valide l'installation par des portes déterministes et
 écris un rapport. Ne fais **rien d'autre**.
 
@@ -74,7 +74,7 @@ SRC=/tmp/weekly-advisor-kit-src
 ### 5.2 Vérification du clone (toutes obligatoires, une seule KO = STOP)
 
 ```sh
-grep -m1 "^kit_version:" "$SRC/INSTALL_PROMPT.md"   # doit contenir `6.0.i`
+grep -m1 "^kit_version:" "$SRC/INSTALL_PROMPT.md"   # doit contenir `6.1`
 for f in INSTALL.md README.md opencode-weekly-advisor \
   .opencode/plugins/weekly-advisor.ts \
   .opencode/agents/weekly-advisor/weekly-advisor.md \
@@ -182,7 +182,7 @@ opencode agent list
 ```jsonc
 {
   "schema_version": 1,
-  "kit_version": "6.0.i",
+  "kit_version": "6.1",
   "source_sha": "<SHA de 5.2>",
   "target": "<TARGET>",
   "date": "<DATE>",
@@ -205,7 +205,7 @@ opencode agent list
 - **ligne crontab PROPOSÉE** (jamais installée) — remplace `<TARGET>` et les chemins PATH réels :
 
 ```
-30 18 * * 1 PATH=/home/<user>/.cargo/bin:/home/<user>/.opencode/bin:/home/<user>/.local/bin:/usr/local/bin:/usr/bin:/bin /bin/sh -c 'log=$HOME/log/weekly-advisor-$(date -Is | tr ":" "-").log; { echo "START $(date -Is)"; /usr/bin/flock -n /tmp/weekly-advisor.lock /usr/bin/timeout --signal=TERM --kill-after=5m 90m "$(command -v opencode)" run --agent weekly-advisor --dir <TARGET> "Lance la revue hebdomadaire"; rc=$?; echo "END $(date -Is) exit=$rc"; exit "$rc"; } >"$log" 2>&1'
+30 18 * * 1 PATH=/home/<user>/.cargo/bin:/home/<user>/.opencode/bin:/home/<user>/.local/bin:/usr/local/bin:/usr/bin:/bin /bin/sh -c 'export WEEKLY_NO_BROWSER=1; log=$HOME/log/weekly-advisor-$(date -Is | tr ":" "-").log; { echo "START $(date -Is)"; /usr/bin/flock -n /tmp/weekly-advisor.lock /usr/bin/timeout --signal=TERM --kill-after=5m 90m "$(command -v opencode)" run --agent weekly-advisor --dir <TARGET> "Lance la revue hebdomadaire"; rc=$?; echo "END $(date -Is) exit=$rc"; exit "$rc"; } >"$log" 2>&1'
 ```
 
 - rappels : `opencode auth login` si non fait ; un premier run manuel (`opencode run --agent weekly-advisor --dir <TARGET>`) est recommandé avant de brancher le cron

@@ -113,8 +113,10 @@ opencode run --port 4097 --agent weekly-advisor --model <votre-modèle> \
 ```
 
 - Durée : 30-45 min (12 étapes ; `weekly_harness` ≈ 100 s à elle seule)
-- Artefact attendu : `<output_dir>/runs/current/weekly-report-<date>.md` (le répertoire du run
-  actif — `runs/current/` est un alias stable) — **c'est le signal** du run
+- Artefact attendu : le **rapport HTML** `<project_root>/reports/html/weekly-report-<date>.html`
+  (+ `weekly-report-latest.html`) — il s'ouvre automatiquement dans votre navigateur ;
+  l'archive `<output_dir>/runs/current/weekly-report-<date>.md` (alias stable `runs/current/`)
+  reste **le signal** du run. Cron headless ? Exportez `WEEKLY_NO_BROWSER=1`
 - Si un run a déjà eu lieu aujourd'hui : les données du jour sont exclues des totaux et le
   drafting aura 0 candidat (comportement normal) — pour un run pleinement informatif,
   lancer le premier run un lundi avec une semaine d'historique
@@ -134,6 +136,9 @@ PATH=/home/<TOI>/.local/bin:/usr/local/bin:/usr/bin:/bin
   et `harness-eval` via le plugin ; seul `git` doit rester résolu (défaut)
 - **Signal** : rapport présent = run terminé ; **rapport absent** = échec → alerter ;
   le log contient la cause
+- **Cron headless** : exporter `WEEKLY_NO_BROWSER=1` dans la ligne crontab (ou `open_browser: false`
+  en config) — sinon l'agent tente d'ouvrir un navigateur à chaque run (tentative sans
+  conséquence sur un serveur sans affichage, mais un warning est loggé)
 - **Heartbeat externe recommandé** (ex. healthchecks.io) pingé en début de run : seul
   maillon qui alerte si le cron lui-même ne tourne pas (spéc §0.5)
 
