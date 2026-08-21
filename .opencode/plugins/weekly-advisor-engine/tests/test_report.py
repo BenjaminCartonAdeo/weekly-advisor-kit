@@ -22,6 +22,7 @@ def _cfg(tmp_path: Path) -> TelemetryConfig:
     cfg.output_dir = tmp_path
     cfg.opencode_db_path = "/nonexistent/opencode.db"  # self-cost → None safely
     cfg.project_root = tmp_path
+    cfg.open_browser = False  # ceinture : conftest force déjà WEEKLY_NO_BROWSER=1
     return cfg
 
 
