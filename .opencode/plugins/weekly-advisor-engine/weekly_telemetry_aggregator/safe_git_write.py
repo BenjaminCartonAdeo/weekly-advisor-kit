@@ -25,7 +25,11 @@ _MESSAGE_PREFIX = {
 
 def _run_git(cwd: Path, *args: str, timeout: int = 30) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git", "-C", str(cwd), *args], capture_output=True, text=True, timeout=timeout
+        ["git", "-C", str(cwd), *args],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
     )
 
 

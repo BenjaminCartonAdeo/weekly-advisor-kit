@@ -39,7 +39,7 @@ jobs:
       - name: Packaging
         run: uv build
       - name: Wheel content (template inclus)
-        run: uv run python -c "import zipfile,glob,sys; names=zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist(); sys.exit(0 if 'templates/report_template.md.j2' in names else 1)"
+        run: uv run python -c "import zipfile,glob,sys; names=zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist(); sys.exit(0 if any('templates/report_template.md.j2' in n for n in names) else 1)"
 
       - name: Plugin TS (syntaxe)
         run: node --check .opencode/plugins/weekly-advisor.ts

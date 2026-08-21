@@ -231,7 +231,7 @@ def _remap_string(value: str, projection_root: Path) -> str:
     """Remap absolute projection paths to project-relative POSIX paths."""
     projection = projection_root.resolve()
     try:
-        candidate = Path(value)
+        candidate = Path(value).resolve()
         if candidate.is_absolute():
             return candidate.relative_to(projection).as_posix()
     except ValueError:

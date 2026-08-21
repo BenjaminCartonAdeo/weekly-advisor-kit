@@ -37,8 +37,8 @@ def _init_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def test_frontmatter_blocks_parses():
-    p = Path("/tmp/fake-skill.md")
+def test_frontmatter_blocks_parses(tmp_path: Path):
+    p = tmp_path / "fake-skill.md"
     p.write_text(VALID_SKILL, encoding="utf-8")
     meta, body, err = frontmatter_blocks(p)
     assert err is None
