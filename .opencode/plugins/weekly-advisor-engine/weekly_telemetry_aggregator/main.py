@@ -540,7 +540,9 @@ def doctor(
         # Windows : shutil.which résout "opencode" → "opencode.cmd"/".exe" (un
         # argv nu n'est pas exécutable tel quel via subprocess sans shell).
         resolved = shutil.which(opencode_bin) or opencode_bin
-        proc = subprocess.run([resolved, "--version"], capture_output=True, text=True, timeout=15)
+        proc = subprocess.run(
+            [resolved, "--version"], capture_output=True, encoding="utf-8", timeout=15
+        )
         version = (proc.stdout or proc.stderr).strip()
     except (OSError, subprocess.TimeoutExpired):
         # Non fatal (v6.0.f) : le run est lancé PAR opencode (binaire absolu du cron) et
@@ -591,7 +593,7 @@ def doctor(
     if shutil.which("harness-eval") is not None and cfg.harness_eval_version:
         try:
             proc = subprocess.run(
-                ["harness-eval", "--version"], capture_output=True, text=True, timeout=15
+                ["harness-eval", "--version"], capture_output=True, encoding="utf-8", timeout=15
             )
             version = (proc.stdout or proc.stderr).strip()
             if version and cfg.harness_eval_version not in version:
@@ -609,7 +611,10 @@ def doctor(
         else:
             try:
                 proc = subprocess.run(
-                    ["gh", "auth", "status", "--active"], capture_output=True, text=True, timeout=10
+                    ["gh", "auth", "status", "--active"],
+                    capture_output=True,
+                    encoding="utf-8",
+                    timeout=10,
                 )
                 if proc.returncode != 0:
                     warnings.append(

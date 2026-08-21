@@ -358,7 +358,8 @@ def _gh_api(endpoint: str) -> dict | list:
         proc = subprocess.run(
             ["gh", "api", endpoint, "--paginate"],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:  # binary absent / hang

@@ -36,7 +36,8 @@ def _git_log_raw(project_root: Path, *args: str) -> list[str]:
         proc = subprocess.run(
             ["git", "-C", str(project_root), "log", "--grep=auto-rédigé, revue hebdo", *args],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=20,
         )
     except (OSError, subprocess.TimeoutExpired):
