@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from helpers import active_run_file, seed_v1_file, tzutc
 
 from weekly_telemetry_aggregator.cli import build_parser, main
@@ -271,3 +272,59 @@ def test_show_session_accepts_canonical_id(tmp_path: Path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "user: salut" in out
+
+
+# ============================================================ v6.2 (fatal dispatch)
+
+
+def _doctor_conf(tmp_path: Path) -> Path:
+    return _write_config(tmp_path, _seed(tmp_path))
+
+
+@pytest.mark.parametrize("exc", [RuntimeError("boom"), OSError("disk full")], ids=type)
+def test_main_unexpected_exception_is_fatal(tmp_path, capsys, monkeypatch, exc):
+    """Spec §4 : traceback non géré → FATAL sur stderr + exit 2 (stop total)."""
+    from weekly_telemetry_aggregator import cli
+
+    def boom(args, cfg):
+        raise exc
+
+    monkeypatch.setattr(cli, "_cmd_doctor", boom)
+    rc = main(["doctor", "--config", str(_doctor_conf(tmp_path))])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "FATAL" in err and str(exc) in err
+
+
+def test_main_dispatch_success_unchanged(tmp_path, capsys, monkeypatch):
+    from weekly_telemetry_aggregator import cli
+
+    def ok(args, cfg):
+        print("ok-dispatch")
+        return 0
+
+    monkeypatch.setattr(cli, "_cmd_doctor", ok)
+    rc = main(["doctor", "--config", str(_doctor_conf(tmp_path))])
+    assert rc == 0
+    assert "ok-dispatch" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("exc", [SystemExit(3), KeyboardInterrupt()], ids=["systemexit", "kbint"])
+def test_main_control_flow_exceptions_traverse(tmp_path, monkeypatch, exc):
+    """KeyboardInterrupt/SystemExit ne sont jamais masqués par le wrap fatal."""
+    from weekly_telemetry_aggregator import cli
+
+    def bye(args, cfg):
+        raise exc
+
+    monkeypatch.setattr(cli, "_cmd_doctor", bye)
+    with pytest.raises(type(exc)):
+        main(["doctor", "--config", str(_doctor_conf(tmp_path))])
+
+
+def test_main_usage_error_still_exits_two_via_argparse(capsys):
+    """parse_args reste hors du try : SystemExit argparse intact."""
+    with pytest.raises(SystemExit) as ei:
+        main(["run", "--lookback-days", "0"])
+    assert ei.value.code != 0
+    capsys.readouterr()  # drain argparse usage output

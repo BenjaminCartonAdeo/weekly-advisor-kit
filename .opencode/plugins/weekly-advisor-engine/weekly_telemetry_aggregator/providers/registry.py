@@ -14,7 +14,7 @@ import warnings
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from .base import SessionProvider
+from .base import SessionProvider, validate_provider
 
 if TYPE_CHECKING:
     from ..config import TelemetryConfig
@@ -59,8 +59,9 @@ def build_providers(
     """Construit les providers des sources actives de `cfg.session_sources`.
 
     Fail-soft : entrée désactivée ("enabled": false) → silence ; type inconnu,
-    source indisponible (factory → None) ou échec d'initialisation →
-    UserWarning + skip. Ne lève jamais pour une source individuelle.
+    source indisponible (factory → None), échec d'initialisation ou provider
+    non conforme au contrat (`validate_provider`) → UserWarning + skip. Ne
+    lève jamais pour une source individuelle.
     """
     if factories is None:
         factories = discover_provider_factories()
@@ -83,6 +84,14 @@ def build_providers(
             continue
         if provider is None:
             warnings.warn(f"source de sessions {stype!r} indisponible — ignorée", stacklevel=2)
+            continue
+        deviations = validate_provider(provider)
+        if deviations:
+            warnings.warn(
+                f"source de sessions {stype!r} ignorée : provider non conforme au contrat "
+                f"({'; '.join(deviations)})",
+                stacklevel=2,
+            )
             continue
         providers.append(provider)
     return providers

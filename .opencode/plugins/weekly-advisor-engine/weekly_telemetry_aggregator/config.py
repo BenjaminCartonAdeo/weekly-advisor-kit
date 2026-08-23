@@ -372,6 +372,14 @@ def _parse(p: Path) -> TelemetryConfig:
     cfg.ignored_findings = [str(x) for x in raw.get("ignored_findings", cfg.ignored_findings)]
     if raw.get("project_root"):
         cfg.project_root = _expand(raw["project_root"])
+        if not cfg.project_root.is_dir():
+            # #11 : signal précoce au parse (fail-soft conservé, jamais bloquant) —
+            # sinon le défaut n'est nommé que plus tard, au doctor/run.
+            warnings.warn(
+                f"project_root {cfg.project_root} inexistant ou non-répertoire "
+                "— vérifier weekly-telemetry-config.json",
+                stacklevel=2,
+            )
     if raw.get("output_dir"):
         cfg.output_dir = _expand(raw["output_dir"])
     if "html_report_dir" in raw:

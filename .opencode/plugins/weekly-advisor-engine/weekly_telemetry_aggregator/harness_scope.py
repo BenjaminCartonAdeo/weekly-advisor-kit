@@ -9,6 +9,7 @@ so the resulting digest remains useful to the report and to insights.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -508,6 +509,41 @@ def harness_digest_counts(digest: Mapping[str, object]) -> dict[str, int | None]
         "findings_raw": findings_raw,
         "findings_unique": findings_unique,
     }
+
+
+# ---- faiblesse #14 : empreinte du jeu de règles (baseline harness) ------------
+
+
+def harness_rules_fingerprint(project_root: Path, tool_version: str | None) -> str:
+    """Empreinte stable du jeu de règles harness-eval courant (faiblesse #14).
+
+    SHA-256 sur les fichiers ``<project>/.harness-eval/rules/*.y*ml`` triés
+    (chemin relatif + octets), salé par la version du binaire ``harness-eval``
+    quand elle est connue. Fail-soft : binaire absent/version vide ou fichier
+    illisible → ``"unknown"`` — la baseline sera rafraîchie une fois puis
+    réutilisée, jamais bloquée.
+    """
+    if not tool_version:
+        return "unknown"
+    root = project_root.expanduser().resolve()
+    rules_dir = root / ".harness-eval" / "rules"
+    hasher = hashlib.sha256()
+    hasher.update(f"harness-eval={tool_version}\n".encode())
+    if rules_dir.is_dir():
+        for path in sorted(
+            candidate
+            for candidate in rules_dir.glob("*.y*ml")
+            if candidate.is_file() and not candidate.is_symlink()
+        ):
+            try:
+                content = path.read_bytes()
+            except OSError:
+                return "unknown"
+            hasher.update(relative_path(path, root).encode("utf-8"))
+            hasher.update(b"\0")
+            hasher.update(content)
+            hasher.update(b"\0")
+    return hasher.hexdigest()
 
 
 def harness_digest_problems(digest: object) -> list[str]:

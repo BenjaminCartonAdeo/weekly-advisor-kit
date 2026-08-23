@@ -11,14 +11,14 @@ mode: tests, manual CLI debugging) — production always activates a run first.
 
 from __future__ import annotations
 
-import json
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .util import load_json
+from .writer import write_json_atomic
 
 RUNS_DIR = "runs"
 RUN_STATE_FILE = "run_state.json"
@@ -92,9 +92,14 @@ def resolve_active_run_dir(output_dir: Path, date: str) -> Path:
 
 
 def active_run_meta(output_dir: Path, date: str) -> dict | None:
-    """State dict of the active run when it matches ``date``; None otherwise."""
+    """State dict of the active run for ``date`` (± tolérance minuit); None otherwise.
+
+    v6.2 : un run franchissant minuit UTC rafraîchit l'ancre en B alors que le
+    state actif porte la date A — le voisin -1 jour reste actif (pas de fallback
+    legacy). Au-delà d'un jour d'écart, comportement historique.
+    """
     state = load_json(Path(output_dir) / RUN_STATE_FILE)
-    if not isinstance(state, dict) or state.get("run_date") != date:
+    if not isinstance(state, dict) or not _state_date_matches(state.get("run_date"), date):
         return None
     run_dir = state.get("run_dir")
     if not isinstance(run_dir, str) or not run_dir:
@@ -104,9 +109,24 @@ def active_run_meta(output_dir: Path, date: str) -> dict | None:
     return state
 
 
+def _state_date_matches(state_run_date: object, date: str) -> bool:
+    """Exact match, ou run daté du voisin -1 jour (tolérance minuit UTC)."""
+    if state_run_date == date:
+        return True
+    try:
+        yesterday = datetime.strptime(date, "%Y-%m-%d").date() - timedelta(days=1)
+    except ValueError:  # date malformée → pas de tolérance
+        return False
+    return state_run_date == yesterday.isoformat()
+
+
 def _write_ok(path: Path, data: dict) -> None:
-    """Atomic-ish state write — state corruption must never kill a run."""
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    """Atomic state write (recette writer.py : temp même répertoire + os.replace).
+
+    Un crash mi-écriture ne doit jamais laisser un ``run_state.json`` tronqué —
+    l'état corrompu basculerait tous les artefacts suivants en fallback legacy.
+    """
+    write_json_atomic(path, data)
 
 
 def _update_current_link(output_dir: Path, run_dir: Path) -> None:

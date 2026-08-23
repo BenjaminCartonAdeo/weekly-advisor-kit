@@ -115,3 +115,40 @@ class SessionProvider(Protocol):
     def close(self) -> None:
         """Libère la source sous-jacente (idempotent)."""
         ...
+
+
+#: Méthodes exigées par le contrat `SessionProvider` (validation structurelle).
+_CONTRACT_METHODS: tuple[str, ...] = (
+    "check_schema",
+    "list_sessions",
+    "has_telemetry_rows",
+    "session_steps",
+    "session_tools",
+    "session_user_turns",
+    "session_context_chars",
+    "session_aggregates",
+    "session_parts",
+    "find_session_by_title",
+    "close",
+)
+
+
+def validate_provider(obj: object) -> list[str]:
+    """Liste les écarts de `obj` au contrat `SessionProvider` (vide = conforme).
+
+    Validation structurelle explicite : attribut `harness` présent et non vide,
+    chacune des 11 méthodes présente et appelable. Indépendante de
+    ``runtime_checkable`` — qui ne teste que la présence d'attributs, ni
+    l'appelabilité utile, ni la sémantique des retours.
+    """
+    issues: list[str] = []
+    harness = getattr(obj, "harness", None)
+    if not isinstance(harness, str) or not harness:
+        issues.append("attribut 'harness' absent ou vide")
+    for name in _CONTRACT_METHODS:
+        attr = getattr(obj, name, None)
+        if attr is None:
+            issues.append(f"méthode manquante : {name}()")
+        elif not callable(attr):
+            issues.append(f"attribut {name!r} non appelable")
+    return issues

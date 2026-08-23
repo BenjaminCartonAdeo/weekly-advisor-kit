@@ -76,7 +76,9 @@ sed -i 's|/path/to/weekly-advisor-kit|/home/<TOI>/Dev/weekly-advisor-kit|g' \
 > dans weekly-telemetry-config.json (placeholders /path/to/ détectés) ».
 
 Toutes les autres clés ont des défauts raisonnables (fenêtre 7 j, budgets, seuils,
-veille `watch`). Personnalisez `watch` (sources de veille) et les budgets selon votre usage.
+veille `watch`). `~` est supporté des deux côtés — le moteur Python (`expanduser()`)
+et le plugin TS (`os.homedir()`) l'expandent avec la même sémantique ; un chemin
+absolu reste recommandé. Personnalisez `watch` (sources de veille) et les budgets selon votre usage.
 Le profil `strict` limite le lint aux surfaces de politique et aux entrypoints de
 plugins ; `advisory` ajoute `.opencode/skills/**/SKILL.md`, leurs références et leurs
 exemples. Les chemins sont toujours relatifs au projet et la projection est temporaire.
@@ -108,7 +110,8 @@ copies, jamais de liens.
 règles custom `.harness-eval/rules/portability.yaml`, ids `custom/portability/*`).
 - ≥ 1 finding `error` → **commit refusé, fix manuel requis** ;
 - warnings seuls → commit autorisé, note jointe ;
-- binaire `harness-eval` absent / sortie illisible → **note ⚠ gate ignorée** (fail-soft).
+- binaire `harness-eval` absent → **note ⚠ gate ignorée** (fail-soft — gap d'install, signalé par le doctor) ;
+- timeout, crash du scanner ou sortie illisible → **commit refusé** (« gate non exécutable ») — jamais de faux vert.
 
 **Limite connue (honnête)** : en harness-eval 7.10.1, la gate couvre les **skills**
 uniquement — les commands/agents ne sont pas inspectés par les règles custom.
@@ -129,7 +132,7 @@ run cron (mesuré v5.32).
 
 ```sh
 cd .opencode/plugins/weekly-advisor-engine
-uv run python -m pytest -q     # 376 tests — tout doit passer
+uv run python -m pytest -q     # 426 tests — tout doit passer
 cd ../../..
 opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"

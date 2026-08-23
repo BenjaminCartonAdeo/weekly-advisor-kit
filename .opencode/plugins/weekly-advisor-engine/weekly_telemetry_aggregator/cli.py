@@ -562,8 +562,18 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(_stream, "reconfigure"):
             _stream.reconfigure(encoding="utf-8", errors="replace")
     args = build_parser().parse_args(argv)
-    cfg = _load_cfg(args)
-    return args.func(args, cfg)
+    from .main import EXIT_TOTAL_FAILURE
+
+    try:
+        cfg = _load_cfg(args)
+        return args.func(args, cfg)
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as exc:
+        # v6.2 spec §4 : toute exception non gérée est fatale (exit 2 = stop),
+        # jamais un « dégradé, je continue » — message explicite sur stderr.
+        print(f"FATAL: {exc}", file=sys.stderr)
+        return EXIT_TOTAL_FAILURE
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ SchemaAdapter (sqlite_reader.py, v5.16/v5.24) — no SDK, no server, no pricing 
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import shutil
@@ -26,6 +27,7 @@ from .harness_scope import (
     copy_scope_to_projection,
     enrich_harness_digest,
     harness_extra_roots,
+    harness_rules_fingerprint,
     inject_engine_content,
     resolve_harness_scope,
     resolve_remediation_surface,
@@ -449,6 +451,16 @@ def run(
     period = Period(start=run_time - timedelta(hours=cfg.window_hours()), end=run_time)
     warnings: list[WarningEntry] = []
     audit: list[dict] = []
+
+    # #12 : la sentinelle placeholders n'est plus réservée au doctor — la chaîne
+    # hebdo standard (run→…→assemble) n'y passe jamais. Warning visible (UserWarning
+    # + summary), non fatal : le run continue comme pour toute config exotique.
+    placeholder_fields = _placeholder_fields(cfg)
+    if placeholder_fields:
+        message = _placeholder_message(placeholder_fields)
+        _warn_user(message, stacklevel=2)
+        warnings.append(WarningEntry(session_id=None, message=message))
+
     print(
         f"telemetry-aggregator: fenêtre {cfg.lookback_days} j [{period.start.isoformat()} → {period.end.isoformat()}]",
         flush=True,
@@ -520,16 +532,19 @@ def run(
                 if meta.time_updated is not None and meta.time_updated < period.start:
                     continue
                 if meta.parent_id:
-                    # parent_id brut → canonique : la fusion racine/enfants
-                    # (aggregate + selection audit) reste valable multi-source.
-                    # Tolérant à un parent déjà préfixé (jamais de double préfixe).
+                    # parent_id brut → canonique sur une COPIE (dataclasses.replace) :
+                    # les metas du provider restent intactes (#10). La fusion
+                    # racine/enfants (aggregate + selection audit) reste valable
+                    # multi-source ; tolérant à un parent déjà préfixé (jamais de
+                    # double préfixe).
                     raw_parent = str(meta.parent_id)
                     prefix = f"{provider.harness}:"
-                    meta.parent_id = (
+                    canonical_parent = (
                         raw_parent
                         if raw_parent.startswith(prefix)
                         else canonical_session_id(provider.harness, raw_parent)
                     )
+                    meta = dataclasses.replace(meta, parent_id=canonical_parent)
                 usage, failed = build_usage(
                     meta,
                     provider,
@@ -648,6 +663,24 @@ def _check_migrations(adapter) -> int | None:
     return None
 
 
+def _placeholder_fields(cfg: TelemetryConfig) -> list[str]:
+    """Champs de config restés en placeholder « /path/to/... » jamais substitué."""
+    return [
+        field
+        for field in ("project_root", "output_dir")
+        if "path/to" in str(getattr(cfg, field, "") or "")
+    ]
+
+
+def _placeholder_message(fields: list[str]) -> str:
+    """Message d'installation partagé doctor/run pour les champs placeholder."""
+    return (
+        "config jamais adaptée à cette installation — substituer "
+        + "/".join(fields)
+        + " dans weekly-telemetry-config.json (placeholders /path/to/ détectés)"
+    )
+
+
 def doctor(
     cfg: TelemetryConfig,
     *,
@@ -684,17 +717,9 @@ def doctor(
     # Sentinelle d'installation : placeholders « /path/to/... » jamais substitués
     # dans weekly-telemetry-config.json — le fatal générique ci-dessus n'est pas
     # actionnable, on nomme le vrai défaut et les champs exacts à corriger.
-    _placeholder_fields = [
-        field
-        for field in ("project_root", "output_dir")
-        if "path/to" in str(getattr(cfg, field, "") or "")
-    ]
-    if _placeholder_fields:
-        problems.append(
-            "config jamais adaptée à cette installation — substituer "
-            + "/".join(_placeholder_fields)
-            + " dans weekly-telemetry-config.json (placeholders /path/to/ détectés)"
-        )
+    _fields = _placeholder_fields(cfg)
+    if _fields:
+        problems.append(_placeholder_message(_fields))
 
     try:
         # Windows : shutil.which résout "opencode" → "opencode.cmd"/".exe" (un
@@ -722,45 +747,51 @@ def doctor(
 
     # Sources de sessions : itération générique sur les providers actifs du
     # registre — aucun harnais connu en dur du doctor (un nouveau provider
-    # s'affiche ici sans modification de ce bloc).
+    # s'affiche ici sans modification de ce bloc). close() est garanti pour
+    # chaque provider (try/finally), même si check_schema() lève (#9).
     providers = build_providers(cfg)
     usable = 0
     for provider in providers:
         name = getattr(provider, "harness", type(provider).__name__)
         try:
-            provider.check_schema()
-        except Exception as exc:  # noqa: BLE001 — diagnostic fail-soft par source
-            warnings.append(f"[{name}] schéma illisible ({exc})")
-            print(f"doctor: [{name}] KO ({exc})")
-            continue
-        usable += 1
-        details: list[str] = []
-        src = getattr(provider, "db_path", None)
-        if src is not None:
-            details.append(str(src))
-        adapter = getattr(provider, "_adapter", None)
-        if adapter is not None:
-            # Check migrations conservé pour les providers SQLite qui exposent
-            # leur adapter ; les autres (non-SQLite) sautent proprement.
-            migrations = _check_migrations(adapter)
-            n = migrations if migrations is not None else 0
-            if migrations is None:
-                warnings.append(
-                    f"[{name}] compteur de migrations introuvable — schéma non standard"
-                )
-            elif n < MIGRATION_MIN_V1:
-                warnings.append(
-                    f"[{name}] compteur de migrations faible ({n}) — vérifier la version du harnais"
-                )
-            details.append(f"migrations={n}")
-        suffix = f" ({', '.join(details)})" if details else ""
-        print(f"doctor: [{name}] OK{suffix}")
-        provider.close()
+            try:
+                provider.check_schema()
+            except Exception as exc:  # noqa: BLE001 — diagnostic fail-soft par source
+                warnings.append(f"[{name}] schéma illisible ({exc})")
+                print(f"doctor: [{name}] KO ({exc})")
+                continue
+            usable += 1
+            details: list[str] = []
+            src = getattr(provider, "db_path", None)
+            if src is not None:
+                details.append(str(src))
+            adapter = getattr(provider, "_adapter", None)
+            if adapter is not None:
+                # Check migrations conservé pour les providers SQLite qui exposent
+                # leur adapter ; les autres (non-SQLite) sautent proprement.
+                migrations = _check_migrations(adapter)
+                n = migrations if migrations is not None else 0
+                if migrations is None:
+                    warnings.append(
+                        f"[{name}] compteur de migrations introuvable — schéma non standard"
+                    )
+                elif n < MIGRATION_MIN_V1:
+                    warnings.append(
+                        f"[{name}] compteur de migrations faible ({n}) — vérifier la version du harnais"
+                    )
+                details.append(f"migrations={n}")
+            suffix = f" ({', '.join(details)})" if details else ""
+            print(f"doctor: [{name}] OK{suffix}")
+        finally:
+            provider.close()
     if not usable:
         problems.append(
             "aucune source de sessions disponible — vérifier session_sources / bases locales"
         )
         print("doctor: sources de sessions: aucune disponible")
+    # #13 : ≥1 source utilisable ET ≥1 source KO → dégradation partielle réelle,
+    # signalée par EXIT_PARTIAL au lieu d'un 0 muet.
+    partial_sources = bool(providers) and 0 < usable < len(providers)
 
     # Cibles de drafting (cellule 2.1) : LE harnais cible effectif — override
     # config > détection par marqueurs > défaut opencode ; [] = legacy. Un
@@ -841,6 +872,10 @@ def doctor(
 
     if problems:
         return EXIT_TOTAL_FAILURE
+    if partial_sources:
+        # #13 : sources mixtes OK/KO — setup dégradé, pas un échec total (2)
+        # ni un setup sain (0).
+        return EXIT_PARTIAL
     # Warnings (harness-eval absent, cwd hint, migrations bas) sont des notes
     # d'opération — un setup sain retourne 0 avec les notes imprimées.
     return EXIT_OK
@@ -848,7 +883,10 @@ def doctor(
 
 # ---- cellule 2.2 : kit root + baseline findings -------------------------------
 
-HARNESS_BASELINE_SCHEMA_VERSION = 1
+# v2 (faiblesse #14) : ajout de `rules_version` — empreinte du jeu de règles
+# (fichiers .harness-eval/rules + version harness-eval). Une baseline sans
+# empreinte (v1) est rafraîchie une fois puis réutilisée.
+HARNESS_BASELINE_SCHEMA_VERSION = 2
 #: Nom de l'artefact baseline (racine output_dir — survit aux runs, comme
 #: `previous_run.json` ; un run ne doit jamais réécrire l'histoire).
 HARNESS_BASELINE_FILE = "weekly-harness-baseline.json"
@@ -887,18 +925,31 @@ def _baseline_finding_keys(digest: Mapping) -> list[tuple[str, str]]:
     )
 
 
-def _capture_or_reuse_baseline(output_dir: Path, date: str, enriched_digest: Mapping) -> dict:
-    """Baseline findings : capturée au premier run, réutilisée ensuite.
+def _capture_or_reuse_baseline(
+    output_dir: Path,
+    date: str,
+    enriched_digest: Mapping,
+    *,
+    project_root: Path,
+    tool_version: str | None,
+) -> dict:
+    """Baseline findings : capturée au premier run, réutilisée à empreinte égale.
 
     Ancrage : racine ``output_dir`` (stable entre runs, comme run_state.json).
     Premier run → le snapshot courant devient la baseline (`status=created`).
-    Runs suivants → la baseline stockée est relue telle quelle (`reused`) et
-    les findings nouveaux depuis la baseline sont listés. Une baseline
-    illisible est remplacée (auto-réparation, jamais bloquante).
+    Runs suivants → réutilisation (`reused`) uniquement si l'empreinte du jeu
+    de règles (``rules_version``, faiblesse #14) est identique ; sinon la
+    baseline est recapturée (`refreshed`) avec note stdout + WarningEntry —
+    un upgrade harness-eval/portability.yaml ne produit plus des faux
+    ``new_findings`` éternels. Une baseline illisible est remplacée
+    (auto-réparation conservée) mais désormais tracée (warning + note), plus
+    aucun reset silencieux.
     """
     current_keys = _baseline_finding_keys(enriched_digest)
+    rules_version = harness_rules_fingerprint(project_root, tool_version)
     path = output_dir / HARNESS_BASELINE_FILE
     stored: dict | None = None
+    corrupted = False
     if path.is_file():
         try:
             loaded = json.loads(path.read_text(encoding="utf-8"))
@@ -910,6 +961,10 @@ def _capture_or_reuse_baseline(output_dir: Path, date: str, enriched_digest: Map
             and isinstance(loaded.get("captured_on"), str)
         ):
             stored = loaded
+        else:
+            # Faiblesse #14 : JSON cassé OU forme invalide = corruption — la
+            # recapture reste automatique mais n'est plus silencieuse.
+            corrupted = True
     baseline_keys = sorted(
         {
             (str(item.get("rule")), str(item.get("path")))
@@ -918,14 +973,35 @@ def _capture_or_reuse_baseline(output_dir: Path, date: str, enriched_digest: Map
         }
     )
     new_keys = sorted(set(current_keys) - set(baseline_keys)) if stored else []
-    if stored is not None:
+    if (
+        stored is not None
+        and stored.get("rules_version") == rules_version
+        and rules_version != "unknown"
+    ):
         return {
             "schema_version": HARNESS_BASELINE_SCHEMA_VERSION,
             "status": "reused",
             "captured_on": str(stored["captured_on"]),
             "finding_count": len(baseline_keys),
             "new_findings": [{"rule": rule, "path": path_} for rule, path_ in new_keys],
+            "rules_version": rules_version,
         }
+
+    # Faiblesse #14 : toute capture non-réutilisée est tracée (jamais muette).
+    entries: list[WarningEntry] = []
+    status = "created"
+    if stored is not None:
+        # Empreinte absente (baseline legacy) ou différente (règles/outil
+        # changés) → recapture unique : le prochain run retrouvera l'empreinte.
+        status = "refreshed"
+        entries.append(
+            WarningEntry(session_id=None, message="baseline harness rafraîchie : règles changées")
+        )
+    elif corrupted:
+        entries.append(WarningEntry(session_id=None, message="baseline illisible — recapture"))
+    for entry in entries:
+        print(f"harness: WARNING: {entry.message}", flush=True)
+
     snapshot = [
         {"rule": rule, "path": path_}
         for rule, path_ in (current_keys if stored is None else baseline_keys)
@@ -935,6 +1011,7 @@ def _capture_or_reuse_baseline(output_dir: Path, date: str, enriched_digest: Map
         "captured_on": date,
         "finding_count": len(snapshot),
         "findings": snapshot,
+        "rules_version": rules_version,
     }
     try:
         write_json_atomic(path, payload)
@@ -942,19 +1019,24 @@ def _capture_or_reuse_baseline(output_dir: Path, date: str, enriched_digest: Map
         print(f"harness: WARNING: baseline non écrite ({exc})", flush=True)
         return {
             "schema_version": HARNESS_BASELINE_SCHEMA_VERSION,
-            "status": "created",
+            "status": status,
             "captured_on": date,
             "finding_count": len(snapshot),
             "new_findings": [],
             "error": str(exc),
+            "rules_version": rules_version,
+            "warnings": [dataclasses.asdict(entry) for entry in entries],
         }
-    print(f"harness: baseline findings capturée ({len(snapshot)} finding(s))", flush=True)
+    verb = "capturée" if status == "created" else "rafraîchie"
+    print(f"harness: baseline findings {verb} ({len(snapshot)} finding(s))", flush=True)
     return {
         "schema_version": HARNESS_BASELINE_SCHEMA_VERSION,
-        "status": "created",
+        "status": status,
         "captured_on": date,
         "finding_count": len(snapshot),
         "new_findings": [],
+        "rules_version": rules_version,
+        "warnings": [dataclasses.asdict(entry) for entry in entries],
     }
 
 
@@ -980,9 +1062,12 @@ def harness(cfg: TelemetryConfig, *, anchor: str | None = None, timeout: int = 9
     if cfg.project_root is None:
         print("harness: FATAL: project_root manquant dans la config", file=sys.stderr, flush=True)
         return EXIT_TOTAL_FAILURE
+    tool_version: str | None = None
     try:
         vp = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=15)
         version = (vp.stdout or vp.stderr).strip()
+        if version:
+            tool_version = version
         installed = _version_tuple(version)
         required = _version_tuple(cfg.harness_eval_version) if cfg.harness_eval_version else None
         if installed is not None and required is not None and installed < required:
@@ -1087,8 +1172,15 @@ def harness(cfg: TelemetryConfig, *, anchor: str | None = None, timeout: int = 9
                 }
                 # Cellule 2.2 : baseline ancrée à la racine output_dir (comme
                 # run_state.json) — un run dir UUID neuf ne doit pas casser
-                # la réutilisation aux runs suivants.
-                baseline = _capture_or_reuse_baseline(cfg.output_dir, date, enriched)
+                # la réutilisation aux runs suivants. Faiblesse #14 : réutilisation
+                # conditionnée à l'empreinte du jeu de règles (rules_version).
+                baseline = _capture_or_reuse_baseline(
+                    cfg.output_dir,
+                    date,
+                    enriched,
+                    project_root=cfg.project_root,
+                    tool_version=tool_version,
+                )
                 enriched["harness_baseline"] = baseline
                 write_json_atomic(out_path, enriched)
     except (OSError, subprocess.TimeoutExpired) as exc:

@@ -34,6 +34,18 @@ interface EngineLoc {
   python: string
   config: Record<string, unknown>
   outputDir: string
+  configPath: string
+}
+
+/**
+ * Expansion `~` alignée sur `Path.expanduser()` côté moteur Python (v6.2.c) :
+ * sans elle, une config `"output_dir": "~/…"` donnait côté TS un littéral
+ * `<engine>/~/x` (split-brain avec le CLI qui, lui, expandait).
+ */
+function expandHome(p: string): string {
+  if (p === "~") return os.homedir()
+  if (p.startsWith("~/") || p.startsWith("~\\")) return path.join(os.homedir(), p.slice(2))
+  return p
 }
 
 function resolveEngine(worktree: string): EngineLoc {
@@ -62,12 +74,19 @@ function resolveEngine(worktree: string): EngineLoc {
   if (fs.existsSync(configPath)) {
     config = JSON.parse(fs.readFileSync(configPath, "utf8"))
   }
-  const out = config["output_dir"]
+  // Expansion `~` des clés de chemins — sémantique identique au moteur Python
+  // (`expanduser()`), pour que l'ancre et tout usage TS voient la même racine.
+  const expanded = { ...config }
+  for (const key of ["project_root", "output_dir", "kit_root"]) {
+    const v = expanded[key]
+    if (typeof v === "string" && v.startsWith("~")) expanded[key] = expandHome(v)
+  }
+  const out = expanded["output_dir"]
   const outputDir =
     typeof out === "string" && path.isAbsolute(out)
       ? out
       : path.join(engine, typeof out === "string" ? out : "reports")
-  return { engine, python, config, outputDir }
+  return { engine, python, config: expanded, outputDir, configPath }
 }
 
 /**
@@ -101,11 +120,20 @@ function anchorArg(
 }
 
 function runCli(worktree: string, args: string[], timeoutMs: number): Promise<string> {
-  const { engine, python } = resolveEngine(worktree)
+  const { engine, python, configPath } = resolveEngine(worktree)
+  // --config explicite (v6.2.c) : le transport ne repose plus sur cwd=engine ;
+  // absent du disque → omis, le CLI retombe sur sa découverte par défaut
+  // (même chemin <cwd>/weekly-telemetry-config.json — comportement inchangé).
+  const argv = [
+    "-m",
+    "weekly_telemetry_aggregator",
+    ...(fs.existsSync(configPath) ? ["--config", configPath] : []),
+    ...args,
+  ]
   return new Promise((resolve, reject) => {
     execFile(
       python,
-      ["-m", "weekly_telemetry_aggregator", ...args],
+      argv,
       {
         cwd: engine,
         timeout: timeoutMs,
@@ -130,8 +158,16 @@ function runCli(worktree: string, args: string[], timeoutMs: number): Promise<st
 //     <racine>/.harness-eval/rules/ ; lancé ailleurs : 0 règle → gate aveugle) ;
 //   - ≥1 finding error → commit refusé, fix manuel requis ;
 //   - warnings seuls → commit autorisé, note jointe au résultat ;
-//   - binaire absent / sortie illisible → fail-soft : note non bloquante
-//     (le doctor du kit signale déjà l'absence du binaire).
+//   - binaire absent (ENOENT POSIX / `where` négatif Windows) → fail-soft :
+//     note ⚠ non bloquante — gap d'install documenté, signalé par le doctor ;
+//   - timeout, crash scanner ou sortie illisible → REFUS « gate non
+//     exécutable » (v6.2.c) : jamais de faux vert — safety-first.
+// win32 : execFile sans shell ne résout pas le shim .cmd de harness-eval
+// (uv tool install) → ENOENT systématique, gate jamais active. Sous Windows on
+// passe shell:true (résolution via cmd) avec scanDir quoté (join par espaces) ;
+// un pré-check `where` préserve la sémantique fail-soft du binaire absent,
+// car en mode shell l'absence remonte exit≠0 et plus ENOENT. Garde non
+// exécutable sur poste POSIX — vérifier sous Windows avant release.
 const PORTABILITY_PREFIX = "custom/portability/"
 
 interface SkillVerifyDetail {
@@ -141,19 +177,36 @@ interface SkillVerifyDetail {
   suggestion?: string
 }
 
+/** Binaire présent sur PATH ? POSIX : ENOENT détecté au spawn, pré-check inutile. */
+function commandOnPath(cmd: string): Promise<boolean> {
+  if (process.platform !== "win32") return Promise.resolve(true)
+  // Windows : `where` (natif) résout les shims .cmd — spawn direct sans shell non.
+  return new Promise((resolve) => {
+    execFile("where", [cmd], { windowsHide: true }, (err) => resolve(!err))
+  })
+}
+
 /** Spawn harness-eval avec cwd = racine projet. Résout "" si binaire absent. */
-function runSkillVerify(scanDir: string): Promise<string> {
+async function runSkillVerify(scanDir: string): Promise<string> {
+  if (!(await commandOnPath("harness-eval"))) return ""
+  const winShell = process.platform === "win32"
   return new Promise((resolve, reject) => {
     execFile(
       "harness-eval",
-      ["skill-verify", scanDir, "--format", "json"],
-      { cwd: worktree, timeout: 60_000, maxBuffer: 16 * 1024 * 1024, env: process.env },
+      // shell:true → argv joint par espaces : quotage obligatoire (tmpdir peut
+      // contenir des espaces sous Windows). POSIX : arg brut, pas de shell.
+      ["skill-verify", winShell ? `"${scanDir}"` : scanDir, "--format", "json"],
+      { cwd: worktree, timeout: 60_000, maxBuffer: 16 * 1024 * 1024, env: process.env, shell: winShell },
       (err, stdout, stderr) => {
         if (err && (err as NodeJS.ErrnoException).code === "ENOENT") return resolve("")
-        if (err)
+        if (err) {
+          const why = (err as NodeJS.ErrnoException & { killed?: boolean }).killed
+            ? `timeout après 60 s`
+            : `exit ${String(err.code ?? "?")}`
           return reject(
-            new Error(`harness-eval skill-verify → exit ${err.code ?? "?"}\n${(stderr || stdout || "").trim().slice(-400)}`),
+            new Error(`skill-verify indisponible (${why})\n${(stderr || stdout || "").trim().slice(-400)}`),
           )
+        }
         resolve(stdout)
       },
     )
@@ -164,25 +217,30 @@ type PortabilityOutcome =
   | { kind: "blocked"; findings: string[] }
   | { kind: "pass"; warnings: string[] }
   | { kind: "ignored"; reason: string }
+  | { kind: "unusable"; reason: string }
 
-/** Exécute la gate et tranche : bloqué / passage (warnings seuls) / ignorée (fail-soft). */
-async function runPortabilityGate(file: string): Promise<PortabilityOutcome> {
+/** Exécute la gate et tranche : bloqué / passage (warnings seuls) / ignorée (binaire absent) / refusée (environnement défaillant). */
+export async function runPortabilityGate(file: string): Promise<PortabilityOutcome> {
   const scan = prepareScanDir(file)
   try {
-    const stdout = await runSkillVerify(scan.dir)
+    let stdout: string
+    try {
+      stdout = await runSkillVerify(scan.dir)
+    } catch (e) {
+      // Crash/timeout du scanner ≠ faute de l'artefact, mais un commit passé
+      // sur une gate morte serait un faux vert → REFUS (v6.2.c).
+      return { kind: "unusable", reason: (e as Error).message.split("\n")[0] }
+    }
     if (!stdout.trim()) return { kind: "ignored", reason: "binaire harness-eval introuvable" }
     let errors: string[]
     let warnings: string[]
     try {
       ;({ errors, warnings } = collectPortability(stdout))
     } catch {
-      return { kind: "ignored", reason: "sortie skill-verify illisible (JSON invalide)" }
+      return { kind: "unusable", reason: "sortie skill-verify illisible (JSON invalide)" }
     }
     if (errors.length > 0) return { kind: "blocked", findings: errors }
     return { kind: "pass", warnings }
-  } catch (e) {
-    // Crash du scanner ≠ faute de l'artefact : fail-soft avec motif explicite.
-    return { kind: "ignored", reason: `skill-verify en échec : ${(e as Error).message.split("\n")[0]}` }
   } finally {
     scan.cleanup()
   }
@@ -404,7 +462,8 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
         description:
           "Étape 4 : commit auto-rédigé d'un skill/command draft (commit-draft). " +
           "Gate de portabilité (skill-verify) avant chaque commit : erreur → refus + fix manuel requis, " +
-          "warnings seuls → passage avec note. 1 commit par écriture, pré-checks git intégrés.",
+          "warnings seuls → passage avec note, environnement défaillant (timeout/crash/sortie illisible) → refus. " +
+          "1 commit par écriture, pré-checks git intégrés.",
         args: {
           kind: tool.schema.enum(["skill", "command"]),
           file: tool.schema.string().describe("chemin absolu du fichier draft"),
@@ -421,6 +480,16 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
                   `artefact : ${args.file}\n` +
                   gate.findings.map((f, i) => `  ${i + 1}. ${f}`).join("\n") +
                   `\nCorrigez le fichier puis relancez le commit.`,
+              )
+            }
+            if (gate.kind === "unusable") {
+              // Safety-first (v6.2.c) : une gate morte ne doit jamais produire
+              // un faux vert — refus avec motif précis, fix d'environnement requis.
+              throw new Error(
+                `commit REFUSÉ — gate de portabilité non exécutable (environnement harness-eval défaillant)\n` +
+                  `artefact : ${args.file}\n` +
+                  `motif : ${gate.reason}\n` +
+                  `Réparez l'installation de harness-eval (≥ 7.10.1, cf. INSTALL.md §1) puis relancez le commit.`,
               )
             }
             if (gate.kind === "pass" && gate.warnings.length > 0) {

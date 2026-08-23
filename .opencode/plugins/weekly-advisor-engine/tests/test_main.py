@@ -409,6 +409,48 @@ def test_doctor_no_provider_available_exits_two(tmp_path: Path, capsys):
     assert doctor(cfg2) == EXIT_TOTAL_FAILURE
 
 
+def test_doctor_closes_provider_even_when_check_schema_raises(tmp_path: Path, monkeypatch):
+    """#9 : un provider dont check_schema() lève doit être close() quand même —
+    la connexion n'est jamais fuite, même en échec de schéma."""
+    import weekly_telemetry_aggregator.main as main_mod
+
+    class BrokenProvider(FakeSessionProvider):
+        def check_schema(self) -> None:
+            raise RuntimeError("boom")
+
+    _ = (tmp_path / ".opencode").mkdir()
+    cfg = _cfg(tmp_path, tmp_path / "absent.db")
+    cfg.project_root = tmp_path
+    ko_src = BrokenProvider("alpha", [])
+    ok_src = FakeSessionProvider("opencode", [])
+    monkeypatch.setattr(main_mod, "build_providers", lambda _cfg: [ko_src, ok_src])
+    rc = doctor(cfg)
+    assert ko_src.closed is True  # close garanti malgré check_schema KO
+    assert ok_src.closed is True
+    assert rc == EXIT_PARTIAL  # mixte OK/KO → partiel (cf. #13)
+
+
+def test_doctor_exit_partial_on_mixed_sources(tmp_path: Path, monkeypatch, capsys):
+    """#13 : ≥1 source utilisable ET ≥1 source KO → EXIT_PARTIAL (1) ; tout KO → 2 ;
+    tout OK → 0. La constante EXIT_PARTIAL cesse d'être morte dans doctor()."""
+    import weekly_telemetry_aggregator.main as main_mod
+
+    class BrokenProvider(FakeSessionProvider):
+        def check_schema(self) -> None:
+            raise RuntimeError("boom")
+
+    _ = (tmp_path / ".opencode").mkdir()
+    cfg = _cfg(tmp_path, tmp_path / "absent.db")
+    cfg.project_root = tmp_path
+    ok_src = FakeSessionProvider("opencode", [])
+    ko_src = BrokenProvider("alpha", [])
+    monkeypatch.setattr(main_mod, "build_providers", lambda _cfg: [ok_src, ko_src])
+    assert doctor(cfg) == EXIT_PARTIAL
+    out = capsys.readouterr().out
+    assert "[alpha] KO" in out
+    assert "[opencode] OK" in out
+
+
 def test_doctor_generic_multi_harness_sections(tmp_path: Path, monkeypatch, capsys, fake_opencode):
     """Générique : aucune liste de harnais en dur — un futur ClaudeCodeProvider
     s'affiche comme n'importe quel provider sans modifier le doctor."""
@@ -1508,6 +1550,57 @@ def test_run_dedup_warning_message_recap_format(tmp_path: Path, monkeypatch):
     assert "1 session(s) en doublon ignorée(s) depuis alpha source #2" in str(
         dup_warnings[0].message
     )
+
+
+def test_run_warns_on_placeholder_config(tmp_path: Path):
+    """#12 : la garde placeholders n'est plus réservée au doctor — run() émet un
+    warning visible (stdout + summary) et continue (non fatal, zéro régression
+    pour les configs valides)."""
+    db = _seed_n(tmp_path / "opencode.db", 3)
+    cfg = _cfg(tmp_path, db)
+    cfg.project_root = Path("/path/to/weekly-advisor-kit")
+    with pytest.warns(UserWarning, match="jamais adaptée"):
+        rc = run(cfg, anchor=RUN_TIME.isoformat())
+    assert rc == EXIT_OK  # non fatal : le run aboutit
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
+    assert any("jamais adaptée" in w["message"] for w in data["warnings"])
+    assert any("/path/to/" in w["message"] for w in data["warnings"])
+
+
+def test_run_does_not_mutate_provider_metas(tmp_path: Path, monkeypatch):
+    """#10 : la canonisation du parent_id se fait sur une copie (dataclasses.replace) —
+    les HarnessSession du provider restent intactes, la fusion racine/enfant marche
+    toujours downstream."""
+    from helpers import fake_meta, make_step
+
+    import weekly_telemetry_aggregator.main as main_mod
+
+    root_meta = fake_meta("alpha", "root", title="Root", updated=FAKE_TS)
+    child_meta = fake_meta("alpha", "child", title="Child", parent="root", updated=FAKE_TS)
+    src = FakeSessionProvider(
+        "alpha",
+        [root_meta, child_meta],
+        steps_by_session={
+            "root": [make_step("root", FAKE_TS, cost=1.0)],
+            "child": [make_step("child", FAKE_TS, cost=0.5)],
+        },
+    )
+    monkeypatch.setattr(main_mod, "build_providers", lambda _cfg: [src])
+    cfg = _cfg(tmp_path, tmp_path / "absent.db")
+    cfg.include_subagents = True
+    assert run(cfg, anchor=RUN_TIME.isoformat()) == EXIT_OK
+    # metas originales intactes (parent_id brut préservé)
+    assert child_meta.parent_id == "root"
+    assert root_meta.parent_id is None
+    # build_usage a bien lu la COPIE canonisée : fusion enfant→racine effective
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
+    sel = data["selection"]
+    assert sel["counted"] == 1
+    assert sel["merged_children"] == 1
 
 
 def test_run_merges_child_into_root_across_canonical_ids(tmp_path: Path, monkeypatch):

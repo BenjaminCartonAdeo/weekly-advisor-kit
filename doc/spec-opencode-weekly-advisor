@@ -551,7 +551,8 @@ Fichier `weekly-telemetry-config.json` (surchargeable en CLI) :
 }
 ```
 
-- Emplacement de la config : **en layout kit , le plugin la résout dans le moteur** (`.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`) ; le CLI conserve le défaut `<cwd>/weekly-telemetry-config.json` (usage autonome/legacy), surchargeable via `--config <path>`
+- Emplacement de la config : **en layout kit , le plugin la résout dans le moteur** (`.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`) ; le CLI conserve le défaut `<cwd>/weekly-telemetry-config.json` (usage autonome/legacy), surchargeable via `--config <path>` — le plugin passe désormais `--config` explicitement à chaque invocation
+- `~` est supporté des deux côtés (`expanduser()` côté moteur Python, `os.homedir()` côté plugin TS — même sémantique) sur `project_root`/`output_dir`/`kit_root` ; un chemin absolu reste recommandé
 - `--anchor <ISO-8601>` : fixe `run_time` (tests, rejeu) ; défaut = horodatage d'exécution
 - `--lookback-days <int> (≥ 1)` : **override de run, déduit du prompt utilisateur** (v6.0.b) — fenêtre `run_time − N×24h` sans réécrire la config (en mémoire seulement) ; disponible avant ou après la sous-commande (`run --lookback-days 21` ≡ `--lookback-days 21 run`) ; consommateurs : `run`, `releases`
 - `session_sources` (v6.2) : liste de sources de sessions actives (objet par source, `type` obligatoire — `opencode` | `claude-code` | `copilot-vscode` ; clés extra tolérées, dont `cost_rate_usd_per_mtok`) ; défaut `[{"type": "opencode"}]`. `draft_targets` (v6.2) : liste de harnais (→ override), `[]` (→ legacy), absent/invalide (→ détection auto) — cf. Partie 4 §3.1

@@ -22,10 +22,12 @@ from weekly_telemetry_aggregator.harness_scope import (
     copy_scope_to_projection,
     enrich_harness_digest,
     harness_extra_roots,
+    harness_rules_fingerprint,
     inject_engine_content,
     resolve_harness_scope,
     resolve_remediation_surface,
 )
+from weekly_telemetry_aggregator.main import HARNESS_BASELINE_FILE, _capture_or_reuse_baseline
 
 
 def _touch(root: Path, relative: str, content: str = "x") -> Path:
@@ -371,3 +373,142 @@ def test_resolve_remediation_surface_matrix_exhaustive():
     assert "inconnu" in unknown.reason
 
     assert decisions == {"projection", "portability"}
+
+
+# ---- faiblesse #14 : empreinte du jeu de règles + baseline harness tracée -----
+
+
+def _rules_project(tmp_path: Path) -> Path:
+    root = tmp_path / "project"
+    (root / ".harness-eval/rules").mkdir(parents=True)
+    return root
+
+
+def _baseline_capture(
+    output_dir: Path, project_root: Path, digest: dict | None = None, date: str = "2026-08-12"
+):
+    return _capture_or_reuse_baseline(
+        output_dir,
+        date,
+        digest or {"findings": [{"rule": "quality/a", "path": ".opencode/cmd.md"}]},
+        project_root=project_root,
+        tool_version="7.9.0",
+    )
+
+
+def test_harness_rules_fingerprint_tracks_rules_and_tool_version(tmp_path: Path):
+    """L'empreinte bouge si un fichier de règles ou la version outil change."""
+    root = _rules_project(tmp_path)
+    rules = root / ".harness-eval/rules"
+    (rules / "a.yaml").write_text("rule_a: 1\n", encoding="utf-8")
+    (rules / "b.yml").write_text("rule_b: 2\n", encoding="utf-8")
+
+    base = harness_rules_fingerprint(root, "7.9.0")
+    assert base != "unknown"
+
+    (rules / "a.yaml").write_text("rule_a: changed\n", encoding="utf-8")
+    assert harness_rules_fingerprint(root, "7.9.0") != base
+
+    (rules / "a.yaml").write_text("rule_a: 1\n", encoding="utf-8")
+    assert harness_rules_fingerprint(root, "7.9.0") == base
+    assert harness_rules_fingerprint(root, "8.0.0") != base
+
+
+def test_harness_rules_fingerprint_fail_soft_without_tool(tmp_path: Path):
+    """Binaire absent/version vide → empreinte 'unknown' (fail-soft)."""
+    assert harness_rules_fingerprint(tmp_path / "nowhere", None) == "unknown"
+    assert harness_rules_fingerprint(tmp_path / "nowhere", "") == "unknown"
+
+
+def test_baseline_reused_when_fingerprint_identical(tmp_path: Path):
+    """Empreinte identique → réutilisation, baseline jamais réécrite."""
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    root = _rules_project(tmp_path)
+
+    first = _baseline_capture(output_dir, root)
+    assert first["status"] == "created"
+
+    second = _baseline_capture(
+        output_dir,
+        root,
+        digest={
+            "findings": [
+                {"rule": "quality/a", "path": ".opencode/cmd.md"},
+                {"rule": "quality/b", "path": ".opencode/new.md"},
+            ]
+        },
+        date="2026-08-19",
+    )
+    assert second["status"] == "reused"
+    assert second["captured_on"] == "2026-08-12"
+    assert second["new_findings"] == [{"rule": "quality/b", "path": ".opencode/new.md"}]
+    stored = json.loads((output_dir / HARNESS_BASELINE_FILE).read_text(encoding="utf-8"))
+    assert stored["captured_on"] == "2026-08-12"  # jamais réécrite
+    assert stored["finding_count"] == 1
+
+
+def test_baseline_refreshed_once_on_rules_change(tmp_path: Path, capsys):
+    """Empreinte différente → recapture `refreshed`, tracée warning + stdout."""
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    root = _rules_project(tmp_path)
+    rules = root / ".harness-eval/rules"
+
+    first = _baseline_capture(output_dir, root)
+    assert first["status"] == "created"
+
+    (rules / "portability.yaml").write_text("rules v2\n", encoding="utf-8")
+    refreshed = _baseline_capture(output_dir, root, date="2026-08-19")
+    capsys.readouterr()
+    assert refreshed["status"] == "refreshed"
+    assert [w["message"] for w in refreshed["warnings"]] == [
+        "baseline harness rafraîchie : règles changées"
+    ]
+
+    # Le run suivant retrouve l'empreinte → réutilisé (refresh une seule fois).
+    again = _baseline_capture(output_dir, root, date="2026-08-26")
+    assert again["status"] == "reused"
+
+    stored = json.loads((output_dir / HARNESS_BASELINE_FILE).read_text(encoding="utf-8"))
+    assert stored["captured_on"] == "2026-08-19"  # snapshot du refresh
+    assert stored["finding_count"] == 1
+    assert stored["rules_version"] != "unknown"
+
+
+def test_baseline_corruption_recaptured_with_trace(tmp_path: Path, capsys):
+    """Corruption JSON ou forme invalide → recapture tracée (warning + note)."""
+    for corrupted_content in ('{"findings": "broken"', '{"captured_on": 42}'):
+        output_dir = tmp_path / f"out-{len(corrupted_content)}"
+        output_dir.mkdir()
+        (output_dir / HARNESS_BASELINE_FILE).write_text(corrupted_content, encoding="utf-8")
+
+        result = _baseline_capture(output_dir, tmp_path)
+
+        assert result["status"] == "created"
+        assert [w["message"] for w in result["warnings"]] == ["baseline illisible — recapture"]
+        stdout = capsys.readouterr().out
+        assert "baseline illisible — recapture" in stdout
+        stored = json.loads((output_dir / HARNESS_BASELINE_FILE).read_text(encoding="utf-8"))
+        assert stored["finding_count"] == 1  # baseline reconstruite valide
+
+
+def test_baseline_legacy_without_rules_version_refreshed_once(tmp_path: Path):
+    """Baseline v1 sans empreinte → mismatch traité → refresh une seule fois."""
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    root = _rules_project(tmp_path)
+    legacy = {
+        "schema_version": 1,
+        "captured_on": "2026-07-01",
+        "finding_count": 1,
+        "findings": [{"rule": "quality/a", "path": ".opencode/cmd.md"}],
+    }
+    (output_dir / HARNESS_BASELINE_FILE).write_text(json.dumps(legacy), encoding="utf-8")
+
+    first = _baseline_capture(output_dir, root)
+    assert first["status"] == "refreshed"
+    assert first["warnings"][0]["message"] == "baseline harness rafraîchie : règles changées"
+
+    second = _baseline_capture(output_dir, root, date="2026-08-19")
+    assert second["status"] == "reused"
