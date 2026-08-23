@@ -23,6 +23,7 @@ from weekly_telemetry_aggregator.main import (
     EXIT_OK,
     EXIT_PARTIAL,
     EXIT_TOTAL_FAILURE,
+    _placeholder_fields,
     build_usage,
     doctor,
     harness,
@@ -348,6 +349,18 @@ def test_doctor_valid_config_no_placeholder_problem(tmp_path: Path, capsys):
     assert doctor(cfg) in (EXIT_OK, EXIT_PARTIAL)
     out = capsys.readouterr().out
     assert "jamais adaptée" not in out
+
+
+def test_placeholder_fields_detect_windows_style_separators(tmp_path: Path):
+    """CI Windows : str(Path) y produit des « \\ » — le substring « path/to » ne
+    matchait plus et la garde devenait muette (doctor muet + run sans warning).
+    Chaînes brutes Windows-style : la détection doit normaliser les séparateurs
+    avant match, quel que soit l'OS du runner."""
+    db = _seed_n(tmp_path / "opencode.db", 3)
+    cfg = _cfg(tmp_path, db)
+    cfg.project_root = "C:\\fake\\path\\to\\weekly"
+    cfg.output_dir = "D:\\other\\path\\to\\reports"
+    assert _placeholder_fields(cfg) == ["project_root", "output_dir"]
 
 
 def test_doctor_warns_when_config_nowhere(tmp_path: Path, capsys, fake_opencode):

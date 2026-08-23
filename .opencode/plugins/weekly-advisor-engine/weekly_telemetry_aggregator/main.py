@@ -668,7 +668,9 @@ def _placeholder_fields(cfg: TelemetryConfig) -> list[str]:
     return [
         field
         for field in ("project_root", "output_dir")
-        if "path/to" in str(getattr(cfg, field, "") or "")
+        # Normalisation séparateurs : str(Path) sous Windows rend des « \ » —
+        # sans elle, « path/to » ne matche plus et la garde devient muette (CI).
+        if "path/to" in str(getattr(cfg, field, "") or "").replace("\\", "/")
     ]
 
 

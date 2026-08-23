@@ -184,10 +184,10 @@ racine/
 ```sh
 # le projet uv (pyproject + uv.lock) vit dans le dossier moteur
 cd .opencode/plugins/weekly-advisor-engine
-uv run python -m pytest -q  # 426 tests
+uv run python -m pytest -q  # 427 tests
 uv run ruff check .          # lint
 uv run ruff format --check . # format
 ```
 
 CI GitHub Actions (`.github/workflows/ci.yml`) : install lockfile `--frozen`, lint,
-format, 426 tests, packaging et syntaxe du plugin TS — vérifiés sur chaque push/PR.
+format, 427 tests, packaging et syntaxe du plugin TS — vérifiés sur chaque push/PR.
