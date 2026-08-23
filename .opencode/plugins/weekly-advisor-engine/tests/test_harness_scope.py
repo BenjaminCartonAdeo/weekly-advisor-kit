@@ -228,13 +228,12 @@ def test_harness_extra_roots_mapping():
     assert harness_extra_roots(ResolvedDraftTarget("detected", (HARNESS_CLAUDE_CODE,))) == (
         ".claude/skills",
     )
-    assert harness_extra_roots(
-        ResolvedDraftTarget("detected", (HARNESS_COPILOT_VSCODE,))
-    ) == (".github/prompts", ".github/skills")
+    assert harness_extra_roots(ResolvedDraftTarget("detected", (HARNESS_COPILOT_VSCODE,))) == (
+        ".github/prompts",
+        ".github/skills",
+    )
     assert harness_extra_roots(ResolvedDraftTarget("detected", (HARNESS_CODEX,))) == (".agents",)
-    assert harness_extra_roots(
-        ResolvedDraftTarget(MODE_LEGACY, DRAFT_TARGET_PRIORITY)
-    ) == (
+    assert harness_extra_roots(ResolvedDraftTarget(MODE_LEGACY, DRAFT_TARGET_PRIORITY)) == (
         ".agents",
         ".claude/skills",
         ".github/prompts",
@@ -259,9 +258,7 @@ def test_inject_engine_content_creates_orphans(tmp_path: Path):
     projection = tmp_path / "projection"
     projection.mkdir()
 
-    orphans = inject_engine_content(
-        project, (".claude/skills",), projection, kit_root=kit
-    )
+    orphans = inject_engine_content(project, (".claude/skills",), projection, kit_root=kit)
 
     assert ".claude/skills/kit-skill/SKILL.md" in orphans
     assert ".claude/skills/kit-skill/references/deep.md" in orphans
@@ -314,9 +311,7 @@ def test_inject_engine_content_without_kit_is_noop(tmp_path: Path):
     projection = tmp_path / "projection"
     projection.mkdir()
 
-    assert (
-        inject_engine_content(project, (".claude/skills",), projection, kit_root=None) == []
-    )
+    assert inject_engine_content(project, (".claude/skills",), projection, kit_root=None) == []
     assert not (projection / ".claude").exists()
 
 
@@ -336,9 +331,7 @@ def test_inject_engine_content_commands_target_mapping(tmp_path: Path):
     prompts_orphans = inject_engine_content(
         project, (".github/prompts",), projection_prompts, kit_root=kit
     )
-    agents_orphans = inject_engine_content(
-        project, (".agents",), projection_agents, kit_root=kit
-    )
+    agents_orphans = inject_engine_content(project, (".agents",), projection_agents, kit_root=kit)
 
     assert ".opencode/commands/kit-cmd.md" in opencode_orphans
     assert ".github/prompts/kit-cmd.md" in prompts_orphans
@@ -363,15 +356,11 @@ def test_resolve_remediation_surface_matrix_exhaustive():
             assert surface.decision == "portability"
             assert harness in surface.reason
 
-    combined = resolve_remediation_surface(
-        (HARNESS_OPENCODE, HARNESS_CLAUDE_CODE), MODE_LEGACY
-    )
+    combined = resolve_remediation_surface((HARNESS_OPENCODE, HARNESS_CLAUDE_CODE), MODE_LEGACY)
     assert combined.decision == "combined"
     assert "portability.yaml" in combined.reason
 
-    foreign_multi = resolve_remediation_surface(
-        (HARNESS_CLAUDE_CODE, HARNESS_CODEX), "override"
-    )
+    foreign_multi = resolve_remediation_surface((HARNESS_CLAUDE_CODE, HARNESS_CODEX), "override")
     assert foreign_multi.decision == "portability"
 
     empty = resolve_remediation_surface((), "default")

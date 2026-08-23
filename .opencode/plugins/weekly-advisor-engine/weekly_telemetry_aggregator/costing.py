@@ -58,9 +58,7 @@ def advisor_cost(cfg: TelemetryConfig) -> dict | None:
                 for m in provider.list_sessions(0):
                     if not (m.agent and "weekly-advisor" in m.agent):
                         continue
-                    if found is None or (m.time_updated or _EPOCH) > (
-                        found.time_updated or _EPOCH
-                    ):
+                    if found is None or (m.time_updated or _EPOCH) > (found.time_updated or _EPOCH):
                         found = m
         if found is None:
             return None

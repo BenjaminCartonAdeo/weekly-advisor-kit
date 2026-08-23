@@ -136,7 +136,8 @@ def _request_tokens(request: dict) -> tuple[float, float, float, float, float]:
         counts = {
             key: value
             for key, value in request.items()
-            if key in ("inputTokens", "outputTokens", "tokenCount") and isinstance(value, (int, float))
+            if key in ("inputTokens", "outputTokens", "tokenCount")
+            and isinstance(value, (int, float))
         }
     total = counts.get("tokenCount")
 
@@ -213,23 +214,21 @@ class CopilotVSCodeSessionProvider:
                 try:
                     raw = json.loads(session_file.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
-                    warnings.warn(
-                        f"chatSessions illisible, ignoré : {session_file}", stacklevel=2
-                    )
+                    warnings.warn(f"chatSessions illisible, ignoré : {session_file}", stacklevel=2)
                     continue
                 if not isinstance(raw, dict):
                     continue
                 raw_requests = raw.get("requests")
-                requests = [r for r in raw_requests if isinstance(r, dict)] if isinstance(
-                    raw_requests, list
-                ) else []
+                requests = (
+                    [r for r in raw_requests if isinstance(r, dict)]
+                    if isinstance(raw_requests, list)
+                    else []
+                )
                 session_id = str(raw.get("sessionId") or session_file.stem)
                 first_user_text = next(
                     (
                         text
-                        for text in (
-                            _message_text(req.get("message")).strip() for req in requests
-                        )
+                        for text in (_message_text(req.get("message")).strip() for req in requests)
                         if text
                     ),
                     "",
@@ -275,7 +274,11 @@ class CopilotVSCodeSessionProvider:
     def _to_harness_session(self, entry: _ChatSession) -> HarnessSession:
         tokens = [_request_tokens(req) for req in entry.requests]
         model_key = next(
-            (_request_model_key(req) for req in entry.requests if _request_model_key(req) != "unknown/unknown"),
+            (
+                _request_model_key(req)
+                for req in entry.requests
+                if _request_model_key(req) != "unknown/unknown"
+            ),
             "unknown/unknown",
         )
         return HarnessSession(
@@ -328,9 +331,7 @@ class CopilotVSCodeSessionProvider:
         entry = self._get(session_id)
         return bool(entry and entry.requests)
 
-    def session_steps(
-        self, session_id: str, start_ms: int, end_ms: int
-    ) -> list[StepFinish]:
+    def session_steps(self, session_id: str, start_ms: int, end_ms: int) -> list[StepFinish]:
         entry = self._get(session_id)
         if entry is None:
             return []
@@ -380,9 +381,7 @@ class CopilotVSCodeSessionProvider:
                 turns.append(text)
         return turns
 
-    def session_context_chars(
-        self, session_id: str, start_ms: int, end_ms: int
-    ) -> dict[str, int]:
+    def session_context_chars(self, session_id: str, start_ms: int, end_ms: int) -> dict[str, int]:
         entry = self._get(session_id)
         if entry is None:
             return dict.fromkeys(_CONTEXT_KEYS, 0)

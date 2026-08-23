@@ -256,7 +256,15 @@ def test_show_session_accepts_canonical_id(tmp_path: Path, capsys):
     ts = RUN_TIME - __import__("datetime").timedelta(hours=2)
     seed_v1_file(
         db,
-        [{"id": "ses_x", "title": "X", "start": ts, "updated": ts, "texts": [{"ts": ts, "text": "salut"}]}],
+        [
+            {
+                "id": "ses_x",
+                "title": "X",
+                "start": ts,
+                "updated": ts,
+                "texts": [{"ts": ts, "text": "salut"}],
+            }
+        ],
     )
     conf = _write_config(tmp_path, db)
     rc = main(["show-session", "opencode:ses_x", "--config", str(conf)])

@@ -123,7 +123,8 @@ def test_factory_failure_warns_and_skips():
     with pytest.warns(UserWarning, match="échec d'initialisation"):
         assert (
             build_providers(
-                cfg, factories={HARNESS_OPENCODE: _boom}  # type: ignore[dict-item]
+                cfg,
+                factories={HARNESS_OPENCODE: _boom},  # type: ignore[dict-item]
             )
             == []
         )
@@ -144,12 +145,8 @@ def seeded_db(tmp_path: Path) -> Path:
                 "start": tzutc(2026, 8, 20, 11, 0, 0),
                 "updated": RUN_TIME,
                 "agg_cost": 0.3,
-                "steps": [
-                    {"ts": tzutc(2026, 8, 20, 11, 5, 0), "cost": 0.25, "input": 100}
-                ],
-                "texts": [
-                    {"ts": tzutc(2026, 8, 20, 11, 1, 0), "text": "Lance la revue"}
-                ],
+                "steps": [{"ts": tzutc(2026, 8, 20, 11, 5, 0), "cost": 0.25, "input": 100}],
+                "texts": [{"ts": tzutc(2026, 8, 20, 11, 1, 0), "text": "Lance la revue"}],
             }
         ],
     )
@@ -193,9 +190,7 @@ def test_opencode_delegation_roundtrip(seeded_db: Path):
         assert steps[0].cost == pytest.approx(0.25)
 
         assert provider.has_telemetry_rows("opencode:ses_1") is True
-        assert provider.session_user_turns("opencode:ses_1", 0, WINDOW_END_MS) == [
-            "Lance la revue"
-        ]
+        assert provider.session_user_turns("opencode:ses_1", 0, WINDOW_END_MS) == ["Lance la revue"]
         assert provider.session_tools("opencode:ses_1", 0, WINDOW_END_MS) == ({}, {}, {})
         assert isinstance(provider.session_context_chars("opencode:ses_1", 0, WINDOW_END_MS), dict)
 

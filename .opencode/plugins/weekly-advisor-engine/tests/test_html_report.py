@@ -13,9 +13,7 @@ from weekly_telemetry_aggregator.config import TelemetryConfig
 from weekly_telemetry_aggregator.html_report import open_html_report, render_html_report
 
 DATE = "2026-08-12"
-PAYLOAD_RE = re.compile(
-    r'<script type="application/json" id="weekly-payload">(.*?)</script>', re.S
-)
+PAYLOAD_RE = re.compile(r'<script type="application/json" id="weekly-payload">(.*?)</script>', re.S)
 
 
 def _cfg(tmp_path: Path, **overrides) -> TelemetryConfig:
@@ -73,16 +71,37 @@ def _ctx() -> dict:
             {"date": DATE, "cost_usd": 0.75, "total_tokens": 25678, "cache_hit_rate": 0.8},
         ],
         "models_top": [
-            {"model": "claude-opus", "session_count": 2, "total_tokens": 40000, "total_cost_usd": 1.1},
-            {"model": "qwen3-coder", "session_count": 1, "total_tokens": 5678, "total_cost_usd": 0.15},
+            {
+                "model": "claude-opus",
+                "session_count": 2,
+                "total_tokens": 40000,
+                "total_cost_usd": 1.1,
+            },
+            {
+                "model": "qwen3-coder",
+                "session_count": 1,
+                "total_tokens": 5678,
+                "total_cost_usd": 0.15,
+            },
         ],
         "top_sessions": [top_session],
         # set réel du ctx report_prep → exerce la sérialisation JSON défensive.
         "outliers": {"ses_outlier"},
         "insights": {
             "alerts": [
-                {"severity": "warning", "rule": "weekly_budget_usd", "threshold": 10, "observed": 12, "unit": "USD"},
-                {"severity": "info", "rule": "cache_hit_rate_min", "threshold": 0.5, "observed": 0.75},
+                {
+                    "severity": "warning",
+                    "rule": "weekly_budget_usd",
+                    "threshold": 10,
+                    "observed": 12,
+                    "unit": "USD",
+                },
+                {
+                    "severity": "info",
+                    "rule": "cache_hit_rate_min",
+                    "threshold": 0.5,
+                    "observed": 0.75,
+                },
             ],
             "maintenance": {"findings": []},
             "deltas": {},
@@ -111,8 +130,14 @@ def test_render_writes_dated_and_latest_with_parsable_payload(tmp_path: Path):
     assert payload["outliers"] == ["ses_outlier"]
     # sections et libellés français présents
     for section_id in (
-        "synthese", "vue-ensemble", "couts", "telemetrie",
-        "qualitatif", "sante", "veille", "alertes",
+        "synthese",
+        "vue-ensemble",
+        "couts",
+        "telemetrie",
+        "qualitatif",
+        "sante",
+        "veille",
+        "alertes",
     ):
         assert f'id="{section_id}"' in html
     assert "Sommaire" in html or "sommaire" in html.lower()
@@ -121,7 +146,9 @@ def test_render_writes_dated_and_latest_with_parsable_payload(tmp_path: Path):
 def test_render_disabled_empty_string_returns_none(tmp_path: Path):
     out = render_html_report(
         _cfg(tmp_path, html_report_dir="", project_root=None),
-        anchor=DATE, ctx=_ctx(), quality_block=None,
+        anchor=DATE,
+        ctx=_ctx(),
+        quality_block=None,
     )
     assert out is None
     assert not (tmp_path / "html").exists()
@@ -184,12 +211,19 @@ def test_ctx_xss_is_escaped_in_body_and_payload_stays_parsable(tmp_path: Path):
     # dans le payload JSON via summary.top_sessions_by_cost.
     malicious_title = "<script>alert(1)</script>"
     ctx["top_sessions"] = [dict(ctx["top_sessions"][0], title_or_topic=malicious_title)]
-    ctx["summary"]["top_sessions_by_cost"] = [dict(ctx["summary"]["top_sessions_by_cost"][0], title_or_topic=malicious_title)]
+    ctx["summary"]["top_sessions_by_cost"] = [
+        dict(ctx["summary"]["top_sessions_by_cost"][0], title_or_topic=malicious_title)
+    ]
     # item de veille (donnée GitHub externe) injecté dans le corps
     # (le template ne rend watch_items que si ecosystem est présent)
     ctx["ecosystem"] = {"new_items": [], "watch_repos": ["owner/repo"]}
     ctx["watch_items"] = [
-        {"name": "<img src=x onerror=alert(2)>", "category": "veille", "description": "desc", "found_via": []},
+        {
+            "name": "<img src=x onerror=alert(2)>",
+            "category": "veille",
+            "description": "desc",
+            "found_via": [],
+        },
     ]
     dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx, quality_block=None)
     assert dated is not None

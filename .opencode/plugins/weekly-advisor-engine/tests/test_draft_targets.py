@@ -158,9 +158,7 @@ def test_describe_draft_target_modes():
     detected = resolve_draft_targets(Path("/x"), DraftTargetsConfig())
     _ = detected  # describe est pur : construit directement
     assert (
-        describe_draft_target(
-            resolve_draft_targets(Path("/nonexistent_zz"), DraftTargetsConfig())
-        )
+        describe_draft_target(resolve_draft_targets(Path("/nonexistent_zz"), DraftTargetsConfig()))
         == "opencode (défaut)"
     )
     assert (
@@ -205,17 +203,13 @@ def test_config_default_dataclass_is_auto():
 
 
 def test_config_non_empty_list_is_override(tmp_path: Path):
-    cfg = load_config(
-        _write_conf(tmp_path, {"draft_targets": ["codex", "opencode"]})
-    )
+    cfg = load_config(_write_conf(tmp_path, {"draft_targets": ["codex", "opencode"]}))
     assert cfg.draft_targets.mode == "override"
     assert cfg.draft_targets.targets == ["codex", "opencode"]
 
 
 def test_config_override_dedupes_preserving_order(tmp_path: Path):
-    cfg = load_config(
-        _write_conf(tmp_path, {"draft_targets": ["opencode", "codex", "opencode"]})
-    )
+    cfg = load_config(_write_conf(tmp_path, {"draft_targets": ["opencode", "codex", "opencode"]}))
     assert cfg.draft_targets.mode == "override"
     assert cfg.draft_targets.targets == ["opencode", "codex"]
 
@@ -248,4 +242,3 @@ def test_config_malformed_type_warns_and_fallback_auto(tmp_path: Path):
         cfg = load_config(_write_conf(tmp_path, {"draft_targets": "opencode"}))
     assert cfg.draft_targets.mode == "auto"
     assert cfg.draft_targets.targets == []
-

@@ -91,9 +91,7 @@ class OpenCodeSessionProvider:
     def session_user_turns(self, session_id: str, start_ms: int, end_ms: int) -> list[str]:
         return self._adapter.session_user_turns(self._unwrap(session_id), start_ms, end_ms)
 
-    def session_context_chars(
-        self, session_id: str, start_ms: int, end_ms: int
-    ) -> dict[str, int]:
+    def session_context_chars(self, session_id: str, start_ms: int, end_ms: int) -> dict[str, int]:
         return self._adapter.session_context_chars(self._unwrap(session_id), start_ms, end_ms)
 
     def session_aggregates(self, session_id: str) -> dict | None:

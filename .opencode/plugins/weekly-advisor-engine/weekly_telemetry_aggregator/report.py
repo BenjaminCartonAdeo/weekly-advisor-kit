@@ -180,9 +180,7 @@ def _top_harness_rules(
     ).most_common(n)
 
 
-def build_report_context(
-    cfg: TelemetryConfig, *, anchor: str | None = None
-) -> dict | None:
+def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> dict | None:
     """Construit le ctx Jinja du rapport (v6.1) — partagé par prep et assemble.
 
     Reconstruit intégralement depuis les artefacts JSON du run actif à chaque
@@ -531,8 +529,6 @@ def report_assemble(
     # ci-dessus (prose LLM validée ou fallback auto) alimente la section 4.
     ctx = build_report_context(cfg, anchor=anchor)
     if ctx is not None:
-        html_path = render_html_report(
-            cfg, anchor=anchor, ctx=ctx, quality_block=replacement
-        )
+        html_path = render_html_report(cfg, anchor=anchor, ctx=ctx, quality_block=replacement)
         open_html_report(cfg, html_path)
     return final_path, warnings, 0

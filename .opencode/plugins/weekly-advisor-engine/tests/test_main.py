@@ -1466,7 +1466,8 @@ def test_run_dedup_warning_message_recap_format(tmp_path: Path, monkeypatch):
     import weekly_telemetry_aggregator.main as main_mod
 
     src_a = FakeSessionProvider(
-        "alpha", [fake_meta("alpha", "a1", updated=FAKE_TS), fake_meta("alpha", "a2", updated=FAKE_TS)]
+        "alpha",
+        [fake_meta("alpha", "a1", updated=FAKE_TS), fake_meta("alpha", "a2", updated=FAKE_TS)],
     )
     src_b = FakeSessionProvider(
         "alpha",
@@ -1479,7 +1480,9 @@ def test_run_dedup_warning_message_recap_format(tmp_path: Path, monkeypatch):
     assert rc == EXIT_OK
     dup_warnings = [w for w in recorded if "doublon" in str(w.message)]
     assert len(dup_warnings) == 1  # récapitulatif unique
-    assert "1 session(s) en doublon ignorée(s) depuis alpha source #2" in str(dup_warnings[0].message)
+    assert "1 session(s) en doublon ignorée(s) depuis alpha source #2" in str(
+        dup_warnings[0].message
+    )
 
 
 def test_run_merges_child_into_root_across_canonical_ids(tmp_path: Path, monkeypatch):
@@ -1708,13 +1711,15 @@ def test_harness_baseline_created_then_reused(tmp_path: Path, monkeypatch):
         calls += 1
         output = Path(args[args.index("--output") + 1])
         output.parent.mkdir(parents=True, exist_ok=True)
-        findings = findings_per_call if calls == 1 else [
-            {"rule": "quality/a", "path": ".opencode/cmd.md"},
-            {"rule": "quality/b", "path": ".opencode/new.md"},
-        ]
-        output.write_text(
-            json.dumps({"findings": findings}), encoding="utf-8"
+        findings = (
+            findings_per_call
+            if calls == 1
+            else [
+                {"rule": "quality/a", "path": ".opencode/cmd.md"},
+                {"rule": "quality/b", "path": ".opencode/new.md"},
+            ]
         )
+        output.write_text(json.dumps({"findings": findings}), encoding="utf-8")
         return _FakeProc(0)
 
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/harness-eval")

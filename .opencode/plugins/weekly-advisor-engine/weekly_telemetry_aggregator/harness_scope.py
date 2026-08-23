@@ -143,9 +143,7 @@ def harness_extra_roots(resolved: object) -> tuple[str, ...]:
     """
     harnesses = tuple(getattr(resolved, "harnesses", ()) or ())
     dirs = {
-        target
-        for harness in harnesses
-        for target in DRAFT_HARNESS_TARGETS.get(str(harness), ())
+        target for harness in harnesses for target in DRAFT_HARNESS_TARGETS.get(str(harness), ())
     }
     dirs.discard(".opencode/skills")
     return tuple(sorted(dirs))
@@ -692,9 +690,7 @@ class RemediationSurface:
         }
 
 
-def resolve_remediation_surface(
-    harnesses: Sequence[str], mode: str
-) -> RemediationSurface:
+def resolve_remediation_surface(harnesses: Sequence[str], mode: str) -> RemediationSurface:
     """Matrice de décision 5.5 : projection vs portability vs combiné.
 
     Règles (décision brief §2.4) :
@@ -751,8 +747,7 @@ def resolve_remediation_surface(
         harnesses=resolved,
         mode=str(mode),
         reason=(
-            f"cibles {', '.join(resolved)} hors .opencode — "
-            f"{_SURFACE_REASONS[SURFACE_PORTABILITY]}"
+            f"cibles {', '.join(resolved)} hors .opencode — {_SURFACE_REASONS[SURFACE_PORTABILITY]}"
             if known
             else (
                 f"cibles multiples ({', '.join(resolved)}) hors .opencode — "

@@ -114,9 +114,7 @@ def resolve_draft_targets(
     if draft_cfg.mode == MODE_LEGACY:
         return ResolvedDraftTarget(mode=MODE_LEGACY, harnesses=DRAFT_TARGET_PRIORITY)
     if draft_cfg.mode == MODE_OVERRIDE and draft_cfg.targets:
-        return ResolvedDraftTarget(
-            mode=MODE_OVERRIDE, harnesses=tuple(draft_cfg.targets)
-        )
+        return ResolvedDraftTarget(mode=MODE_OVERRIDE, harnesses=tuple(draft_cfg.targets))
     detected = detect_draft_target(project_root)
     if detected is not None:
         return ResolvedDraftTarget(mode=MODE_DETECTED, harnesses=(detected,))

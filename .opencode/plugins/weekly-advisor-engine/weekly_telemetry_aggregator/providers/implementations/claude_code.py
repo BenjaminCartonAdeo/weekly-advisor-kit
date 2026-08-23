@@ -125,9 +125,7 @@ def _stringify(value: object) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, list):
-        return "\n".join(
-            t for t in (_block_text(b) for b in value if isinstance(b, dict)) if t
-        )
+        return "\n".join(t for t in (_block_text(b) for b in value if isinstance(b, dict)) if t)
     if value is None:
         return ""
     return json.dumps(value, ensure_ascii=False)
@@ -228,7 +226,11 @@ class ClaudeCodeSessionProvider:
     def _to_harness_session(self, session: _JsonlSession) -> HarnessSession:
         tokens = [t for line in session.lines if (t := _usage_tokens(line.entry.get("message")))]
         model_key = next(
-            (_model_key(line.entry.get("message")) for line in session.lines if _usage_tokens(line.entry.get("message"))),
+            (
+                _model_key(line.entry.get("message"))
+                for line in session.lines
+                if _usage_tokens(line.entry.get("message"))
+            ),
             "unknown/unknown",
         )
         return HarnessSession(
@@ -269,12 +271,11 @@ class ClaudeCodeSessionProvider:
     def has_telemetry_rows(self, session_id: str) -> bool:
         session = self._get(session_id)
         return bool(session) and any(
-            _usage_tokens(line.entry.get("message")) is not None for line in session.lines  # type: ignore[union-attr]
+            _usage_tokens(line.entry.get("message")) is not None
+            for line in session.lines  # type: ignore[union-attr]
         )
 
-    def session_steps(
-        self, session_id: str, start_ms: int, end_ms: int
-    ) -> list[StepFinish]:
+    def session_steps(self, session_id: str, start_ms: int, end_ms: int) -> list[StepFinish]:
         session = self._get(session_id)
         if session is None:
             return []
@@ -333,9 +334,7 @@ class ClaudeCodeSessionProvider:
                 turns.append(text)
         return turns
 
-    def session_context_chars(
-        self, session_id: str, start_ms: int, end_ms: int
-    ) -> dict[str, int]:
+    def session_context_chars(self, session_id: str, start_ms: int, end_ms: int) -> dict[str, int]:
         session = self._get(session_id)
         if session is None:
             return dict.fromkeys(_CONTEXT_KEYS, 0)
@@ -369,7 +368,9 @@ class ClaudeCodeSessionProvider:
                     output = _stringify(block.get("content"))
                     parts.append(PartRecord(ts=line.ts, kind="tool", tool_output=output or None))
                 elif kind == "text":
-                    parts.append(PartRecord(ts=line.ts, kind=role or "assistant", text=_block_text(block)))
+                    parts.append(
+                        PartRecord(ts=line.ts, kind=role or "assistant", text=_block_text(block))
+                    )
                 elif kind == "thinking":
                     thinking = block.get("thinking")
                     if isinstance(thinking, str) and thinking:

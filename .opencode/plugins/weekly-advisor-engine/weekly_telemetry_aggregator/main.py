@@ -462,7 +462,9 @@ def run(
         try:
             _path, adapter = detect_db(cfg.opencode_db_path)
         except DataSourceError as exc:
-            print(f"telemetry-aggregator: FATAL: {exc} — lancer doctor", file=sys.stderr, flush=True)
+            print(
+                f"telemetry-aggregator: FATAL: {exc} — lancer doctor", file=sys.stderr, flush=True
+            )
             return EXIT_TOTAL_FAILURE
         from .providers.implementations.opencode import OpenCodeSessionProvider
 
@@ -740,7 +742,9 @@ def doctor(
         print(f"doctor: [{name}] OK{suffix}")
         provider.close()
     if not usable:
-        problems.append("aucune source de sessions disponible — vérifier session_sources / bases locales")
+        problems.append(
+            "aucune source de sessions disponible — vérifier session_sources / bases locales"
+        )
         print("doctor: sources de sessions: aucune disponible")
 
     # Cibles de drafting (cellule 2.1) : LE harnais cible effectif — override
@@ -983,13 +987,17 @@ def harness(cfg: TelemetryConfig, *, anchor: str | None = None, timeout: int = 9
         resolved_draft = resolve_draft_targets(cfg.project_root, cfg.draft_targets)
         extra_roots = harness_extra_roots(resolved_draft)
         inject_dirs = tuple(
-            sorted({
-                target
-                for harness in resolved_draft.harnesses
-                for target in DRAFT_HARNESS_TARGETS.get(harness, ())
-            })
+            sorted(
+                {
+                    target
+                    for harness in resolved_draft.harnesses
+                    for target in DRAFT_HARNESS_TARGETS.get(harness, ())
+                }
+            )
         )
-        scope = resolve_harness_scope(cfg.project_root, cfg.harness_include, extra_roots=extra_roots)
+        scope = resolve_harness_scope(
+            cfg.project_root, cfg.harness_include, extra_roots=extra_roots
+        )
         for warning in scope.warnings:
             print(f"harness: WARNING: {warning}", flush=True)
 

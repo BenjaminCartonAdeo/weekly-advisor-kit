@@ -433,9 +433,7 @@ def test_aggregate_merges_child_across_canonical_ids():
 
     ts = tzutc(2026, 8, 11, 22)
     root = make_usage("alpha:root", [make_step("alpha:root", ts, cost=1.0)])
-    child = make_usage(
-        "alpha:child", [make_step("alpha:child", ts, cost=0.5)], parent="alpha:root"
-    )
+    child = make_usage("alpha:child", [make_step("alpha:child", ts, cost=0.5)], parent="alpha:root")
     summary = aggregate(
         [root, child],
         period=_period(),

@@ -62,7 +62,9 @@ def _assistant(
     }
 
 
-def _write_jsonl(directory: Path, name: str, entries: list[dict], raw_lines: list[str] | None = None):
+def _write_jsonl(
+    directory: Path, name: str, entries: list[dict], raw_lines: list[str] | None = None
+):
     directory.mkdir(parents=True, exist_ok=True)
     lines = [json.dumps(e) for e in entries] + (raw_lines or [])
     (directory / f"{name}.jsonl").write_text("\n".join(lines), encoding="utf-8")

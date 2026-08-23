@@ -58,9 +58,7 @@ def _children_ids(provider: SessionProvider, session_id: str) -> list[str]:
     )
 
 
-def _select_provider(
-    providers: Sequence[SessionProvider], session_id: str
-) -> SessionProvider:
+def _select_provider(providers: Sequence[SessionProvider], session_id: str) -> SessionProvider:
     """Route vers le provider du harnais déduit de l'id ; première source sinon."""
     harness, _raw = split_canonical_session_id(session_id)
     for provider in providers:

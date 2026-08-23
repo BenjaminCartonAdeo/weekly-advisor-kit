@@ -72,13 +72,9 @@ def _write_workspace(
     chat_dir = ws_dir / "chatSessions"
     chat_dir.mkdir(parents=True)
     for entry in sessions:
-        (chat_dir / f"{entry['sessionId']}.json").write_text(
-            json.dumps(entry), encoding="utf-8"
-        )
+        (chat_dir / f"{entry['sessionId']}.json").write_text(json.dumps(entry), encoding="utf-8")
     if folder_uri is not None:
-        (ws_dir / "workspace.json").write_text(
-            json.dumps({"folder": folder_uri}), encoding="utf-8"
-        )
+        (ws_dir / "workspace.json").write_text(json.dumps({"folder": folder_uri}), encoding="utf-8")
     return ws_dir
 
 
@@ -120,7 +116,9 @@ def test_provider_type_discovered_by_registry():
 
 def test_factory_returns_none_when_user_dir_missing(tmp_path: Path):
     missing = tmp_path / "nope"
-    assert build_provider({"type": PROVIDER_TYPE, "user_dir": str(missing)}, TelemetryConfig()) is None
+    assert (
+        build_provider({"type": PROVIDER_TYPE, "user_dir": str(missing)}, TelemetryConfig()) is None
+    )
 
 
 def test_factory_uses_default_linux_user_dir_when_key_absent(monkeypatch, tmp_path: Path):
@@ -156,11 +154,7 @@ def test_list_sessions_namespaces_ids_and_maps_project_directory(provider):
 
 
 def test_list_sessions_metadata_fields(provider):
-    pop = next(
-        s
-        for s in provider.list_sessions(0)
-        if s.session_id.endswith(UUID_POPULATED)
-    )
+    pop = next(s for s in provider.list_sessions(0) if s.session_id.endswith(UUID_POPULATED))
     assert pop.harness == HARNESS_COPILOT_VSCODE
     assert pop.cost is None  # jamais de coût exploitable hors IDE
     assert pop.model_key == "github-copilot/gpt-4o"  # dérivé des requests peuplées
@@ -289,7 +283,9 @@ def test_corrupt_session_file_skipped_with_warning(user_dir: Path):
     (broken_ws / "chatSessions").mkdir(parents=True)
     (broken_ws / "chatSessions" / "broken.json").write_text("{not json", encoding="utf-8")
     with pytest.warns(UserWarning, match="chatSessions illisible"):
-        built = build_provider({"type": PROVIDER_TYPE, "user_dir": str(user_dir)}, TelemetryConfig())
+        built = build_provider(
+            {"type": PROVIDER_TYPE, "user_dir": str(user_dir)}, TelemetryConfig()
+        )
     assert built is not None  # fichier corrompu ignoré, le reste est chargé :
     assert built.find_session_by_title("Fix the flaky test") is not None
 

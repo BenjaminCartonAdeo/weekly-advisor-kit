@@ -71,9 +71,7 @@ def build_providers(
             continue
         factory = factories.get(stype) if isinstance(stype, str) else None
         if factory is None:
-            warnings.warn(
-                f"source de sessions ignorée : type inconnu {stype!r}", stacklevel=2
-            )
+            warnings.warn(f"source de sessions ignorée : type inconnu {stype!r}", stacklevel=2)
             continue
         try:
             provider = factory(source, cfg)
@@ -84,9 +82,7 @@ def build_providers(
             )
             continue
         if provider is None:
-            warnings.warn(
-                f"source de sessions {stype!r} indisponible — ignorée", stacklevel=2
-            )
+            warnings.warn(f"source de sessions {stype!r} indisponible — ignorée", stacklevel=2)
             continue
         providers.append(provider)
     return providers

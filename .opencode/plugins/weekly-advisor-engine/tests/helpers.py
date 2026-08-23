@@ -279,8 +279,7 @@ class FakeSessionProvider:
             for raw, steps in (steps_by_session or {}).items()
         }
         self._parts = {
-            self._key(raw): list(parts)
-            for raw, parts in (parts_by_session or {}).items()
+            self._key(raw): list(parts) for raw, parts in (parts_by_session or {}).items()
         }
         self.closed = False
 

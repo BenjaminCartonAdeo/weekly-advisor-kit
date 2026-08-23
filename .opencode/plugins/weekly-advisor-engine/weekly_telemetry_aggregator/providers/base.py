@@ -82,9 +82,7 @@ class SessionProvider(Protocol):
         """Vrai si la session porte des lignes de télémétrie exploitables."""
         ...
 
-    def session_steps(
-        self, session_id: str, start_ms: int, end_ms: int
-    ) -> list[StepFinish]:
+    def session_steps(self, session_id: str, start_ms: int, end_ms: int) -> list[StepFinish]:
         """Step-finish agrégés dans [start_ms, end_ms] (fenêtre, jamais vie totale)."""
         ...
 

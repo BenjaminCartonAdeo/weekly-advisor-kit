@@ -6,6 +6,7 @@ test visible au lieu d'ouvrir des onglets sur la machine de développement.
 Les tests qui exercent volontairement l'ouverture réécrivent ce stub (monkeypatch)
 ou suppriment la variable d'environnement dans leur propre portée.
 """
+
 from __future__ import annotations
 
 import pytest

@@ -45,9 +45,7 @@ def _resolve_html_dir(cfg: TelemetryConfig) -> Path | None:
     if cfg.html_report_dir is not None:
         return Path(cfg.html_report_dir).expanduser()
     if cfg.project_root is None:
-        logger.warning(
-            "html_report_dir non défini et project_root absent — rapport HTML ignoré"
-        )
+        logger.warning("html_report_dir non défini et project_root absent — rapport HTML ignoré")
         return None
     return cfg.project_root / "reports" / "html"
 
