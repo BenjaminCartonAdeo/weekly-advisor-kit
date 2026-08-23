@@ -17,3 +17,6 @@ reports/*
 !reports/html/**
 *.log
 dist/
+
+# graphify (graphe regenerable, cache local)
+graphify-out/
