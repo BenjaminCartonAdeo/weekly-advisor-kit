@@ -180,6 +180,28 @@ def test_append_merges_existing_id_and_keeps_append_only_store(tmp_path: Path):
     assert len(p.read_text(encoding="utf-8").splitlines()) == 2
 
 
+def test_append_snapshot_each_week_increments_occurrences(tmp_path: Path):
+    p = tmp_path / "watch-memory.jsonl"
+    for week in ("2026-W30", "2026-W31", "2026-W32"):
+        wm.append_entries(p, [wm.entry_from_item({"name": "tool", "npm_package": "tool"}, week)])
+
+    entries, warnings = wm.load_memory(p)
+    assert warnings == []
+    entry = entries["npm:tool"]
+    assert entry["occurrences"] == 3
+    assert entry["history"] == [
+        {"week": "2026-W30", "status": "seen"},
+        {"week": "2026-W31", "status": "seen"},
+        {"week": "2026-W32", "status": "seen"},
+    ]
+    assert wm.build_digest(entries, "2026-W34")["recurrents"] == ["npm:tool"]
+
+    # même semaine re-persistée : pas de double comptage
+    wm.append_entries(p, [wm.entry_from_item({"name": "tool", "npm_package": "tool"}, "2026-W32")])
+    entries, _ = wm.load_memory(p)
+    assert entries["npm:tool"]["occurrences"] == 3
+
+
 # -------------------------------------------------------------------- digest
 
 

@@ -257,9 +257,16 @@ def _merge_snapshot(existing: Mapping[str, Any] | None, update: Mapping[str, Any
     ]
     entry["first_seen_week"] = min(weeks, key=_week_key) if weeks else ""
     entry["last_seen_week"] = max(weeks, key=_week_key) if weeks else ""
-    entry["occurrences"] = max(
-        int(incoming["occurrences"]), int((base or {}).get("occurrences", 0))
-    )
+    base_occ = int((base or {}).get("occurrences", 0))
+    # Un squelette entrant porte toujours occurrences=1 : on n'incrémenterait
+    # jamais avec max(). Une semaine strictement plus récente = nouvelle
+    # occurrence ; sinon (semaine identique ou antérieure) on garde le maximum.
+    if incoming["last_seen_week"] and _week_key(incoming["last_seen_week"]) > _week_key(
+        (base or {}).get("last_seen_week", "")
+    ):
+        entry["occurrences"] = base_occ + 1
+    else:
+        entry["occurrences"] = max(int(incoming["occurrences"]), base_occ)
     entry["history"] = _merge_history(
         (base or {}).get("history", []), incoming["history"]
     )
