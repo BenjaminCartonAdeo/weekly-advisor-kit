@@ -56,6 +56,12 @@ function tsCommands(src) {
     .filter((line) => !line.trim().startsWith("//"))
     .join("\n")
     .replace(/tool\.schema\s*\.\s*enum\(\s*\[[^\]]*\]\)/g, "")
+    // Le contrat porte sur les outils TS ↔ NOTRE CLI aggregator. Les spawns
+    // d'un binaire EXTERNE (execFile("<binaire>", [...]), ex: la gate de
+    // portabilité invoquant `harness-eval skill-verify`) n'en font pas partie :
+    // leur argv est retiré avant l'extraction (exclusion par mécanisme, pas par
+    // token — un futur binaire externe reste hors contrat automatiquement).
+    .replace(/execFile\(\s*"[^"]+"\s*,\s*\[[^\]]*\]/g, "")
   for (const m of clean.matchAll(/\["([a-z][a-z-]+)"[,\]]/g)) cmds.add(m[1])
   return cmds
 }
