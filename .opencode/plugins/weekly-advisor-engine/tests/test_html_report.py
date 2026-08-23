@@ -171,7 +171,9 @@ def test_render_without_project_root_warns_and_returns_none(tmp_path: Path, capl
 
 
 def test_render_explicit_dir_expands_tilde(tmp_path: Path, monkeypatch):
+    # expanduser lit HOME (POSIX) mais USERPROFILE d'abord (Windows).
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     cfg = _cfg(tmp_path, html_report_dir="~/wa-html-test", project_root=None)
     dated = render_html_report(cfg, anchor=DATE, ctx=_ctx(), quality_block=None)

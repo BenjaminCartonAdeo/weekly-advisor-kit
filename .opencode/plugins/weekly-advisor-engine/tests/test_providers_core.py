@@ -84,8 +84,17 @@ def test_registry_discovers_opencode_factory():
     assert callable(factories[HARNESS_OPENCODE])
 
 
-def test_unknown_type_warns_and_skips():
+def _hermetic_cfg(tmp_path: Path) -> TelemetryConfig:
+    """Cfg sans dépendance ambiante : base OpenCode seedée dans tmp_path."""
+    db = tmp_path / "opencode.db"
+    seed_v1_file(db, []).close()
     cfg = TelemetryConfig()
+    cfg.opencode_db_path = str(db)
+    return cfg
+
+
+def test_unknown_type_warns_and_skips(tmp_path: Path):
+    cfg = _hermetic_cfg(tmp_path)
     # 1.3 : "claude-code" est désormais un provider réel — inconnu générique utilisé.
     cfg.session_sources = [{"type": "harnais-inexistant"}, {"type": "opencode"}]
     with pytest.warns(UserWarning, match="type inconnu 'harnais-inexistant'"):
@@ -93,8 +102,8 @@ def test_unknown_type_warns_and_skips():
     assert [p.harness for p in providers] == [HARNESS_OPENCODE]
 
 
-def test_disabled_source_skipped_silently():
-    cfg = TelemetryConfig()
+def test_disabled_source_skipped_silently(tmp_path: Path):
+    cfg = _hermetic_cfg(tmp_path)
     cfg.session_sources = [
         {"type": "opencode", "enabled": False},
         {"type": "opencode"},
