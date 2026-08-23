@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sqlite3
 from datetime import UTC, datetime
 
-from weekly_telemetry_aggregator.models import SessionUsage, StepFinish
+from weekly_telemetry_aggregator.models import SessionUsage, StepFinish, canonical_session_id
+from weekly_telemetry_aggregator.providers.base import HarnessSession
+from weekly_telemetry_aggregator.sqlite_reader import PartRecord
 
 
 def tzutc(*args) -> datetime:
@@ -234,3 +237,98 @@ def active_run_file(output_dir, name):
 
     date = "-".join(name.split("-")[-3:]).removesuffix(".json")
     return resolve_active_run_dir(Path(output_dir), date) / name
+
+
+# ------------------------------------------------------------------ multi-harnais doubles
+
+
+def fake_meta(
+    harness: str,
+    sid: str,
+    *,
+    title: str | None = None,
+    parent: str | None = None,
+    agent: str | None = None,
+    updated: datetime | None = None,
+) -> HarnessSession:
+    """HarnessSession canonique ("<harness>:<sid>") prête pour un FakeSessionProvider."""
+    return HarnessSession(
+        harness=harness,
+        session_id=canonical_session_id(harness, sid),
+        title=title,
+        parent_id=parent,
+        agent=agent,
+        time_created=updated,
+        time_updated=updated,
+    )
+
+
+class FakeSessionProvider:
+    """Double minimal du protocol `SessionProvider` — sessions en mémoire.
+
+    `steps_by_session` / `parts_by_session` sont indexés par id BRUT ; les ids
+    exposés sont re-namespacés au vol comme un vrai provider. `closed` trace
+    l'appel à close() (cycle de vie possédé par le call site).
+    """
+
+    def __init__(self, harness: str, metas, *, steps_by_session=None, parts_by_session=None):
+        self.harness = harness
+        self._metas = list(metas)
+        self._steps = {
+            self._key(raw): [self._retag(st) for st in steps]
+            for raw, steps in (steps_by_session or {}).items()
+        }
+        self._parts = {
+            self._key(raw): list(parts)
+            for raw, parts in (parts_by_session or {}).items()
+        }
+        self.closed = False
+
+    def _key(self, session_id: str) -> str:
+        prefix = f"{self.harness}:"
+        return session_id if session_id.startswith(prefix) else prefix + session_id
+
+    def _retag(self, step: StepFinish) -> StepFinish:
+        return dataclasses.replace(
+            step, harness=self.harness, session_id=self._key(step.session_id)
+        )
+
+    # --- Protocol SessionProvider -----------------------------------------
+
+    def check_schema(self) -> None:
+        return None
+
+    def list_sessions(self, since_ms: int):
+        return list(self._metas)
+
+    def has_telemetry_rows(self, session_id: str) -> bool:
+        return True
+
+    def session_steps(self, session_id: str, start_ms: int, end_ms: int):
+        return list(self._steps.get(session_id, []))
+
+    def session_tools(self, session_id: str, start_ms: int, end_ms: int):
+        return ({}, {}, {})
+
+    def session_user_turns(self, session_id: str, start_ms: int, end_ms: int):
+        return []
+
+    def session_context_chars(self, session_id: str, start_ms: int, end_ms: int):
+        return {}
+
+    def session_aggregates(self, session_id: str):
+        return None
+
+    def session_parts(self, session_id: str):
+        return list(self._parts.get(session_id, []))
+
+    def find_session_by_title(self, title: str):
+        return next((m for m in self._metas if m.title == title), None)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def fake_part(kind: str, ts: datetime, *, text: str = "") -> PartRecord:
+    """PartRecord minimal (user/text) pour les tests de rendu transcript."""
+    return PartRecord(ts=ts, kind=kind, text=text)

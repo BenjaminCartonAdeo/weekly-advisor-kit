@@ -1,8 +1,14 @@
 """Self-cost of the pipeline run (Part 1 §12) — extracted from main (C14, v6.0.p).
 
 ``advisor_cost`` is shared by the CLI self-cost command and the report's
-self-cost line: title lookup first, then the most recent weekly-advisor
-agent session (v5.30 E).  Raises :class:`DataSourceError` when no DB exists.
+self-cost line: title lookup first, then the most recent weekly-advisor agent
+session (v5.30 E), toutes sources actives confondues.  Raises
+:class:`DataSourceError` when no source is usable (no DB exists).
+
+Multi-harnais : la recherche traverse tous les providers actifs
+(`build_providers`) ; l'id retourné est canonique ``"<harness>:<id>"``.
+Repli rétrocompatible : aucune source active → base OpenCode locale via
+`detect_db` (le contrat DataSourceError est conservé).
 
 Exit codes are imported from main so the CLI contract stays in one place
 (main never imports this module — no cycle).
@@ -11,37 +17,55 @@ Exit codes are imported from main so the CLI contract stays in one place
 from __future__ import annotations
 
 import sys
+import warnings
 from datetime import UTC, datetime
 
 from .config import TelemetryConfig
 from .main import EXIT_OK, EXIT_PARTIAL, EXIT_TOTAL_FAILURE
+from .providers import build_providers
 from .sqlite_reader import DataSourceError, detect_db
+
+_EPOCH = datetime.min.replace(tzinfo=UTC)
 
 
 def advisor_cost(cfg: TelemetryConfig) -> dict | None:
-    """Advisor session info: cost, session_id, tokens; None when undetectable."""
-    _path, adapter = detect_db(cfg.opencode_db_path)
+    """Advisor session info: cost, session_id (canonique), tokens; None sinon."""
+    providers = build_providers(cfg)
+    if not providers:
+        # Repli historique : DataSourceError préservée quand la base manque
+        # (contrat consommé par self_cost et report._self_cost_value).
+        warnings.warn(
+            "aucune source de sessions active — repli sur la base OpenCode locale "
+            f"({cfg.opencode_db_path})",
+            stacklevel=2,
+        )
+        _path, adapter = detect_db(cfg.opencode_db_path)
+        from .providers.implementations.opencode import OpenCodeSessionProvider
+
+        providers = [OpenCodeSessionProvider(_path, adapter)]
     try:
-        meta = adapter.find_session_by_title(cfg.advisor_run_title)
-        if meta is None:
-            # v5.30 (E) : fallback — session la plus récente de l'agent weekly-advisor
-            # (le titre du run peut différer du advisor_run_title si le prompt cron change).
-            best = None
-            for m in adapter.list_sessions(0):
-                if (
-                    m.agent
-                    and "weekly-advisor" in m.agent
-                    and (
-                        best is None
-                        or (m.time_updated or datetime.min.replace(tzinfo=UTC))
-                        > (best.time_updated or datetime.min.replace(tzinfo=UTC))
-                    )
-                ):
-                    best = m
-            meta = best
-        if meta is None:
+        found = None
+        for provider in providers:
+            meta = provider.find_session_by_title(cfg.advisor_run_title)
+            if meta is not None:
+                found = meta
+                break
+        if found is None:
+            # v5.30 (E) : fallback — session la plus récente de l'agent weekly-advisor,
+            # toutes sources confondues (le titre du run peut différer du
+            # advisor_run_title si le prompt cron change).
+            for provider in providers:
+                for m in provider.list_sessions(0):
+                    if not (m.agent and "weekly-advisor" in m.agent):
+                        continue
+                    if found is None or (m.time_updated or _EPOCH) > (
+                        found.time_updated or _EPOCH
+                    ):
+                        found = m
+        if found is None:
             return None
-        agg = adapter.session_aggregates(meta.session_id)
+        owner = next(p for p in providers if p.harness == found.harness)
+        agg = owner.session_aggregates(found.session_id)
         if agg is None:
             return None
         tokens = sum(
@@ -54,9 +78,10 @@ def advisor_cost(cfg: TelemetryConfig) -> dict | None:
                 "tokens_cache_write",
             )
         )
-        return {"cost": agg["cost"], "session_id": meta.session_id, "tokens": tokens}
+        return {"cost": agg["cost"], "session_id": found.session_id, "tokens": tokens}
     finally:
-        adapter.conn.close()
+        for provider in providers:
+            provider.close()
 
 
 def self_cost(cfg: TelemetryConfig, *, anchor: str | None = None) -> int:  # noqa: ARG001

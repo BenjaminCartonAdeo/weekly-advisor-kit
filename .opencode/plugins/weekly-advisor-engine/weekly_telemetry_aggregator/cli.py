@@ -53,17 +53,31 @@ def _cmd_run(args, cfg) -> int:
 
 
 def _cmd_show_session(args, cfg) -> int:
+    import warnings
+
     from .main import EXIT_TOTAL_FAILURE
+    from .providers import build_providers
+    from .providers.implementations.opencode import OpenCodeSessionProvider
     from .sqlite_reader import DataSourceError, detect_db
     from .transcript import render_session
 
+    providers = build_providers(cfg)
+    if not providers:
+        # Repli historique : aucune source active → base OpenCode locale.
+        warnings.warn(
+            "aucune source de sessions active — repli sur la base OpenCode locale "
+            f"({cfg.opencode_db_path})",
+            stacklevel=2,
+        )
+        try:
+            _path, adapter = detect_db(cfg.opencode_db_path)
+        except DataSourceError as exc:
+            print(f"show-session: FATAL: {exc} — lancer doctor", file=sys.stderr, flush=True)
+            return EXIT_TOTAL_FAILURE
+        providers = [OpenCodeSessionProvider(_path, adapter)]
     try:
-        _path, adapter = detect_db(cfg.opencode_db_path)
-    except DataSourceError as exc:
-        print(f"show-session: FATAL: {exc} — lancer doctor", file=sys.stderr, flush=True)
-        return EXIT_TOTAL_FAILURE
-    try:
-        text = render_session(adapter, args.session_id, include_children=args.include_children)
+        # render_session route vers le provider du harnais déduit de l'id canonique.
+        text = render_session(providers, args.session_id, include_children=args.include_children)
         sys.stdout.write(text)
         if args.extract_dir:
             target = Path(args.extract_dir) / f"transcript-extract-{args.session_id}.md"
@@ -71,7 +85,8 @@ def _cmd_show_session(args, cfg) -> int:
             target.write_text(text, encoding="utf-8")
             print(f"\nshow-session: extract écrit -> {target}", flush=True)
     finally:
-        adapter.conn.close()
+        for provider in providers:
+            provider.close()
     return 0
 
 

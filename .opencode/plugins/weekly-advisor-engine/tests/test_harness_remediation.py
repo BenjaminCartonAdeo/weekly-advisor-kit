@@ -477,3 +477,33 @@ def test_apply_with_null_old_text_is_blocked(tmp_path: Path):
     result = _result(cfg)
     assert result["summary"]["blocked"] == 1
     assert "non-empty old_text" in result["proposals"][0]["reason"]
+
+
+# ---- cellule 2.2 : matrice de décision 5.5 dans le résultat -------------------
+
+
+def test_run_result_reports_draft_target_surface_decision(tmp_path: Path):
+    """Le résultat 5.5 documente la surface décidée (harnais/mode → décision)."""
+    project, _target = _project(tmp_path)
+    (project / ".claude").mkdir()  # marqueur claude-code → priorité détection
+    cfg = _config(tmp_path, project)
+    proposal = _proposal(cfg.output_dir / "proposal.json")
+
+    assert run(cfg, proposal_path=proposal, mode="dry-run", anchor=ANCHOR) == EXIT_OK
+
+    result = _result(cfg)
+    draft_target = result["draft_target"]
+    assert draft_target["mode"] == "detected"
+    assert draft_target["harnesses"] == ["claude-code"]
+    assert draft_target["decision"] == "portability"
+    assert "portability.yaml" in draft_target["reason"]
+
+
+def test_run_result_reports_projection_for_opencode_project(tmp_path: Path):
+    project, _target = _project(tmp_path)  # marqueur .opencode seul
+    cfg = _config(tmp_path, project)
+    proposal = _proposal(cfg.output_dir / "proposal.json")
+
+    assert run(cfg, proposal_path=proposal, mode="dry-run", anchor=ANCHOR) == EXIT_OK
+
+    assert _result(cfg)["draft_target"]["decision"] == "projection"

@@ -425,3 +425,25 @@ def test_skills_targets_propagated_to_summary():
         skill_catalog_entries=entries,
     )
     assert summary.skills_targets == {"jira-to-code-audit": ["java-pro", "backend-architect"]}
+
+
+def test_aggregate_merges_child_across_canonical_ids():
+    """Ids canoniques multi-harnais : fusion racine/enfant inchangée."""
+    from helpers import make_step, make_usage, tzutc
+
+    ts = tzutc(2026, 8, 11, 22)
+    root = make_usage("alpha:root", [make_step("alpha:root", ts, cost=1.0)])
+    child = make_usage(
+        "alpha:child", [make_step("alpha:child", ts, cost=0.5)], parent="alpha:root"
+    )
+    summary = aggregate(
+        [root, child],
+        period=_period(),
+        generated_at=_period().end,
+        known_parent_ids={"alpha:root"},
+        include_subagents=True,
+    )
+    assert summary.totals.session_count == 1
+    assert abs(summary.totals.total_cost_usd - 1.5) < 1e-9
+    top = {t.session_id: t for t in summary.top_sessions_by_cost}
+    assert top["alpha:root"].includes_subagents is True

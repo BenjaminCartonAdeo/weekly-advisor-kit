@@ -191,8 +191,8 @@ def test_audit_candidates_subcommand(tmp_path: Path, capsys):
     assert data["limit"] == 8
     assert len(data["audited"]) <= 8
     assert (
-        data["audited"][0]["session_id"] == "s000"
-    )  # top-cost (coûts identiques → session_id ASC)
+        data["audited"][0]["session_id"] == "opencode:s000"
+    )  # top-cost (coûts identiques → session_id ASC), id canonique multi-harnais
 
 
 def test_audit_candidates_requires_summary(tmp_path: Path, capsys):
@@ -248,3 +248,18 @@ def test_draft_candidates_subcommand(tmp_path: Path, capsys):
     )  # skill-candidate high + command-candidate low (prompting-habit exclu)
     data = json.loads((tmp_path / "weekly-draft-candidates-2026-08-12.json").read_text())
     assert [c["session_id"] for c in data["candidates"]] == ["s001", "s002"]
+
+
+def test_show_session_accepts_canonical_id(tmp_path: Path, capsys):
+    """Id canonique <harness>:<id> routé vers le provider du harnais."""
+    db = tmp_path / "opencode.db"
+    ts = RUN_TIME - __import__("datetime").timedelta(hours=2)
+    seed_v1_file(
+        db,
+        [{"id": "ses_x", "title": "X", "start": ts, "updated": ts, "texts": [{"ts": ts, "text": "salut"}]}],
+    )
+    conf = _write_config(tmp_path, db)
+    rc = main(["show-session", "opencode:ses_x", "--config", str(conf)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "user: salut" in out

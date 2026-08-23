@@ -16,6 +16,7 @@
  */
 import { type Plugin, tool } from "@opencode-ai/plugin"
 import path from "node:path"
+import os from "node:os"
 import fs from "node:fs"
 import { execFile } from "node:child_process"
 
@@ -117,6 +118,109 @@ function runCli(worktree: string, args: string[], timeoutMs: number): Promise<st
       },
     )
   })
+}
+
+// ---------------------------------------------------------------------------
+// Gate de portabilité (cellule 3.2) : chaque draft est scanné par
+// `harness-eval skill-verify` AVANT tout commit-draft. Seules les règles
+// custom/portability/* du kit décident (.harness-eval/rules/portability.yaml) :
+//   - cwd = racine projet OBLIGATOIRE (chargement des règles custom depuis
+//     <racine>/.harness-eval/rules/ ; lancé ailleurs : 0 règle → gate aveugle) ;
+//   - ≥1 finding error → commit refusé, fix manuel requis ;
+//   - warnings seuls → commit autorisé, note jointe au résultat ;
+//   - binaire absent / sortie illisible → fail-soft : note non bloquante
+//     (le doctor du kit signale déjà l'absence du binaire).
+const PORTABILITY_PREFIX = "custom/portability/"
+
+interface SkillVerifyDetail {
+  rule?: string
+  severity?: string
+  message?: string
+  suggestion?: string
+}
+
+/** Spawn harness-eval avec cwd = racine projet. Résout "" si binaire absent. */
+function runSkillVerify(scanDir: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "harness-eval",
+      ["skill-verify", scanDir, "--format", "json"],
+      { cwd: worktree, timeout: 60_000, maxBuffer: 16 * 1024 * 1024, env: process.env },
+      (err, stdout, stderr) => {
+        if (err && (err as NodeJS.ErrnoException).code === "ENOENT") return resolve("")
+        if (err)
+          return reject(
+            new Error(`harness-eval skill-verify → exit ${err.code ?? "?"}\n${(stderr || stdout || "").trim().slice(-400)}`),
+          )
+        resolve(stdout)
+      },
+    )
+  })
+}
+
+type PortabilityOutcome =
+  | { kind: "blocked"; findings: string[] }
+  | { kind: "pass"; warnings: string[] }
+  | { kind: "ignored"; reason: string }
+
+/** Exécute la gate et tranche : bloqué / passage (warnings seuls) / ignorée (fail-soft). */
+async function runPortabilityGate(file: string): Promise<PortabilityOutcome> {
+  const scan = prepareScanDir(file)
+  try {
+    const stdout = await runSkillVerify(scan.dir)
+    if (!stdout.trim()) return { kind: "ignored", reason: "binaire harness-eval introuvable" }
+    let errors: string[]
+    let warnings: string[]
+    try {
+      ;({ errors, warnings } = collectPortability(stdout))
+    } catch {
+      return { kind: "ignored", reason: "sortie skill-verify illisible (JSON invalide)" }
+    }
+    if (errors.length > 0) return { kind: "blocked", findings: errors }
+    return { kind: "pass", warnings }
+  } catch (e) {
+    // Crash du scanner ≠ faute de l'artefact : fail-soft avec motif explicite.
+    return { kind: "ignored", reason: `skill-verify en échec : ${(e as Error).message.split("\n")[0]}` }
+  } finally {
+    scan.cleanup()
+  }
+}
+
+/**
+ * Copie réelle (zéro symlink) de l'artefact dans un répertoire temporaire :
+ * le scan porte sur LE seul artefact commis — jamais sur le voisinage du
+ * dossier de drafts (des findings tiers bloqueraient à tort). Pour un skill,
+ * le dossier entier est copié afin que la règle self-contained-scripts voie
+ * les scripts frères.
+ */ // ponytail: isolation par copie plutôt que scan du dossier parent
+function prepareScanDir(file: string): { dir: string; cleanup: () => void } {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "wa-portab-"))
+  const cleanup = () => fs.rmSync(tmp, { recursive: true, force: true })
+  if (path.basename(file) === "SKILL.md") {
+    const dir = path.join(tmp, "skill")
+    fs.cpSync(path.dirname(file), dir, { recursive: true })
+    return { dir, cleanup }
+  }
+  fs.copyFileSync(file, path.join(tmp, path.basename(file)))
+  return { dir: tmp, cleanup }
+}
+
+/** Extrait les findings custom/portability/* d'un rapport skill-verify JSON. */
+function collectPortability(stdout: string): { errors: string[]; warnings: string[] } {
+  const report = JSON.parse(stdout) as { findings?: Array<{ details?: SkillVerifyDetail[] }> }
+  const errors: string[] = []
+  const warnings: string[] = []
+  for (const finding of report.findings ?? []) {
+    for (const detail of finding.details ?? []) {
+      if (!detail.rule?.startsWith(PORTABILITY_PREFIX)) continue
+      const entry =
+        `[${detail.rule}] ${detail.message ?? ""}` +
+        (detail.suggestion ? ` — suggestion : ${detail.suggestion}` : "")
+      // Toute sévérité != error passe en note non bloquante (error seul bloque).
+      ;(detail.severity === "error" ? errors : warnings).push(entry)
+    }
+  }
+  return { errors, warnings }
 }
 
 // Factories pour les tools « 1 sous-commande → 1 appel CLI » (le cas majoritaire).
@@ -296,14 +400,41 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
 
       weekly_commit_draft: tool({
         description:
-          "Étape 4 : commit auto-rédigé d'un skill/command draft (commit-draft). 1 commit par écriture, " +
-          "message construit depuis le frontmatter, pré-checks git intégrés.",
+          "Étape 4 : commit auto-rédigé d'un skill/command draft (commit-draft). " +
+          "Gate de portabilité (skill-verify) avant chaque commit : erreur → refus + fix manuel requis, " +
+          "warnings seuls → passage avec note. 1 commit par écriture, pré-checks git intégrés.",
         args: {
           kind: tool.schema.enum(["skill", "command"]),
           file: tool.schema.string().describe("chemin absolu du fichier draft"),
         },
         async execute(args) {
-          return runCli(worktree, ["commit-draft", "--kind", args.kind, "--file", args.file], 120_000)
+          // Gate portabilité (cellule 3.2) — avant TOUT commit. Fichier absent :
+          // pas de gate, l'erreur vient du CLI (comportement inchangé).
+          let note = ""
+          if (fs.existsSync(args.file)) {
+            const gate = await runPortabilityGate(args.file)
+            if (gate.kind === "blocked") {
+              throw new Error(
+                `commit REFUSÉ par la gate de portabilité (skill-verify) — fix manuel requis\n` +
+                  `artefact : ${args.file}\n` +
+                  gate.findings.map((f, i) => `  ${i + 1}. ${f}`).join("\n") +
+                  `\nCorrigez le fichier puis relancez le commit.`,
+              )
+            }
+            if (gate.kind === "pass" && gate.warnings.length > 0) {
+              note =
+                `note : gate portabilité — ${gate.warnings.length} warning(s) non bloquant(s)\n` +
+                gate.warnings.map((w) => `  - ${w}`).join("\n")
+            } else if (gate.kind === "ignored") {
+              note = `⚠ gate portabilité ignorée (fail-soft) : ${gate.reason}`
+            }
+          }
+          const result = await runCli(
+            worktree,
+            ["commit-draft", "--kind", args.kind, "--file", args.file],
+            120_000,
+          )
+          return note ? `${note}\n\n${result}` : result
         },
       }),
 

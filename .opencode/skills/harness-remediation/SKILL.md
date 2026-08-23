@@ -1,6 +1,6 @@
 ---
 name: harness-remediation
-description: Analyse les findings harness-eval et prépare/applique uniquement les corrections à haute confiance autorisées par la gate déterministe.
+description: Analyse les findings harness-eval du digest et prépare des propositions de correction (étape 5.5 du weekly-advisor). Use when: corrections à haute confiance, validées par la gate déterministe — dry-run par défaut, aucun commit automatique.
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: pipeline-step
@@ -10,12 +10,16 @@ metadata:
 
 Cette étape transforme le digest `harness-eval` en décisions explicites. Elle ne donne
 jamais au LLM un droit implicite d'édition : le LLM écrit un fichier de propositions,
-puis `weekly_harness_remediate` décide déterministiquement ce qui peut être appliqué.
+puis la sous-commande `harness-remediate` du plugin weekly-advisor décide
+déterministiquement ce qui peut être appliqué.
 
 ## Entrées
 
 - `weekly-harness-digest-<date>.json` — findings du scan allowlisté, avec `path`, `rule`,
-  `severity`, `message` et `suggestion`
+  `severity`, `message` et `suggestion`. Depuis la cellule 2.2, le scan couvre aussi les
+  répertoires du harnais détecté (`DRAFT_HARNESS_TARGETS`, ex. `.claude/skills`) et le
+  contenu engine du kit injecté dans la projection — les fichiers sans source réelle
+  sont listés comme **orphelins** dans `draft_targets.orphan_files`.
 - `weekly-telemetry-config.json` — `harness_auto_fix_rules` et
   `harness_auto_fix_max_files`
 - le contenu des seuls fichiers ciblés par les findings
@@ -29,13 +33,12 @@ puis `weekly_harness_remediate` décide déterministiquement ce qui peut être a
 (répertoire du run actif — alias stable `runs/current`)
 ```
 
-Puis appeler obligatoirement :
+Puis appeler obligatoirement la sous-commande `harness-remediate` du plugin
+weekly-advisor, avec les paramètres :
 
 ```text
-weekly_harness_remediate({
-  proposal_file: "<chemin absolu>",
+  proposal_file: "<chemin absolu>"
   mode: "apply"
-})
 ```
 
 Le tool écrit ensuite :
@@ -46,6 +49,23 @@ Le tool écrit ensuite :
 
 Le résultat explique chaque décision (`applied`, `proposed`, `manual`, `blocked`,
 `rolled_back`) et contient le post-check lorsqu'une correction a été appliquée.
+
+## Surface de remédiation (matrice 5.5, cellule 2.2)
+
+Le résultat porte un bloc `draft_target` : `{mode, harnesses, decision, reason}` —
+décision pure déduite du harnais résolu (`resolve_remediation_surface`) :
+
+- cible unique `opencode` → `projection` (surface native `.opencode` déjà couverte) ;
+- cible unique hors `.opencode` → `portability` (remédiation conditionnée au mapping
+  `portability.yaml` — règle YAML elle-même : cellule 3.1) ;
+- plusieurs cibles avec `opencode` → `combined` ; sans `opencode` → `portability` ;
+- entrée vide ou harnais inconnu → repli sûr `projection`, raison explicite.
+
+Le digest étape 5 expose la même décision dans `draft_targets.surface_decision`, plus
+une **baseline findings** (`harness_baseline`) : capturée au premier run dans
+`<output_dir>/weekly-harness-baseline.json`, réutilisée telle quelle aux runs suivants
+(`status=reused`, nouveaux findings listés dans `new_findings`). Les findings orphelins
+(contenu engine projeté sans source réelle) sont des signaux, jamais des cibles d'apply.
 
 ## Décision
 

@@ -8,9 +8,11 @@ defines project_root itself, the implicit default is `<cwd>/weekly-telemetry-con
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .draft_targets import DRAFT_TARGET_PRIORITY, MODE_AUTO, MODE_LEGACY
 from .models import OUTLIER_MIN_SESSIONS
 
 DEFAULT_CONFIG_NAME = "weekly-telemetry-config.json"
@@ -89,6 +91,21 @@ class InsightsConfig:
 
 
 @dataclass(slots=True)
+class DraftTargetsConfig:
+    """Cibles de drafting mono-cible (cellule 2.1) — sémantique décision §2.1.
+
+    ``mode`` :
+      - ``"auto"`` (défaut, clé absente/null) → détection par marqueurs ;
+      - ``"legacy"`` (``[]`` explicite) → toutes les cibles (historique) ;
+      - ``"override"`` (liste non vide valide) → cibles explicites.
+    """
+
+    mode: str = MODE_AUTO
+    #: Cibles explicites (mode "override"), dédupliquées, ordre conservé.
+    targets: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class HarnessIncludeConfig:
     """Allowlist profiles used to build the temporary harness projection."""
 
@@ -110,6 +127,10 @@ class TelemetryConfig:
     project_root: Path | None = None
     #: "auto" → opencode.db then opencode-next.db, the live one wins (v5.24).
     opencode_db_path: str = "auto"
+    #: sources de sessions multi-harnais (vNext) — ABSENT de la config JSON ⇒
+    #: [{"type": "opencode"}] (rétrocompatible strict). Entrée optionnelle
+    #: "enabled": false ignorée ; clés extra préservées pour les harnais futurs.
+    session_sources: list[dict] = field(default_factory=lambda: [{"type": "opencode"}])
     lookback_days: int = 7
     output_dir: Path = field(default_factory=lambda: _expand("~/opencode-weekly-reports"))
     top_sessions_limit: int = 5
@@ -171,6 +192,9 @@ class TelemetryConfig:
     ignored_findings: list[str] = field(default_factory=list)
     audit: AuditConfig = field(default_factory=AuditConfig)
     insights: InsightsConfig = field(default_factory=InsightsConfig)
+    #: cibles de drafting mono-cible (cellule 2.1) — clé absente = auto
+    #: (détection marqueurs), [] = legacy, liste non vide = override.
+    draft_targets: DraftTargetsConfig = field(default_factory=DraftTargetsConfig)
 
     def window_hours(self) -> float:
         return self.lookback_days * 24.0
@@ -279,6 +303,61 @@ def _parse(p: Path) -> TelemetryConfig:
     cfg.git_email = str(raw.get("git_email", cfg.git_email))
     cfg.advisor_run_title = str(raw.get("advisor_run_title", cfg.advisor_run_title))
     cfg.opencode_db_path = str(raw.get("opencode_db_path", cfg.opencode_db_path))
+    # Sources de sessions multi-harnais — validation tolérante : entrées non-dict
+    # ou sans "type" ignorées ; défaut conservé si la clé est absente/mal formée.
+    sources_raw = raw.get("session_sources")
+    if isinstance(sources_raw, list):
+        parsed_sources: list[dict] = []
+        for entry in sources_raw:
+            if not isinstance(entry, dict):
+                continue
+            stype = entry.get("type")
+            if not isinstance(stype, str) or not stype.strip():
+                continue
+            source: dict = {"type": stype.strip(), "enabled": bool(entry.get("enabled", True))}
+            for key, value in entry.items():
+                if key not in ("type", "enabled"):
+                    source[key] = value
+            parsed_sources.append(source)
+        cfg.session_sources = parsed_sources
+    # Cibles de drafting mono-cible (cellule 2.1) — tolérant, style fail-soft :
+    #   clé absente/null → auto (détection par marqueurs au doctor/run) ;
+    #   liste vide []    → legacy (toutes les cibles, comportement historique) ;
+    #   liste non vide   → override (valeurs inconnues ignorées avec warning ;
+    #                      aucune valeur valide restante → fallback auto) ;
+    #   autre type       → warning + auto.
+    dt_raw = raw.get("draft_targets")
+    if dt_raw is None:
+        pass  # absent → défaut auto conservé
+    elif isinstance(dt_raw, list):
+        if not dt_raw:
+            cfg.draft_targets.mode = MODE_LEGACY
+            cfg.draft_targets.targets = []
+        else:
+            names = [x.strip() for x in dt_raw if isinstance(x, str)]
+            known = set(DRAFT_TARGET_PRIORITY)
+            valid: list[str] = []
+            for name in names:
+                if name not in known:
+                    warnings.warn(
+                        f"draft_targets : valeur inconnue {name!r} ignorée "
+                        f"— harnais connus : {sorted(known)}",
+                        stacklevel=2,
+                    )
+                elif name not in valid:
+                    valid.append(name)
+            if valid:
+                cfg.draft_targets.mode = "override"
+                cfg.draft_targets.targets = valid
+            else:
+                cfg.draft_targets.mode = MODE_AUTO  # fallback détection
+                cfg.draft_targets.targets = []
+    else:
+        warnings.warn(
+            f"draft_targets mal formé ({type(dt_raw).__name__}, liste attendue) "
+            "— fallback détection auto",
+            stacklevel=2,
+        )
     cfg.release_keywords = [str(x) for x in raw.get("release_keywords", cfg.release_keywords)]
     cfg.watch_repos = [str(x) for x in raw.get("watch_repos", cfg.watch_repos)]
     cfg.watch = [

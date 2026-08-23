@@ -113,7 +113,7 @@ cp -a "$SRC/README.md" "$SRC/INSTALL.md" "$SRC/opencode-weekly-advisor" <TARGET>
 ### 5.5 Environnement moteur
 
 ```sh
-uv sync --project <TARGET>/.opencode/plugins/weekly-advisor-engine --all-extras
+uv sync --project <TARGET>/.opencode/plugins/weekly-advisor-engine --extra dev
 ```
 
 Succès sans erreur, sinon STOP (rollback 5.8).

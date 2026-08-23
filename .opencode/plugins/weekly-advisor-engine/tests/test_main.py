@@ -9,7 +9,13 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from helpers import active_run_file, seed_hybrid_file, seed_v1_file, tzutc
+from helpers import (
+    FakeSessionProvider,
+    active_run_file,
+    seed_hybrid_file,
+    seed_v1_file,
+    tzutc,
+)
 
 from weekly_telemetry_aggregator.config import TelemetryConfig
 from weekly_telemetry_aggregator.costing import self_cost
@@ -341,6 +347,128 @@ def test_doctor_warns_when_config_nowhere(tmp_path: Path, capsys, fake_opencode)
     doctor(cfg, cwd=tmp_path / "nowhere", config_loaded=True)
     out = (capsys.readouterr().out + capsys.readouterr().err).lower()
     assert "config introuvable" not in out
+
+
+# ================================================== v6.2 cellule 1.2 (doctor multi-providers)
+
+
+def test_doctor_lists_active_provider_status_and_source(tmp_path: Path, capsys, fake_opencode):
+    """Cellule 1.2 : le doctor itère sur les providers du registre — section
+    statut+source par harnais, chemin de la base détectée affiché, compteur de
+    migrations conservé pour l'adapter SQLite."""
+    _ = (tmp_path / ".opencode").mkdir()
+    db = _seed_n(tmp_path / "opencode.db", 3)
+    cfg = _cfg(tmp_path, db)
+    cfg.project_root = tmp_path
+    rc = doctor(cfg)
+    out = capsys.readouterr().out
+    assert rc in (EXIT_OK, EXIT_PARTIAL)
+    assert "doctor: [opencode] OK" in out
+    assert str(db) in out  # source (chemin de la base) affichée
+    assert "migrations=" in out  # check migrations conservé
+
+
+def test_doctor_no_provider_available_exits_two(tmp_path: Path, capsys):
+    """Exit 2 dès qu'AUCUNE source n'est disponible : base absente ou toutes
+    sources désactivées — plus aucun message 'base OpenCode' en dur."""
+    _ = (tmp_path / ".opencode").mkdir()
+    cfg = _cfg(tmp_path, tmp_path / "missing.db")
+    cfg.project_root = tmp_path
+    assert doctor(cfg) == EXIT_TOTAL_FAILURE
+    assert "aucune source de sessions disponible" in capsys.readouterr().out
+
+    capsys.readouterr()
+    cfg2 = _cfg(tmp_path, tmp_path / "missing.db")
+    cfg2.project_root = tmp_path
+    cfg2.session_sources = [{"type": "opencode", "enabled": False}]
+    assert doctor(cfg2) == EXIT_TOTAL_FAILURE
+
+
+def test_doctor_generic_multi_harness_sections(tmp_path: Path, monkeypatch, capsys, fake_opencode):
+    """Générique : aucune liste de harnais en dur — un futur ClaudeCodeProvider
+    s'affiche comme n'importe quel provider sans modifier le doctor."""
+    import weekly_telemetry_aggregator.main as main_mod
+
+    _ = (tmp_path / ".opencode").mkdir()
+    cfg = _cfg(tmp_path, tmp_path / "unused.db")
+    cfg.project_root = tmp_path
+    monkeypatch.setattr(
+        main_mod,
+        "build_providers",
+        lambda _cfg: [
+            FakeSessionProvider("opencode", []),
+            FakeSessionProvider("claudecode", []),
+        ],
+    )
+    rc = doctor(cfg)
+    out = capsys.readouterr().out
+    assert rc in (EXIT_OK, EXIT_PARTIAL)
+    assert "doctor: [opencode] OK" in out
+    assert "doctor: [claudecode] OK" in out
+
+
+# ================================================== cellule 2.1 (cibles de drafting au doctor)
+
+
+def test_doctor_shows_detected_draft_target(tmp_path: Path, capsys, fake_opencode):
+    """Marqueur .opencode présent → cible affichée en mode détection, sans warning."""
+    _ = (tmp_path / ".opencode").mkdir()
+    db = _seed_n(tmp_path / "opencode.db", 3)
+    cfg = _cfg(tmp_path, db)
+    cfg.project_root = tmp_path
+    assert doctor(cfg) in (EXIT_OK, EXIT_PARTIAL)
+    out = capsys.readouterr().out
+    assert "doctor: cibles de drafting: opencode (détection)" in out
+    assert "WARNING" not in out or "marqueur" not in out
+
+
+def test_doctor_detects_claude_before_opencode(tmp_path: Path, capsys):
+    """Priorité §2.1 visible au doctor : .claude + .opencode → claude-code."""
+    _ = (tmp_path / ".claude").mkdir()
+    _ = (tmp_path / ".opencode").mkdir()
+    db = _seed_n(tmp_path / "opencode.db", 3)
+    cfg = _cfg(tmp_path, db)
+    cfg.project_root = tmp_path
+    _ = doctor(cfg)
+    out = capsys.readouterr().out
+    assert "doctor: cibles de drafting: claude-code (détection)" in out
+
+
+def test_doctor_shows_config_override_draft_target(tmp_path: Path, capsys, fake_opencode):
+    """Override config > détection : cible affichée en mode config."""
+    _ = (tmp_path / ".opencode").mkdir()
+    db = _seed_n(tmp_path / "opencode.db", 3)
+    cfg = _cfg(tmp_path, db)
+    cfg.project_root = tmp_path
+    cfg.draft_targets.mode = "override"
+    cfg.draft_targets.targets = ["codex"]
+    assert doctor(cfg) in (EXIT_OK, EXIT_PARTIAL)
+    assert "doctor: cibles de drafting: codex (config)" in capsys.readouterr().out
+
+
+def test_doctor_shows_legacy_draft_target(tmp_path: Path, capsys, fake_opencode):
+    """[] = legacy : toutes les cibles affichées en mode legacy."""
+    _ = (tmp_path / ".opencode").mkdir()
+    db = _seed_n(tmp_path / "opencode.db", 3)
+    cfg = _cfg(tmp_path, db)
+    cfg.project_root = tmp_path
+    cfg.draft_targets.mode = "legacy"
+    assert doctor(cfg) in (EXIT_OK, EXIT_PARTIAL)
+    assert "doctor: cibles de drafting: toutes cibles (legacy)" in capsys.readouterr().out
+
+
+def test_doctor_warns_default_draft_target_without_marker(tmp_path: Path, capsys, fake_opencode):
+    """Aucun marqueur → défaut opencode affiché + WARNING (rc inchangé : la
+    sentinelle project_root-sans-.opencode reste le vrai blocant)."""
+    empty_root = tmp_path / "vide"
+    empty_root.mkdir()  # aucun marqueur
+    db = _seed_n(tmp_path / "opencode.db", 3)
+    cfg = _cfg(tmp_path, db)
+    cfg.project_root = empty_root
+    assert doctor(cfg) == EXIT_TOTAL_FAILURE  # sentinelle existante, inchangée
+    out = capsys.readouterr().out
+    assert "doctor: cibles de drafting: opencode (défaut)" in out
+    assert "WARNING: aucun marqueur de harnais trouvé" in out
 
 
 def test_self_cost_finds_advisor_session(tmp_path: Path, capsys):
@@ -676,8 +804,8 @@ def test_run_writes_selection_audit(tmp_path: Path):
     assert sel["excluded_error"] == 0
     assert len(sel["recent"]) == 4
     assert {r["status"] for r in sel["recent"]} == {"included", "active", "advisor", "no-activity"}
-    # recent trié par updated décroissant (le plus récent en premier)
-    assert sel["recent"][0]["session_id"] == "ses_active"
+    # recent trié par updated décroissant (le plus récent en premier) — id canonique
+    assert sel["recent"][0]["session_id"] == "opencode:ses_active"
 
 
 # ============================================================ v5.28 (K1/K2/K9/K10/K11)
@@ -790,8 +918,8 @@ def test_selection_audit_has_parent_id(tmp_path: Path):
         (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
     )
     by_id = {r["session_id"]: r for r in data["selection"]["recent"]}
-    assert by_id["ses_child"]["parent_id"] == "ses_parent"
-    assert by_id["ses_parent"]["parent_id"] is None
+    assert by_id["opencode:ses_child"]["parent_id"] == "opencode:ses_parent"
+    assert by_id["opencode:ses_parent"]["parent_id"] is None
 
 
 def test_doctor_warns_when_gh_missing_with_watch_repos(
@@ -1221,3 +1349,417 @@ def test_build_selection_marks_in_window():
     assert by_id["s1"]["in_window"] is True
     assert by_id["s2"]["in_window"] is False
     assert by_id["s3"]["in_window"] is False
+
+
+# ============================================================ multi-harnais (cellule 1.1)
+
+FAKE_TS = tzutc(2026, 8, 11, 22, 0, 0)  # dans la fenêtre, hors cut-off session active
+
+
+def _two_fake_sources():
+    from helpers import FakeSessionProvider, fake_meta, make_step
+
+    src_a = FakeSessionProvider(
+        "alpha",
+        [fake_meta("alpha", "a1", title="Alpha one", updated=FAKE_TS)],
+        steps_by_session={"a1": [make_step("a1", FAKE_TS, cost=0.4)]},
+    )
+    src_b = FakeSessionProvider(
+        "beta",
+        [fake_meta("beta", "b1", title="Beta one", updated=FAKE_TS)],
+        steps_by_session={"b1": [make_step("b1", FAKE_TS, cost=0.6)]},
+    )
+    return [src_a, src_b]
+
+
+def test_run_fuses_two_fake_sources_with_canonical_ids(tmp_path: Path, monkeypatch):
+    """Deux sources factices → usages fusionnés, ids canoniques <harness>:<id>."""
+    import weekly_telemetry_aggregator.main as main_mod
+
+    sources = _two_fake_sources()
+    monkeypatch.setattr(main_mod, "build_providers", lambda _cfg: sources)
+    cfg = _cfg(tmp_path, tmp_path / "absent.db")  # base absente : ne doit pas être ouverte
+    rc = run(cfg, anchor=RUN_TIME.isoformat())
+    assert rc == EXIT_OK
+    assert all(src.closed for src in sources)  # cycle de vie possédé par run()
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
+    assert data["totals"]["session_count"] == 2
+    assert data["totals"]["total_cost_usd"] == pytest.approx(1.0)
+    top_ids = {t["session_id"] for t in data["top_sessions_by_cost"]}
+    assert top_ids == {"alpha:a1", "beta:b1"}
+    recent_ids = {r["session_id"] for r in data["selection"]["recent"]}
+    assert recent_ids == {"alpha:a1", "beta:b1"}
+
+
+def test_run_dedups_same_harness_duplicate_ids_first_source_wins(tmp_path: Path, monkeypatch):
+    """Deux sources du même harnais exposant le même id canonique → compté UNE fois.
+
+    La première source (ordre cfg.session_sources) gagne : contenu = ses données ;
+    UserWarning récapitulative émise + trace dans summary.warnings.
+    """
+    from helpers import FakeSessionProvider, fake_meta, make_step
+
+    import weekly_telemetry_aggregator.main as main_mod
+
+    src_a = FakeSessionProvider(
+        "alpha",
+        [fake_meta("alpha", "a1", title="Alpha one", updated=FAKE_TS)],
+        steps_by_session={"a1": [make_step("a1", FAKE_TS, cost=0.4)]},
+    )
+    src_b = FakeSessionProvider(
+        "alpha",
+        [fake_meta("alpha", "a1", title="Alpha dup", updated=FAKE_TS)],
+        steps_by_session={"a1": [make_step("a1", FAKE_TS, cost=9.9)]},
+    )
+    monkeypatch.setattr(main_mod, "build_providers", lambda _cfg: [src_a, src_b])
+    cfg = _cfg(tmp_path, tmp_path / "absent.db")
+    with pytest.warns(UserWarning, match="doublon.*alpha"):
+        rc = run(cfg, anchor=RUN_TIME.isoformat())
+    assert rc == EXIT_OK
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
+    assert data["totals"]["session_count"] == 1  # compté une seule fois
+    assert data["totals"]["total_cost_usd"] == pytest.approx(0.4)  # première source gagne
+    top = next(t for t in data["top_sessions_by_cost"] if t["session_id"] == "alpha:a1")
+    assert top["cost_usd"] == pytest.approx(0.4)
+    assert any("doublon" in w["message"] and "alpha" in w["message"] for w in data["warnings"])
+
+
+def test_run_same_harness_disjoint_ids_all_counted_no_dedup_warning(tmp_path: Path, monkeypatch):
+    """Sources du même harnais avec ids disjoints → tous comptés, aucun warning dédup."""
+    import warnings as warnings_mod
+
+    from helpers import FakeSessionProvider, fake_meta, make_step
+
+    import weekly_telemetry_aggregator.main as main_mod
+
+    src_a = FakeSessionProvider(
+        "alpha",
+        [fake_meta("alpha", "a1", title="Alpha one", updated=FAKE_TS)],
+        steps_by_session={"a1": [make_step("a1", FAKE_TS, cost=0.4)]},
+    )
+    src_b = FakeSessionProvider(
+        "alpha",
+        [fake_meta("alpha", "a2", title="Alpha two", updated=FAKE_TS)],
+        steps_by_session={"a2": [make_step("a2", FAKE_TS, cost=0.6)]},
+    )
+    monkeypatch.setattr(main_mod, "build_providers", lambda _cfg: [src_a, src_b])
+    cfg = _cfg(tmp_path, tmp_path / "absent.db")
+    with warnings_mod.catch_warnings():
+        warnings_mod.simplefilter("error")  # tout warning → échec
+        rc = run(cfg, anchor=RUN_TIME.isoformat())
+    assert rc == EXIT_OK
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
+    assert data["totals"]["session_count"] == 2
+    assert data["totals"]["total_cost_usd"] == pytest.approx(1.0)
+
+
+def test_run_dedup_warning_message_recap_format(tmp_path: Path, monkeypatch):
+    """Message récapitulatif unique : « N session(s) en doublon ignorée(s) depuis <h> source #k »."""
+    from helpers import FakeSessionProvider, fake_meta
+
+    import weekly_telemetry_aggregator.main as main_mod
+
+    src_a = FakeSessionProvider(
+        "alpha", [fake_meta("alpha", "a1", updated=FAKE_TS), fake_meta("alpha", "a2", updated=FAKE_TS)]
+    )
+    src_b = FakeSessionProvider(
+        "alpha",
+        [fake_meta("alpha", "a2", updated=FAKE_TS), fake_meta("alpha", "a3", updated=FAKE_TS)],
+    )
+    monkeypatch.setattr(main_mod, "build_providers", lambda _cfg: [src_a, src_b])
+    cfg = _cfg(tmp_path, tmp_path / "absent.db")
+    with pytest.warns(UserWarning) as recorded:
+        rc = run(cfg, anchor=RUN_TIME.isoformat())
+    assert rc == EXIT_OK
+    dup_warnings = [w for w in recorded if "doublon" in str(w.message)]
+    assert len(dup_warnings) == 1  # récapitulatif unique
+    assert "1 session(s) en doublon ignorée(s) depuis alpha source #2" in str(dup_warnings[0].message)
+
+
+def test_run_merges_child_into_root_across_canonical_ids(tmp_path: Path, monkeypatch):
+    """parent_id brut re-namespacé → fusion racine/enfant valable en multi-source."""
+    from helpers import FakeSessionProvider, fake_meta, make_step
+
+    import weekly_telemetry_aggregator.main as main_mod
+
+    src = FakeSessionProvider(
+        "alpha",
+        [
+            fake_meta("alpha", "root", title="Root", updated=FAKE_TS),
+            fake_meta("alpha", "child", title="Child", parent="root", updated=FAKE_TS),
+        ],
+        steps_by_session={
+            "root": [make_step("root", FAKE_TS, cost=1.0)],
+            "child": [make_step("child", FAKE_TS, cost=0.5)],
+        },
+    )
+    monkeypatch.setattr(main_mod, "build_providers", lambda _cfg: [src])
+    cfg = _cfg(tmp_path, tmp_path / "absent.db")
+    cfg.include_subagents = True
+    rc = run(cfg, anchor=RUN_TIME.isoformat())
+    assert rc == EXIT_OK
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
+    sel = data["selection"]
+    assert sel["counted"] == 1  # racine seule ; l'enfant est fusionné
+    assert sel["merged_children"] == 1
+    root_row = next(t for t in data["top_sessions_by_cost"] if t["session_id"] == "alpha:root")
+    assert root_row["cost_usd"] == pytest.approx(1.5)
+
+
+def test_run_zero_active_source_falls_back_to_local_db_with_warning(tmp_path: Path):
+    """Aucun provider actif → warning + repli comportement historique detect_db."""
+    db = tmp_path / "opencode.db"
+    ts = RUN_TIME - timedelta(hours=2)
+    seed_v1_file(
+        db,
+        [
+            {
+                "id": "ses_x",
+                "title": "X",
+                "start": ts,
+                "updated": ts,
+                "steps": [{"ts": ts, "cost": 1.0}],
+            }
+        ],
+    )
+    cfg = _cfg(tmp_path, db)
+    cfg.session_sources = [{"type": "harnais-inexistant"}]
+    with pytest.warns(UserWarning, match="repli sur la base OpenCode locale"):
+        rc = run(cfg, anchor=RUN_TIME.isoformat())
+    assert rc == EXIT_OK
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
+    assert {t["session_id"] for t in data["top_sessions_by_cost"]} == {"opencode:ses_x"}
+
+
+def test_run_writes_cost_estimates_for_unpriced_sessions(tmp_path: Path):
+    """Steps sans coût → estimation tokens × taux du harnais (opencode défaut)."""
+    db = tmp_path / "opencode.db"
+    ts = RUN_TIME - timedelta(hours=2)
+    seed_v1_file(
+        db,
+        [
+            {
+                "id": "ses_noprice",
+                "title": "Sans prix",
+                "start": ts,
+                "updated": ts,
+                "steps": [{"ts": ts, "input": 900_000}],  # output défaut 10 → 900_010 tokens
+            },
+            {
+                "id": "ses_priced",
+                "title": "Avec prix",
+                "start": ts,
+                "updated": ts,
+                "steps": [{"ts": ts, "cost": 0.2}],
+            },
+        ],
+    )
+    cfg = _cfg(tmp_path, db)
+    run(cfg, anchor=RUN_TIME.isoformat())
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
+    estimates = data["cost_estimates"]
+    assert set(estimates) == {"opencode:ses_noprice"}  # session avec prix → absente
+    # taux opencode par défaut (9.0 $/Mtok) : 900_010 × 9.0 / 1e6
+    assert estimates["opencode:ses_noprice"] == pytest.approx(round(900_010 * 9.0 / 1e6, 6))
+    # champ first-class : l'ancien emplacement selection ne porte plus la clé
+    assert "cost_estimates" not in data["selection"]
+
+
+def test_run_cost_rate_override_per_source(tmp_path: Path):
+    """Clé extra cost_rate_usd_per_mtok d'une source → taux surchargé."""
+    db = tmp_path / "opencode.db"
+    ts = RUN_TIME - timedelta(hours=2)
+    seed_v1_file(
+        db,
+        [
+            {
+                "id": "ses_noprice",
+                "title": "Sans prix",
+                "start": ts,
+                "updated": ts,
+                "steps": [{"ts": ts, "input": 900_000}],
+            }
+        ],
+    )
+    cfg = _cfg(tmp_path, db)
+    cfg.session_sources = [{"type": "opencode", "cost_rate_usd_per_mtok": 2.0}]
+    run(cfg, anchor=RUN_TIME.isoformat())
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
+    estimates = data["cost_estimates"]
+    assert estimates["opencode:ses_noprice"] == pytest.approx(round(900_010 * 2.0 / 1e6, 6))
+
+
+def test_run_omits_cost_estimates_when_nothing_to_estimate(tmp_path: Path):
+    """Toutes sessions avec coût enregistré → champ absent (only-if-non-empty)."""
+    db = tmp_path / "opencode.db"
+    ts = RUN_TIME - timedelta(hours=2)
+    seed_v1_file(
+        db,
+        [
+            {
+                "id": "ses_priced",
+                "title": "Avec prix",
+                "start": ts,
+                "updated": ts,
+                "steps": [{"ts": ts, "cost": 0.2}],
+            }
+        ],
+    )
+    cfg = _cfg(tmp_path, db)
+    run(cfg, anchor=RUN_TIME.isoformat())
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
+    assert "cost_estimates" not in data
+    assert "cost_estimates" not in data["selection"]
+
+
+def test_legacy_summary_with_selection_cost_estimates_still_readable(tmp_path: Path):
+    """Artefact legacy (clé sous selection) : lecture brute inchangée.
+
+    writer.py ne désérialise pas WeeklySummary (les consommateurs lisent le
+    JSON en dict brut) — un ancien artefact reste donc tel quel lisible et
+    n'entre jamais en collision avec le nouveau champ top-level.
+    """
+    legacy = {
+        "schema_version": 2,
+        "selection": {"window_touched": 3, "cost_estimates": {"opencode:ses_x": 0.42}},
+    }
+    path = tmp_path / "weekly-summary-legacy.json"
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["selection"]["cost_estimates"] == {"opencode:ses_x": 0.42}
+    assert data.get("cost_estimates") is None  # pas de collision top-level
+
+
+# ---- cellule 2.2 : projection multi-harnais + baseline + matrice 5.5 ----------
+
+
+def _make_kit(tmp_path: Path) -> Path:
+    kit = tmp_path / "kit"
+    (kit / ".opencode/skills/kit-skill").mkdir(parents=True)
+    (kit / ".opencode/commands").mkdir(parents=True)
+    (kit / ".opencode/skills/kit-skill/SKILL.md").write_text("kit skill", encoding="utf-8")
+    (kit / ".opencode/commands/kit-cmd.md").write_text("kit cmd", encoding="utf-8")
+    return kit
+
+
+def test_harness_projects_detected_harness_and_records_orphans(tmp_path: Path, monkeypatch):
+    project = tmp_path / "project"
+    (project / ".claude/skills/user-skill").mkdir(parents=True)
+    (project / ".claude/skills/user-skill/SKILL.md").write_text("real", encoding="utf-8")
+
+    def fake_run(args, **kwargs):
+        if "--version" in args:
+            return _FakeProc(0, stdout="harness-eval 7.9.0")
+        projection = Path(args[2])
+        # fichiers réels + contenu engine injecté, tous dans la projection
+        assert (projection / ".claude/skills/user-skill/SKILL.md").is_file()
+        assert (projection / ".claude/skills/kit-skill/SKILL.md").is_file()
+        assert (projection / ".claude/commands/kit-cmd.md").is_file()
+        output = Path(args[args.index("--output") + 1])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("{}", encoding="utf-8")
+        return _FakeProc(0)
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/harness-eval")
+    monkeypatch.setattr("subprocess.run", fake_run)
+    cfg = _cfg(tmp_path / "reports", tmp_path / "opencode.db", kit_root=_make_kit(tmp_path))
+    cfg.project_root = project
+
+    assert harness(cfg, anchor=RUN_TIME.isoformat()) == EXIT_OK
+
+    digest = json.loads(
+        active_run_file(cfg.output_dir, "weekly-harness-digest-2026-08-12.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    draft_block = digest["draft_targets"]
+    assert draft_block["mode"] == "detected"
+    assert draft_block["harnesses"] == ["claude-code"]
+    assert ".claude/skills/kit-skill/SKILL.md" in draft_block["orphan_files"]
+    assert ".claude/skills/user-skill/SKILL.md" not in draft_block["orphan_files"]
+    assert draft_block["extra_projection_roots"] == [".claude/skills"]
+    assert draft_block["surface_decision"]["decision"] == "portability"
+
+
+def test_harness_baseline_created_then_reused(tmp_path: Path, monkeypatch):
+    findings_per_call = [{"rule": "quality/a", "path": ".opencode/cmd.md"}]
+    calls = 0
+
+    def fake_run(args, **kwargs):
+        nonlocal calls
+        if "--version" in args:
+            return _FakeProc(0, stdout="harness-eval 7.9.0")
+        calls += 1
+        output = Path(args[args.index("--output") + 1])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        findings = findings_per_call if calls == 1 else [
+            {"rule": "quality/a", "path": ".opencode/cmd.md"},
+            {"rule": "quality/b", "path": ".opencode/new.md"},
+        ]
+        output.write_text(
+            json.dumps({"findings": findings}), encoding="utf-8"
+        )
+        return _FakeProc(0)
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/harness-eval")
+    monkeypatch.setattr("subprocess.run", fake_run)
+    cfg = _cfg(tmp_path / "reports", tmp_path / "opencode.db", kit_root=tmp_path / "empty-kit")
+    (tmp_path / "empty-kit" / ".opencode").mkdir(parents=True)  # kit vide → zéro injection
+    cfg.project_root = tmp_path / "project"
+    (cfg.project_root / ".opencode/commands").mkdir(parents=True)
+    (cfg.project_root / ".opencode/commands/cmd.md").write_text("cmd", encoding="utf-8")
+
+    assert harness(cfg, anchor=RUN_TIME.isoformat()) == EXIT_OK
+    baseline_path = cfg.output_dir / "weekly-harness-baseline.json"
+    digest1 = json.loads(
+        active_run_file(cfg.output_dir, "weekly-harness-digest-2026-08-12.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert digest1["harness_baseline"]["status"] == "created"
+    assert digest1["harness_baseline"]["captured_on"] == "2026-08-12"
+    assert digest1["harness_baseline"]["finding_count"] == 1
+
+    assert harness(cfg, anchor=RUN_TIME.isoformat()) == EXIT_OK
+    digest2 = json.loads(
+        active_run_file(cfg.output_dir, "weekly-harness-digest-2026-08-12.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert digest2["harness_baseline"]["status"] == "reused"
+    assert digest2["harness_baseline"]["captured_on"] == "2026-08-12"
+    assert digest2["harness_baseline"]["new_findings"] == [
+        {"rule": "quality/b", "path": ".opencode/new.md"}
+    ]
+    stored = json.loads(baseline_path.read_text(encoding="utf-8"))
+    assert stored["finding_count"] == 1  # la baseline n'est jamais réécrite
+
+
+def test_doctor_prints_remediation_surface_5_5(tmp_path: Path, fake_opencode, capsys):
+    _ = (tmp_path / ".opencode").mkdir()
+    db = _seed_n(tmp_path / "opencode.db", 1)
+    project = tmp_path / "project"
+    (project / ".opencode").mkdir(parents=True)
+    (project / ".claude").mkdir()
+    cfg = _cfg(tmp_path / "reports", db)
+    cfg.project_root = project
+    assert doctor(cfg) in (EXIT_OK, EXIT_PARTIAL)
+    out = capsys.readouterr().out
+    assert "surface de remédiation 5.5: portability" in out
+    assert "cibles de drafting: claude-code" in out

@@ -13,20 +13,37 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import warnings
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
+from warnings import warn as _warn_user
 
 from .aggregator import _cap_warnings, aggregate
 from .config import TelemetryConfig, apply_lookback_override
+from .draft_targets import DRAFT_HARNESS_TARGETS, describe_draft_target, resolve_draft_targets
 from .harness_scope import (
     copy_scope_to_projection,
     enrich_harness_digest,
+    harness_extra_roots,
+    inject_engine_content,
     resolve_harness_scope,
+    resolve_remediation_surface,
 )
-from .models import Period, SessionUsage, SkillCatalogEntry, WarningEntry, round6
+from .models import (
+    Period,
+    SessionUsage,
+    SkillCatalogEntry,
+    WarningEntry,
+    canonical_session_id,
+    round6,
+    split_canonical_session_id,
+)
+from .providers import SessionProvider, build_providers
+from .providers.base import HARNESS_OPENCODE, HarnessSession
 from .run_state import activate_run, resolve_active_run_dir
 from .sqlite_reader import MIGRATION_MIN_V1, DataSourceError, SessionMeta, _to_ms, detect_db
-from .util import load_json, parse_iso_ts, root_and_orphan_ids
+from .util import iter_digest_findings, load_json, parse_iso_ts, root_and_orphan_ids
 from .util import parse_anchor as _parse_anchor
 from .writer import write_json_atomic, write_summary
 
@@ -40,6 +57,20 @@ ACTIVE_CUTOFF_MINUTES = 10
 SKILL_LAYOUTS = ((".opencode", "skills"), (".claude", "skills"), (".agents", "skills"))
 #: Cross-check tolerance for lifetime parts-cost vs session_v2 aggregate.
 CROSS_CHECK_ABS = 0.01
+
+# ---- coûts estimés multi-harnais (cost_estimates optionnels) -----------------
+#
+# Quand un harnais n'enregistre pas de prix (steps `cost=None` → warnings
+# `missing-pricing`), un coût ESTIMÉ est calculé : total_tokens × taux du
+# harnais. Taux en USD par million de tokens — ordres de grandeur blended
+# (input+output) des grilles publiques, jamais des montants facturés.
+# Surcharge par source : clé extra "cost_rate_usd_per_mtok" dans l'entrée
+# correspondante de `cfg.session_sources` (clés extra conservées au parsing).
+DEFAULT_HARNESS_COST_RATE_USD_PER_MTOK = 5.0
+HARNESS_COST_RATES_USD_PER_MTOK: dict[str, float] = {
+    HARNESS_OPENCODE: 9.0,  # blend modèles premium (claude/gpt class)
+    "copilot-vscode": 2.5,  # blend modèles Copilot (HARNESS_COPILOT_VSCODE)
+}
 
 
 def _truncate(text: str, limit: int = 80) -> str | None:
@@ -126,7 +157,7 @@ def _audit_record(meta, status: str) -> dict:
 
 
 def build_usage(
-    meta: SessionMeta,
+    meta: SessionMeta | HarnessSession,
     adapter,
     *,
     period: Period,
@@ -139,6 +170,9 @@ def build_usage(
 
     Active-session exclusion (updated < 10 min before run_time) and
     advisor-run-title exclusion (anti auto-pollution, v5.12) are applied here.
+    `meta` peut être une SessionMeta brute ou une HarnessSession multi-harnais
+    (ids canoniques) ; `adapter` est toute source exposant le protocol
+    `SessionProvider` (un provider ou l'adaptateur SQLite historique).
     """
     start_ms = _to_ms(period.start)
     end_ms = _to_ms(period.end)
@@ -270,6 +304,50 @@ def build_usage(
     )
 
 
+def _harness_cost_rates(cfg: TelemetryConfig) -> dict[str, float]:
+    """Taux $/Mtok par harnais : défauts documentés + surcharges par source.
+
+    Une entrée `session_sources` peut porter la clé extra
+    "cost_rate_usd_per_mtok" (valeur numérique) ; illisible → défaut conservé.
+    """
+    rates = dict(HARNESS_COST_RATES_USD_PER_MTOK)
+    for source in cfg.session_sources:
+        if not isinstance(source, dict) or source.get("cost_rate_usd_per_mtok") is None:
+            continue
+        try:
+            rates[str(source.get("type"))] = float(source["cost_rate_usd_per_mtok"])
+        except (TypeError, ValueError):
+            continue  # taux illisible → défaut conservé
+    return rates
+
+
+def estimate_costs(
+    usages: Iterable[SessionUsage],
+    *,
+    rates: dict[str, float] | None = None,
+    default_rate: float = DEFAULT_HARNESS_COST_RATE_USD_PER_MTOK,
+) -> dict[str, float]:
+    """Coûts estimés ($, round6) des sessions sans AUCUN coût enregistré.
+
+    Cible : `usage.cost_usd` null au sens télémétrique — tous les steps ont
+    `cost=None` (harnais sans grille de prix). Estimation = total_tokens ×
+    taux du harnais / 1e6 ; session avec au moins un coût enregistré ou sans
+    tokens → absente du résultat (champ optionnel : absent = rien à estimer).
+    """
+    if rates is None:
+        rates = HARNESS_COST_RATES_USD_PER_MTOK
+    estimates: dict[str, float] = {}
+    for usage in usages:
+        if not usage.steps or any(s.cost is not None for s in usage.steps):
+            continue
+        tokens = sum(s.total_tokens for s in usage.steps)
+        if tokens <= 0:
+            continue
+        harness = usage.harness or split_canonical_session_id(usage.session_id)[0] or ""
+        estimates[usage.session_id] = round6(tokens * rates.get(harness, default_rate) / 1e6)
+    return estimates
+
+
 def _build_selection(
     audit: list[dict],
     limit: int,
@@ -340,6 +418,15 @@ def _existing_period(path: Path) -> tuple[str | None, str | None]:
 # --------------------------------------------------------------------------- run
 
 
+def _warn_fallback_local_db(cfg: TelemetryConfig) -> None:
+    """Warning de repli (module-level : run() shadowe `warnings` avec sa liste)."""
+    warnings.warn(
+        "aucune source de sessions active — repli sur la base OpenCode locale "
+        f"({cfg.opencode_db_path})",
+        stacklevel=3,
+    )
+
+
 def run(
     cfg: TelemetryConfig,
     *,
@@ -367,18 +454,30 @@ def run(
         flush=True,
     )
 
-    try:
-        _path, adapter = detect_db(cfg.opencode_db_path)
-    except DataSourceError as exc:
-        print(f"telemetry-aggregator: FATAL: {exc} — lancer doctor", file=sys.stderr, flush=True)
-        return EXIT_TOTAL_FAILURE
+    providers = build_providers(cfg)
+    if not providers:
+        # Repli rétrocompatible : aucune source active (sources désactivées,
+        # harnais absents) → comportement historique sur la base OpenCode locale.
+        _warn_fallback_local_db(cfg)
+        try:
+            _path, adapter = detect_db(cfg.opencode_db_path)
+        except DataSourceError as exc:
+            print(f"telemetry-aggregator: FATAL: {exc} — lancer doctor", file=sys.stderr, flush=True)
+            return EXIT_TOTAL_FAILURE
+        from .providers.implementations.opencode import OpenCodeSessionProvider
+
+        providers = [OpenCodeSessionProvider(_path, adapter)]
 
     read_failed = False
     usages: list[SessionUsage] = []
+    all_ids: set[str] = set()
     try:
         try:
-            metas = adapter.list_sessions(_to_ms(period.start))
-            all_ids = {m.session_id for m in adapter.list_sessions(0)}
+            # Fusion multi-sources : listing fenêtré + univers d'ids par provider.
+            windowed: list[tuple[SessionProvider, list]] = []
+            for provider in providers:
+                windowed.append((provider, provider.list_sessions(_to_ms(period.start))))
+                all_ids.update(m.session_id for m in provider.list_sessions(0))
         except Exception as exc:  # noqa: BLE001
             print(
                 f"telemetry-aggregator: FATAL: session listing failed: {exc}",
@@ -386,30 +485,67 @@ def run(
                 flush=True,
             )
             return EXIT_TOTAL_FAILURE
+        # Dédup déterministe des ids canoniques entre sources du même harnais :
+        # deux entrées session_sources pointant la même base listent les mêmes
+        # ids → sinon double comptage sessions/coûts/tokens. La PREMIÈRE source
+        # (ordre cfg.session_sources) gagne ; `all_ids` étant un set, l'univers
+        # ne peut de toute façon pas doubler.
+        dup_by_source: dict[int, int] = {}
+        seen_canonical: set[str] = set()
+        for idx, (provider, metas) in enumerate(windowed):
+            kept: list = []
+            for meta in metas:
+                if meta.session_id in seen_canonical:
+                    dup_by_source[idx] = dup_by_source.get(idx, 0) + 1
+                    continue
+                seen_canonical.add(meta.session_id)
+                kept.append(meta)
+            windowed[idx] = (provider, kept)
+        if dup_by_source:
+            message = " ; ".join(
+                f"{n} session(s) en doublon ignorée(s) depuis {windowed[i][0].harness} source #{i + 1}"
+                for i, n in sorted(dup_by_source.items())
+            )
+            _warn_user(message, stacklevel=2)
+            warnings.append(WarningEntry(session_id=None, message=message))
+        touched = sum(len(metas) for _, metas in windowed)
         print(
-            f"telemetry-aggregator: {len(metas)} session(s) touchée(s) — lecture télémétrie…",
+            f"telemetry-aggregator: {touched} session(s) touchée(s) — lecture télémétrie…",
             flush=True,
         )
-        for meta in metas:
-            if meta.time_updated is not None and meta.time_updated < period.start:
-                continue
-            usage, failed = build_usage(
-                meta,
-                adapter,
-                period=period,
-                run_time=run_time,
-                cfg=cfg,
-                warnings=warnings,
-                audit=audit,
-            )
-            if failed:
-                read_failed = True
-            if usage is not None:
-                usages.append(usage)
+        for provider, metas in windowed:
+            for meta in metas:
+                if meta.time_updated is not None and meta.time_updated < period.start:
+                    continue
+                if meta.parent_id:
+                    # parent_id brut → canonique : la fusion racine/enfants
+                    # (aggregate + selection audit) reste valable multi-source.
+                    # Tolérant à un parent déjà préfixé (jamais de double préfixe).
+                    raw_parent = str(meta.parent_id)
+                    prefix = f"{provider.harness}:"
+                    meta.parent_id = (
+                        raw_parent
+                        if raw_parent.startswith(prefix)
+                        else canonical_session_id(provider.harness, raw_parent)
+                    )
+                usage, failed = build_usage(
+                    meta,
+                    provider,
+                    period=period,
+                    run_time=run_time,
+                    cfg=cfg,
+                    warnings=warnings,
+                    audit=audit,
+                )
+                if failed:
+                    read_failed = True
+                if usage is not None:
+                    usages.append(usage)
         if read_failed and cfg.fail_on_missing_telemetry:
             return EXIT_PARTIAL
     finally:
-        adapter.conn.close()
+        for provider in providers:
+            provider.close()
 
     print("telemetry-aggregator: agrégation…", flush=True)
     catalog_names, catalog_count, catalog_entries = scan_skill_catalog(cfg.project_root)
@@ -454,6 +590,13 @@ def run(
         )
     if extra_warnings:
         summary.warnings = _cap_warnings([*summary.warnings, *extra_warnings])
+
+    # coûts estimés (champ first-class) : sessions sans aucun coût enregistré →
+    # estimation tokens × taux du harnais ; champ laissé à None (clé absente
+    # à la sérialisation) si rien à estimer.
+    estimates = estimate_costs(usages, rates=_harness_cost_rates(cfg))
+    if estimates:
+        summary.cost_estimates = estimates
 
     # v6.0.k (F1): every run gets its own UUID-scoped directory — artifacts of
     # different runs (same anchor or not) can never collide or overwrite each
@@ -560,19 +703,57 @@ def doctor(
                 f"opencode {version} < {cfg.opencode_version_min} — épinglage du schéma non garanti"
             )
 
-    try:
-        path, adapter = detect_db(cfg.opencode_db_path)
-        migrations = _check_migrations(adapter)
-        n = migrations if migrations is not None else 0
-        if migrations is None:
-            warnings.append("compteur de migrations introuvable — schéma non standard")
-        elif n < MIGRATION_MIN_V1:
-            warnings.append(f"compteur de migrations faible ({n}) — vérifier la version d'OpenCode")
-        adapter.conn.close()
-        print(f"doctor: base OpenCode détectée: {path} (adaptateur {adapter.name}, migrations={n})")
-    except DataSourceError as exc:
-        problems.append(f"base OpenCode non détectée: {exc}")
-        print(f"doctor: base OpenCode: KO ({exc})")
+    # Sources de sessions : itération générique sur les providers actifs du
+    # registre — aucun harnais connu en dur du doctor (un nouveau provider
+    # s'affiche ici sans modification de ce bloc).
+    providers = build_providers(cfg)
+    usable = 0
+    for provider in providers:
+        name = getattr(provider, "harness", type(provider).__name__)
+        try:
+            provider.check_schema()
+        except Exception as exc:  # noqa: BLE001 — diagnostic fail-soft par source
+            warnings.append(f"[{name}] schéma illisible ({exc})")
+            print(f"doctor: [{name}] KO ({exc})")
+            continue
+        usable += 1
+        details: list[str] = []
+        src = getattr(provider, "db_path", None)
+        if src is not None:
+            details.append(str(src))
+        adapter = getattr(provider, "_adapter", None)
+        if adapter is not None:
+            # Check migrations conservé pour les providers SQLite qui exposent
+            # leur adapter ; les autres (non-SQLite) sautent proprement.
+            migrations = _check_migrations(adapter)
+            n = migrations if migrations is not None else 0
+            if migrations is None:
+                warnings.append(
+                    f"[{name}] compteur de migrations introuvable — schéma non standard"
+                )
+            elif n < MIGRATION_MIN_V1:
+                warnings.append(
+                    f"[{name}] compteur de migrations faible ({n}) — vérifier la version du harnais"
+                )
+            details.append(f"migrations={n}")
+        suffix = f" ({', '.join(details)})" if details else ""
+        print(f"doctor: [{name}] OK{suffix}")
+        provider.close()
+    if not usable:
+        problems.append("aucune source de sessions disponible — vérifier session_sources / bases locales")
+        print("doctor: sources de sessions: aucune disponible")
+
+    # Cibles de drafting (cellule 2.1) : LE harnais cible effectif — override
+    # config > détection par marqueurs > défaut opencode ; [] = legacy. Un
+    # défaut faute de marqueur est signalé en warning (affiché en fin de run).
+    resolved = resolve_draft_targets(cfg.project_root, cfg.draft_targets)
+    print(f"doctor: cibles de drafting: {describe_draft_target(resolved)}")
+    if resolved.warning:
+        warnings.append(resolved.warning)
+    # Matrice de décision 5.5 (cellule 2.2) : surface de remédiation déduite
+    # du harnais résolu — affichée seule ; la règle portability.yaml = cellule 3.1.
+    surface = resolve_remediation_surface(resolved.harnesses, resolved.mode)
+    print(f"doctor: surface de remédiation 5.5: {surface.decision} — {surface.reason}")
 
     try:
         cfg.output_dir.mkdir(parents=True, exist_ok=True)
@@ -646,6 +827,118 @@ def doctor(
     return EXIT_OK
 
 
+# ---- cellule 2.2 : kit root + baseline findings -------------------------------
+
+HARNESS_BASELINE_SCHEMA_VERSION = 1
+#: Nom de l'artefact baseline (racine output_dir — survit aux runs, comme
+#: `previous_run.json` ; un run ne doit jamais réécrire l'histoire).
+HARNESS_BASELINE_FILE = "weekly-harness-baseline.json"
+
+
+def _engine_kit_root(cfg: TelemetryConfig) -> Path | None:
+    """Racine du kit portant le contenu engine (`.opencode/{skills,commands}`).
+
+    ``cfg.kit_root`` d'abord (distribution), puis dérivation depuis le paquet
+    moteur (`<kit>/.opencode/plugins/weekly-advisor-engine/...`). None si
+    aucune racine valide — l'injection engine est alors silencieusement absente.
+    """
+    candidates: list[Path] = []
+    if cfg.kit_root is not None:
+        candidates.append(Path(cfg.kit_root))
+    # main.py = <kit>/.opencode/plugins/weekly-advisor-engine/weekly_telemetry_aggregator/
+    candidates.append(Path(__file__).resolve().parents[4])
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve()
+        except OSError:  # pragma: no cover - chemin illisible
+            continue
+        if (resolved / ".opencode" / "skills").is_dir():
+            return resolved
+    return None
+
+
+def _baseline_finding_keys(digest: Mapping) -> list[tuple[str, str]]:
+    """Paires (rule, path) localisées d'un digest, dédupliquées et triées."""
+    return sorted(
+        {
+            (str(record["rule"]), str(record["path"]))
+            for record in iter_digest_findings(digest)
+            if record.get("path") is not None
+        }
+    )
+
+
+def _capture_or_reuse_baseline(output_dir: Path, date: str, enriched_digest: Mapping) -> dict:
+    """Baseline findings : capturée au premier run, réutilisée ensuite.
+
+    Ancrage : racine ``output_dir`` (stable entre runs, comme run_state.json).
+    Premier run → le snapshot courant devient la baseline (`status=created`).
+    Runs suivants → la baseline stockée est relue telle quelle (`reused`) et
+    les findings nouveaux depuis la baseline sont listés. Une baseline
+    illisible est remplacée (auto-réparation, jamais bloquante).
+    """
+    current_keys = _baseline_finding_keys(enriched_digest)
+    path = output_dir / HARNESS_BASELINE_FILE
+    stored: dict | None = None
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            loaded = None
+        if (
+            isinstance(loaded, dict)
+            and isinstance(loaded.get("findings"), list)
+            and isinstance(loaded.get("captured_on"), str)
+        ):
+            stored = loaded
+    baseline_keys = sorted(
+        {
+            (str(item.get("rule")), str(item.get("path")))
+            for item in (stored or {}).get("findings", [])
+            if isinstance(item, Mapping) and item.get("path") is not None
+        }
+    )
+    new_keys = sorted(set(current_keys) - set(baseline_keys)) if stored else []
+    if stored is not None:
+        return {
+            "schema_version": HARNESS_BASELINE_SCHEMA_VERSION,
+            "status": "reused",
+            "captured_on": str(stored["captured_on"]),
+            "finding_count": len(baseline_keys),
+            "new_findings": [{"rule": rule, "path": path_} for rule, path_ in new_keys],
+        }
+    snapshot = [
+        {"rule": rule, "path": path_}
+        for rule, path_ in (current_keys if stored is None else baseline_keys)
+    ]
+    payload = {
+        "schema_version": HARNESS_BASELINE_SCHEMA_VERSION,
+        "captured_on": date,
+        "finding_count": len(snapshot),
+        "findings": snapshot,
+    }
+    try:
+        write_json_atomic(path, payload)
+    except OSError as exc:
+        print(f"harness: WARNING: baseline non écrite ({exc})", flush=True)
+        return {
+            "schema_version": HARNESS_BASELINE_SCHEMA_VERSION,
+            "status": "created",
+            "captured_on": date,
+            "finding_count": len(snapshot),
+            "new_findings": [],
+            "error": str(exc),
+        }
+    print(f"harness: baseline findings capturée ({len(snapshot)} finding(s))", flush=True)
+    return {
+        "schema_version": HARNESS_BASELINE_SCHEMA_VERSION,
+        "status": "created",
+        "captured_on": date,
+        "finding_count": len(snapshot),
+        "new_findings": [],
+    }
+
+
 def harness(cfg: TelemetryConfig, *, anchor: str | None = None, timeout: int = 900) -> int:
     """Run ``harness-eval`` against the configured temporary projection.
 
@@ -685,13 +978,35 @@ def harness(cfg: TelemetryConfig, *, anchor: str | None = None, timeout: int = 9
     out_path = out_dir / f"weekly-harness-digest-{date}.json"
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
-        scope = resolve_harness_scope(cfg.project_root, cfg.harness_include)
+        # Cellule 2.2 : le harnais résolu étend la projection au-delà de
+        # `.opencode/` (DRAFT_HARNESS_TARGETS) et reçoit le contenu engine.
+        resolved_draft = resolve_draft_targets(cfg.project_root, cfg.draft_targets)
+        extra_roots = harness_extra_roots(resolved_draft)
+        inject_dirs = tuple(
+            sorted({
+                target
+                for harness in resolved_draft.harnesses
+                for target in DRAFT_HARNESS_TARGETS.get(harness, ())
+            })
+        )
+        scope = resolve_harness_scope(cfg.project_root, cfg.harness_include, extra_roots=extra_roots)
         for warning in scope.warnings:
             print(f"harness: WARNING: {warning}", flush=True)
 
         with tempfile.TemporaryDirectory(prefix="weekly-harness-") as temporary:
             projection_root = Path(temporary)
             copy_scope_to_projection(cfg.project_root, scope, projection_root)
+            orphans = inject_engine_content(
+                cfg.project_root,
+                inject_dirs,
+                projection_root,
+                kit_root=_engine_kit_root(cfg),
+            )
+            if orphans:
+                print(
+                    f"harness: contenu engine projeté ({len(orphans)} fichier(s) orphelin(s))",
+                    flush=True,
+                )
             proc = subprocess.run(
                 [
                     binary,
@@ -734,6 +1049,24 @@ def harness(cfg: TelemetryConfig, *, anchor: str | None = None, timeout: int = 9
                     )
                     return EXIT_TOTAL_FAILURE
                 enriched = enrich_harness_digest(digest, scope, projection_root)
+                # Cellule 2.2 : signal de projection (harnais, orphelins) +
+                # baseline findings capturée au premier run, réutilisée ensuite.
+                enriched["draft_targets"] = {
+                    "mode": resolved_draft.mode,
+                    "harnesses": list(resolved_draft.harnesses),
+                    "warning": resolved_draft.warning,
+                    "extra_projection_roots": list(extra_roots),
+                    "injected_engine_files": len(orphans),
+                    "orphan_files": sorted(orphans),
+                    "surface_decision": resolve_remediation_surface(
+                        resolved_draft.harnesses, resolved_draft.mode
+                    ).to_dict(),
+                }
+                # Cellule 2.2 : baseline ancrée à la racine output_dir (comme
+                # run_state.json) — un run dir UUID neuf ne doit pas casser
+                # la réutilisation aux runs suivants.
+                baseline = _capture_or_reuse_baseline(cfg.output_dir, date, enriched)
+                enriched["harness_baseline"] = baseline
                 write_json_atomic(out_path, enriched)
     except (OSError, subprocess.TimeoutExpired) as exc:
         print(f"harness: FATAL: exécution impossible: {exc}", file=sys.stderr, flush=True)

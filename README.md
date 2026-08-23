@@ -26,9 +26,11 @@ les guides d'installation (humain + agent) et les scripts de validation.
 ## Ce que fait le kit
 
 Le cœur est **100 % déterministe, zéro LLM** : le moteur Python lit directement la
-base SQLite locale d'OpenCode (pas de SDK, pas de serveur) et produit des JSON
-reproductibles. Le LLM n'intervient que sur les étapes qualitatives, encadrées par
-des skills dédiés et des contrats anti-hallucination.
+télémétrie locale des harnais actifs (base SQLite OpenCode, transcripts JSONL
+Claude Code, sessions Copilot VS Code — sources configurables via `session_sources` ;
+pas de SDK, pas de serveur) et produit des JSON reproductibles. Le LLM n'intervient
+que sur les étapes qualitatives, encadrées par des skills dédiés et des contrats
+anti-hallucination.
 
 | Étape | Contenu | Exécuté par |
 |---|---|---|
@@ -36,8 +38,8 @@ des skills dédiés et des contrats anti-hallucination.
 | 2 · Veille écosystème | npm, topics GitHub, registre MCP, releases OpenCode, repos/listes/RSS suivis | `weekly_releases` (déterministe) |
 | 3 · Audit qualitatif | sessions candidates (coût, outliers, boucles, cache, prompts répétés) → constats archivés | skill `weekly-quality-audit` |
 | 3.5 · Veille critique | marché × environnement × constats → recommandations adopt / improve / ignore | skill `weekly-watch-review` |
-| 4 · Auto-drafting | candidats skills/commands → rédaction + commit sécurisé et scoped | skill `weekly-drafting` + `weekly_commit_draft` |
-| 5 · Lint | `harness-eval` sur une projection allowlistée de `.opencode/` (version minimum) | `weekly_harness` (déterministe) |
+| 4 · Auto-drafting | candidats skills/commands → rédaction + commit sécurisé et scoped (gate portabilité `skill-verify` avant commit) | skill `weekly-drafting` + `weekly_commit_draft` |
+| 5 · Lint | `harness-eval` sur une projection étendue au harnais détecté (règles `portability.yaml`, baseline findings) | `weekly_harness` (déterministe) |
 | 5.5 · Remédiation | findings harness → décisions et corrections bornées, sans commit automatique | skill `harness-remediation` + `weekly_harness_remediate` |
 | 6 · Insights | deltas vs semaine précédente, alertes budget/cache/spikes, maintenance R1-R4 | `weekly_insights` (déterministe) |
 | 6.5 · Cohérence | état déclaratif (skills/agents) vs usage réel | skill `weekly-coherence-review` |
@@ -54,20 +56,24 @@ est absent, quelque chose s'est mal passé. Codes de sortie : `0` complet, `1` p
 Prérequis : `opencode` ≥ 1.18 avec un modèle authentifié (`opencode auth login`), `uv` —
 détails et alternatives : [`INSTALL.md`](INSTALL.md).
 `harness-eval` est requis pour exécuter l'étape 5 (le `doctor` signale son absence et
-`weekly_harness` échoue fatalement) ; `gh` reste optionnel pour les repos privés de la
-veille et cette source se dégrade en warning.
+`weekly_harness` échoue fatalement) ; la gate de portabilité du drafting est
+fail-soft (binaire absent → note ⚠, commit autorisé). `gh` reste optionnel pour les
+repos privés de la veille et cette source se dégrade en warning.
 
 Le lint utilise par défaut le profil `advisory` de `harness_include` : surfaces de
 politique (`AGENTS`, agents, commands, configurations et entrypoints plugins) plus
 documentation des skills (`SKILL.md`, références et exemples). Le moteur copie ces
-seuls fichiers dans une projection temporaire ; `node_modules`, le moteur lui-même,
-les venv/caches et autres artefacts ne sont donc jamais exposés à `harness-eval`.
-Les fichiers `.opencode/` hors allowlist sont signalés dans
-`harness_include.unscoped_files` et ne sont pas scannés.
+seuls fichiers dans une projection temporaire, **étendue au harnais détecté**
+(marqueurs projet, voir § Harnais & portabilité) avec injection du contenu engine ;
+`node_modules`, le moteur lui-même, les venv/caches et autres artefacts ne sont
+donc jamais exposés à `harness-eval`. La projection **copie réellement** les
+fichiers (zéro symlink) et trace les orphelins ; les fichiers `.opencode/` hors
+allowlist sont signalés dans `harness_include.unscoped_files` et ne sont pas
+scannés.
 
 ```sh
 git clone https://github.com/BenjaminCartonAdeo/weekly-advisor-kit.git && cd weekly-advisor-kit
-uv sync --project .opencode/plugins/weekly-advisor-engine --all-extras
+uv sync --project .opencode/plugins/weekly-advisor-engine --extra dev
 # 1 fichier à adapter : project_root + output_dir (chemins absolus)
 $EDITOR .opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json
 opencode run --agent weekly-advisor "Lance la revue hebdomadaire"
@@ -86,6 +92,33 @@ opencode run --agent weekly-advisor "Lance la revue hebdomadaire"
   fenêtre ? Dites-le en toutes lettres (« revue des 3 dernières semaines ») — l'agent
   déduit `N semaines → N×7` et passe `--lookback-days` en override du run, **la config
   n'est jamais réécrite** (v6.0.b)
+
+## Harnais & portabilité
+
+**Placement mono-cible** : chaque projet est rattaché à **un** harnais de drafting,
+résolu par détection de marqueurs (priorité `claude-code` > `opencode` >
+`copilot-vscode` > `codex`), surchargeable par la config `draft_targets` (`[]` =
+mode legacy, toutes cibles). Aucun marqueur → défaut `opencode` + warning du doctor.
+
+| Marqueur projet | Harnais | Cibles de projection des drafts |
+|---|---|---|
+| `.claude/` | claude-code | `.claude/skills` |
+| `.opencode/` | opencode | `.opencode/skills` |
+| `.github/prompts/` ou `.github/skills/` | copilot-vscode | `.github/prompts`, `.github/skills` |
+| `.agents/` | codex | `.agents` |
+
+**Zéro symlink** : la projection et les artefacts générés sont de vraies copies.
+
+**Portabilité des artefacts générés** (règles `.harness-eval/rules/portability.yaml`,
+ids `custom/portability/*`) : frontmatter `name`+`description` seuls · outils par
+nom conceptuel (identifiants `weekly_*` interdits) · section « Comment invoquer »
+multi-plateforme obligatoire · chemins relatifs projet · scripts auto-contenus.
+
+**Gate de commit** : `weekly_commit_draft` lance `harness-eval skill-verify` (cwd =
+racine projet) avant tout commit — ≥ 1 finding `error` → **commit refusé, fix
+manuel** ; warnings seuls → note ; binaire absent → note ⚠ (gate ignorée).
+**Limite connue** : en 7.10.1 la gate couvre les **skills** uniquement (commands /
+agents non inspectés).
 
 ## Cron (rappel)
 
@@ -109,8 +142,10 @@ Détails et heartbeat recommandé : [`INSTALL.md`](INSTALL.md) §2.7.
 ```
 racine/
 ├── INSTALL.md / INSTALL_PROMPT.md / README.md   ← guides d'installation (humain / agent) et vue d'ensemble
+├── proposition-draft-multi-harnais.md           ← proposition multi-harnais (décisions actées, architecture, limites)
 ├── opencode-weekly-advisor                      ← la spec (contrat complet)
 ├── scripts/plugin-smoke.mjs                     ← smoke test du plugin (validation d'installation)
+├── .harness-eval/rules/portability.yaml         ← règles custom harness-eval (portabilité des artefacts, ids custom/portability/*)
 └── .opencode/
     ├── agents/weekly-advisor/weekly-advisor.md   ← orchestration : ordre figé, invariants, bash: deny
     ├── agents/harness-remediator/harness-remediator.md ← remédiation bornée, sans edit/bash
@@ -118,7 +153,7 @@ racine/
     ├── commands/weekly-review.md / weekly-report.md / harness-remediate.md
     └── plugins/
         ├── weekly-advisor.ts                     ← plugin enveloppe : 16 tools weekly_* (chemins dérivés)
-        └── weekly-advisor-engine/                ← moteur Python (package, config, tests)
+        └── weekly-advisor-engine/                ← moteur Python (package, config, tests, providers multi-harnais)
 ```
 
 ## Documentation
@@ -126,6 +161,7 @@ racine/
 | Document | Contenu |
 |---|---|
 | [`opencode-weekly-advisor`](opencode-weekly-advisor) | La spec complète (8 parties) — le contrat du pipeline : orchestration, télémétrie, veille, audit, drafting, lint, insights, rapport |
+| [`proposition-draft-multi-harnais.md`](proposition-draft-multi-harnais.md) | Proposition multi-harnais : décisions actées (mono-cible, zéro symlink, portabilité, gate harness-eval), architecture livrée, limites |
 | [`INSTALL_PROMPT.md`](INSTALL_PROMPT.md) | Installation **pilotée par agent** : prompt autonome à coller ou à lire via raw URL — clone, config, doctor, smoke, pytest, rapport |
 | [`INSTALL.md`](INSTALL.md) | Installation pas à pas pour un humain : prérequis, config, validation, cron, mise à jour, dépannage |
 | [`README.md`](README.md) | Ce fichier — vue d'ensemble |
@@ -148,10 +184,10 @@ racine/
 ```sh
 # le projet uv (pyproject + uv.lock) vit dans le dossier moteur
 cd .opencode/plugins/weekly-advisor-engine
-uv run pytest -q             # 255 tests
+uv run python -m pytest -q  # 368 tests
 uv run ruff check .          # lint
 uv run ruff format --check . # format
 ```
 
 CI GitHub Actions (`.github/workflows/ci.yml`) : install lockfile `--frozen`, lint,
-format, 255 tests, packaging et syntaxe du plugin TS — vérifiés sur chaque push/PR.
+format, 368 tests, packaging et syntaxe du plugin TS — vérifiés sur chaque push/PR.

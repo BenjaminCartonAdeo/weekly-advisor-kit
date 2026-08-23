@@ -18,7 +18,7 @@ Tous les artefacts du run sont dans `<output_dir>/runs/current/` (alias stable d
 - `weekly-ecosystem-<date>.json` — **TOUS** les items, pas seulement les premiers
 - `weekly-watch-context-<date>.json` — inventaire déterministe du worktree et crosswalk
   `existing_state`/`match` pour chaque item de marché (produit par
-  `weekly-telemetry-aggregator watch-context`)
+  la sous-commande `watch-context` du plugin)
 - L'environnement existant : le contexte déterministe d'abord, puis le catalogue
   skills/commands/agents (`scan_skill_catalog` du summary + `ls .opencode/{skills,commands,agents}`)
   uniquement pour compléter une information manquante
@@ -33,7 +33,8 @@ Le skill écrit uniquement le brouillon LLM dans :
 ```
 
 Il ne écrit jamais directement `weekly-watch-findings-<date>.json` : ce fichier est
-produit ensuite par `weekly_watch_validate`, qui applique les garde-fous déterministes.
+produit ensuite par la sous-commande `watch-validate` du plugin weekly-advisor, qui
+applique les garde-fous déterministes.
 
 Pour chaque recommandation marché (`adopt`, `improve-existing` ou `token-saver`), le
 finding brut doit contenir un `subject` avec au moins un des champs suivants :

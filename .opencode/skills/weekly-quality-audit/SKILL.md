@@ -12,13 +12,13 @@ Sélection déterministe en amont (aucun choix de session ici), examen LLM des t
 
 ## Flux
 
-1. `weekly_audit_candidates` → `weekly-audit-candidates-<date>.json` (dans `<output_dir>/runs/current/`,
+1. La sous-commande `audit-candidates` du plugin weekly-advisor → `weekly-audit-candidates-<date>.json` (dans `<output_dir>/runs/current/`,
    alias stable du run actif)
    (équivalent CLI : `audit-candidates --anchor <ancre>` — l'ancre est gérée par le
    plugin `<output_dir>/anchor-last.txt`, pas de calcul manuel)
    (`audited` / `unaudited`, plafond `audit_max_sessions` — ne PAS auditer au-delà)
-2. Pour chaque session `audited` : `weekly_show_session <id> [--include-children si
-   sous-agents]` → `<output_dir>/runs/current/extracts/transcript-extract-<id>.md`
+2. Pour chaque session `audited` : la sous-commande `show-session` du plugin weekly-advisor
+   (`<id>`, `--include-children` si sous-agents) → `<output_dir>/runs/current/extracts/transcript-extract-<id>.md`
    (le tool écrit l'extract ; équivalent CLI : `show-session <id> --extract-dir
    <output_dir>/runs/current/extracts`)
 3. Examiner chaque transcript selon les catégories ci-dessous
@@ -30,6 +30,14 @@ Sélection déterministe en amont (aucun choix de session ici), examen LLM des t
    avec `recommendation_type: command-improvement`
 5. Écrire `weekly-quality-findings-<date>.json` (schéma ci-dessous)
 6. Ne PAS ré-émettre un candidat snoozé (`ignored_findings` de la config)
+
+## Harnais d'origine
+
+Chaque session provient d'un harnais identifiable : ids canoniques
+`<harness>:<uuid>` (`claude-code:`, `opencode:`, `copilot-vscode:`).
+`show-session` accepte l'id canonique ET l'id brut (le brut est résolu vers la
+première source qui le possède) ; les titres Claude Code sont tronqués à
+100 caractères à la lecture.
 
 ## Catégories de constats
 

@@ -23,6 +23,8 @@ from typing import Any
 
 from . import main as main_module
 from .config import TelemetryConfig
+from .draft_targets import resolve_draft_targets
+from .harness_scope import resolve_remediation_surface
 from .main import EXIT_OK, EXIT_PARTIAL, EXIT_TOTAL_FAILURE, _parse_anchor
 from .run_state import resolve_active_run_dir
 from .util import iter_digest_findings
@@ -596,6 +598,12 @@ def run(
         if value.get("path") is not None
     }
 
+    # Cellule 2.2 : matrice de décision 5.5 — surface de remédiation déduite
+    # du harnais résolu (pure, aucune lecture disque). La règle portability.yaml
+    # elle-même est la cellule 3.1 ; ici seule la décision est documentée.
+    resolved_draft = resolve_draft_targets(project_root, cfg.draft_targets)
+    surface = resolve_remediation_surface(resolved_draft.harnesses, resolved_draft.mode)
+
     records: list[dict[str, Any]] = []
     eligible: list[_ValidatedProposal] = []
     for index, raw in enumerate(raw_proposals):
@@ -661,6 +669,11 @@ def run(
         "summary": _summary(records),
         "proposals": records,
         "postcheck": postcheck,
+        "draft_target": {
+            "mode": resolved_draft.mode,
+            "harnesses": list(resolved_draft.harnesses),
+            **surface.to_dict(),
+        },
     }
 
     if mode == "dry-run" or not selected:

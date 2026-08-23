@@ -3,14 +3,24 @@
 One entry per turn (tool called + key args + result summary, user text,
 files, reasoning). Repetitive sequences (N >= 3 consecutive similar calls of
 the same tool) are mechanically compacted — deduplication, never synthesis.
+
+Multi-harnais : `render_session` prend une liste de providers (protocol
+`SessionProvider`) et route vers celui dont le harnais correspond au préfixe
+canonique ``"<harness>:<session_id>"`` de l'id demandé ; un id brut est toléré
+et routé vers la première source.
 """
 
 from __future__ import annotations
 
 import difflib
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
-from .sqlite_reader import SchemaAdapter
+from .models import split_canonical_session_id
 from .util import descendants_by_parent
+
+if TYPE_CHECKING:
+    from .providers.base import SessionProvider
 
 #: Compaction threshold: N >= 3 similar consecutive calls of the same tool (Partie 0 §3).
 COMPACT_MIN = 3
@@ -22,11 +32,41 @@ OUTPUT_CAP = 300
 TEXT_CAP = 400
 
 
-def _children_ids(adapter: SchemaAdapter, session_id: str) -> list[str]:
-    """All descendant session ids (indexed BFS shared with aggregator, util)."""
+def _canonical_id(provider: SessionProvider, session_id: str) -> str:
+    """Id canonique pour ce provider : préfixe du harnais ajouté si absent."""
+    prefix = f"{provider.harness}:"
+    return session_id if session_id.startswith(prefix) else prefix + session_id
+
+
+def _children_ids(provider: SessionProvider, session_id: str) -> list[str]:
+    """All descendant session ids (indexed BFS shared with aggregator, util).
+
+    Les metas des providers exposent un `parent_id` brut : il est re-préfixé
+    avec le harnais du provider pour rester comparable aux ids canoniques.
+    """
+    canonical = _canonical_id(provider, session_id)
+    prefix = f"{provider.harness}:"
+
+    def _canonical_parent(parent: str | None) -> str | None:
+        if not parent or parent.startswith(prefix):
+            return parent
+        return prefix + parent
+
     return descendants_by_parent(
-        ((m.session_id, m.parent_id) for m in adapter.list_sessions(0)), session_id
+        ((m.session_id, _canonical_parent(m.parent_id)) for m in provider.list_sessions(0)),
+        canonical,
     )
+
+
+def _select_provider(
+    providers: Sequence[SessionProvider], session_id: str
+) -> SessionProvider:
+    """Route vers le provider du harnais déduit de l'id ; première source sinon."""
+    harness, _raw = split_canonical_session_id(session_id)
+    for provider in providers:
+        if provider.harness == harness:
+            return provider
+    return providers[0]  # id brut ou harnais inconnu → première source (tolérance)
 
 
 def _render_part(part) -> str:
@@ -84,13 +124,27 @@ def _compact(entries: list[str]) -> list[str]:
 
 
 def render_session(
-    adapter: SchemaAdapter, session_id: str, *, include_children: bool = False
+    providers: SessionProvider | Sequence[SessionProvider],
+    session_id: str,
+    *,
+    include_children: bool = False,
 ) -> str:
-    """Render a session transcript (with optional subagent children) to readable text."""
-    ids = [session_id] + (_children_ids(adapter, session_id) if include_children else [])
+    """Render a session transcript (with optional subagent children) to readable text.
+
+    Multi-harnais : `providers` est une liste (ou un provider seul) ; la source
+    est choisie d'après le préfixe canonique de `session_id`.
+    """
+    sources: list[SessionProvider] = (
+        list(providers) if isinstance(providers, (list, tuple)) else [providers]
+    )
+    provider = _select_provider(sources, session_id)
+    canonical = _canonical_id(provider, session_id)
+    ids = [canonical]
+    if include_children:
+        ids.extend(_children_ids(provider, canonical))
     records = []
     for sid in ids:
-        records.extend(adapter.session_parts(sid))
+        records.extend(provider.session_parts(sid))
     records.sort(key=lambda r: r.ts)
 
     lines = [f"# Session {session_id}  —  {len(ids)} session(s)", ""]

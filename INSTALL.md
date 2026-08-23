@@ -16,7 +16,7 @@ Temps total : ~10 min (hors run complet de test : 30-45 min).
 |---|---|---|---|
 | `opencode` | ≥ 1.18 | `curl -fsSL https://opencode.ai/install \| bash` | `opencode --version` |
 | `uv` | — | `curl -LsSf https://astral.sh/uv/install.sh \| sh` | `uv --version` |
-| `harness-eval` | ≥ 7.9.0 | `uv tool install harness-eval` — paquet **PyPI**, pas npm | `harness-eval --version` (versions supérieures acceptées ; le doctor alerte sous le minimum) |
+| `harness-eval` | ≥ 7.9.0 | `uv tool install harness-eval` — paquet **PyPI**, pas npm | `harness-eval --version` (versions supérieures acceptées ; le doctor alerte sous le minimum ; absent → étape 5 fatale, gate de portabilité du drafting ignorée avec note ⚠) |
 | `git`, `python` | ≥ 3.11 | gestionnaire du poste | `git --version`, `python3 --version` |
 | `bun` | optionnel | framework officiel | **non requis au runtime** — utile seulement pour éditer le plugin TS (typages `@opencode-ai/plugin`) ; opencode fournit le module au chargement |
 
@@ -34,12 +34,13 @@ git clone https://github.com/BenjaminCartonAdeo/weekly-advisor-kit.git && cd wee
 ### 2.2 venv + moteur
 
 ```sh
-uv sync --project .opencode/plugins/weekly-advisor-engine --all-extras
+uv sync --project .opencode/plugins/weekly-advisor-engine --extra dev
 ```
 
 Le venv vit dans le projet moteur (`.opencode/plugins/weekly-advisor-engine/.venv`) —
-le plugin enveloppe le résout seul, aucune variable d'environnement. `--all-extras`
-installe le dev (`pytest`, `ruff`) ; sans lui le run fonctionne mais pas les tests.
+le plugin enveloppe le résout seul, aucune variable d'environnement. L'extra `dev`
+est **OBLIGATOIRE** (`pytest`, `ruff`) : sans lui ces outils sont désinstallés et
+les tests/lint ne peuvent pas tourner.
 
 ### 2.3 Configuration — adaptation OBLIGATOIRE avant tout run
 
@@ -52,7 +53,9 @@ Fichier : `.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`
 | `html_report_dir` | (optionnel) Dossier du **rapport HTML autonome** publié à chaque assemble — défaut `<project_root>/reports/html` (`weekly-report-latest.html` + copie datée) ; `""` désactive la génération (v6.1) | absent → défaut activé |
 | `open_browser` | Ouverture automatique du rapport HTML dans le navigateur après l'assemble — mettre `false`, ou poser la variable d'environnement `WEEKLY_NO_BROWSER=1` pour un cron headless | `true` |
 | `kit_root` | (optionnel) Worktree du kit pour la synchro best-effort des drafts auto-rédigés (`commit-draft`, v6.0.l) | absent → désactivé |
-| `harness_include` | Profil et globs allowlistés pour l'étape `harness` | `advisory` (policy + documentation) |
+| `harness_include` | Profil et globs allowlistés pour l'étape `harness` (projection étendue au harnais détecté) | `advisory` (policy + documentation) |
+| `session_sources` | Sources de sessions actives (liste d'objets `{type, ...}` : `opencode`, `claude-code`, `copilot-vscode`) ; clé extra `cost_rate_usd_per_mtok` = surcharge du taux d'estimation | `[{"type": "opencode"}]` |
+| `draft_targets` | Cible de drafting mono-cible : liste de harnais (override), `[]` (legacy toutes cibles), absent/invalide (détection auto par marqueurs) | détection auto |
 | `harness_auto_fix_rules` | Règles explicitement autorisées pour l'application automatique | `[]` (aucune) |
 | `harness_auto_fix_max_files` | Nombre maximum de fichiers modifiés par remédiation | `1` |
 | `git_name` / `git_email` | Identité des commits auto-rédigés (drafting) | `Weekly Advisor` / `weekly-advisor@localhost` (déjà neutres) |
@@ -77,6 +80,33 @@ ajouter.
 Un fichier `.opencode/` qui ne correspond à aucun profil apparaît comme warning dans le
 digest (`harness_include.unscoped_files`) au lieu d'être scanné silencieusement.
 
+#### Drafting mono-cible & gate de portabilité
+
+**Placement mono-cible** : chaque projet est rattaché à **un** harnais de drafting,
+résolu par détection de marqueurs au `project_root` (priorité `claude-code` >
+`opencode` > `copilot-vscode` > `codex`), surchargeable par `draft_targets` (`[]` =
+mode legacy). Aucun marqueur → défaut `opencode` + warning du doctor (exit 1).
+
+| Marqueur projet | Harnais | Cibles de projection des drafts |
+|---|---|---|
+| `.claude/` | claude-code | `.claude/skills` |
+| `.opencode/` | opencode | `.opencode/skills` |
+| `.github/prompts/` ou `.github/skills/` | copilot-vscode | `.github/prompts`, `.github/skills` |
+| `.agents/` | codex | `.agents` |
+
+**Zéro symlink** : la projection étape 5 et les artefacts générés sont de vraies
+copies, jamais de liens.
+
+**Gate de portabilité** (`weekly_commit_draft`) : avant chaque commit de draft,
+`harness-eval skill-verify` est lancé avec `cwd` = **racine projet** (chargement des
+règles custom `.harness-eval/rules/portability.yaml`, ids `custom/portability/*`).
+- ≥ 1 finding `error` → **commit refusé, fix manuel requis** ;
+- warnings seuls → commit autorisé, note jointe ;
+- binaire `harness-eval` absent / sortie illisible → **note ⚠ gate ignorée** (fail-soft).
+
+**Limite connue (honnête)** : en harness-eval 7.10.1, la gate couvre les **skills**
+uniquement — les commands/agents ne sont pas inspectés par les règles custom.
+
 ### 2.4 Permissions user + auth (une fois par poste)
 
 ```sh
@@ -93,7 +123,7 @@ run cron (mesuré v5.32).
 
 ```sh
 cd .opencode/plugins/weekly-advisor-engine
-uv run pytest -q     # 255 tests — tout doit passer
+uv run python -m pytest -q     # 368 tests — tout doit passer
 cd ../../..
 opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"
@@ -163,8 +193,8 @@ schtasks /Create /SC WEEKLY /D LUN /ST 06:00 /TN weekly-advisor /TR "opencode ru
 
 ```sh
 git pull
-uv sync --project .opencode/plugins/weekly-advisor-engine --all-extras
-cd .opencode/plugins/weekly-advisor-engine && uv run pytest -q
+uv sync --project .opencode/plugins/weekly-advisor-engine --extra dev
+cd .opencode/plugins/weekly-advisor-engine && uv run python -m pytest -q
 cd ../../..
 opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"
@@ -202,7 +232,7 @@ Rien d'autre à nettoyer : aucun service, aucun fichier hors du repo et de `outp
 |---|---|---|
 | doctor : `PROBLEM: project_root ... ne contient pas .opencode/` (exit 2) | config non adaptée (placeholder) | adapter `project_root` (§2.3) |
 | doctor : `PROBLEM: output_dir non accessible ... '/path'` (exit 2) | `output_dir` placeholder | adapter `output_dir` (§2.3) |
-| `No module named pytest` | install sans `--all-extras` | `uv sync --project .opencode/plugins/weekly-advisor-engine --all-extras` |
+| `No module named pytest` | install sans l'extra `dev` | `uv sync --project .opencode/plugins/weekly-advisor-engine --extra dev` |
 | tool : `venv introuvable: ...` | venv absent | §2.2 |
 | tool : `moteur introuvable: ... (structure du kit corrompue)` | `.opencode/` incomplet | re-cloner proprement |
 | doctor : `opencode introuvable` | PATH du shell d'appel (cron minimal) | prérequis §1 + PATH du cron |
@@ -217,7 +247,7 @@ Rien d'autre à nettoyer : aucun service, aucun fichier hors du repo et de `outp
 ```sh
 # tests (depuis le dossier moteur)
 cd .opencode/plugins/weekly-advisor-engine
-uv run pytest tests -q
+uv run python -m pytest -q
 
 # lint python
 uvx ruff check weekly_telemetry_aggregator tests

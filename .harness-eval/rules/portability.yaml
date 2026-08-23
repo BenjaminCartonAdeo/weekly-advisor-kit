@@ -1,0 +1,167 @@
+# =============================================================================
+# portability.yaml — règles custom harness-eval (kit weekly-advisor)
+# =============================================================================
+# Format : schéma natif harness-eval 7.10.1 (inspection/yaml_rules.py) :
+#   id, severity (error|warning|info), description, suggestion,
+#   target (skill|command|agent|hooks|claude_md|mcp_config),
+#   category (content|security|structural|frontmatter),
+#   patterns: [{label, regex}]  — re.search PAR LIGNE, insensible à la casse,
+#   message: template avec {{label}} et {{line}}.
+#
+# Contraintes moteur constatées (7.10.1) :
+#   - patterns POSITIFS uniquement (pas de détection d'absence globale) ;
+#   - sous tout preset non vide (défaut `recommended`), seules les règles dont
+#     l'id commence par `custom/` restent actives sans config explicite —
+#     d'où le namespace obligatoire `custom/portability/...` ;
+#   - les règles YAML ne s'appliquent EN PRATIQUE qu'aux skills : YamlRule
+#     early-return si `skill.raw_content` est vide, or pour command/agent/
+#     hooks le contexte n'a pas de skill parsé (dummy vide) -> cible ignorée.
+#     Les surfaces .github/prompts/**, .claude/commands/**, */agents/** ne
+#     sont donc PAS couvertes par ces règles custom en 7.10.1 (limite amont,
+#     voir notes cellule 3.2) ;
+#   - chaque règle EST un document YAML distinct — séparateur `---`
+#     obligatoire entre règles (sans lui, fusion silencieuse des mappings).
+#
+# Les 5 règles de contenu universel (brief §2.3), id canonique stable :
+#   custom/portability/frontmatter-minimal          (error, frontmatter)
+#   custom/portability/no-hardcoded-tool-names      (error, content)
+#   custom/portability/multi-platform-invocation    (warning, content)
+#   custom/portability/project-relative-paths       (error, content)
+#   custom/portability/self-contained-scripts       (error, content)
+# =============================================================================
+---
+# -----------------------------------------------------------------------------
+# Règle 1 — Frontmatter minimal.
+# Seuls name/description requis ; metadata/license/compatibility tolérés.
+# Le match se fait par ligne sur tout le fichier : la regex vise une ligne
+# « clef:valeur » de premier niveau hors allowlist (deux-points collé à la
+# clef, valeur requise — style YAML canonique ; évite les faux positifs de
+# prose du type « Ponytail-audit : ... »). Une stoplist de mots de prose
+# courants (Note:, Warning:, http:, json:...) complète le filtrage (limite
+# heuristique assumée).
+# -----------------------------------------------------------------------------
+id: "custom/portability/frontmatter-minimal"
+severity: error
+description: >-
+  Frontmatter minimal : seuls name et description sont requis ; seuls
+  metadata, license et compatibility sont tolérés en plus. Tout autre champ
+  frontmatter de premier niveau est interdit pour garantir la portabilité.
+suggestion: >-
+  Supprimez ce champ frontmatter ou déplacez-le sous `metadata:`. Champs
+  autorisés : name, description (requis) ; metadata, license, compatibility
+  (tolérés).
+target: skill
+category: frontmatter
+patterns:
+  - label: "champ frontmatter non autorisé"
+    regex: '^(?!(?:name|description|metadata|license|compatibility|note|notes|warning|caution|tip|important|remarque|attention|exemple|example|usage|source|sources|sortie|entree|entrée|input|output|voir|see|ref|reference|référence|http|https|ftp|mailto|data|json|yaml|toml|args|params?|returns|throws|raises|env)\s*:)[a-z][a-z0-9_-]*:[ \t]*\S'
+message: "Portabilité : '{{label}}' détecté ligne {{line}} — le frontmatter ne doit contenir que name/description (+ metadata/license/compatibility)."
+---
+# -----------------------------------------------------------------------------
+# Règle 2 — Outils par nom conceptuel, jamais d'identifiant de kit en dur.
+# Tout identifiant weekly_* (underscore) ou weekly-* (dash-case) dans le
+# contenu est interdit : les artefacts invoquent les commandes du kit par leur
+# nom conceptuel. Exclusions dash-case (anti faux positifs, corps atomique
+# anti-backtracking) :
+#   - le plugin lui-même : weekly-advisor, weekly-advisor-kit, et tout
+#     dérivé weekly-advisor-* (ex. chemin plugins/weekly-advisor-engine/) ;
+#   - les lignes `name:` du frontmatter (nom propre du skill) ;
+#   - les fichiers : token suivi de .<ext> (weekly-telemetry-config.json,
+#     weekly-harness-baseline.json) ou suivi de -<date>/-YYYY-MM-DD
+#     (artefacts weekly-*-<date>.json|md) ;
+#   - l'accès attribut sur artefact racine : weekly-watch-context.market_matches.
+# -----------------------------------------------------------------------------
+id: "custom/portability/no-hardcoded-tool-names"
+severity: error
+description: >-
+  Interdit tout identifiant weekly_* ou weekly-* (hors noms légitimes : plugin
+  weekly-advisor/-kit, fichiers weekly-*.json/md, frontmatter name:) dans le
+  contenu : les artefacts doivent référencer les commandes du kit par leur nom
+  conceptuel, jamais par un nom technique propre à ce kit ou à un harnais donné.
+suggestion: >-
+  Remplacez l'identifiant weekly_* / weekly-* par son nom conceptuel (ex. « la
+  sous-commande X du plugin », « le CLI installé par le kit ») ou décrivez
+  l'action attendue.
+target: skill
+category: content
+patterns:
+  - label: "identifiant de kit codé en dur"
+    regex: '\bweekly_[a-z0-9_]+\b'
+  - label: "nom de kit en dash-case codé en dur"
+    regex: '^(?![ \t]*name[ \t]*:)(?=.*\bweekly-(?!advisor(?:-kit)?\b)(?>[a-z][a-z0-9]*(?:-[a-z][a-z0-9]*)*)(?!\.?\w)(?!-\d)(?!-<))'
+message: "Portabilité : '{{label}}' ligne {{line}} — identifiant weekly_* / weekly-* interdit, utilisez le nom conceptuel de la commande."
+---
+# -----------------------------------------------------------------------------
+# Règle 3 — Section « Comment invoquer » multi-plateforme.
+# Heuristique (moteur à patterns positifs) : détection des VIOLATIONS
+# visibles — titre de section d'invocation lié à UN seul harnais, ou titre
+# générique sans annonce multi-plateforme. L'absence TOTALE de section
+# n'est pas détectable par ce moteur (limite documentée).
+# -----------------------------------------------------------------------------
+id: "custom/portability/multi-platform-invocation"
+severity: warning
+description: >-
+  La section « Comment invoquer » doit décrire l'invocation pour plusieurs
+  harnais, pas pour un seul. Détecte les titres d'invocation mono-plateforme
+  et les titres d'invocation sans couverture multi-plateforme explicite.
+suggestion: >-
+  Rédigez la section pour plusieurs harnais (ex. OpenCode, Claude Code,
+  Codex, Cursor…) ou renommez-la pour annoncer la couverture multi-plateforme.
+target: skill
+category: content
+patterns:
+  - label: "invocation décrite pour un seul harnais"
+    regex: '^#{1,6}\s*.*\b(?:dans|pour|avec|via|sous|in|for|with|via)\s+(?:opencode|claude(?:\s*code)?|codex|cursor|gemini(?:\s*cli)?|amp\b|windsurf|cline|copilot)\b'
+  - label: "section d'invocation sans mention multi-plateforme"
+    regex: '^#{1,6}\s*(?:comment invoquer|comment appeler|how to invoke|how to call|invocation)\s*:?\s*$'
+message: "Portabilité : '{{label}}' (titre ligne {{line}}) — décrivez l'invocation pour plusieurs harnais, pas un seul."
+---
+# -----------------------------------------------------------------------------
+# Règle 4 — Chemins relatifs projet, aucun chemin absolu.
+# Couvre /home/, /Users/, /root/, ~/ et lecteurs Windows (C:\...).
+# NB : chevauche partiellement la règle builtin content/hardcoded-machine-path
+# (warning) — celle-ci est error et plus large (~ inclus).
+# -----------------------------------------------------------------------------
+id: "custom/portability/project-relative-paths"
+severity: error
+description: >-
+  Aucun chemin absolu (/home/, /Users/, /root/, ~/., C:\...) dans le contenu :
+  tous les chemins doivent être relatifs au projet pour rester portables
+  d'une machine et d'un harnais à l'autre.
+suggestion: >-
+  Remplacez le chemin absolu par un chemin relatif au projet (ex.
+  scripts/foo.sh) ou par une variable d'environnement documentée.
+target: skill
+category: content
+patterns:
+  - label: "chemin home Unix absolu"
+    regex: '/(?:home|users|root)/[a-z0-9._-]+'
+  - label: "chemin relatif au home machine"
+    regex: '~/\S+'
+  - label: "chemin Windows absolu"
+    regex: '\b[a-z]:[\\/]\S*'
+message: "Portabilité : '{{label}}' ligne {{line}} — chemin absolu interdit, utilisez un chemin relatif au projet."
+---
+# -----------------------------------------------------------------------------
+# Règle 5 — Scripts auto-contenus.
+# Tout script référencé doit être inclus/copié avec l'artefact : interdits
+# les chemins hors projet (../, ~/, /usr|/opt|/etc|/var|/home|/Users) et les
+# scripts distants http(s). Un chemin relatif projet (scripts/foo.sh) passe.
+# -----------------------------------------------------------------------------
+id: "custom/portability/self-contained-scripts"
+severity: error
+description: >-
+  Tout script référencé doit être inclus/copié avec l'artefact. Interdits :
+  les références hors du projet (../, ~/, /usr|/opt|/etc|/var|/home|/Users)
+  et les scripts distants (http(s)://...*.sh|.py|.js|.mjs).
+suggestion: >-
+  Copiez le script dans le répertoire de l'artefact (ex. scripts/) et
+  référencez-le par un chemin relatif au projet.
+target: skill
+category: content
+patterns:
+  - label: "script référencé hors du projet"
+    regex: '(?:\.\./|~/|/(?:usr|opt|etc|var|home|users)/)[\w./-]+\.(?:sh|py|js|ts|mjs|cjs)\b'
+  - label: "script distant téléchargé"
+    regex: '\bhttps?://[^\s)''"]+\.(?:sh|py|js|mjs)\b'
+message: "Portabilité : '{{label}}' ligne {{line}} — script non auto-contenu, incluez-le dans l'artefact et référencez-le en relatif projet."

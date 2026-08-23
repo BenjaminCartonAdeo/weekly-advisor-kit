@@ -16,6 +16,23 @@ def round6(value: float) -> float:
     return round(float(value), 6)
 
 
+def canonical_session_id(harness: str, session_id: str) -> str:
+    """Identifiant canonique multi-harnais : ``"<harness>:<session_id>"``."""
+    return f"{harness}:{session_id}"
+
+
+def split_canonical_session_id(canonical: str) -> tuple[str | None, str]:
+    """Décompose ``"<harness>:<session_id>"`` → ``(harness, session_id)``.
+
+    Id sans préfixe (ou préfixe vide) → ``(None, canonical)`` — tolérant aux
+    identifiants bruts d'un harnais unique.
+    """
+    harness, sep, raw = canonical.partition(":")
+    if not sep or not harness:
+        return None, canonical
+    return harness, raw
+
+
 @dataclass(slots=True)
 class StepFinish:
     """One assistant step inside the window (per step-finish part + assistant message).
@@ -33,6 +50,8 @@ class StepFinish:
     tokens_cache_write: float = 0.0
     #: OpenCode-recorded cost (None = not persisted → `missing-pricing:<model>`).
     cost: float | None = None
+    #: harnais d'origine (multi-harnais, vNext) — "" pour le flux historique.
+    harness: str = ""
 
     @property
     def total_tokens(self) -> int:
@@ -64,6 +83,8 @@ class SessionUsage:
     first_user_text: str | None = None
     #: session_v2 lifetime cost (cross-check reference, v5.28).
     reported_cost_usd_lifetime: float | None = None
+    #: harnais d'origine (multi-harnais, vNext) — "" pour le flux historique.
+    harness: str = ""
 
     @property
     def cost_usd(self) -> float:
@@ -232,4 +253,7 @@ class WeeklySummary:
     subagent_totals: SubagentTotals = field(default_factory=SubagentTotals)
     #: selection audit — why each window-touched session was/wasn't counted (v5.28).
     selection: dict = field(default_factory=dict)
+    #: coûts estimés ($, round6) des sessions sans AUCUN coût enregistré,
+    #: par id canonique — None si rien à estimer (clé absente à la sérialisation).
+    cost_estimates: dict[str, float] | None = None
     warnings: list[WarningEntry] = field(default_factory=list)

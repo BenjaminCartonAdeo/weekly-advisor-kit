@@ -13,12 +13,13 @@ import json
 import os
 import re
 import shutil
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .config import DEFAULT_HARNESS_EXCLUDE_PATTERNS, HarnessIncludeConfig
+from .draft_targets import DRAFT_HARNESS_TARGETS, HARNESS_OPENCODE
 from .util import relative_path
 
 
@@ -35,6 +36,8 @@ class HarnessScope:
     excluded_counts_by_pattern: dict[str, int]
     unscoped_files: list[str]
     warnings: list[str]
+    #: Répertoires additionnels (harnais détecté) projetés en plus de `.opencode/`.
+    extra_roots: list[str]
 
     def to_dict(self) -> dict[str, Any]:
         """Return the stable JSON representation stored in the digest."""
@@ -51,6 +54,13 @@ class HarnessScope:
             "unscoped_files": list(self.unscoped_files),
             "warnings": list(self.warnings),
             "projection": "temporary-project-relative",
+            #: cellule 2.2 : extension multi-répertoires du harnais résolu.
+            "extra_roots": list(self.extra_roots),
+            "extra_root_file_count": sum(
+                1
+                for path in self.included_files
+                if any(path == root or path.startswith(root + "/") for root in self.extra_roots)
+            ),
         }
 
 
@@ -123,12 +133,49 @@ def _iter_regular_files(root: Path) -> Iterator[Path]:
         yield path
 
 
-def resolve_harness_scope(project_root: Path, config: HarnessIncludeConfig) -> HarnessScope:
+def harness_extra_roots(resolved: object) -> tuple[str, ...]:
+    """Répertoires additionnels à projeter pour les harnais résolus (cellule 2.2).
+
+    Union des ``DRAFT_HARNESS_TARGETS`` des harnais actifs, triée, sans
+    ``.opencode/skills`` (déjà couvert par le walk natif `.opencode`). Mode
+    legacy → toutes les cibles connues. Accepte un ``ResolvedDraftTarget``
+    ou tout objet portant ``harnesses``.
+    """
+    harnesses = tuple(getattr(resolved, "harnesses", ()) or ())
+    dirs = {
+        target
+        for harness in harnesses
+        for target in DRAFT_HARNESS_TARGETS.get(str(harness), ())
+    }
+    dirs.discard(".opencode/skills")
+    return tuple(sorted(dirs))
+
+
+def _safe_extra_root(pattern: str) -> bool:
+    """Reject absolute, empty and parent-traversing extra roots."""
+    normalised = _normalise_pattern(pattern)
+    if not normalised:
+        return False
+    return _safe_pattern(normalised)
+
+
+def resolve_harness_scope(
+    project_root: Path,
+    config: HarnessIncludeConfig,
+    *,
+    extra_roots: Sequence[str] = (),
+) -> HarnessScope:
     """Resolve configured files and audit what was deliberately left out.
 
     The walk is used only for scope accounting.  The harness itself receives
     files from ``included_files`` through :func:`copy_scope_to_projection`, so
     excluded and unscoped content is never made visible to the subprocess.
+
+    Cellule 2.2 : ``extra_roots`` ajoute les répertoires du harnais détecté
+    (``DRAFT_HARNESS_TARGETS``) au périmètre allowlisté. Un fichier sous une
+    racine additionnelle est inclus sauf exclusion obligatoire/configurée —
+    ces racines sont déjà étroites (skills/prompts), l'allowlist par profils
+    reste spécifique `.opencode`.
     """
     root = project_root.expanduser().resolve()
     profile = config.default_profile
@@ -156,6 +203,37 @@ def resolve_harness_scope(project_root: Path, config: HarnessIncludeConfig) -> H
         key=str,
     )
 
+    # Extension multi-répertoires : mêmes sémantiques d'exclusion, chemins
+    # relatifs au project_root conservés pour le remap du digest.
+    safe_roots: list[str] = []
+    seen_roots: set[str] = set()
+    warnings: list[str] = []
+    for candidate in extra_roots:
+        normalised = _normalise_pattern(str(candidate))
+        if not _safe_extra_root(normalised) or normalised in seen_roots:
+            if normalised not in seen_roots:
+                warnings.append(f"cible de projection additionnelle rejetée: {candidate!r}")
+            continue
+        seen_roots.add(normalised)
+        safe_roots.append(normalised)
+        extra_root_path = root / Path(*PurePosixPath(normalised).parts)
+        if not extra_root_path.is_dir():
+            warnings.append(
+                f"cible de projection absente du projet: {normalised} "
+                "(aucun fichier à projeter pour ce harnais)"
+            )
+            continue
+        all_files.extend(
+            sorted(
+                (
+                    f"{normalised}/{relative_path(path, extra_root_path)}"
+                    for path in _iter_regular_files(extra_root_path)
+                ),
+                key=str,
+            )
+        )
+    all_files.sort()
+
     excluded_counts = {pattern: 0 for pattern in exclude_patterns}
     excluded_files: set[str] = set()
     unexcluded_files: list[str] = []
@@ -182,13 +260,22 @@ def resolve_harness_scope(project_root: Path, config: HarnessIncludeConfig) -> H
             included.add(rel_path)
             included_counts[pattern] += 1
 
+    # Racines additionnelles : inclusion large sauf exclusion explicite.
+    for rel_path in all_files:
+        if rel_path in excluded_files or rel_path in included:
+            continue
+        if any(
+            rel_path == extra_root or rel_path.startswith(extra_root + "/")
+            for extra_root in safe_roots
+        ):
+            included.add(rel_path)
+
     unscoped = sorted(
         rel_path
         for rel_path in unexcluded_files
         if rel_path == ".opencode" or rel_path.startswith(".opencode/")
         if rel_path not in included
     )
-    warnings: list[str] = []
     if not profile_known:
         warnings.append(
             f"unknown harness include profile '{profile}' — no files selected; "
@@ -209,6 +296,7 @@ def resolve_harness_scope(project_root: Path, config: HarnessIncludeConfig) -> H
         excluded_counts_by_pattern=excluded_counts,
         unscoped_files=unscoped,
         warnings=warnings,
+        extra_roots=safe_roots,
     )
 
 
@@ -474,3 +562,201 @@ def enrich_harness_digest(
     normalized_data["harness_scope"] = scope_data
     enriched["normalized"] = normalized_data
     return enriched
+
+
+# ---- cellule 2.2 : injection du contenu engine + orphelins --------------------
+
+#: Harnais → destination des commands/prompts du kit, miroir documenté de
+#: ``DRAFT_HARNESS_TARGETS`` (skills). La cible « prompts » est sa propre
+#: destination : chez copilot, prompts = l'équivalent commands.
+ENGINE_COMMAND_TARGETS: dict[str, str] = {
+    ".opencode/skills": ".opencode/commands",
+    ".claude/skills": ".claude/commands",
+    ".github/skills": ".github/prompts",
+    ".github/prompts": ".github/prompts",
+    ".agents": ".agents/commands",
+}
+
+
+def _copy_tree_regular(source: Path, dest_dir: Path) -> Iterator[str]:
+    """Copy regular non-symlink files below ``source`` into ``dest_dir``.
+
+    Yields project-relative paths actually written.  Symlinks are skipped on
+    both sides (zéro symlink dans la projection) ; un fichier déjà présent
+    gagne — la source réelle du projet n'est jamais écrasée.
+    """
+    for path in sorted(_iter_regular_files(source)):
+        rel = relative_path(path, source)
+        target = dest_dir / Path(rel)
+        if target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+        yield rel
+
+
+def inject_engine_content(
+    project_root: Path,
+    target_dirs: Sequence[str],
+    projection_root: Path,
+    *,
+    kit_root: Path | None,
+) -> list[str]:
+    """Projette le contenu engine (skills + commands du kit) dans la projection.
+
+    Pour chaque répertoire cible du harnais résolu, le contenu ``skills/`` et
+    ``commands/`` du kit est copié vers l'emplacement correspondant.  Les
+    chemins créés sans existence réelle dans le projet sont des **orphelins** :
+    présents en projection mais sans source — signal conservé dans le digest
+    (``draft_targets.orphan_files``).  Best-effort : kit absent/invalide →
+    liste vide, jamais d'erreur d'étape.
+    """
+    if kit_root is None:
+        return []
+    kit_opencode = kit_root.expanduser().resolve() / ".opencode"
+    skills_source = kit_opencode / "skills"
+    commands_source = kit_opencode / "commands"
+    if not skills_source.is_dir() and not commands_source.is_dir():
+        return []
+
+    root = project_root.expanduser().resolve()
+    destination = projection_root.resolve()
+    orphans: list[str] = []
+
+    for target in target_dirs:
+        normalised = _normalise_pattern(target)
+        command_target = ENGINE_COMMAND_TARGETS.get(normalised)
+        skills_dest = destination / Path(*PurePosixPath(normalised).parts)
+        for skill_dir in sorted(skills_source.iterdir()) if skills_source.is_dir() else []:
+            if not skill_dir.is_dir() or skill_dir.is_symlink():
+                continue
+            for rel in _copy_tree_regular(skill_dir, skills_dest / skill_dir.name):
+                orphans.append(f"{normalised}/{skill_dir.name}/{rel}")
+        if command_target is None or not commands_source.is_dir():
+            continue
+        commands_dest = destination / Path(*PurePosixPath(command_target).parts)
+        for rel in _copy_tree_regular(commands_source, commands_dest):
+            orphans.append(f"{command_target}/{rel}")
+
+    # Orphelin = chemin créé sans source équivalente dans le projet réel.
+    return sorted({path for path in orphans if not (root / path).exists()})
+
+
+# ---- cellule 2.2 : matrice de décision 5.5 (projection vs portability) --------
+
+#: Décision : remédiation couverte par la projection `.opencode` seule.
+SURFACE_PROJECTION = "projection"
+#: Décision : remédiation conditionnée au mapping `portability.yaml` (cellule 3.1).
+SURFACE_PORTABILITY = "portability"
+#: Décision : les deux surfaces sont nécessaires (legacy / cibles mixtes).
+SURFACE_COMBINED = "combined"
+
+_SURFACE_REASONS: dict[str, str] = {
+    SURFACE_PROJECTION: (
+        "surface native .opencode — la projection couvre la totalité des cibles remédiables"
+    ),
+    SURFACE_PORTABILITY: (
+        "surface hors allowlist .opencode — remédiation conditionnée à "
+        "portability.yaml (règle de mapping : cellule 3.1)"
+    ),
+    SURFACE_COMBINED: (
+        "cibles multiples dont .opencode — projection .opencode + mapping "
+        "portability.yaml requis pour les autres harnais"
+    ),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class RemediationSurface:
+    """Décision 5.5 documentée : où la remédiation peut s'appliquer.
+
+    Entrée pure (harnais/mode), sortie déterministe — aucune lecture disque.
+    La règle ``portability.yaml`` elle-même est la cellule 3.1 ; cette matrice
+    n'arbitre que la surface décisionnelle et sa raison affichable.
+    """
+
+    #: SURFACE_* ("projection" | "portability" | "combined").
+    decision: str
+    harnesses: tuple[str, ...]
+    mode: str
+    #: Raison stable et affichable (doctor + résultat 5.5).
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        """Représentation JSON stockée dans les artefacts."""
+        return {
+            "decision": self.decision,
+            "harnesses": list(self.harnesses),
+            "mode": self.mode,
+            "reason": self.reason,
+        }
+
+
+def resolve_remediation_surface(
+    harnesses: Sequence[str], mode: str
+) -> RemediationSurface:
+    """Matrice de décision 5.5 : projection vs portability vs combiné.
+
+    Règles (décision brief §2.4) :
+    - cible unique ``opencode`` → **projection** (surface native déjà couverte) ;
+    - cible unique connue hors `.opencode` → **portability** (mapping requis) ;
+    - plusieurs cibles avec `opencode` → **combined** ;
+    - plusieurs cibles sans `opencode` → **portability** ;
+    - entrée vide ou harnais inconnu → repli sûr **projection**, raison explicite.
+    """
+    resolved = (
+        (str(harnesses),)
+        if isinstance(harnesses, str)
+        else tuple(str(harness) for harness in harnesses)
+    )
+    if not resolved:
+        return RemediationSurface(
+            decision=SURFACE_PROJECTION,
+            harnesses=(),
+            mode=str(mode),
+            reason="aucune cible résolue — repli surface .opencode",
+        )
+    if len(resolved) == 1:
+        harness = resolved[0]
+        if harness == HARNESS_OPENCODE:
+            return RemediationSurface(
+                decision=SURFACE_PROJECTION,
+                harnesses=resolved,
+                mode=str(mode),
+                reason=_SURFACE_REASONS[SURFACE_PROJECTION],
+            )
+        if harness in DRAFT_HARNESS_TARGETS:
+            return RemediationSurface(
+                decision=SURFACE_PORTABILITY,
+                harnesses=resolved,
+                mode=str(mode),
+                reason=f"cible '{harness}' {_SURFACE_REASONS[SURFACE_PORTABILITY]}",
+            )
+        return RemediationSurface(
+            decision=SURFACE_PROJECTION,
+            harnesses=resolved,
+            mode=str(mode),
+            reason=(f"harnais inconnu '{harness}' — repli projection .opencode par défaut"),
+        )
+    if HARNESS_OPENCODE in resolved:
+        return RemediationSurface(
+            decision=SURFACE_COMBINED,
+            harnesses=resolved,
+            mode=str(mode),
+            reason=_SURFACE_REASONS[SURFACE_COMBINED],
+        )
+    known = all(harness in DRAFT_HARNESS_TARGETS for harness in resolved)
+    return RemediationSurface(
+        decision=SURFACE_PORTABILITY,
+        harnesses=resolved,
+        mode=str(mode),
+        reason=(
+            f"cibles {', '.join(resolved)} hors .opencode — "
+            f"{_SURFACE_REASONS[SURFACE_PORTABILITY]}"
+            if known
+            else (
+                f"cibles multiples ({', '.join(resolved)}) hors .opencode — "
+                "remédiation conditionnée à portability.yaml (cellule 3.1)"
+            )
+        ),
+    )

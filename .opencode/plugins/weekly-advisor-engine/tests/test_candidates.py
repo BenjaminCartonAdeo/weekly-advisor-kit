@@ -128,3 +128,20 @@ def test_draft_candidates_includes_command_improvement():
         "s1",
         "s3",
     ]  # command-improvement high + command-candidate low ; prompting-habit exclu
+
+
+def test_audit_candidates_keep_canonical_multi_harness_ids():
+    """Ids canoniques <harness>:<id> traversent intacts ; dédup par id complet."""
+    summary = _summary(
+        tops=[
+            {"session_id": "opencode:a", "cost_per_active_minute": 0.1, "cache_efficiency": 0.9},
+            {"session_id": "copilot:b", "cost_per_active_minute": 2.0, "cache_efficiency": 0.5},
+        ],
+        outliers=[{"session_id": "opencode:a", "cost_usd": 5.0, "z_score": 4.0}],
+    )
+    cands = select_audit_candidates(
+        summary, top_sessions_limit=5, cost_per_active_minute_min=0.5, cache_efficiency_gap=0.2
+    )
+    ids = [c["session_id"] for c in cands]
+    assert ids == ["opencode:a", "copilot:b"]  # outlier dup → raisons fusionnées, pas de doublon
+    assert cands[0]["reasons"] == ["top-cost", "cost-outlier"]

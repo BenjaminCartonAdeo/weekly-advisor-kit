@@ -193,3 +193,21 @@ def test_summary_serializes_skills_targets():
     )
     data = summary_to_dict(summary)
     assert data["skills_targets"] == {"jira-to-code-audit": ["java-pro"]}
+
+
+def test_summary_cost_estimates_round_trip():
+    """Champ first-class cost_estimates : présent si rempli, absent si None."""
+    from weekly_telemetry_aggregator.models import Period
+
+    period = Period(start=tzutc(2026, 8, 5), end=tzutc(2026, 8, 12))
+    u = make_usage("r", [make_step("r", tzutc(2026, 8, 6), cost=0.1)])
+
+    summary = aggregate([u], period=period, generated_at=period.end)
+    summary.cost_estimates = {"opencode:r": round(900_010 * 9.0 / 1e6, 6)}
+    data = summary_to_dict(summary)
+    assert data["cost_estimates"] == {"opencode:r": round(900_010 * 9.0 / 1e6, 6)}
+    # round-trip JSON : la clé survit à une sérialisation/ré-lecture
+    assert json.loads(json.dumps(data))["cost_estimates"] == data["cost_estimates"]
+
+    empty = aggregate([u], period=period, generated_at=period.end)  # cost_estimates=None
+    assert "cost_estimates" not in summary_to_dict(empty)  # clé absente si None

@@ -24,6 +24,8 @@ def summary_to_dict(summary: WeeklySummary) -> dict:
     """
     data = {"schema_version": 2, **asdict(summary)}
     data.pop("skill_catalog_source", None)  # internal field, not part of spec §4
+    if data.get("cost_estimates") is None:
+        data.pop("cost_estimates", None)  # optional field: key absent when nothing to estimate
     for item in data["tool_usage"]:
         item["estimated_input_tokens"] = item.pop("estimated_tokens")  # spec key name
     data["period"]["start"] = _iso(summary.period.start)
