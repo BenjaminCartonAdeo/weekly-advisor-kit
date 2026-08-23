@@ -69,6 +69,12 @@ sed -i 's|/path/to/weekly-advisor-kit|/home/<TOI>/Dev/weekly-advisor-kit|g' \
 # ou éditez à la main : nano .opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json
 ```
 
+> **Installation manuelle** : substituez les **DEUX** placeholders (`project_root` **et**
+> `output_dir`). L'installation agent-driven les adapte automatiquement — pas la manuelle.
+> Un placeholder oublié est détecté par `weekly_doctor` avec un PROBLEM dédié :
+> « config jamais adaptée à cette installation — substituer project_root/output_dir
+> dans weekly-telemetry-config.json (placeholders /path/to/ détectés) ».
+
 Toutes les autres clés ont des défauts raisonnables (fenêtre 7 j, budgets, seuils,
 veille `watch`). Personnalisez `watch` (sources de veille) et les budgets selon votre usage.
 Le profil `strict` limite le lint aux surfaces de politique et aux entrypoints de
@@ -123,7 +129,7 @@ run cron (mesuré v5.32).
 
 ```sh
 cd .opencode/plugins/weekly-advisor-engine
-uv run python -m pytest -q     # 374 tests — tout doit passer
+uv run python -m pytest -q     # 376 tests — tout doit passer
 cd ../../..
 opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"

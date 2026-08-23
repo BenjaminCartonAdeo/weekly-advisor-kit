@@ -38,20 +38,22 @@ interface EngineLoc {
 
 function resolveEngine(worktree: string): EngineLoc {
   const engine = path.join(worktree, ...ENGINE_REL)
-  // Résolution cross-platform : premier candidat existant gagnant (Windows pose
-  // le venv en .venv\Scripts\python.exe, POSIX en .venv/bin/python).
-  const candidates = [
-    process.env.WEEKLY_PYTHON,
-    path.join(engine, ".venv", "Scripts", "python.exe"),
-    path.join(engine, ".venv", "bin", "python"),
-  ].filter((p): p is string => typeof p === "string" && p.length > 0)
+  // Résolution platform-aware : le venv est posé en .venv\Scripts\python.exe
+  // sur Windows, .venv/bin/python ailleurs — un seul candidat par OS.
+  const venvPython =
+    process.platform === "win32"
+      ? path.join(engine, ".venv", "Scripts", "python.exe")
+      : path.join(engine, ".venv", "bin", "python")
+  const candidates = [process.env.WEEKLY_PYTHON, venvPython].filter(
+    (p): p is string => typeof p === "string" && p.length > 0,
+  )
   const python = candidates.find((p) => fs.existsSync(p))
   if (!fs.existsSync(engine)) {
     throw new Error(`moteur introuvable: ${engine} (structure du kit corrompue)`)
   }
   if (!python) {
     throw new Error(
-      `interpréteur Python introuvable (candidats testés: ${candidates.join(", ")}) — définir WEEKLY_PYTHON ou créer le venv : uv sync --project .opencode/plugins/weekly-advisor-engine --all-extras`,
+      `interpréteur Python introuvable (candidats testés: ${candidates.join(", ")}) — définir WEEKLY_PYTHON ou créer le venv : uv sync --project .opencode/plugins/weekly-advisor-engine --extra dev`,
     )
   }
   // config : <moteur>/weekly-telemetry-config.json (même résolution que le CLI)

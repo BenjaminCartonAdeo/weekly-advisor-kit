@@ -681,6 +681,21 @@ def doctor(
             except OSError:
                 warnings.append("project_root non résoluble — chemins à vérifier")
 
+    # Sentinelle d'installation : placeholders « /path/to/... » jamais substitués
+    # dans weekly-telemetry-config.json — le fatal générique ci-dessus n'est pas
+    # actionnable, on nomme le vrai défaut et les champs exacts à corriger.
+    _placeholder_fields = [
+        field
+        for field in ("project_root", "output_dir")
+        if "path/to" in str(getattr(cfg, field, "") or "")
+    ]
+    if _placeholder_fields:
+        problems.append(
+            "config jamais adaptée à cette installation — substituer "
+            + "/".join(_placeholder_fields)
+            + " dans weekly-telemetry-config.json (placeholders /path/to/ détectés)"
+        )
+
     try:
         # Windows : shutil.which résout "opencode" → "opencode.cmd"/".exe" (un
         # argv nu n'est pas exécutable tel quel via subprocess sans shell).

@@ -325,6 +325,31 @@ def test_doctor_missing_project_root(tmp_path: Path):
     assert doctor(cfg) == EXIT_TOTAL_FAILURE
 
 
+def test_doctor_placeholder_project_root_is_problem(tmp_path: Path, capsys):
+    """Install réelle : placeholders /path/to/ jamais substitués → PROBLEM explicite
+    et actionnable, pas le fatal générique « project_root manquant »."""
+    db = _seed_n(tmp_path / "opencode.db", 3)
+    cfg = _cfg(tmp_path, db)
+    cfg.project_root = Path("/path/to/weekly-advisor-kit")
+    assert doctor(cfg) == EXIT_TOTAL_FAILURE
+    out = capsys.readouterr().out
+    assert "config jamais adaptée à cette installation" in out
+    assert "substituer project_root" in out
+    assert "/path/to/" in out
+    assert "project_root manquant" not in out
+
+
+def test_doctor_valid_config_no_placeholder_problem(tmp_path: Path, capsys):
+    """Régression zéro : config substituée → aucun PROBLEM placeholder nouveau."""
+    _ = (tmp_path / ".opencode").mkdir()
+    db = _seed_n(tmp_path / "opencode.db", 3)
+    cfg = _cfg(tmp_path, db)
+    cfg.project_root = tmp_path
+    assert doctor(cfg) in (EXIT_OK, EXIT_PARTIAL)
+    out = capsys.readouterr().out
+    assert "jamais adaptée" not in out
+
+
 def test_doctor_warns_when_config_nowhere(tmp_path: Path, capsys, fake_opencode):
     """Layout kit : cwd=moteur (config au cwd) ≠ project_root (repo audité) — warning
     uniquement si la config est introuvable partout, plus jamais sur cwd≠project_root."""
