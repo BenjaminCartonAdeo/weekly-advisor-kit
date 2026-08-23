@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Séquence run() — pipeline télémétrie weekly-advisor-kit</title>
+<style>
+  :root{
+    --paper:#f5f5f5; --ink:#2d3142; --muted:#4f5d75; --soft:#7a8399;
+    --rule:rgba(45,49,66,.10); --accent:#eb6c36;
+    --sans:'Geist',ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;
+    --serif:'Instrument Serif',Georgia,'Times New Roman',serif;
+    --mono:'Geist Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--paper);color:var(--ink);font-family:var(--sans);padding:48px 40px 40px}
+  .wrap{max-width:1840px;margin:0 auto}
+  .eyebrow{font-family:var(--mono);font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:var(--muted)}
+  h1{font-family:var(--serif);font-weight:400;font-size:40px;line-height:1.1;margin-top:12px}
+  .sub{margin-top:10px;font-size:14px;color:var(--muted);max-width:820px}
+  figure{margin-top:36px}
+  svg{display:block;width:100%;height:auto}
+  footer{margin-top:28px;padding-top:14px;border-top:1px solid var(--rule);
+         font-family:var(--mono);font-size:9px;color:var(--soft);letter-spacing:.04em;line-height:1.7}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <p class="eyebrow">weekly-advisor-kit · weekly_telemetry_aggregator · sequence · cli _cmd_run → main.run()</p>
+    <h1>Pipeline run() — fusion multi-sources, dédup, coûts estimés, repli local</h1>
+    <p class="sub">Flux complet de la sous-commande <code>run</code> : construction fail-soft des providers, listing fenêtré + univers d'ids, dédup premier-source-gagne, re-namespacing parent_id, lecture télémétrie par session, agrégation, cost_estimates, écriture du summary dans le run UUID.</p>
+  </header>
+  <figure>
+  <svg viewBox="0 0 1840 1408" role="img" aria-labelledby="seq-wk-run-title seq-wk-run-desc">
+    <title id="seq-wk-run-title">Séquence run() du collecteur télémétrique weekly-advisor-kit</title>
+    <desc id="seq-wk-run-desc">Diagramme de séquence UML : la CLI invoque run() qui construit les providers de sessions (avec repli sur la base OpenCode locale si aucun), liste et déduplique les sessions multi-harnais, lit la télémétrie fenêtrée de chacune, agrège, estime les coûts des sessions sans prix et écrit le résumé JSON dans un répertoire de run UUID ; codes de sortie 0 ou 1.</desc>
+    <defs>
+      <marker id="swr-a" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4f5d75"/></marker>
+      <marker id="swr-ac" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#eb6c36"/></marker>
+      <marker id="swr-al" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#2e5aa8"/></marker>
+    </defs>
+    <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+    <!-- ===== lifelines ===== -->
+    <line x1="128" y1="104" x2="128" y2="1332" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="560" y1="104" x2="560" y2="1332" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="1012" y1="104" x2="1012" y2="1332" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="1432" y1="104" x2="1432" y2="1332" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="1736" y1="104" x2="1736" y2="1332" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+
+    <!-- ===== actors (drawn after lifelines) ===== -->
+    <!-- CLI -->
+    <rect x="52" y="40" width="152" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="100" y="48" width="56" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+    <text x="128" y="57" fill="rgba(45,49,66,0.80)" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">CLI PY</text>
+    <text x="128" y="78" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">_cmd_run</text>
+    <text x="128" y="94" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">cli.py</text>
+    <!-- run() -->
+    <rect x="456" y="40" width="208" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="532" y="48" width="56" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+    <text x="560" y="57" fill="rgba(45,49,66,0.80)" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">ORCH</text>
+    <text x="560" y="78" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">run()</text>
+    <text x="560" y="94" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">main.py — pipeline</text>
+    <!-- registry -->
+    <rect x="916" y="40" width="192" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="984" y="48" width="56" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+    <text x="1012" y="57" fill="rgba(45,49,66,0.80)" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">REGISTRY</text>
+    <text x="1012" y="78" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">build_providers</text>
+    <text x="1012" y="94" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">registry.py — fail-soft</text>
+    <!-- providers -->
+    <rect x="1316" y="40" width="232" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="1404" y="48" width="56" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+    <text x="1432" y="57" fill="rgba(45,49,66,0.80)" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">SET</text>
+    <text x="1432" y="78" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">Providers[]</text>
+    <text x="1432" y="94" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">OpenCode · Claude Code</text>
+    <!-- writer -->
+    <rect x="1652" y="40" width="168" height="64" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+    <rect x="1708" y="48" width="56" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+    <text x="1736" y="57" fill="rgba(79,93,117,0.90)" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">STORE</text>
+    <text x="1736" y="78" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">Writer</text>
+    <text x="1736" y="94" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">write_summary</text>
+
+    <!-- ===== activation bars ===== -->
+    <rect x="124" y="144" width="8" height="1204" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+    <rect x="556" y="144" width="8" height="1180" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+    <rect x="1008" y="224" width="8" height="180" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+    <rect x="1428" y="468" width="8" height="72" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+    <rect x="1428" y="660" width="8" height="100" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+    <rect x="1428" y="892" width="8" height="52" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+    <rect x="1428" y="1032" width="8" height="56" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+    <rect x="1732" y="1236" width="8" height="44" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+
+    <!-- ===== messages ===== -->
+    <!-- 1. CLI -> run() -->
+    <line x1="132" y1="148" x2="552" y2="148" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="240" y="124" width="212" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="344" y="137" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">run(cfg, anchor, overrides…)</text>
+
+    <!-- 2. self period -->
+    <path d="M 564 176 h 28 v 24 h -24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="600" y="168" width="264" height="28" rx="2" fill="#f5f5f5"/>
+    <text x="604" y="179" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">Period = [T − lookback_days → T] — print fenêtre</text>
+
+    <!-- 3. build_providers -->
+    <line x1="564" y1="228" x2="1004" y2="228" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="720" y="204" width="136" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="788" y="217" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">build_providers(cfg)</text>
+
+    <!-- 4. self scan factories -->
+    <path d="M 1016 252 h 28 v 24 h -24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="1052" y="244" width="276" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="1056" y="257" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">pkgutil scan implementations/ → factories</text>
+
+    <!-- LOOP frame : per source -->
+    <rect x="924" y="280" width="636" height="112" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <rect x="924" y="280" width="44" height="16" rx="2" fill="#f5f5f5" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <text x="946" y="292" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.12em">LOOP</text>
+    <text x="936" y="312" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">[pour chaque session_source]</text>
+    <line x1="1016" y1="332" x2="1424" y2="332" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="1140" y="308" width="164" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="1222" y="321" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">factory(source_cfg, cfg)</text>
+    <line x1="1424" y1="360" x2="1020" y2="360" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#swr-a)"/>
+    <rect x="1156" y="336" width="116" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="1214" y="349" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">provider | None</text>
+    <rect x="1032" y="372" width="176" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="1036" y="382" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">None / raise → UserWarning + skip</text>
+
+    <!-- return providers -->
+    <line x1="1008" y1="408" x2="568" y2="408" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#swr-a)"/>
+    <rect x="704" y="384" width="152" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="780" y="397" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">providers[] actifs</text>
+
+    <!-- ALT frame : fallback -->
+    <rect x="484" y="428" width="1076" height="220" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <rect x="484" y="428" width="40" height="16" rx="2" fill="#f5f5f5" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <text x="504" y="440" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.12em">ALT</text>
+    <text x="536" y="440" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">[providers == ∅]</text>
+    <path d="M 564 468 h 28 v 24 h -24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="600" y="460" width="320" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="604" y="471" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">_warn_fallback_local_db() — UserWarning «repli»</text>
+    <line x1="564" y1="508" x2="1424" y2="508" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="852" y="484" width="256" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="980" y="497" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">detect_db(cfg.opencode_db_path)</text>
+    <line x1="1424" y1="532" x2="568" y2="532" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#swr-a)"/>
+    <rect x="900" y="508" width="120" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="960" y="521" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">(path, adapter)</text>
+    <path d="M 564 556 h 28 v 24 h -24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="600" y="548" width="336" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="604" y="559" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">wrap OpenCodeSessionProvider(path, adapter)</text>
+    <line x1="556" y1="584" x2="136" y2="584" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#swr-a)"/>
+    <rect x="216" y="560" width="260" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="346" y="573" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">[DataSourceError] FATAL → exit 2</text>
+    <line x1="492" y1="600" x2="1552" y2="600" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+    <text x="536" y="622" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">[else — sources actives]</text>
+    <text x="604" y="637" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">providers[] conservés tels quels</text>
+
+    <!-- LOOP : listing fusion -->
+    <rect x="484" y="664" width="1076" height="108" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <rect x="484" y="664" width="44" height="16" rx="2" fill="#f5f5f5" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <text x="506" y="676" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.12em">LOOP</text>
+    <text x="536" y="676" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">[pour chaque provider — Exception → FATAL exit 2]</text>
+    <line x1="564" y1="700" x2="1424" y2="700" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="872" y="676" width="220" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="982" y="689" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">list_sessions(period.start_ms)</text>
+    <line x1="1424" y1="724" x2="568" y2="724" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#swr-a)"/>
+    <rect x="836" y="700" width="264" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="968" y="713" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">metas fenêtrées (HarnessSession[])</text>
+    <line x1="564" y1="748" x2="1424" y2="748" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="864" y="724" width="236" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="982" y="737" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">list_sessions(0) → all_ids ∪=</text>
+
+    <!-- OPT dedup -->
+    <rect x="484" y="788" width="340" height="64" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <rect x="484" y="788" width="40" height="16" rx="2" fill="#f5f5f5" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <text x="504" y="800" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.12em">OPT</text>
+    <text x="532" y="800" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">[id canonique déjà vu]</text>
+    <path d="M 564 824 h 28 v 20 h -24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="600" y="812" width="212" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="604" y="823" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">dédup 1ʳᵉ source gagne + UserWarning</text>
+
+    <!-- LOOP : lecture par session -->
+    <rect x="484" y="868" width="1076" height="192" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <rect x="484" y="868" width="44" height="16" rx="2" fill="#f5f5f5" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <text x="506" y="880" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.12em">LOOP</text>
+    <text x="536" y="880" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">[pour chaque provider × meta fenêtrée]</text>
+    <path d="M 564 904 h 28 v 20 h -24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="600" y="892" width="300" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="604" y="903" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">parent_id → préfixe harnais (idempotent)</text>
+    <line x1="564" y1="948" x2="1424" y2="948" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="656" y="906" width="400" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="856" y="919" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">build_usage(meta) : steps · tools · turns · contexte · agrégats</text>
+    <rect x="656" y="922" width="400" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="856" y="932" fill="#7a8399" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">exclusions : active &lt;10 min · advisor-title · 0 step</text>
+    <line x1="1424" y1="976" x2="568" y2="976" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#swr-a)"/>
+    <rect x="808" y="952" width="248" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="932" y="965" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">(SessionUsage | None, read_failed)</text>
+    <rect x="484" y="992" width="328" height="52" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <rect x="484" y="992" width="40" height="16" rx="2" fill="#f5f5f5" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <text x="504" y="1004" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.12em">OPT</text>
+    <text x="532" y="1008" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">[read_failed ∧ fail_on_missing_telemetry]</text>
+    <line x1="556" y1="1040" x2="136" y2="1040" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#swr-a)"/>
+    <rect x="240" y="1016" width="204" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="342" y="1029" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">return EXIT_PARTIAL (1)</text>
+
+    <!-- close finally -->
+    <line x1="564" y1="1080" x2="1424" y2="1080" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="900" y="1056" width="160" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="980" y="1069" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">close() ×N (finally)</text>
+
+    <!-- aggregation selves -->
+    <path d="M 564 1108 h 28 v 24 h -24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="600" y="1100" width="304" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="604" y="1111" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">scan_skill_catalog(project_root) → catalogue skills</text>
+    <path d="M 564 1144 h 28 v 24 h -24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="600" y="1124" width="356" height="28" rx="2" fill="#f5f5f5"/>
+    <text x="604" y="1135" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">aggregate(usages, known_parent_ids=all_ids…) → summary</text>
+    <text x="604" y="1147" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">+ _build_selection(audit) → selection (+warnings si 0 comptée)</text>
+    <path d="M 564 1180 h 28 v 24 h -24" fill="none" stroke="#eb6c36" stroke-width="1" marker-end="url(#swr-ac)"/>
+    <rect x="600" y="1160" width="356" height="28" rx="2" fill="#f5f5f5"/>
+    <text x="604" y="1171" fill="#b3541f" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">estimate_costs(usages, rates=_harness_cost_rates(cfg))</text>
+    <text x="604" y="1183" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">sessions sans aucun coût → tokens × $/Mtok harnais → cost_estimates</text>
+    <path d="M 564 1216 h 28 v 24 h -24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="600" y="1208" width="288" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="604" y="1219" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">activate_run(output_dir, date) → runs/&lt;uuid&gt;</text>
+
+    <!-- write summary -->
+    <line x1="572" y1="1244" x2="1728" y2="1244" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="880" y="1220" width="420" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="1090" y="1233" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">write_summary(runs/&lt;uuid&gt;/weekly-summary-&lt;date&gt;.json)</text>
+    <line x1="1728" y1="1272" x2="572" y2="1272" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#swr-a)"/>
+    <rect x="1032" y="1248" width="152" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="1108" y="1261" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">JSON atomique écrit</text>
+
+    <!-- final exit -->
+    <line x1="556" y1="1304" x2="136" y2="1304" stroke="#eb6c36" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#swr-ac)"/>
+    <rect x="196" y="1280" width="300" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="346" y="1293" fill="#b3541f" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">exit 0 · sinon 1 si ≥1 warning partial</text>
+
+    <!-- ===== legend ===== -->
+    <line x1="30" y1="1340" x2="1810" y2="1340" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <text x="30" y="1358" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.14em">LEGEND</text>
+    <line x1="120" y1="1355" x2="164" y2="1355" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <text x="174" y="1358" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">appel synchrone</text>
+    <line x1="330" y1="1355" x2="374" y2="1355" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#swr-a)"/>
+    <text x="384" y="1358" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">retour / réponse</text>
+    <line x1="540" y1="1355" x2="584" y2="1355" stroke="#eb6c36" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#swr-ac)"/>
+    <text x="594" y="1358" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">issue de contrôle (exit / estimation)</text>
+    <rect x="880" y="1346" width="40" height="16" rx="2" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <text x="900" y="1357" fill="#4f5d75" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.10em">ALT</text>
+    <text x="930" y="1358" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">fragment alt / opt / loop</text>
+    <rect x="1190" y="1347" width="8" height="16" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+    <text x="1208" y="1358" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">barre d'activation</text>
+    <text x="1460" y="1358" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">ids canoniques « harness:sid » partout</text>
+  </svg>
+  </figure>
+  <footer>
+    weekly-advisor-kit · reports/diagrams/sequence-weekly-run.html · généré depuis main.py run(), providers/registry.py, implementations/{opencode,claude_code}.py · design system diagram-design v2.6
+  </footer>
+</div>
+</body>
+</html>

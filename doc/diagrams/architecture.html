@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Architecture weekly-advisor-kit v6.2 — multi-harness telemetry</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #f5f5f5;
+    --ink: #2d3142;
+    --muted: #4f5d75;
+    --soft: #7a8399;
+    --accent: #eb6c36;
+    --link: #2e5aa8;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'Geist', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1680px; margin: 0 auto; padding: 3rem 2.5rem 2.5rem; }
+  header { margin-bottom: 1.75rem; }
+  .eyebrow {
+    font-family: 'Geist Mono', monospace;
+    font-size: 0.6875rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--soft);
+    margin-bottom: 0.75rem;
+  }
+  h1 {
+    font-family: 'Instrument Serif', serif;
+    font-weight: 400;
+    font-size: 2.25rem;
+    line-height: 1.15;
+    margin-bottom: 0.5rem;
+  }
+  .subtitle { color: var(--muted); font-size: 0.9375rem; max-width: 62ch; line-height: 1.5; }
+  .subtitle em { font-family: 'Instrument Serif', serif; font-style: italic; color: var(--ink); }
+  figure { overflow-x: auto; }
+  figcaption {
+    margin-top: 0.75rem;
+    font-family: 'Geist Mono', monospace;
+    font-size: 0.65rem;
+    color: var(--soft);
+    letter-spacing: 0.04em;
+  }
+  footer {
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid rgba(45,49,66,0.10);
+    font-family: 'Geist Mono', monospace;
+    font-size: 0.65rem;
+    color: var(--soft);
+    line-height: 1.8;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <p class="eyebrow">WEEKLY-ADVISOR-KIT · v6.2 · MULTI-HARNESS TELEMETRY</p>
+    <h1>Architecture du kit — moteur déterministe, enveloppe plugin, six couches</h1>
+    <p class="subtitle">Flux de bout en bout : marqueurs de harnais → résolution des cibles de draft → providers de sessions (SQLite · JSONL · chatSessions) → pipeline <em>main.run()</em> → projection harness &amp; gates → artefacts JSON et rapport. L'agent OpenCode ne pilote que l'enveloppe ; le moteur reste 100&nbsp;% déterministe.</p>
+  </header>
+
+  <figure>
+  <svg viewBox="0 0 1560 2096" width="1560" role="img" aria-labelledby="wa-arch-title wa-arch-desc" xmlns="http://www.w3.org/2000/svg">
+    <title id="wa-arch-title">Architecture weekly-advisor-kit v6.2</title>
+    <desc id="wa-arch-desc">Diagramme d'architecture en six couches : les marqueurs de harnais alimentent la résolution des cibles de draft ; trois providers lisent les sessions OpenCode (SQLite), Claude Code (JSONL) et Copilot VS Code (chatSessions + state.vscdb) derrière un protocole commun et un registre fail-soft ; le pipeline main.run() agrège usages, coûts estimés et candidats avant écriture des artefacts ; la projection harness et ses gates encadrent lint et remédiation ; l'enveloppe plugin TypeScript expose 16 tools avec gate de portabilité et commit sécurisé ; les sorties regroupent artefacts JSON, rapport HTML/Markdown et diagnostic doctor.</desc>
+
+    <defs>
+      <marker id="wa-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/>
+      </marker>
+      <marker id="wa-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/>
+      </marker>
+    </defs>
+
+    <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+    <!-- ================= ZONES (6 couches) ================= -->
+    <rect x="32" y="24" width="1496" height="208" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <rect x="48" y="28" width="356" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="56" y="37" fill="rgba(45,49,66,0.40)" font-size="7" font-family="'Geist Mono', monospace" letter-spacing="0.14em">1 · HARN AIS — MARQUEURS &amp; CIBLES DE DRAFT</text>
+
+    <rect x="32" y="248" width="1496" height="464" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <rect x="48" y="252" width="292" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="56" y="261" fill="rgba(45,49,66,0.40)" font-size="7" font-family="'Geist Mono', monospace" letter-spacing="0.14em">2 · PROVIDERS DE SESSIONS MULTI-HARN AIS</text>
+
+    <rect x="32" y="728" width="1496" height="312" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <rect x="48" y="732" width="228" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="56" y="741" fill="rgba(45,49,66,0.40)" font-size="7" font-family="'Geist Mono', monospace" letter-spacing="0.14em">3 · MOTEUR — PIPELINE MAIN.RUN()</text>
+
+    <rect x="32" y="1056" width="1496" height="320" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <rect x="48" y="1060" width="316" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="56" y="1069" fill="rgba(45,49,66,0.40)" font-size="7" font-family="'Geist Mono', monospace" letter-spacing="0.14em">4 · ÉTAPE 5 — SCOPE &amp; REMÉDIATION HARNESS</text>
+
+    <rect x="32" y="1392" width="1496" height="320" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <rect x="48" y="1396" width="264" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="56" y="1405" fill="rgba(45,49,66,0.40)" font-size="7" font-family="'Geist Mono', monospace" letter-spacing="0.14em">5 · ENVELOPPE PLUGIN TS (OPENCODE)</text>
+
+    <rect x="32" y="1728" width="1496" height="296" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <rect x="48" y="1732" width="196" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="56" y="1741" fill="rgba(45,49,66,0.40)" font-size="7" font-family="'Geist Mono', monospace" letter-spacing="0.14em">6 · SORTIES &amp; DIAGNOSTIC</text>
+
+    <!-- ================= CONNECTEURS (avant les boîtes) ================= -->
+
+    <!-- A1 -> A2 : détection marqueurs -->
+    <line x1="728" y1="148" x2="790" y2="148" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
+    <rect x="716" y="128" width="72" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="752" y="137" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">DÉTECTE</text>
+
+    <!-- T1 : A2 -> D3 (gutter droit x=1500, dashed) -->
+    <path d="M 1144,124 H 1492 Q 1500,124 1500,132 V 1264 Q 1500,1272 1492,1272 H 1432"
+          fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#wa-arrow)"/>
+    <rect x="1200" y="104" width="112" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="1256" y="113" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">CIBLES, MODE</text>
+
+    <!-- P* -> PROTO (implémente, dashed) -->
+    <line x1="480" y1="432" x2="480" y2="494" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#wa-arrow)"/>
+    <line x1="704" y1="432" x2="704" y2="494" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#wa-arrow)"/>
+    <line x1="928" y1="432" x2="928" y2="494" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#wa-arrow)"/>
+    <rect x="716" y="452" width="88" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="760" y="461" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">IMPLÉMENTE</text>
+
+    <!-- REG -> P3 (factories) -->
+    <path d="M 1216,432 V 456 Q 1216,464 1208,464 H 1000 Q 992,464 992,456 V 434"
+          fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
+    <rect x="1032" y="444" width="112" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="1088" y="453" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">FACTORIES ×N</text>
+
+    <!-- REG -> ST1 (gutter x=1476) -->
+    <path d="M 1424,376 H 1468 Q 1476,376 1476,384 V 708 Q 1476,716 1468,716 H 568 Q 560,716 560,724 V 782"
+          fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
+    <rect x="600" y="694" width="140" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="670" y="703" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">BUILD_PROVIDERS</text>
+    <rect x="572" y="700" width="176" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="660" y="709" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">build_providers(cfg)</text>
+
+    <!-- Chaîne ST1..ST6 -->
+    <line x1="536" y1="836" x2="552" y2="836" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
+    <line x1="712" y1="836" x2="728" y2="836" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
+    <line x1="888" y1="836" x2="904" y2="836" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
+    <line x1="1064" y1="836" x2="1080" y2="836" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
+    <line x1="1240" y1="836" x2="1256" y2="836" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
+
+    <!-- Trunk execFile : E1 -> ST1 (subprocess externe, bleu link) -->
+    <path d="M 384,1544 H 264 Q 256,1544 256,1536 V 1008 Q 256,1000 264,1000 H 552 Q 560,1000 560,992 V 890"
+          fill="none" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#wa-arrow-link)"/>
+    <rect x="272" y="978" width="80" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="312" y="987" fill="#2e5aa8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">EXECFILE</text>
+    <rect x="280" y="1008" width="260" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="410" y="1017" fill="#2e5aa8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">python -m weekly_telemetry_aggregator</text>
+
+    <!-- E1 -> D1 (weekly_harness) -->
+    <line x1="416" y1="1440" x2="416" y2="1226" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
+    <rect x="428" y="1326" width="152" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="504" y="1335" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">WEEKLY_HARNESS</text>
+
+    <!-- D1 -> D2 baseline -->
+    <line x1="904" y1="1172" x2="950" y2="1172" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
+    <rect x="884" y="1152" width="80" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="924" y="1161" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">BASELINE</text>
+
+    <!-- D3 -> D4 surface -->
+    <line x1="952" y1="1300" x2="906" y2="1300" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
+    <rect x="900" y="1280" width="72" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="936" y="1289" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">SURFACE</text>
+
+    <!-- E1 -> EG scan -->
+    <line x1="1024" y1="1528" x2="1070" y2="1528" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
+    <rect x="1012" y="1508" width="52" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="1038" y="1517" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">SCAN</text>
+
+    <!-- EG -> EC verdict -->
+    <path d="M 1248,1608 V 1620 Q 1248,1628 1240,1628 H 908 Q 900,1628 900,1636 V 1640"
+          fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
+    <rect x="1010" y="1606" width="64" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="1042" y="1615" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">VERDICT</text>
+
+    <!-- E1 -> EC commit-draft -->
+    <line x1="416" y1="1608" x2="416" y2="1640" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
+    <rect x="430" y="1614" width="120" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="490" y="1623" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">COMMIT-DRAFT</text>
+
+    <!-- ST6 -> FALL artefacts (gutter droit x=1452) -->
+    <path d="M 1416,836 H 1444 Q 1452,836 1452,844 V 1768 Q 1452,1776 1444,1776 H 712 Q 704,1776 704,1784 V 1790"
+          fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
+    <rect x="1024" y="1754" width="128" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="1088" y="1763" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">ARTEFACTS JSON</text>
+
+    <!-- FALL -> F3 summary -->
+    <line x1="1024" y1="1856" x2="1070" y2="1856" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
+    <rect x="1012" y="1836" width="76" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="1050" y="1845" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">SUMMARY</text>
+
+    <!-- ================= NŒUDS ================= -->
+
+    <!-- Bande 1 -->
+    <g>
+      <rect x="384" y="96" width="344" height="104" rx="6" fill="#f5f5f5"/>
+      <rect x="384" y="96" width="344" height="104" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="392" y="102" width="52" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.5)" stroke-width="0.8"/>
+      <text x="418" y="111" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">INPUT</text>
+      <text x="556" y="134" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Marqueurs projet utilisateur</text>
+      <text x="556" y="154" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">.claude/ · .opencode/</text>
+      <text x="556" y="170" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">.github/prompts/ · .github/skills/ · .agents/</text>
+      <text x="556" y="186" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">racine du projet audité</text>
+    </g>
+    <g>
+      <rect x="792" y="96" width="344" height="104" rx="6" fill="#f5f5f5"/>
+      <rect x="792" y="96" width="344" height="104" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="800" y="102" width="64" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="832" y="111" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">MODULE</text>
+      <text x="964" y="130" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Résolution cibles de draft</text>
+      <text x="964" y="150" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">draft_targets.py</text>
+      <text x="964" y="166" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">claude-code &gt; opencode &gt; copilot-vscode &gt; codex</text>
+      <text x="964" y="182" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">override · detected · default · legacy ([])</text>
+    </g>
+
+    <!-- Bande 2 : providers (rangée 1) + protocole (barre pleine largeur) -->
+    <g>
+      <rect x="384" y="304" width="192" height="128" rx="6" fill="#f5f5f5"/>
+      <rect x="384" y="304" width="192" height="128" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="392" y="310" width="64" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="424" y="319" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PROVIDER</text>
+      <text x="480" y="340" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">OpenCode</text>
+      <text x="480" y="356" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">SessionProvider</text>
+      <text x="480" y="378" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">detect_db → base</text>
+      <text x="480" y="394" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">SQLite locale</text>
+      <text x="480" y="412" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">sessions · parts · v2</text>
+    </g>
+    <g>
+      <rect x="608" y="304" width="192" height="128" rx="6" fill="#f5f5f5"/>
+      <rect x="608" y="304" width="192" height="128" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="616" y="310" width="64" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="648" y="319" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PROVIDER</text>
+      <text x="704" y="340" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Claude Code</text>
+      <text x="704" y="356" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">SessionProvider</text>
+      <text x="704" y="378" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">~/.claude/projects/</text>
+      <text x="704" y="394" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">&lt;cwd-mungé&gt;/&lt;sid&gt;.jsonl</text>
+      <text x="704" y="412" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">1 fichier = 1 session · JSONL</text>
+    </g>
+    <g>
+      <rect x="832" y="304" width="192" height="128" rx="6" fill="#f5f5f5"/>
+      <rect x="832" y="304" width="192" height="128" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="840" y="310" width="64" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="872" y="319" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PROVIDER</text>
+      <text x="928" y="340" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Copilot VS Code</text>
+      <text x="928" y="356" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">SessionProvider</text>
+      <text x="928" y="378" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">workspaceStorage/&lt;hash&gt;/</text>
+      <text x="928" y="394" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">chatSessions/&lt;uuid&gt;.json</text>
+      <text x="928" y="412" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">+ state.vscdb opt. (SQLite)</text>
+    </g>
+    <g>
+      <rect x="1088" y="304" width="336" height="128" rx="6" fill="#f5f5f5"/>
+      <rect x="1088" y="304" width="336" height="128" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="1096" y="310" width="68" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="1130" y="319" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">REGISTRE</text>
+      <text x="1256" y="342" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Registry auto-discovery — registry.py</text>
+      <text x="1256" y="362" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">scan pkgutil providers/implementations/</text>
+      <text x="1256" y="378" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">PROVIDER_TYPE + build_provider(source_cfg, cfg)</text>
+      <text x="1256" y="394" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">fail-soft : type inconnu / source absente → warning + skip</text>
+      <text x="1256" y="410" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">0 source active → repli OpenCode locale (detect_db)</text>
+    </g>
+    <g>
+      <rect x="384" y="496" width="1040" height="112" rx="6" fill="#f5f5f5"/>
+      <rect x="384" y="496" width="1040" height="112" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="392" y="502" width="68" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="426" y="511" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PROTOCOLE</text>
+      <text x="904" y="530" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">SessionProvider — protocole commun multi-harnais (base.py)</text>
+      <text x="904" y="550" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">attribut harness + 11 méthodes : listes de sessions, agrégats, transcript, close()</text>
+      <text x="904" y="568" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">id canonique namespacé &lt;harness&gt;:&lt;id&gt; — opencode: · claude-code: · copilot-vscode:</text>
+      <text x="904" y="586" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">dédup entre sources du même harnais : première entrée session_sources gagne (W2), UserWarning récap → summary.warnings</text>
+    </g>
+
+    <!-- Bande 3 : stages -->
+    <g>
+      <rect x="384" y="784" width="152" height="104" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="392" y="790" width="44" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="414" y="799" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">1/6</text>
+      <text x="460" y="822" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Fusion listes</text>
+      <text x="460" y="838" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">+ all_ids</text>
+      <text x="460" y="858" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">list_sessions,</text>
+      <text x="460" y="872" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">univers connu</text>
+    </g>
+    <g>
+      <rect x="560" y="784" width="152" height="104" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="568" y="790" width="44" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="590" y="799" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">2/6</text>
+      <text x="636" y="822" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">build_usage</text>
+      <text x="636" y="842" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">parts → SessionUsage</text>
+      <text x="636" y="858" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">cross-check coût</text>
+      <text x="636" y="872" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">parts vs session_v2</text>
+    </g>
+    <g>
+      <rect x="736" y="784" width="152" height="104" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="744" y="790" width="44" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="766" y="799" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">3/6</text>
+      <text x="812" y="822" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">aggregate()</text>
+      <text x="812" y="842" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">Period · totaux</text>
+      <text x="812" y="858" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">warnings récap</text>
+      <text x="812" y="874" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">orphelins tracés</text>
+    </g>
+    <g>
+      <rect x="912" y="784" width="152" height="104" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="920" y="790" width="44" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="942" y="799" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">4/6</text>
+      <text x="988" y="822" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Candidats</text>
+      <text x="988" y="838" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">+ insights</text>
+      <text x="988" y="858" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">audit_max_sessions</text>
+      <text x="988" y="874" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">sélection plafonnée</text>
+    </g>
+    <g>
+      <rect x="1088" y="784" width="152" height="104" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="1096" y="790" width="44" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="1118" y="799" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">5/6</text>
+      <text x="1164" y="822" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">estimate_costs</text>
+      <text x="1164" y="842" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">tokens × taux $/Mtok</text>
+      <text x="1164" y="858" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">5.0 défaut · 9.0 opencode</text>
+      <text x="1164" y="872" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">2.5 copilot-vscode</text>
+    </g>
+    <g>
+      <rect x="1264" y="784" width="152" height="104" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="1272" y="790" width="44" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="1294" y="799" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">6/6</text>
+      <text x="1340" y="822" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">writer</text>
+      <text x="1340" y="838" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">write_summary</text>
+      <text x="1340" y="858" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">activate_run() uuid</text>
+      <text x="1340" y="874" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">EXIT 0 · 1 partiel · 2 fatal</text>
+    </g>
+    <text x="904" y="948" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">cfg : weekly-telemetry-config.json (TelemetryConfig, relue à chaque appel) · déterministe — zéro LLM sur les étapes chiffrées</text>
+
+    <!-- Bande 4 -->
+    <g>
+      <rect x="384" y="1120" width="520" height="104" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="392" y="1126" width="60" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="422" y="1135" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">MODULE</text>
+      <text x="644" y="1154" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Projection temporaire allowlistée — harness_scope.py</text>
+      <text x="644" y="1176" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">copy2 zéro symlink · réel-gagne en collision</text>
+      <text x="644" y="1192" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">orphelins tracés dans harness_include.unscoped_files · remap chemins digest</text>
+    </g>
+    <g>
+      <rect x="952" y="1120" width="472" height="104" rx="6" fill="#f5f5f5"/>
+      <rect x="952" y="1120" width="472" height="104" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="960" y="1126" width="56" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.5)" stroke-width="0.8"/>
+      <text x="988" y="1135" fill="#4f5d75" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">STORE</text>
+      <text x="1188" y="1158" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">weekly-harness-baseline.json</text>
+      <text x="1188" y="1178" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">racine output_dir · status created | reused</text>
+      <text x="1188" y="1194" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">jamais réécrite après le premier run</text>
+    </g>
+    <g>
+      <rect x="384" y="1248" width="520" height="104" rx="6" fill="#f5f5f5"/>
+      <rect x="384" y="1248" width="520" height="104" rx="6" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.5)" stroke-width="1" stroke-dasharray="4,3"/>
+      <rect x="392" y="1254" width="40" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.5)" stroke-width="0.8"/>
+      <text x="412" y="1263" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">GATE</text>
+      <text x="644" y="1286" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">harness_remediation — gates d'application</text>
+      <text x="644" y="1306" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">dry-run par défaut · apply uniquement après toutes les gates</text>
+      <text x="644" y="1322" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">aucun commit automatique · invariant : jamais appliqué sans gate</text>
+    </g>
+    <g>
+      <rect x="952" y="1248" width="472" height="104" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="960" y="1254" width="64" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="992" y="1263" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PURE FN</text>
+      <text x="1188" y="1286" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">resolve_remediation_surface</text>
+      <text x="1188" y="1306" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">projection | portability | combined</text>
+      <text x="1188" y="1322" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">entrée pure (harnais, mode) — aucune lecture disque</text>
+    </g>
+
+    <!-- Bande 5 -->
+    <g>
+      <rect x="384" y="1440" width="640" height="168" rx="6" fill="#f5f5f5"/>
+      <rect x="384" y="1440" width="640" height="168" rx="6" fill="rgba(235,108,54,0.10)" stroke="#eb6c36" stroke-width="1"/>
+      <rect x="392" y="1446" width="76" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.5)" stroke-width="0.8"/>
+      <text x="430" y="1455" fill="rgba(235,108,54,0.9)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PLUGIN TS</text>
+      <text x="704" y="1478" fill="#2d3142" font-size="13" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">weekly-advisor.ts — enveloppe 16 tools weekly_*</text>
+      <text x="704" y="1498" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">ancre glissante anchor-last.txt : lue / créée / rafraîchie dans &lt;output_dir&gt;</text>
+      <text x="704" y="1516" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">run · releases · watch-context · watch-validate · audit-candidates · show-session</text>
+      <text x="704" y="1532" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">draft-candidates · commit-draft · harness · harness-remediate · insights</text>
+      <text x="704" y="1548" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">report-prep · report-blocks-draft · report-assemble · self-cost · doctor</text>
+      <text x="704" y="1570" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">zéro logique métier : 1 tool = 1 sous-commande CLI du moteur · venv .venv/bin/python</text>
+      <text x="704" y="1586" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">export default WeeklyAdvisorPlugin (loader opencode v1.18+) · PYTHONUTF8=1</text>
+    </g>
+    <g>
+      <rect x="1072" y="1440" width="352" height="168" rx="6" fill="#f5f5f5"/>
+      <rect x="1072" y="1440" width="352" height="168" rx="6" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.5)" stroke-width="1" stroke-dasharray="4,3"/>
+      <rect x="1080" y="1446" width="40" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.5)" stroke-width="0.8"/>
+      <text x="1100" y="1455" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">GATE</text>
+      <text x="1248" y="1478" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Gate de portabilité</text>
+      <text x="1248" y="1496" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">runPortabilityGate → harness-eval skill-verify</text>
+      <text x="1248" y="1512" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">cwd = worktree · règles custom/portability/*</text>
+      <text x="1248" y="1528" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">findings[].details[] · severity error | warning</text>
+      <text x="1248" y="1546" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">ENOENT binaire → gate ignorée ⚠ fail-soft (note)</text>
+      <text x="1248" y="1562" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">scan sur copie tmp de l'artefact seul (mkdtemp)</text>
+    </g>
+    <g>
+      <rect x="384" y="1640" width="640" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="384" y="1640" width="640" height="56" rx="6" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.5)" stroke-width="1" stroke-dasharray="4,3"/>
+      <rect x="392" y="1646" width="40" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.5)" stroke-width="0.8"/>
+      <text x="412" y="1655" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">GATE</text>
+      <text x="704" y="1664" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Safe Git Commit Gate — safe_git_write.py</text>
+      <text x="704" y="1682" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">commit-draft : pré-checks git · 1 commit par écriture · scoped à .opencode/ du worktree</text>
+    </g>
+
+    <!-- Bande 6 -->
+    <g>
+      <rect x="384" y="1792" width="640" height="128" rx="6" fill="#f5f5f5"/>
+      <rect x="384" y="1792" width="640" height="128" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="392" y="1798" width="180" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.5)" stroke-width="0.8"/>
+      <text x="482" y="1807" fill="#4f5d75" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">RUNS/&lt;DATE&gt;-&lt;UUID8&gt;/ · CURRENT</text>
+      <text x="704" y="1830" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">output_dir — artefacts JSON reproductibles</text>
+      <text x="704" y="1850" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">weekly-summary · ecosystem · watch-context · watch-findings</text>
+      <text x="704" y="1866" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">audit-candidates · draft-candidates · harness-digest · insights</text>
+      <text x="704" y="1884" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">extraits show-session dans runs/current/extracts/ · anchor-last.txt</text>
+      <text x="704" y="1900" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">baseline harness au niveau output_dir (voir couche 4)</text>
+    </g>
+    <g>
+      <rect x="1072" y="1792" width="352" height="128" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="1080" y="1798" width="76" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="1118" y="1807" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">RENDERER</text>
+      <text x="1248" y="1830" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">HTML Report Renderer</text>
+      <text x="1248" y="1850" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">html_report.py · report.py</text>
+      <text x="1248" y="1866" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">prep → blocks-draft → assemble</text>
+      <text x="1248" y="1884" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">weekly-report-&lt;date&gt;.md + rendu HTML</text>
+      <text x="1248" y="1900" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">assemble consomme le draft (⚠)</text>
+    </g>
+    <g>
+      <rect x="1072" y="1944" width="352" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="1080" y="1950" width="36" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="1098" y="1959" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CLI</text>
+      <text x="1248" y="1959" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">doctor — diagnostic kit</text>
+      <text x="1248" y="1977" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">exit 0 sources OK · exit 2 aucune source</text>
+      <text x="1248" y="1993" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">[name] OK (chemin, migrations=n) · itère les providers</text>
+    </g>
+
+    <!-- ================= LÉGENDE ================= -->
+    <line x1="30" y1="2040" x2="1530" y2="2040" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <text x="30" y="2058" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LÉGENDE</text>
+    <g font-family="'Geist Mono', monospace" font-size="8" fill="#4f5d75">
+      <rect x="120" y="2048" width="20" height="12" rx="2" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="0.8"/>
+      <text x="148" y="2058">marqueur / entrée</text>
+      <rect x="290" y="2048" width="20" height="12" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="0.8"/>
+      <text x="318" y="2058">module / étape moteur</text>
+      <rect x="500" y="2048" width="20" height="12" rx="2" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="0.8"/>
+      <text x="528" y="2058">store / artefact JSON</text>
+      <rect x="700" y="2048" width="20" height="12" rx="2" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.5)" stroke-width="0.8" stroke-dasharray="3,2"/>
+      <text x="728" y="2058">gate fail-soft / sécurité</text>
+      <rect x="910" y="2048" width="20" height="12" rx="2" fill="rgba(235,108,54,0.10)" stroke="#eb6c36" stroke-width="0.8"/>
+      <text x="938" y="2058">enveloppe focale (TS)</text>
+      <line x1="1100" y1="2054" x2="1140" y2="2054" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
+      <text x="1150" y="2058">flux données</text>
+    </g>
+    <g font-family="'Geist Mono', monospace" font-size="8" fill="#4f5d75">
+      <line x1="1268" y1="2054" x2="1308" y2="2054" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#wa-arrow)"/>
+      <text x="1318" y="2058">config / optionnel</text>
+      <line x1="1440" y1="2054" x2="1480" y2="2054" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#wa-arrow-link)"/>
+      <text x="1490" y="2058">subprocess</text>
+    </g>
+  </svg>
+  <figcaption>Six couches verticales · formats annotés (SQLite · JSONL · chatSessions JSON + state.vscdb · artefacts JSON) · trunks latéraux = appels inter-couches.</figcaption>
+  </figure>
+
+  <footer>
+    Sources : ARCHITECTURE.md · graphify-out/GRAPH_REPORT.md · .opencode/plugins/weekly-advisor.ts · weekly_telemetry_aggregator/{main,draft_targets,harness_scope,providers/*}.py — génération 2026-08-23.
+    Écarts vs consigne : modes réels = override·detected·default·legacy (« auto » = alias config) ; html_report n'est pas dans main.run() (pipeline report) ; Copilot = chatSessions JSON + state.vscdb optionnel.
+  </footer>
+</div>
+</body>
+</html>
