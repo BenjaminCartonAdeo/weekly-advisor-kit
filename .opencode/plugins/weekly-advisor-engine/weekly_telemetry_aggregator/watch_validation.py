@@ -4,7 +4,8 @@ The watch review is an LLM step, so its raw JSON is not treated as a trusted
 final artefact.  This module validates one raw findings snapshot against the
 dated watch context produced for the same run.  It intentionally reads no
 OpenCode configuration, telemetry, logs, network resource, or previous final
-findings file: the two arguments are the complete input to the validation.
+findings file: the two positional arguments plus the optional keyword-only
+v7 inputs below are the complete input to the validation.
 
 The functions return JSON-compatible values and do not keep process or
 cross-run state.  This makes the validator useful both from the CLI and from
@@ -423,8 +424,10 @@ def _validate_one_finding(
         validated["confidence"] = "low" if state == "unknown" else "medium"
 
     if suspicious_reasons is not None:
-        reason = suspicious_reasons.get(_subject_memory_id(subject))
-        if reason is not None and not _mentions_risk(validated, reason):
+        fid = _subject_memory_id(subject)
+        # Appartenance (pas .get() is not None) : une fiche suspicious SANS
+        # raison atteint _mentions_risk(None) → False → relèvement conservateur.
+        if fid in suspicious_reasons and not _mentions_risk(validated, suspicious_reasons[fid]):
             validated["severity"] = "high"
     return validated, None, downgraded, market_match is not None
 

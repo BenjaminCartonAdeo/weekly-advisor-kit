@@ -357,6 +357,20 @@ def test_suspicious_fiche_without_risk_mention_raises_severity_high(tmp_path: Pa
     assert second["severity"] == "medium"
 
 
+def test_suspicious_fiche_without_reason_key_raises_severity_high(tmp_path: Path) -> None:
+    sketchy = _fiche("npm:sketchy-tool", verdict="suspicious")
+    del sketchy["security"]["reason"]  # clé absente, pas seulement None
+    candidates_path = _write_candidates(tmp_path, _candidates_payload(sketchy))
+    raw = {"findings": [_finding(subject={"name": "sketchy-tool", "npm_package": "sketchy-tool"})]}
+    context = _context(
+        {"name": "sketchy-tool", "npm_package": "sketchy-tool", "existing_state": "absent"}
+    )
+
+    result = validate_findings(raw, context, candidates_path=candidates_path)
+
+    assert result["findings"][0]["severity"] == "high"
+
+
 # ---------------------------------------------------------- annexe sécurité
 
 
