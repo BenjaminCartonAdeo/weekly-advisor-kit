@@ -15,6 +15,8 @@ from pathlib import Path
 from .draft_targets import DRAFT_TARGET_PRIORITY, MODE_AUTO, MODE_LEGACY
 from .models import OUTLIER_MIN_SESSIONS
 from .util import _abs
+from .watch_distill import DEFAULT_WEIGHTS as WATCH_DEFAULT_WEIGHTS
+from .watch_distill import QUOTAS as WATCH_QUOTAS
 
 DEFAULT_CONFIG_NAME = "weekly-telemetry-config.json"
 
@@ -107,6 +109,23 @@ class DraftTargetsConfig:
 
 
 @dataclass(slots=True)
+class WatchDistillConfig:
+    """Étape 2.2 distill déterministe — quotas, poids, mémoire inter-run.
+
+    ``memory_file`` est relatif à ``output_dir`` (la mémoire survit aux runs) ;
+    ``min_candidates`` est le seuil de déclenchement du filet B côté skill 3.5.
+    """
+
+    enabled: bool = True
+    top_n: int = 30
+    quotas: dict[str, int] = field(default_factory=lambda: dict(WATCH_QUOTAS))
+    weights: dict[str, int] = field(default_factory=lambda: dict(WATCH_DEFAULT_WEIGHTS))
+    memory_file: str = "watch-memory.jsonl"
+    retention_weeks: int = 26
+    min_candidates: int = 20
+
+
+@dataclass(slots=True)
 class HarnessIncludeConfig:
     """Allowlist profiles used to build the temporary harness projection."""
 
@@ -194,8 +213,10 @@ class TelemetryConfig:
     audit: AuditConfig = field(default_factory=AuditConfig)
     insights: InsightsConfig = field(default_factory=InsightsConfig)
     #: cibles de drafting mono-cible (cellule 2.1) — clé absente = auto
-    #: (détection marqueurs), [] = legacy, liste non vide = override.
+    #: (détection par marqueurs), [] = legacy, liste non vide = override.
     draft_targets: DraftTargetsConfig = field(default_factory=DraftTargetsConfig)
+    #: veille — distill déterministe (étape 2.2) : quotas, poids, mémoire.
+    watch_distill: WatchDistillConfig = field(default_factory=WatchDistillConfig)
 
     def window_hours(self) -> float:
         return self.lookback_days * 24.0
@@ -361,11 +382,25 @@ def _parse(p: Path) -> TelemetryConfig:
         )
     cfg.release_keywords = [str(x) for x in raw.get("release_keywords", cfg.release_keywords)]
     cfg.watch_repos = [str(x) for x in raw.get("watch_repos", cfg.watch_repos)]
-    cfg.watch = [
-        {"type": str(w.get("type", "repo")), "name": str(w.get("name", ""))}
-        for w in raw.get("watch", [])
-        if isinstance(w, dict) and w.get("name")
-    ]
+    cfg.watch = []
+    for entry in raw.get("watch", []):
+        if not isinstance(entry, dict) or not entry.get("name"):
+            continue
+        watch_entry = {"type": str(entry.get("type", "repo")), "name": str(entry.get("name", ""))}
+        if watch_entry["type"] == "radar":
+            # clés propres au type radar (Task 4) — sources déclaratives uniquement.
+            if entry.get("tool"):
+                watch_entry["tool"] = str(entry["tool"])
+            if entry.get("rss_fallback"):
+                watch_entry["rss_fallback"] = str(entry["rss_fallback"])
+            window_days = entry.get("window_days")
+            if (
+                isinstance(window_days, int)
+                and not isinstance(window_days, bool)
+                and window_days >= 1
+            ):
+                watch_entry["window_days"] = window_days
+        cfg.watch.append(watch_entry)
     # rétrocompat : watch_repos → entrées type repo (dédupliquées)
     for repo in cfg.watch_repos:
         if not any(w["name"] == repo for w in cfg.watch):
@@ -431,4 +466,44 @@ def _parse(p: Path) -> TelemetryConfig:
     cfg.insights.cache_write_zero_runs = int(
         ins.get("cache_write_zero_runs", cfg.insights.cache_write_zero_runs)
     )
+
+    # Distill déterministe (étape 2.2) — style fail-soft : clé absente/mal
+    # formée → défauts conservés ; valeurs hors type/hors bornes ignorées.
+    wds = raw.get("watch_distill")
+    if isinstance(wds, dict):
+        wd_cfg = cfg.watch_distill
+        if isinstance(wds.get("enabled"), bool):
+            wd_cfg.enabled = wds["enabled"]
+        top_n = wds.get("top_n")
+        if isinstance(top_n, int) and not isinstance(top_n, bool) and top_n >= 1:
+            wd_cfg.top_n = top_n
+        quotas_raw = wds.get("quotas")
+        if isinstance(quotas_raw, dict):
+            for cat in WATCH_QUOTAS:
+                value = quotas_raw.get(cat)
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    wd_cfg.quotas[cat] = value
+        weights_raw = wds.get("weights")
+        if isinstance(weights_raw, dict):
+            for key in WATCH_DEFAULT_WEIGHTS:
+                value = weights_raw.get(key)
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    wd_cfg.weights[key] = value
+        memory_file = wds.get("memory_file")
+        if isinstance(memory_file, str) and memory_file.strip():
+            wd_cfg.memory_file = memory_file
+        retention_weeks = wds.get("retention_weeks")
+        if (
+            isinstance(retention_weeks, int)
+            and not isinstance(retention_weeks, bool)
+            and retention_weeks >= 1
+        ):
+            wd_cfg.retention_weeks = retention_weeks
+        min_candidates = wds.get("min_candidates")
+        if (
+            isinstance(min_candidates, int)
+            and not isinstance(min_candidates, bool)
+            and min_candidates >= 0
+        ):
+            wd_cfg.min_candidates = min_candidates
     return cfg

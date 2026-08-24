@@ -354,6 +354,17 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
         120_000,
       ),
 
+      weekly_watch_distill: anchorTool(
+        "Étape 2.2 : distillation déterministe de l'écosystème vers ~30 fiches candidates " +
+          "(scoring, screening sécurité, mémoire inter-run). " +
+          "Écrit watch-candidates-<date>.json et watch-memory-digest-<date>.json. " +
+          "SÉQUENTIEL : exécuter après weekly_releases, avant weekly_watch_context ; " +
+          "exit 2 = écosystème absent ou étape désactivée (config watch_distill.enabled) — " +
+          "dégradation attendue, le flux aval retombe sur l'écosystème complet.",
+        (anchor) => ["watch-distill", "--anchor", anchor],
+        120_000,
+      ),
+
       weekly_watch_validate: anchorTool(
         "Étape 3.6 : valide les findings bruts de la veille contre l'inventaire déterministe. " +
           "Écrit weekly-watch-findings-<date>.json.",

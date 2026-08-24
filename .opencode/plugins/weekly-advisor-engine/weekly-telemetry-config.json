@@ -82,6 +82,15 @@
     "lint_coverage_min": 0.7
   },
   "watch_repos": [],
+  "watch_distill": {
+    "enabled": true,
+    "top_n": 30,
+    "quotas": { "new": 12, "improvable": 8, "resurfaced": 5 },
+    "weights": { "authority": 25, "relevance": 30, "freshness": 20, "multi_source": 15, "traction": 10 },
+    "memory_file": "watch-memory.jsonl",
+    "retention_weeks": 26,
+    "min_candidates": 20
+  },
   "watch": [
     {
       "type": "repo",
@@ -130,6 +139,25 @@
     {
       "type": "rss",
       "name": "https://simonwillison.net/atom/everything/"
+    },
+    {
+      "type": "repo",
+      "name": "github/copilot-cli"
+    },
+    {
+      "type": "repo",
+      "name": "openai/codex"
+    },
+    {
+      "type": "repo",
+      "name": "google-gemini/gemini-cli"
+    },
+    {
+      "type": "radar",
+      "name": "agents-radar",
+      "tool": "get_latest",
+      "window_days": 7,
+      "rss_fallback": "https://agents-radar.duanyytop.workers.dev/feed.xml"
     }
   ]
 }

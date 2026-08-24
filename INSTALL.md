@@ -79,6 +79,30 @@ Toutes les autres clés ont des défauts raisonnables (fenêtre 7 j, budgets, se
 veille `watch`). `~` est supporté des deux côtés — le moteur Python (`expanduser()`)
 et le plugin TS (`os.homedir()`) l'expandent avec la même sémantique ; un chemin
 absolu reste recommandé. Personnalisez `watch` (sources de veille) et les budgets selon votre usage.
+veille `watch`). Personnalisez `watch` (sources de veille) et les budgets selon votre usage.
+
+#### Veille : `watch_distill` (étape 2.2) et sources radar
+
+La clé `watch_distill` pilote la **distillation déterministe** de l'écosystème
+(étape 2.2) — valeurs commitées par défaut :
+
+| Sous-clé | Rôle | Défaut |
+|---|---|---|
+| `enabled` | `false` → étape sautée (exit 2, le flux aval retombe sur l'écosystème complet) | `true` |
+| `top_n` | Nombre max de fiches candidates écrites | `30` |
+| `quotas` | Répartition `{new, improvable, resurfaced}` des fiches | `{12, 8, 5}` |
+| `weights` | Poids du scoring (`authority, relevance, freshness, multi_source, traction`) | `{25, 30, 20, 15, 10}` |
+| `memory_file` | Mémoire inter-run (JSONL), chemin relatif à `output_dir` | `watch-memory.jsonl` |
+| `retention_weeks` | Purge mémoire au-delà de N semaines | `26` |
+| `min_candidates` | Seuil sous lequel la skill 3.5 déclenche le filet B (phase 0) | `20` |
+
+Les fiches bloquées sécurité ne sont jamais soumises au LLM : elles vivent dans
+l'**annexe sécurité** du findings final (écrite par `watch-validate`, étape 3.6).
+
+Une entrée `"type": "radar"` dans `watch` interroge un serveur MCP déclaré dans
+le fichier `opencode.json` **à la racine du projet** (clé `mcp.<name>.url`) —
+le kit est livré avec `agents-radar` déjà déclaré ; sans cette déclaration, la
+source se dégrade en warning avec repli RSS (`rss_fallback`).
 Le profil `strict` limite le lint aux surfaces de politique et aux entrypoints de
 plugins ; `advisory` ajoute `.opencode/skills/**/SKILL.md`, leurs références et leurs
 exemples. Les chemins sont toujours relatifs au projet et la projection est temporaire.
@@ -132,7 +156,7 @@ run cron (mesuré v5.32).
 
 ```sh
 cd .opencode/plugins/weekly-advisor-engine
-uv run python -m pytest -q     # 436 tests — tout doit passer
+uv run python -m pytest -q     # 517 tests — tout doit passer
 cd ../../..
 opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"
@@ -151,7 +175,7 @@ opencode run --port 4097 --agent weekly-advisor --model <votre-modèle> \
     --dir . "Lance la revue hebdomadaire"
 ```
 
-- Durée : 30-45 min (12 étapes ; `weekly_harness` ≈ 100 s à elle seule)
+- Durée : 30-45 min (ordre figé en 17 étapes ; `weekly_harness` ≈ 100 s à elle seule)
 - Artefact attendu : le **rapport HTML** `<project_root>/reports/html/weekly-report-<date>.html`
   (+ `weekly-report-latest.html`) — il s'ouvre automatiquement dans votre navigateur ;
   l'archive `<output_dir>/runs/current/weekly-report-<date>.md` (alias stable `runs/current/`)

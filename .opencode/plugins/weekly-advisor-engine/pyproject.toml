@@ -31,7 +31,10 @@ weekly_telemetry_aggregator = ["templates/*.j2"]
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
-markers = ["integration: tests against a live local OpenCode instance (skipped by default)"]
+markers = [
+    "integration: tests against a live local OpenCode instance (skipped by default)",
+    "slow: budget/e2e assertions on the golden fixture (deselect with -m 'not slow')",
+]
 
 [tool.ruff]
 line-length = 100

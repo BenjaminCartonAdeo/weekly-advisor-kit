@@ -34,7 +34,7 @@ def summary_to_dict(summary: WeeklySummary) -> dict:
     return data
 
 
-def write_json_atomic(path: Path, data: dict) -> None:
+def write_json_atomic(path: Path, data: dict, *, indent: int | None = 2) -> None:
     """Write JSON atomically: temp file in the same directory + os.replace.
 
     The spec imposes this recipe: an `open(cible, "w")` writes directly to the
@@ -43,7 +43,7 @@ def write_json_atomic(path: Path, data: dict) -> None:
     .tmp in the same directory (never /tmp).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    payload = json.dumps(data, indent=indent, ensure_ascii=False) + "\n"
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
