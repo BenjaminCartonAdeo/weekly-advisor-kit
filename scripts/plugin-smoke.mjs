@@ -145,8 +145,9 @@ for (const [name, cmd] of [
   )
 }
 
-// 7. watch context/validation : ancre propagée et tools exposés
+// 7. watch distill/context/validation : ancre propagée et tools exposés
 for (const [name, cmd] of [
+  ["weekly_watch_distill", "watch-distill"],
   ["weekly_watch_context", "watch-context"],
   ["weekly_watch_validate", "watch-validate"],
 ]) {
