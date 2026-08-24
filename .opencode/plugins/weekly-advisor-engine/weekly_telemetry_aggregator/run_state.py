@@ -24,6 +24,7 @@ RUNS_DIR = "runs"
 RUN_STATE_FILE = "run_state.json"
 CURRENT_SYMLINK = "current"
 STATE_SCHEMA_VERSION = 1
+_WARNED_REAL_CURRENT = False  # warning "current réel" : une seule fois par process
 
 _LAYOUT_README = """# reports/ — layout du pipeline `weekly-advisor`
 
@@ -58,6 +59,9 @@ def activate_run(output_dir: Path, date: str, run_time: datetime) -> ActiveRun:
     run_id = f"{date}-{uuid.uuid4().hex[:8]}"
     run_dir = runs_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=False)  # uuid ⇒ never pre-exists
+    #: alias matérialisé IMMÉDIatement à la naissance du run dir (v6.2) —
+    #: les artefacts intermédiaires résolvent `runs/current` dès la première écriture.
+    _update_current_link(output_dir, run_dir)
     state = {
         "schema_version": STATE_SCHEMA_VERSION,
         "run_id": run_id,
@@ -70,7 +74,6 @@ def activate_run(output_dir: Path, date: str, run_time: datetime) -> ActiveRun:
     _write_ok(output_dir / RUN_STATE_FILE, state)
     _migrate_legacy_root(output_dir, run_dir)
     _ensure_layout_readme(output_dir)
-    _update_current_link(output_dir, run_dir)
     return ActiveRun(run_id=run_id, run_date=date, run_dir=run_dir)
 
 
@@ -130,14 +133,34 @@ def _write_ok(path: Path, data: dict) -> None:
 
 
 def _update_current_link(output_dir: Path, run_dir: Path) -> None:
-    """Refresh ``<output_dir>/current`` → run_dir; best-effort (no error raised)."""
-    link = output_dir / CURRENT_SYMLINK
+    """Refresh ``<output_dir>/runs/current`` → run_dir; best-effort (no error raised).
+
+    Mécanique atomique (recette writer.py) : symlink temporaire + ``os.replace`` —
+    jamais de fenêtre sans alias, et un alias préexistant (cassé ou pointant
+    ailleurs) est remplacé en une opération. Si ``current`` existe comme entrée
+    réelle (répertoire/fichier), warning + intact. Filesystems sans support
+    symlink (Windows non privilégié) : OSError silencieux, la résolution passe
+    toujours par ``run_state.json``.
+    """
+    link = output_dir / RUNS_DIR / CURRENT_SYMLINK
+    tmp_link = output_dir / RUNS_DIR / f".{CURRENT_SYMLINK}.tmp-{uuid.uuid4().hex[:8]}"
+    global _WARNED_REAL_CURRENT
     try:
-        if link.is_symlink() or link.exists():
-            link.unlink()
-        link.symlink_to(run_dir, target_is_directory=True)
+        if link.exists() and not link.is_symlink():
+            if not _WARNED_REAL_CURRENT:
+                print(
+                    f"run_state: {RUNS_DIR}/{CURRENT_SYMLINK} existe déjà comme "
+                    "répertoire réel — alias non remplacé",
+                    flush=True,
+                )
+                _WARNED_REAL_CURRENT = True
+            return
+        with suppress(OSError):
+            tmp_link.unlink()  # résidu d'un crash précédent
+        tmp_link.symlink_to(run_dir, target_is_directory=True)
+        tmp_link.replace(link)
     except OSError:
-        pass  # filesystems without symlink support still resolve via run_state.json
+        return  # symlink unsupported → comportement historique (state file only)
 
 
 def _migrate_legacy_root(output_dir: Path, run_dir: Path) -> None:

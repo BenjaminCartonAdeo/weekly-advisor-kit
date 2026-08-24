@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .draft_targets import DRAFT_TARGET_PRIORITY, MODE_AUTO, MODE_LEGACY
 from .models import OUTLIER_MIN_SESSIONS
+from .util import _abs
 
 DEFAULT_CONFIG_NAME = "weekly-telemetry-config.json"
 
@@ -381,7 +382,10 @@ def _parse(p: Path) -> TelemetryConfig:
                 stacklevel=2,
             )
     if raw.get("output_dir"):
-        cfg.output_dir = _expand(raw["output_dir"])
+        # X4 : normalisé ABSOLU à la source — toute réponse de tool dérive de
+        # output_dir ; relatif, chaque réponse porterait un chemin dépendant
+        # du cwd que l'agent devrait deviner (incident post-run 07:41).
+        cfg.output_dir = _abs(raw["output_dir"])
     if "html_report_dir" in raw:
         # None/absent → défaut <project_root>/reports/html ; "" explicite → désactivé.
         v = raw["html_report_dir"]

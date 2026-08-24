@@ -11,7 +11,9 @@ metadata:
 La collecte (`releases`, déterministe) est une matière première. La valeur est ici :
 le **regard critique** qui croise l'offre du marché avec les problèmes mesurés du run.
 
-Tous les artefacts du run sont dans `<output_dir>/runs/current/` (alias stable du run actif).
+Tous les artefacts du run vivent dans le répertoire du run actif : **utiliser le
+chemin absolu retourné par le tool précédent** ; jamais de Glob depuis la racine
+sur l'arbre `reports/`.
 
 ## Entrées
 
@@ -26,11 +28,9 @@ Tous les artefacts du run sont dans `<output_dir>/runs/current/` (alias stable d
 
 ## Sortie de l'étape
 
-Le skill écrit uniquement le brouillon LLM dans :
-
-```text
-<output_dir>/runs/current/weekly-watch-findings-raw-<date>.json
-```
+Le skill écrit uniquement le brouillon LLM dans `weekly-watch-findings-raw-<date>.json`,
+à côté des artefacts du run actif (répertoire du chemin absolu retourné par le
+tool précédent).
 
 Il ne écrit jamais directement `weekly-watch-findings-<date>.json` : ce fichier est
 produit ensuite par la sous-commande `watch-validate` du plugin weekly-advisor, qui

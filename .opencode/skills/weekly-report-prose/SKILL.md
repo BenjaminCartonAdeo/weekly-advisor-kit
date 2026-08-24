@@ -10,8 +10,9 @@ metadata:
 
 Le rapport final est assemblé par du code (`report-prep` → draft → `report-assemble`).
 Cette étape écrit UNIQUEMENT le bloc « Constats qualitatifs » (section 4) dans
-`weekly-report-blocks-<date>.md` (dans `<output_dir>/runs/current/` — alias stable du run
-actif). Le brouillon déterministe
+`weekly-report-blocks-<date>.md`, à côté des artefacts du run actif (**utiliser le
+chemin absolu retourné par le tool précédent ; jamais de Glob depuis la racine sur
+l'arbre `reports/`**). Le brouillon déterministe
 (`weekly-report-blocks-auto-<date>.md`, produit par `report-blocks-draft`) est le filet
 de sécurité : si le bloc est rejeté ou absent, le rapport sort quand même avec lui.
 

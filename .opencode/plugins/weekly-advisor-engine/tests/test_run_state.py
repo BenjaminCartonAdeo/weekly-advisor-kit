@@ -36,9 +36,62 @@ def test_activate_creates_uuid_run_dir_and_state(tmp_path):
 
 def test_current_symlink_points_to_active_run(tmp_path):
     active = activate_run(tmp_path, RUN_DATE, RUN_TIME)
-    link = tmp_path / "current"
+    link = tmp_path / "runs" / "current"
     assert link.is_symlink()
     assert link.resolve() == active.run_dir.resolve()
+
+
+def test_alias_repoints_when_new_run_created(tmp_path):
+    """Nouveau run dir → l'alias bascule atomiquement ; aucun résidu .tmp."""
+    first = activate_run(tmp_path, RUN_DATE, RUN_TIME)
+    second = activate_run(tmp_path, RUN_DATE, RUN_TIME.replace(hour=11))
+    link = tmp_path / "runs" / "current"
+    assert link.resolve() == second.run_dir.resolve()
+    assert link.resolve() != first.run_dir.resolve()
+    assert [p.name for p in (tmp_path / "runs").iterdir() if ".tmp" in p.name] == []
+
+
+def test_alias_repairs_broken_preexisting_symlink(tmp_path):
+    """Alias cassé préexistant (cible supprimée) → réparé au prochain activate."""
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    ghost = runs / "ghost-run"
+    ghost.mkdir()
+    link = runs / "current"
+    link.symlink_to(ghost)
+    ghost.rmdir()  # symlink désormais cassé
+    assert link.is_symlink() and not link.exists()
+
+    active = activate_run(tmp_path, RUN_DATE, RUN_TIME)
+    assert link.resolve() == active.run_dir.resolve()
+
+
+def test_alias_replaces_stale_symlink_pointing_elsewhere(tmp_path):
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    stale = tmp_path / "stale-target"
+    stale.mkdir()
+    (runs / "current").symlink_to(stale)
+
+    active = activate_run(tmp_path, RUN_DATE, RUN_TIME)
+    assert (runs / "current").resolve() == active.run_dir.resolve()
+
+
+def test_real_directory_at_current_left_untouched_with_warning(tmp_path, capsys):
+    """`runs/current` répertoire réel : warning + intact, jamais écrasé."""
+    runs = tmp_path / "runs"
+    runs.mkdir(parents=True)
+    link = runs / "current"
+    link.mkdir()
+    sentinel = link / "keep.txt"
+    sentinel.write_text("data", encoding="utf-8")
+
+    active = activate_run(tmp_path, RUN_DATE, RUN_TIME)
+    assert link.is_dir() and not link.is_symlink()
+    assert sentinel.read_text(encoding="utf-8") == "data"
+    out = capsys.readouterr().out
+    assert "current" in out
+    assert active.run_id.startswith(RUN_DATE + "-")  # le run continue malgré tout
 
 
 def test_resolve_uses_state_and_falls_back_to_legacy_root(tmp_path):

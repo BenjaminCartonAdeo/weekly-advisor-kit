@@ -30,6 +30,17 @@ def parse_iso_ts(value: object) -> datetime | None:
         return None
 
 
+def _abs(path: Path | str) -> Path:
+    """Chemin absolu (~ expansé, indépendant du cwd) d'un artefact (X4).
+
+    Contrat : la réponse d'un tool qui produit un artefact porte le chemin
+    ABSOLU du fichier écrit — l'agent enchaîne les étapes en recopiant ce
+    chemin dans l'appel suivante ; un chemin relatif dépend du cwd et force
+    l'agent à deviner (incident post-run 07:41 : boucle ~20 min).
+    """
+    return Path(path).expanduser().resolve()
+
+
 def descendants_by_parent(records: Iterable[tuple[str, str | None]], root_id: str) -> list[str]:
     """BFS over parent_id links: (id, parent_id) pairs → descendant ids, discovery order.
 

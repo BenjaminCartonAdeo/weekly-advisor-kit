@@ -12,15 +12,16 @@ Sélection déterministe en amont (aucun choix de session ici), examen LLM des t
 
 ## Flux
 
-1. La sous-commande `audit-candidates` du plugin weekly-advisor → `weekly-audit-candidates-<date>.json` (dans `<output_dir>/runs/current/`,
-   alias stable du run actif)
+1. La sous-commande `audit-candidates` du plugin weekly-advisor → `weekly-audit-candidates-<date>.json`
+   (**utiliser le chemin absolu retourné par le tool ; jamais de Glob depuis la racine
+   sur l'arbre `reports/`**)
    (équivalent CLI : `audit-candidates --anchor <ancre>` — l'ancre est gérée par le
    plugin `<output_dir>/anchor-last.txt`, pas de calcul manuel)
    (`audited` / `unaudited`, plafond `audit_max_sessions` — ne PAS auditer au-delà)
 2. Pour chaque session `audited` : la sous-commande `show-session` du plugin weekly-advisor
-   (`<id>`, `--include-children` si sous-agents) → `<output_dir>/runs/current/extracts/transcript-extract-<id>.md`
-   (le tool écrit l'extract ; équivalent CLI : `show-session <id> --extract-dir
-   <output_dir>/runs/current/extracts`)
+   (`<id>`, `--include-children` si sous-agents) → `transcript-extract-<id>.md`
+   (le tool écrit l'extract et retourne le chemin absolu — l'utiliser tel quel ;
+   équivalent CLI : `show-session <id> --extract-dir <répertoire extracts du run actif>`)
 3. Examiner chaque transcript selon les catégories ci-dessous
 4. **Relier chaque session à son lanceur** : si les premiers tours utilisateur commencent par
    `/` (ex. `/swarmx`), identifier la commande lanceuse et l'examiner. Si la session est

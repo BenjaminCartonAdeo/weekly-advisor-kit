@@ -45,7 +45,7 @@ from .providers import SessionProvider, build_providers
 from .providers.base import HARNESS_OPENCODE, HarnessSession
 from .run_state import activate_run, resolve_active_run_dir
 from .sqlite_reader import MIGRATION_MIN_V1, DataSourceError, SessionMeta, _to_ms, detect_db
-from .util import iter_digest_findings, load_json, parse_iso_ts, root_and_orphan_ids
+from .util import _abs, iter_digest_findings, load_json, parse_iso_ts, root_and_orphan_ids
 from .util import parse_anchor as _parse_anchor
 from .writer import write_json_atomic, write_summary
 
@@ -629,14 +629,16 @@ def run(
             f"dans runs/{active.run_id} (le run précédent est conservé)",
             flush=True,
         )
-    out_path = active.run_dir / f"weekly-summary-{date}.json"
+    # X4 : chemin ABSOLU dans la réponse — l'agent enchaîne run → étapes
+    # suivantes en recopiant ce chemin (un relatif dépend du cwd : incident 07:41).
+    out_path = _abs(active.run_dir / f"weekly-summary-{date}.json")
     print("telemetry-aggregator: écriture du summary…", flush=True)
     write_summary(out_path, summary)
 
     print(
         f"telemetry-aggregator: sessions={summary.totals.session_count} "
         f"tokens={summary.totals.total_tokens} cost=${summary.totals.total_cost_usd:.6f} "
-        f"warnings={len(summary.warnings)} run_dir={active.run_dir} file={out_path}",
+        f"warnings={len(summary.warnings)} run_dir={_abs(active.run_dir)} file={out_path}",
         flush=True,
     )
     return EXIT_PARTIAL if any(w.partial for w in summary.warnings) else EXIT_OK
@@ -1080,9 +1082,12 @@ def harness(cfg: TelemetryConfig, *, anchor: str | None = None, timeout: int = 9
             )
     except (OSError, subprocess.TimeoutExpired):
         print("harness: WARNING: --version indisponible", flush=True)
-    out_dir = resolve_active_run_dir(cfg.output_dir, date)
-    out_path = out_dir / f"weekly-harness-digest-{date}.json"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # X4 : chemin ABSOLU dès la résolution — l'écriture du digest, l'argument
+    # --output et la réponse finale portent le même chemin non ambigu.
+    out_path = _abs(
+        resolve_active_run_dir(cfg.output_dir, date) / f"weekly-harness-digest-{date}.json"
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         # Cellule 2.2 : le harnais résolu étend la projection au-delà de
         # `.opencode/` (DRAFT_HARNESS_TARGETS) et reçoit le contenu engine.
