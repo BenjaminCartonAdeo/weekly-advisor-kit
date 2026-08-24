@@ -158,7 +158,16 @@ def _update_current_link(output_dir: Path, run_dir: Path) -> None:
         with suppress(OSError):
             tmp_link.unlink()  # résidu d'un crash précédent
         tmp_link.symlink_to(run_dir, target_is_directory=True)
-        tmp_link.replace(link)
+        try:
+            tmp_link.replace(link)
+        except OSError:
+            #: Windows : un symlink→répertoire préexistant est vu comme un
+            #: répertoire par MoveFileEx ⇒ ACCESS_DENIED sur os.replace.
+            #: Fallback remove+rename (best-effort ; POSIX ne passe jamais ici,
+            #: le remplacement atomique reste la voie nominale).
+            with suppress(OSError):
+                link.unlink()
+            tmp_link.rename(link)
     except OSError:
         return  # symlink unsupported → comportement historique (state file only)
 

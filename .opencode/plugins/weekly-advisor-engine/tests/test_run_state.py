@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -75,6 +76,28 @@ def test_alias_replaces_stale_symlink_pointing_elsewhere(tmp_path):
 
     active = activate_run(tmp_path, RUN_DATE, RUN_TIME)
     assert (runs / "current").resolve() == active.run_dir.resolve()
+
+
+def test_alias_fallback_when_replace_denied(tmp_path, monkeypatch):
+    """os.replace refusé sur symlink existant (Windows : destination vue comme
+    répertoire ⇒ ACCESS_DENIED) → fallback unlink+rename repointe l'alias
+    quand même, sans résidu .tmp."""
+    first = activate_run(tmp_path, RUN_DATE, RUN_TIME)
+    link = tmp_path / "runs" / "current"
+    assert link.resolve() == first.run_dir.resolve()
+
+    real_replace = Path.replace
+
+    def windows_denied_replace(self, target):
+        if self.is_symlink():  # seul le remplacement d'un symlink échoue
+            raise OSError(5, "simulé Windows ACCESS_DENIED")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", windows_denied_replace)
+    second = activate_run(tmp_path, RUN_DATE, RUN_TIME.replace(hour=11))
+    assert link.resolve() == second.run_dir.resolve()
+    assert link.resolve() != first.run_dir.resolve()
+    assert [p.name for p in (tmp_path / "runs").iterdir() if ".tmp" in p.name] == []
 
 
 def test_real_directory_at_current_left_untouched_with_warning(tmp_path, capsys):
