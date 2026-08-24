@@ -9,24 +9,32 @@ findings file: the two arguments are the complete input to the validation.
 The functions return JSON-compatible values and do not keep process or
 cross-run state.  This makes the validator useful both from the CLI and from
 unit tests with hand-written snapshots.
+
+Entrées optionnelles (v7) : ``project_root`` active la coercition des cibles
+locales manquantes (inventaire déterministe), ``candidates_path`` branche
+l'annexe sécurité et les fiches ``suspicious``, ``memory_path`` déclenche le
+writer mémoire post-validation. Tous sont keyword-only avec défaut neutre
+``None`` = comportement legacy inchangé.
 """
 
 from __future__ import annotations
 
 import copy
 import json
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .util import casefold
-from .watch_context import normalize_npm_package, normalize_repo_url
+from .util import casefold, parse_iso_ts
+from .watch_context import build_local_inventory, normalize_npm_package, normalize_repo_url
+from .watch_memory import append_entries, normalize_id, week_of
 
-INPUT_CATEGORIES = frozenset({"adopt", "improve-existing", "token-saver", "ignore"})
+INPUT_CATEGORIES = frozenset({"install-new", "improve-existing", "ignore"})
 EXISTING_STATES = frozenset({"absent", "declared", "observed", "unknown"})
 
 _DECISION_BY_STATE = {
-    "absent": "adopt",
+    "absent": "install-new",
     "declared": "verify-existing",
     "observed": "improve-existing",
     "unknown": "verify-existing",
@@ -37,7 +45,15 @@ _RESERVED_TOP_LEVEL_KEYS = {
     "findings",
     "rejected_findings",
     "validation",
+    # Réservé : l'annexe est toujours calculée ici depuis watch-candidates,
+    # jamais copiée depuis le brut LLM (qui ne peut pas l'usurper).
+    "security_annex",
 }
+
+#: Catégories finales retenues comme recommandations à l'écriture mémoire.
+_RECOMMENDED_DECISIONS = frozenset({"install-new", "improve-existing"})
+
+_TEXT_SPLIT_RE = re.compile(r"\W+")
 
 
 def _non_empty_text(value: object) -> str | None:
@@ -49,6 +65,116 @@ def _non_empty_text(value: object) -> str | None:
 
 def _is_values(value: object) -> bool:
     return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
+
+
+def _text_tokens(text: object) -> frozenset[str]:
+    """Jetons minuscules (≥ 3 caractères) d'un texte, split non-mot."""
+
+    return frozenset(
+        token for token in _TEXT_SPLIT_RE.split(str(text or "").casefold()) if len(token) >= 3
+    )
+
+
+def _mentions_risk(finding: Mapping[str, Any], reason: object) -> bool:
+    """Vrai si un jeton de la raison sécurité apparaît dans le texte du finding.
+
+    Détection déterministe par intersection de jetons sur ``description``,
+    ``evidence_summary`` et ``recommendation``. Une raison illisible ou vide
+    rend la mention invérifiable → False (conservateur).
+    """
+
+    needed = _text_tokens(reason)
+    if not needed:
+        return False
+    haystack = _text_tokens(
+        " ".join(
+            str(finding.get(field) or "")
+            for field in ("description", "evidence_summary", "recommendation")
+        )
+    )
+    return bool(needed & haystack)
+
+
+def _subject_memory_id(subject: object) -> str | None:
+    """Id mémoire stable d'un sujet objet ({name, npm_package, repo_url}).
+
+    Même calcul d'identité que le distill (:func:`watch_memory.normalize_id`).
+    Les sujets non objet (chaînes libres legacy) n'ont pas d'id exploitable.
+    """
+
+    if not isinstance(subject, Mapping):
+        return None
+    return normalize_id(
+        str(subject.get("name") or ""), subject.get("npm_package"), subject.get("repo_url")
+    )
+
+
+# ------------------------------------------------------- entrées optionnelles
+
+
+def _inventory_names(project_root: Path | None) -> frozenset[str] | None:
+    """Noms (casefold) de l'inventaire local ; None si racine non fournie."""
+
+    if project_root is None:
+        return None
+    try:
+        inventory = build_local_inventory(Path(project_root))
+    except OSError:
+        return None
+    items = inventory.get("items")
+    if not _is_values(items):
+        return frozenset()
+    return frozenset(
+        casefold(str(item.get("name") or "")) for item in items if isinstance(item, Mapping)
+    )
+
+
+def _load_candidates_snapshot(path: Path | None) -> Mapping[str, Any] | None:
+    """Snapshot watch-candidates brut ; None si absent/illisible/invalide."""
+
+    if path is None:
+        return None
+    payload, error = load_watch_json(Path(path))
+    if error is not None or not isinstance(payload, Mapping):
+        return None
+    return payload
+
+
+def _suspicious_reasons(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Map {id fiche: raison} restreinte aux fiches ``security=suspicious``."""
+
+    reasons: dict[str, Any] = {}
+    if payload is None:
+        return reasons
+    candidates = payload.get("candidates")
+    for row in candidates if _is_values(candidates) else []:
+        if not isinstance(row, Mapping):
+            continue
+        cid = row.get("id")
+        security = row.get("security")
+        verdict = security.get("verdict") if isinstance(security, Mapping) else None
+        if cid and verdict == "suspicious":
+            reasons[str(cid)] = security.get("reason") if isinstance(security, Mapping) else None
+    return reasons
+
+
+def _security_annex_block(payload: Mapping[str, Any] | None) -> dict[str, int | list[str]] | None:
+    """Annexe sécurité du findings final depuis l'annexe du snapshot candidats."""
+
+    if payload is None:
+        return None
+    annex = payload.get("security_annex")
+    ids = sorted(
+        {
+            str(row.get("id"))
+            for row in (annex if _is_values(annex) else [])
+            if isinstance(row, Mapping) and row.get("id")
+        }
+    )
+    return {"blocked_count": len(ids), "ids": ids}
+
+
+# ---------------------------------------------------------------- identités
 
 
 def _subject_identities(subject: object) -> set[tuple[str, str]]:
@@ -230,7 +356,7 @@ def _finding_error(finding: Mapping[str, Any]) -> str | None:
     # Market recommendations need an explicit subject so the deterministic
     # validator can prove whether the item already exists.  `ignore` remains
     # subject-less for noise findings and backwards compatibility.
-    if category in {"adopt", "improve-existing", "token-saver"} and not subject_is_valid:
+    if category in {"install-new", "improve-existing"} and not subject_is_valid:
         errors.append("market finding requires subject identity")
     elif has_subject and not subject_is_valid:
         errors.append("invalid subject identity")
@@ -241,8 +367,16 @@ def _validate_one_finding(
     finding: object,
     index: int,
     market_matches: Sequence[object],
+    *,
+    inventory_names: frozenset[str] | None = None,
+    suspicious_reasons: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, bool, bool]:
     """Validate and enrich one raw value.
+
+    Coercitions v7 : ``improve-existing`` dont la cible locale est absente de
+    l'inventaire devient ``install-new`` (jamais un drop) ; une fiche
+    ``suspicious`` sans mention de risque citable voit sa sévérité relevée à
+    ``high`` (jamais un rejet).
 
     Returns ``(accepted, rejected, was_downgraded, was_matched)``.  The return
     shape keeps the aggregation in :func:`validate_findings` simple and makes
@@ -268,11 +402,13 @@ def _validate_one_finding(
     validated["existing_state"] = state
     decision = category
     downgraded = False
-    if category == "adopt":
+    if category == "install-new":
         decision = _DECISION_BY_STATE[state]
-    elif category == "token-saver":
-        decision = "token-saver" if state == "absent" else _DECISION_BY_STATE[state]
-    if category in {"adopt", "token-saver"} and decision != category:
+    elif category == "improve-existing" and inventory_names is not None:
+        target = _non_empty_text(validated.get("target_local"))
+        if target is None or casefold(target) not in inventory_names:
+            decision = "install-new"
+    if decision != category:
         validated["category"] = decision
         downgraded = True
     validated["decision"] = decision
@@ -285,7 +421,112 @@ def _validate_one_finding(
         validated["confidence"] = "high"
     else:
         validated["confidence"] = "low" if state == "unknown" else "medium"
+
+    if suspicious_reasons is not None:
+        reason = suspicious_reasons.get(_subject_memory_id(subject))
+        if reason is not None and not _mentions_risk(validated, reason):
+            validated["severity"] = "high"
     return validated, None, downgraded, market_match is not None
+
+
+# ------------------------------------------------------------ writer mémoire
+
+
+def _memory_updates(
+    result: Mapping[str, Any],
+    candidates_payload: Mapping[str, Any] | None,
+    week: str,
+) -> list[dict[str, Any]]:
+    """Mises à jour mémoire post-validation (statuts finaux + signatures).
+
+    Chaque fiche candidate porte le statut final de son finding retenu :
+    ``recommended`` (install-new/improve-existing), ``ignored`` (ignore) ou
+    ``seen`` (sans finding retenu). Les findings acceptés hors candidats
+    (résidual/filet) et les rejets avec id extractible deviennent ``seen`` —
+    sans note : une raison de rejet ne doit jamais empoisonner la mémoire.
+    """
+
+    status_by_id: dict[str, str] = {}
+    order: list[str] = []
+    for finding in result.get("findings", []):
+        fid = _subject_memory_id(finding.get("subject"))
+        if fid is None:
+            continue
+        decision = str(finding.get("decision") or finding.get("category") or "")
+        if decision in _RECOMMENDED_DECISIONS:
+            status = "recommended"
+        elif decision == "ignore":
+            status = "ignored"
+        else:
+            status = "seen"
+        if fid not in status_by_id:
+            status_by_id[fid] = status
+            order.append(fid)
+
+    updates: list[dict[str, Any]] = []
+    covered: set[str] = set()
+    candidates = candidates_payload.get("candidates") if candidates_payload else None
+    for fiche in candidates if _is_values(candidates) else []:
+        if not isinstance(fiche, Mapping):
+            continue
+        cid = str(fiche.get("id") or "")
+        if not cid or cid in covered:
+            continue
+        covered.add(cid)
+        update: dict[str, Any] = {
+            "id": cid,
+            "week": week,
+            "status": status_by_id.pop(cid, "seen"),
+            "name": str(fiche.get("name") or ""),
+        }
+        signature = fiche.get("signature")
+        if isinstance(signature, Mapping) and signature:
+            update["signature"] = copy.deepcopy(dict(signature))
+        updates.append(update)
+
+    for fid in order:  # findings retenus hors fiches (résidual/filet)
+        if fid in covered:
+            continue
+        covered.add(fid)
+        updates.append({"id": fid, "week": week, "status": status_by_id[fid]})
+
+    for rejection in result.get("rejected_findings", []):
+        raw_finding = rejection.get("finding") if isinstance(rejection, Mapping) else None
+        rid = (
+            _subject_memory_id(raw_finding.get("subject"))
+            if isinstance(raw_finding, Mapping)
+            else None
+        )
+        if rid is not None and rid not in covered:
+            covered.add(rid)
+            updates.append({"id": rid, "week": week, "status": "seen"})
+    return updates
+
+
+def _write_memory(
+    memory_path: Path | None,
+    result: Mapping[str, Any],
+    candidates_payload: Mapping[str, Any] | None,
+    date: str | None,
+) -> None:
+    """Writer mémoire post-validation, best-effort (jamais bloquant).
+
+    Sans chemin ou sans date exploitable → aucune écriture. Une erreur disque
+    est ignorée : au pire l'item resurfacera la semaine suivante.
+    """
+
+    if memory_path is None or date is None:
+        return
+    parsed = parse_iso_ts(date)
+    if parsed is None:
+        return
+    try:
+        append_entries(
+            Path(memory_path),
+            _memory_updates(result, candidates_payload, week_of(parsed)),
+        )
+    except OSError:
+        return
 
 
 def validate_findings(
@@ -293,6 +534,9 @@ def validate_findings(
     context: Mapping[str, Any] | None,
     *,
     date: str | None = None,
+    memory_path: Path | None = None,
+    candidates_path: Path | None = None,
+    project_root: Path | None = None,
 ) -> dict[str, Any]:
     """Validate one raw findings snapshot against one watch context.
 
@@ -301,6 +545,12 @@ def validate_findings(
         context: The dated ``weekly-watch-context`` object.  Only its
             ``market_matches`` list is consulted.
         date: Optional anchor date to preserve/override the output date.
+        memory_path: Optionnel — writer mémoire post-validation (statuts
+            finaux + signatures) dans ce fichier JSONL.
+        candidates_path: Optionnel — snapshot ``watch-candidates`` pour
+            l'annexe sécurité et les fiches ``suspicious``.
+        project_root: Optionnel — racine projet activant la coercition des
+            cibles locales absentes de l'inventaire.
 
     Returns:
         A schema-version-2 JSON-compatible final findings report.  Invalid
@@ -308,6 +558,10 @@ def validate_findings(
         raising an exception.  No timestamp is generated here, so identical
         inputs produce identical output.
     """
+
+    inventory_names = _inventory_names(project_root)
+    candidates_payload = _load_candidates_snapshot(candidates_path)
+    suspicious_reasons = _suspicious_reasons(candidates_payload)
 
     metadata, raw_items, rejected = _raw_items(raw_findings)
     market_matches = _context_matches(context)
@@ -317,7 +571,13 @@ def validate_findings(
     unknown_count = 0
 
     for index, raw_item in enumerate(raw_items):
-        valid, invalid, downgraded, matched = _validate_one_finding(raw_item, index, market_matches)
+        valid, invalid, downgraded, matched = _validate_one_finding(
+            raw_item,
+            index,
+            market_matches,
+            inventory_names=inventory_names,
+            suspicious_reasons=suspicious_reasons,
+        )
         if invalid is not None:
             rejected.append(invalid)
             continue
@@ -352,7 +612,12 @@ def validate_findings(
         result["date"] = date
     result["findings"] = accepted
     result["rejected_findings"] = rejected
+    annex = _security_annex_block(candidates_payload)
+    if annex is not None:
+        result["security_annex"] = annex
     result["validation"] = validation
+
+    _write_memory(memory_path, result, candidates_payload, date)
     return result
 
 
