@@ -238,3 +238,20 @@ def test_digest_bounds_and_recurrents():
     assert [row["id"] for row in digest["recently_ignored"]] == [f"ig{i:02d}" for i in range(20)]
     assert len(digest["previously_recommended"]) == 30
     assert digest["recurrents"] == ["big"]
+
+
+def test_digest_caps_recurrents_by_occurrences_then_id():
+    """>20 items occ≥3 : top-20 par occurrences décroissantes puis id alpha."""
+    memory: dict[str, dict] = {}
+    for i in range(25):
+        eid = f"r{i:02d}"
+        memory[eid] = _line(eid, week="2026-W30", status="seen", occurrences=3)
+    memory["hot"] = _line("hot", week="2026-W31", status="seen", occurrences=10)
+    memory["ahot"] = _line("ahot", week="2026-W31", status="seen", occurrences=10)
+
+    digest = wm.build_digest(memory, "2026-W34")
+
+    assert len(digest["recurrents"]) == wm.RECURRENTS_CAP
+    # tri (-occurrences, id) : occ=10 d'abord (alpha), puis occ=3 (alpha), queue coupée
+    expected = ["ahot", "hot", *(f"r{i:02d}" for i in range(wm.RECURRENTS_CAP - 2))]
+    assert digest["recurrents"] == expected

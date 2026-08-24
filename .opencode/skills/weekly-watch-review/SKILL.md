@@ -20,7 +20,7 @@ sur l'arbre `reports/`.
 
 | Fichier | Taille | Rôle |
 |---|---|---|
-| `watch-candidates-enriched-<date>.json` | ~20 KB | fiches candidates × état local (`existing_state`, `market_match`, `local_relevance_hints`) + bande `residual` sous cutoff |
+| `watch-candidates-enriched-<date>.json` | ~32 KB | fiches candidates × état local (`existing_state`, `market_match`, `local_relevance_hints`) + bande `residual` sous cutoff (fiches ≈20 KB + residual plafonné ≈12 KB, mesuré fixture 323 items) |
 | `watch-memory-digest-<date>.json` | ~3 KB | mémoire inter-run bornée : `recently_ignored [{id, week, note}]` (≤20), `previously_recommended []` (≤30), `recurrents []` (occurrences ≥3) |
 | `weekly-quality-findings-<date>.json` | variable | sessions coûteuses du run (+ alertes insights) pour croiser coût mesuré ↔ recommandation |
 

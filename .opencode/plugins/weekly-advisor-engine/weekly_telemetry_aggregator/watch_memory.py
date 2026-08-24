@@ -30,6 +30,8 @@ STALE_SEEN_WEEKS = 4
 RECURRENT_MIN_OCCURRENCES = 3
 MAX_RECENTLY_IGNORED = 20
 MAX_PREVIOUSLY_RECOMMENDED = 30
+#: Plafond des récurents du digest (top-N occurrences puis id) — borne prompt.
+RECURRENTS_CAP = 20
 
 VALID_STATUSES = frozenset({"seen", "candidate", "recommended", "ignored", "blocked-security"})
 _RETAINED_STATUSES = frozenset({"recommended", "blocked-security"})
@@ -488,5 +490,5 @@ def build_digest(memory: dict[str, dict[str, Any]], week: str) -> dict[str, Any]
         "previously_recommended": [
             eid for _latest, eid in recommended[:MAX_PREVIOUSLY_RECOMMENDED]
         ],
-        "recurrents": [eid for _neg_occ, eid in recurrents],
+        "recurrents": [eid for _neg_occ, eid in recurrents[:RECURRENTS_CAP]],
     }
