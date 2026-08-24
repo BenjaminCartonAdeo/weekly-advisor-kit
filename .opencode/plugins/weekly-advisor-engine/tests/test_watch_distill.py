@@ -213,10 +213,14 @@ def test_screen_postinstall_suspicious():
     assert "postinstall" in reason
 
 
-def test_screen_recent_without_traction_suspicious():
-    recent = _item(published_at=(datetime.now(UTC) - timedelta(days=3)).isoformat(), stars=None)
-    assert wd.screen_item(recent)[0] == "suspicious"
-    traction = dict(recent, stars=120)
+def test_screen_recent_without_known_traction_not_flagged():
+    """Traction inconnue (npm, stars=None) ≠ zéro traction : pas de badge suspicious."""
+
+    recent_unknown = _item(published_at=(datetime.now(UTC) - timedelta(days=3)).isoformat(), stars=None)
+    assert wd.screen_item(recent_unknown)[0] == "clean"
+    recent_zero = dict(recent_unknown, stars=0)
+    assert wd.screen_item(recent_zero)[0] == "suspicious"
+    traction = dict(recent_unknown, stars=120)
     assert wd.screen_item(traction)[0] == "clean"
 
 

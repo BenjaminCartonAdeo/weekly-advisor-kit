@@ -258,8 +258,9 @@ def screen_item(item: Mapping[str, Any]) -> tuple[str, str | None]:
 
     published = _published_dt(item.get("published_at"))
     stars = item.get("stars")
-    has_traction = isinstance(stars, int | float) and not isinstance(stars, bool) and stars > 0
-    if published is not None and not has_traction:
+    # Absence de donnée traction (None, typique npm) ≠ zéro traction : ne pas flagger.
+    zero_traction = isinstance(stars, int | float) and not isinstance(stars, bool) and stars <= 0
+    if published is not None and zero_traction:
         age_days = (datetime.now(UTC) - published.astimezone(UTC)).total_seconds() / 86400
         if 0 <= age_days < _RECENT_DAYS:
             return "suspicious", "recent-no-traction"
@@ -585,6 +586,6 @@ def _run_impl(cfg, *, anchor: str | None = None) -> tuple[dict[str, Any], int]:
         "week": week,
         **build_digest(memory_post, week),
     }
-    write_json_atomic(out / f"watch-candidates-{date}.json", result)
-    write_json_atomic(out / f"watch-memory-digest-{date}.json", digest)
+    write_json_atomic(out / f"watch-candidates-{date}.json", result, indent=None)
+    write_json_atomic(out / f"watch-memory-digest-{date}.json", digest, indent=None)
     return result, 0
