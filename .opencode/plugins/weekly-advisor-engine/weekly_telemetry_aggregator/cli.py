@@ -301,8 +301,17 @@ def _cmd_watch_distill(args, cfg) -> int:
 
 
 def _cmd_watch_validate(args, cfg) -> int:
-    """Validate raw watch findings against the anchor-dated local context."""
+    """Validate raw watch findings against the anchor-dated local context.
+
+    v7 : câble les entrées optionnelles du validateur — snapshot
+    ``watch-candidates-<date>.json`` du run (annexe sécurité + fiches
+    suspicious), mémoire inter-run (même fichier que le distill,
+    ``watch_distill.memory_file`` relatif à ``output_dir``) et racine projet
+    (coercition des cibles locales hors inventaire). Snapshot absent →
+    validation legacy sans annexe, jamais une erreur.
+    """
     from .main import EXIT_OK, EXIT_PARTIAL, EXIT_TOTAL_FAILURE, _parse_anchor
+    from .watch_distill import DEFAULT_MEMORY_FILE
     from .watch_validation import (
         load_raw_findings,
         load_watch_context,
@@ -315,6 +324,12 @@ def _cmd_watch_validate(args, cfg) -> int:
     out = _out_dir(cfg, date)
     context_path = out / f"weekly-watch-context-{date}.json"
     raw_path = out / f"weekly-watch-findings-raw-{date}.json"
+
+    wd_cfg = getattr(cfg, "watch_distill", None)
+    memory_file = Path(getattr(wd_cfg, "memory_file", None) or DEFAULT_MEMORY_FILE)
+    memory_path = memory_file if memory_file.is_absolute() else Path(cfg.output_dir) / memory_file
+    candidates_path = out / f"watch-candidates-{date}.json"
+    project_root = cfg.project_root or Path.cwd()
 
     context, context_error = load_watch_context(context_path)
     if context is None:
@@ -332,13 +347,22 @@ def _cmd_watch_validate(args, cfg) -> int:
         print(f"watch-validate: FATAL: {raw_error}", file=sys.stderr, flush=True)
         return EXIT_TOTAL_FAILURE
 
-    result = validate_findings(raw_findings, context, date=date)
+    result = validate_findings(
+        raw_findings,
+        context,
+        date=date,
+        memory_path=memory_path,
+        candidates_path=candidates_path,
+        project_root=project_root,
+    )
     out_path = out / f"weekly-watch-findings-{date}.json"
     write_json_atomic(out_path, result)
     counts = result["validation"]["counts"]
+    annex = result.get("security_annex")
+    annex_note = f" bloques={annex['blocked_count']}" if isinstance(annex, dict) else ""
     print(
         f"watch-validate: accepted={counts['accepted']} rejected={counts['rejected']} "
-        f"downgraded={counts['downgraded']} file={out_path}",
+        f"downgraded={counts['downgraded']}{annex_note} file={out_path}",
         flush=True,
     )
     return EXIT_PARTIAL if counts["rejected"] else EXIT_OK

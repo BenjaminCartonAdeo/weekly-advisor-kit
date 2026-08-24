@@ -328,3 +328,147 @@ def test_main_usage_error_still_exits_two_via_argparse(capsys):
         main(["run", "--lookback-days", "0"])
     assert ei.value.code != 0
     capsys.readouterr()  # drain argparse usage output
+
+
+# ============================================================ v7 (watch-validate : câblage candidats/mémoire/racine)
+
+
+def _seed_watch_inputs(tmp_path: Path) -> None:
+    """Artefacts datés du run (mode legacy racine output_dir) pour watch-validate."""
+    date = RUN_TIME.strftime("%Y-%m-%d")
+    (tmp_path / f"weekly-watch-context-{date}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "market_matches": [
+                    {"name": "cool-tool", "npm_package": "cool-tool", "existing_state": "absent"},
+                    {
+                        "name": "other-tool",
+                        "npm_package": "other-tool",
+                        "existing_state": "observed",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    raw = {
+        "findings": [
+            {
+                "category": "install-new",
+                "severity": "medium",
+                "description": "A useful market item",
+                "evidence_summary": "Evidence must survive validation",
+                "recommendation": "Evaluate the item with a human",
+                "subject": {"name": "cool-tool", "npm_package": "cool-tool"},
+            },
+            {
+                "category": "improve-existing",
+                "severity": "medium",
+                "description": "Ameliore un skill local existant",
+                "evidence_summary": "Evidence",
+                "recommendation": "Fusionner la capacite",
+                "target_local": "local-skill",
+                "subject": {"name": "other-tool", "npm_package": "other-tool"},
+            },
+        ]
+    }
+    (tmp_path / f"weekly-watch-findings-raw-{date}.json").write_text(
+        json.dumps(raw), encoding="utf-8"
+    )
+    candidates = {
+        "schema_version": 1,
+        "mode": "distill",
+        "candidates": [
+            {
+                "id": "npm:cool-tool",
+                "name": "cool-tool",
+                "sources": [],
+                "score": {"total": 10, "breakdown": {}},
+                "security": {"verdict": "clean", "reason": None},
+                "summary": "une fiche",
+                "signature": {"version": "1.0.0", "published_at": None},
+                "local_relevance_hints": [],
+            }
+        ],
+        "security_annex": [
+            {"id": "npm:blocked-one", "name": "blocked-one", "reason": "env-exfiltration"}
+        ],
+    }
+    (tmp_path / f"watch-candidates-{date}.json").write_text(
+        json.dumps(candidates), encoding="utf-8"
+    )
+
+
+def _write_watch_config(tmp_path: Path, project_root: Path, **extra) -> Path:
+    conf = tmp_path / "config.json"
+    conf.write_text(
+        json.dumps({"output_dir": str(tmp_path), "project_root": str(project_root), **extra}),
+        encoding="utf-8",
+    )
+    return conf
+
+
+def test_watch_validate_wires_memory_annex_and_project_root(tmp_path: Path):
+    """v7 : le CLI passe candidats du run, mémoire inter-run et racine projet."""
+    _seed_watch_inputs(tmp_path)
+    project = tmp_path / "project"
+    skill_dir = project / ".opencode" / "skills" / "local-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\ndescription: x\n---\ncorps\n", encoding="utf-8")
+    conf = _write_watch_config(tmp_path, project)
+    anchor = RUN_TIME.isoformat()
+
+    rc = main(["watch-validate", "--config", str(conf), "--anchor", anchor])
+
+    assert rc == 0
+    date = RUN_TIME.strftime("%Y-%m-%d")
+    data = json.loads((tmp_path / f"weekly-watch-findings-{date}.json").read_text(encoding="utf-8"))
+    # Annexe sécurité branchée depuis watch-candidates-<date>.json.
+    assert data["security_annex"] == {"blocked_count": 1, "ids": ["npm:blocked-one"]}
+    # Coercition cible locale active via project_root : inventaire sans
+    # « local-skill » serait coerci ; ici la cible existe → improve-existing.
+    by_subject = {f["subject"]["name"]: f for f in data["findings"]}
+    assert by_subject["cool-tool"]["decision"] == "install-new"
+    assert by_subject["other-tool"]["category"] == "improve-existing"
+    assert data["validation"]["counts"]["downgraded"] == 0
+    # Mémoire post-validation écrite à la racine output_dir (pas dans le run).
+    entries = {
+        entry["id"]: entry
+        for entry in (
+            json.loads(line)
+            for line in (tmp_path / "watch-memory.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
+    }
+    assert entries["npm:cool-tool"]["history"][-1]["status"] == "recommended"
+
+
+def test_watch_validate_coerces_unknown_target_to_install_new(tmp_path: Path):
+    """project_root câblé : cible hors inventaire → coercition install-new."""
+    _seed_watch_inputs(tmp_path)
+    conf = _write_watch_config(tmp_path, tmp_path)  # racine vide → inventaire vide
+    anchor = RUN_TIME.isoformat()
+
+    main(["watch-validate", "--config", str(conf), "--anchor", anchor])
+
+    date = RUN_TIME.strftime("%Y-%m-%d")
+    data = json.loads((tmp_path / f"weekly-watch-findings-{date}.json").read_text(encoding="utf-8"))
+    other = next(f for f in data["findings"] if f["subject"]["name"] == "other-tool")
+    assert other["category"] == "install-new"
+    assert data["validation"]["counts"]["downgraded"] == 1
+
+
+def test_watch_validate_memory_file_follows_config(tmp_path: Path):
+    """Le fichier mémoire honore watch_distill.memory_file (relatif à output_dir)."""
+    _seed_watch_inputs(tmp_path)
+    conf = _write_watch_config(
+        tmp_path, tmp_path, watch_distill={"memory_file": "custom-memory.jsonl"}
+    )
+    anchor = RUN_TIME.isoformat()
+
+    rc = main(["watch-validate", "--config", str(conf), "--anchor", anchor])
+
+    assert rc == 0
+    assert (tmp_path / "custom-memory.jsonl").is_file()
+    assert not (tmp_path / "watch-memory.jsonl").exists()
