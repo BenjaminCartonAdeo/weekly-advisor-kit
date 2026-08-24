@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import json
+from datetime import UTC, datetime, timedelta
 
 import httpx
+import pytest
 
 from weekly_telemetry_aggregator import releases
-from weekly_telemetry_aggregator.config import TelemetryConfig
+from weekly_telemetry_aggregator.config import TelemetryConfig, load_config
 
 ANCHOR_ISO = "2026-08-10T06:00:00Z"
 PERIOD_START = datetime(2026, 8, 3, 6, 0, 0, tzinfo=UTC)
@@ -852,3 +854,249 @@ def test_fetch_github_topics(monkeypatch):
     assert items[0]["name"] == "acme/claude-tool"
     assert items[0]["found_via"] == ["github:topic:claude-code"]
     assert items[0]["new_repo"] is True
+
+
+# ============================================================ Task 4 (radar MCP + version passthrough)
+
+
+def test_finalize_items_preserves_version():
+    """Le champ `version` (core_changes/watch) survit à la finalisation → signature mémoire."""
+    record = {
+        "name": "some-repo v1.2.3",
+        "category": "repo",
+        "repo_url": "https://github.com/acme/some-repo",
+        "npm_package": None,
+        "description": "d",
+        "published_at": PERIOD_END,
+        "found_via": ["radar"],
+        "new_repo": False,
+        "version": "v1.2.3",
+    }
+    items = releases._finalize_items({"k": dict(record)})
+    assert len(items) == 1
+    assert items[0]["version"] == "v1.2.3"
+
+    del record["version"]
+    items_no_version = releases._finalize_items({"k": dict(record)})
+    assert items_no_version[0]["version"] is None
+
+
+RADAR_URL = "https://radar.test/mcp"
+RADAR_FEED_URL = "https://radar.test/feed.xml"
+RADAR_ENTRY = {
+    "type": "radar",
+    "name": "agents-radar",
+    "tool": "get_latest",
+    "window_days": 7,
+    "rss_fallback": RADAR_FEED_URL,
+}
+
+RADAR_MARKDOWN = (
+    "# Digest\n"
+    "- [Tool A](https://github.com/acme/tool-a) — 2026-08-05\n"
+    "- [Tool B](https://github.com/acme/tool-b) (2026-08-08)\n"
+    "- [Hors fenêtre](https://github.com/acme/old) — 2026-01-01\n"
+    "- [Non daté](https://github.com/acme/undated)\n"
+)
+
+SSE_TOOLS_CALL = (
+    'event: message\ndata: {"jsonrpc":"2.0","id":2,"result":{"content":'
+    '[{"type":"text","text":"- [SSE Tool](https://github.com/acme/sse-tool) 2026-08-06"}]}}\n\n'
+)
+
+
+def _radar_opencode_json(tmp_path, mcp=None):
+    doc = {"$schema": "https://opencode.ai/config.json"}
+    if mcp is not None:
+        doc["mcp"] = mcp
+    (tmp_path / "opencode.json").write_text(json.dumps(doc), encoding="utf-8")
+    return tmp_path
+
+
+def _radar_handler(tools_call):
+    """MockTransport MCP : initialize OK (session), tools/call piloté par `tools_call`."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method != "POST":
+            return httpx.Response(503)  # flux RSS indisponible par défaut
+        body = json.loads(request.content)
+        method = body.get("method")
+        if method == "initialize":
+            assert request.headers["accept"] == "application/json, text/event-stream"
+            assert request.headers["content-type"].startswith("application/json")
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {"protocolVersion": "2025-06-18", "serverInfo": {"name": "agents-radar"}},
+                },
+                headers={"mcp-session-id": "sess-42"},
+            )
+        if method == "tools/call":
+            assert request.headers.get("mcp-session-id") == "sess-42", (
+                "la session initialize doit être reprise dans tools/call"
+            )
+            assert body["params"]["name"] == RADAR_ENTRY["tool"]
+            return tools_call(request)
+        return httpx.Response(404)
+
+    return handler
+
+
+def test_fetch_radar_happy_path_mcp(tmp_path):
+    """initialize + tools/call → liens markdown datés ; non datés et hors fenêtre exclus."""
+    root = _radar_opencode_json(tmp_path, {RADAR_ENTRY["name"]: {"type": "remote", "url": RADAR_URL}})
+    client = httpx.Client(transport=httpx.MockTransport(_radar_handler(lambda _rq: httpx.Response(
+        200,
+        json={"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": RADAR_MARKDOWN}]}},
+    ))))
+    items = releases._fetch_radar(client, RADAR_ENTRY, PERIOD_START, PERIOD_END, project_root=root)
+
+    names = [i["name"] for i in items]
+    assert names == ["Tool A", "Tool B"]  # undated exclu, hors fenêtre exclu
+    first = items[0]
+    assert first["category"] == "repo"
+    assert first["repo_url"] == "https://github.com/acme/tool-a"
+    assert first["npm_package"] is None
+    assert first["found_via"] == ["radar"]
+    assert first["new_repo"] is False
+    assert first["published_at"] == datetime(2026, 8, 5, tzinfo=UTC)
+    client.close()
+
+
+def test_fetch_radar_parses_sse_tools_call(tmp_path):
+    """Réponse tools/call en flux SSE (`event:`/`data:`) → dernière ligne data parsée."""
+    root = _radar_opencode_json(tmp_path, {RADAR_ENTRY["name"]: {"type": "remote", "url": RADAR_URL}})
+
+    def tools_call(_request):
+        return httpx.Response(200, text=SSE_TOOLS_CALL, headers={"content-type": "text/event-stream"})
+
+    client = httpx.Client(transport=httpx.MockTransport(_radar_handler(tools_call)))
+    items = releases._fetch_radar(client, RADAR_ENTRY, PERIOD_START, PERIOD_END, project_root=root)
+    assert [i["name"] for i in items] == ["SSE Tool"]
+    assert items[0]["published_at"] == datetime(2026, 8, 6, tzinfo=UTC)
+    client.close()
+
+
+def test_fetch_radar_falls_back_to_rss_when_tools_call_500(tmp_path):
+    """tools/call en 500 → repli RSS déclaré dans l'entrée radar."""
+    root = _radar_opencode_json(tmp_path, {RADAR_ENTRY["name"]: {"type": "remote", "url": RADAR_URL}})
+    fallback_atom = (
+        '<?xml version="1.0"?>\n<feed xmlns="http://www.w3.org/2005/Atom">\n'
+        '  <entry><title>Fallback Item</title>'
+        '<link href="https://github.com/acme/fallback"/>'
+        "<updated>2026-08-05T09:00:00Z</updated></entry>\n</feed>"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and str(request.url) == RADAR_FEED_URL:
+            return httpx.Response(200, text=fallback_atom)
+        return _radar_handler(lambda _rq: httpx.Response(500))(request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    items = releases._fetch_radar(client, RADAR_ENTRY, PERIOD_START, PERIOD_END, project_root=root)
+    assert [i["name"] for i in items] == ["Fallback Item"]
+    assert items[0]["found_via"] == [f"rss:{RADAR_FEED_URL}"]
+    client.close()
+
+
+def test_fetch_radar_both_dead_raises_source_error(tmp_path):
+    """MCP mort ET flux RSS mort → SourceError (warning source, run inchangé)."""
+    root = _radar_opencode_json(tmp_path, {RADAR_ENTRY["name"]: {"type": "remote", "url": RADAR_URL}})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(503)
+        return _radar_handler(lambda _rq: httpx.Response(500))(request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(releases.SourceError, match="feed.xml"):
+        releases._fetch_radar(client, RADAR_ENTRY, PERIOD_START, PERIOD_END, project_root=root)
+    client.close()
+
+
+def test_fetch_radar_missing_mcp_url_raises_clear_error(tmp_path):
+    """URL absente de opencode.json → SourceError nommant la clé manquante."""
+    root = _radar_opencode_json(tmp_path, None)  # pas de clé mcp du tout
+    client = httpx.Client(
+        transport=httpx.MockTransport(_radar_handler(lambda _rq: httpx.Response(200, json={})))
+    )
+    with pytest.raises(releases.SourceError, match=r"mcp\.agents-radar\.url.*opencode\.json"):
+        releases._fetch_radar(client, RADAR_ENTRY, PERIOD_START, PERIOD_END, project_root=root)
+    client.close()
+
+
+def test_collect_routes_radar_entries(monkeypatch, tmp_path):
+    """_collect route le type radar : source_id `radar:<name>`, project_root transmis."""
+    monkeypatch.setattr(releases, "_BACKOFF", (0.0, 0.0))
+    seen: dict = {}
+
+    def fake_radar(client, entry, start, end, *, project_root):
+        seen.update(entry=dict(entry), project_root=project_root, start=start, end=end)
+        return [
+            {
+                "name": "Radar Item",
+                "category": "repo",
+                "repo_url": "https://github.com/acme/radar-item",
+                "npm_package": None,
+                "description": "d",
+                "published_at": PERIOD_END - timedelta(days=1),
+                "found_via": ["radar"],
+                "new_repo": False,
+            }
+        ]
+
+    monkeypatch.setattr(releases, "_fetch_radar", fake_radar)
+    handler = make_handler(
+        {
+            URL_NPM: npm_payload(),
+            URL_GITHUB: {"items": []},
+            URL_MCP: {"servers": []},
+            URL_RELEASES: [],
+        }
+    )
+    cfg = make_cfg(watch=[dict(RADAR_ENTRY)], project_root=tmp_path)
+    data, rc = releases.run(cfg, anchor=ANCHOR_ISO, client=FakeClient(handler))
+
+    assert rc == 0
+    assert seen["entry"]["tool"] == "get_latest"
+    assert seen["entry"]["rss_fallback"] == RADAR_FEED_URL
+    assert seen["project_root"] == tmp_path
+    assert seen["start"] == PERIOD_START and seen["end"] == PERIOD_END
+    assert data["counts_by_source"]["radar:agents-radar"] == 1
+    assert [i["name"] for i in data["new_items"]] == ["Radar Item"]
+    assert data["warnings"] == []
+
+
+def test_config_parses_radar_watch_entry(tmp_path):
+    """Le parseur config préserve les clés radar (tool/window_days/rss_fallback)."""
+    cfg_file = tmp_path / "weekly-telemetry-config.json"
+    cfg_file.write_text(
+        json.dumps(
+            {
+                "watch": [
+                    {"type": "repo", "name": "openai/codex"},
+                    {
+                        "type": "radar",
+                        "name": "agents-radar",
+                        "tool": "get_latest",
+                        "window_days": 7,
+                        "rss_fallback": RADAR_FEED_URL,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = load_config(cfg_file)
+    radar = next(w for w in cfg.watch if w["type"] == "radar")
+    assert radar == {
+        "type": "radar",
+        "name": "agents-radar",
+        "tool": "get_latest",
+        "window_days": 7,
+        "rss_fallback": RADAR_FEED_URL,
+    }
+    repo = next(w for w in cfg.watch if w["type"] == "repo")
+    assert repo == {"type": "repo", "name": "openai/codex"}  # pas de clés fantômes

@@ -382,11 +382,21 @@ def _parse(p: Path) -> TelemetryConfig:
         )
     cfg.release_keywords = [str(x) for x in raw.get("release_keywords", cfg.release_keywords)]
     cfg.watch_repos = [str(x) for x in raw.get("watch_repos", cfg.watch_repos)]
-    cfg.watch = [
-        {"type": str(w.get("type", "repo")), "name": str(w.get("name", ""))}
-        for w in raw.get("watch", [])
-        if isinstance(w, dict) and w.get("name")
-    ]
+    cfg.watch = []
+    for entry in raw.get("watch", []):
+        if not isinstance(entry, dict) or not entry.get("name"):
+            continue
+        watch_entry = {"type": str(entry.get("type", "repo")), "name": str(entry.get("name", ""))}
+        if watch_entry["type"] == "radar":
+            # clés propres au type radar (Task 4) — sources déclaratives uniquement.
+            if entry.get("tool"):
+                watch_entry["tool"] = str(entry["tool"])
+            if entry.get("rss_fallback"):
+                watch_entry["rss_fallback"] = str(entry["rss_fallback"])
+            window_days = entry.get("window_days")
+            if isinstance(window_days, int) and not isinstance(window_days, bool) and window_days >= 1:
+                watch_entry["window_days"] = window_days
+        cfg.watch.append(watch_entry)
     # rétrocompat : watch_repos → entrées type repo (dédupliquées)
     for repo in cfg.watch_repos:
         if not any(w["name"] == repo for w in cfg.watch):

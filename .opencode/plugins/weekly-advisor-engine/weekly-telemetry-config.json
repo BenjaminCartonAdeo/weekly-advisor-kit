@@ -139,6 +139,25 @@
     {
       "type": "rss",
       "name": "https://simonwillison.net/atom/everything/"
+    },
+    {
+      "type": "repo",
+      "name": "github/copilot-cli"
+    },
+    {
+      "type": "repo",
+      "name": "openai/codex"
+    },
+    {
+      "type": "repo",
+      "name": "google-gemini/gemini-cli"
+    },
+    {
+      "type": "radar",
+      "name": "agents-radar",
+      "tool": "get_latest",
+      "window_days": 7,
+      "rss_fallback": "https://agents-radar.duanyytop.workers.dev/feed.xml"
     }
   ]
 }
