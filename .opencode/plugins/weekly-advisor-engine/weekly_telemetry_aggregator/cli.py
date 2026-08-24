@@ -1,7 +1,8 @@
 """CLI entry point for weekly-telemetry-aggregator (Part 0 §3, Part 1 §5).
 
-Subcommands: run (default), show-session, releases, watch-context, watch-validate, insights,
-report-prep, report-assemble, harness, harness-remediate, commit-draft, doctor, self-cost.
+Subcommands: run (default), show-session, releases, watch-context, watch-distill,
+watch-validate, insights, report-prep, report-assemble, harness, harness-remediate,
+commit-draft, doctor, self-cost.
 """
 
 from __future__ import annotations
@@ -230,6 +231,34 @@ def _cmd_watch_context(args, cfg) -> int:
     return EXIT_OK
 
 
+def _cmd_watch_distill(args, cfg) -> int:
+    """Étape 2.2 — distill déterministe : fiches top-N + quotas + mémoire."""
+    from .watch_distill import run as distill_run
+
+    result, rc = distill_run(cfg, anchor=args.anchor)
+    if rc != 0:
+        # 1 = exception moteur, 2 = dépendance absente / étape désactivée :
+        # dans les deux cas l'orchestration aval retombe sur le flux legacy
+        # (relance sans 2.2) — jamais une fatalité du pipeline.
+        reason = "; ".join(result.get("warnings") or []) or "raison inconnue"
+        print(
+            f"watch-distill: DÉGRADÉ (mode={result.get('mode')}): {reason}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return rc
+    for warning in result["warnings"]:
+        print(f"watch-distill: WARNING: {warning}", flush=True)
+    print(
+        f"watch-distill: candidats={len(result['candidates'])} "
+        f"annexe_securite={len(result['security_annex'])} "
+        f"memoire_ignoree={result['dropped_memory']} "
+        f"quotas={result['quotas_applied']}",
+        flush=True,
+    )
+    return 0
+
+
 def _cmd_watch_validate(args, cfg) -> int:
     """Validate raw watch findings against the anchor-dated local context."""
     from .main import EXIT_OK, EXIT_PARTIAL, EXIT_TOTAL_FAILURE, _parse_anchor
@@ -452,6 +481,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the anchor-derived weekly-ecosystem-<date>.json input path",
     )
     p_watch.set_defaults(func=_cmd_watch_context)
+
+    p_watch_distill = sub.add_parser(
+        "watch-distill",
+        parents=[global_parent],
+        help="Deterministic ecosystem distill: fuse, screen, score, quota top-N fiches (étape 2.2)",
+    )
+    p_watch_distill.set_defaults(func=_cmd_watch_distill)
 
     p_watch_validate = sub.add_parser(
         "watch-validate",
