@@ -472,6 +472,34 @@ def test_residual_capped_at_50_with_compact_sorted_entries(tmp_path: Path) -> No
     assert totals == sorted(totals, reverse=True)
 
 
+def test_empty_candidates_snapshot_still_scopes_blocked_out(tmp_path: Path) -> None:
+    """Snapshot valide avec candidates:[] : le scope s'applique quand même.
+
+    Sinon les bloqués sécurité fuient dans market_matches pendant que le
+    fichier enrichi (résiduel) les exclut — incohérence inter-artefacts.
+    """
+
+    root, ecosystem = _crosswalk_project(tmp_path)
+    candidates_file = _candidates_file(
+        tmp_path,
+        [],
+        blocked=[{"id": "npm:delta-pkg", "name": "delta", "reason": "typosquat:x"}],
+    )
+
+    ctx = build_watch_context(root, ecosystem, generated_at=ANCHOR, candidates_path=candidates_file)
+    payload = load_jsonc(candidates_file)
+    inv = build_local_inventory(root)
+    enriched = enrich_candidates(payload, ctx, ecosystem, inv["items"], now=ANCHOR)
+
+    ctx_ids = {_mm_id(match) for match in ctx["market_matches"]}
+    assert "npm:delta-pkg" not in ctx_ids
+    # Sans fiche retenue, tout le non-bloqué devient résiduel : les deux
+    # artefacts exposent exactement le même ensemble d'ids.
+    assert ctx_ids == {"npm:alpha-pkg", "gh:acme/beta", "url:gamma"}
+    assert enriched["candidates"] == []
+    assert {row["id"] for row in enriched["residual"]} == ctx_ids
+
+
 def test_cli_writes_enriched_candidates_alongside_context(tmp_path: Path, capsys) -> None:
     root, ecosystem = _crosswalk_project(tmp_path)
     skill_dir = root / ".opencode" / "skills" / "context-cache"

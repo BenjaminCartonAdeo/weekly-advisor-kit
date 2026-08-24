@@ -908,16 +908,18 @@ def build_watch_context(
     environment = _environment_items(inventory)
     eco_items = _ecosystem_items(ecosystem)
     if candidates is not None:
+        # Scope appliqué dès que le snapshot est valide, même si aucune fiche
+        # n'est retenue : les bloqués sécurité doivent être exclus des deux
+        # artefacts (contexte ET enrichi), jamais seulement de l'un.
         kept_ids, blocked_ids = _candidate_ids(candidates)
-        if kept_ids:
-            residual = _residual_entries(
-                ecosystem,
-                exclude_ids=kept_ids | blocked_ids,
-                now=run_time,
-                extra_keywords=extra_keywords,
-            )
-            scope_ids = kept_ids | {row["id"] for row in residual}
-            eco_items = [item for item in eco_items if _item_identity(item) in scope_ids]
+        residual = _residual_entries(
+            ecosystem,
+            exclude_ids=kept_ids | blocked_ids,
+            now=run_time,
+            extra_keywords=extra_keywords,
+        )
+        scope_ids = kept_ids | {row["id"] for row in residual}
+        eco_items = [item for item in eco_items if _item_identity(item) in scope_ids]
     market_matches = [_match_market_item(item, inventory) for item in eco_items]
     market_matches.sort(
         key=lambda item: (
