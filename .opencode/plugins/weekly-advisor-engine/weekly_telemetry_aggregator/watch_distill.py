@@ -328,7 +328,8 @@ def truncate_summary(description: object, limit: int = SUMMARY_MAX_CHARS) -> str
     dot = cut.rfind(". ")
     if dot >= limit // 3:
         return cut[: dot + 1]
-    return cut.rstrip() + "…"
+    # Ellipse : borne à limit-1 AVANT l'ellipse (sinon 200 + 1 = 201, cf. revue).
+    return cut.rstrip()[: limit - 1].rstrip() + "…"
 
 
 def _last_status(entry: Mapping[str, Any] | None) -> str | None:

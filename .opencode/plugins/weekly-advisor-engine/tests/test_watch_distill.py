@@ -354,6 +354,16 @@ def test_constants_run_verbatim():
     )
 
 
+def test_truncate_summary_ellipse_branch_never_exceeds_limit():
+    """Régression : monophrase >200c sans ``". "`` → 200c exacts, fin par ellipse."""
+
+    single_sentence = "A" * 260
+    out = wd.truncate_summary(single_sentence)
+    assert len(out) == wd.SUMMARY_MAX_CHARS
+    assert out.endswith("…")
+    assert out[:-1] == "A" * 199
+
+
 def test_run_golden_top_n_quotas_blocked_annex_and_memory(tmp_path: Path):
     items, memory_entries = _golden_inputs()
     _write_eco(tmp_path, items)
