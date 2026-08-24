@@ -22,8 +22,10 @@ from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
 
 from .util import casefold, iso, load_jsonc, parse_iso_ts, relative_path
+from .watch_memory import normalize_id
 
 ExistingState = Literal["absent", "declared", "observed", "unknown"]
+EXISTING_STATES = frozenset(("absent", "declared", "observed", "unknown"))
 PluginSource = Literal["config", "local_file"]
 
 SCHEMA_VERSION = 1
@@ -33,6 +35,16 @@ _NPM_PACKAGE_RE = re.compile(
     r"^(?:@[a-z0-9._~-]+/)?[a-z0-9._~-]+$",
     re.IGNORECASE,
 )
+
+#: Schéma du fichier ``watch-candidates-enriched-<date>.json`` (T6).
+ENRICHED_SCHEMA_VERSION = 1
+#: Plafond d'entrées dans la bande résiduelle sous cutoff (T6).
+RESIDUAL_CAP = 50
+#: Plafond de noms locaux pertinents par fiche (T6).
+HINTS_CAP = 5
+#: Longueur maximale d'une description compacte (fiche/résiduel, T6).
+ENRICHED_DESCRIPTION_MAX_CHARS = 200
+_TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -632,12 +644,233 @@ def _ecosystem_items(ecosystem: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return []
 
 
+# ------------------------------------------- T6 : inventaire local + crosswalk
+
+
+def _markdown_description(path: Path) -> str:
+    """Description d'un markdown local : frontmatter ``description:`` sinon
+    première ligne utile (titres ``#`` décapités) ; ``""`` si illisible."""
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return ""
+    body = lines
+    if lines and lines[0].strip() == "---":
+        body = lines[1:]
+        for index, line in enumerate(lines[1:], start=1):
+            stripped = line.strip()
+            if stripped == "---":
+                body = lines[index + 1 :]
+                break
+            if stripped.startswith("description:"):
+                value = stripped[len("description:") :].strip().strip("\"'")
+                if value:
+                    return value
+    for line in body:
+        text = line.strip()
+        if text:
+            return text.lstrip("#").strip()
+    return ""
+
+
+def build_local_inventory(project_root: Path) -> dict[str, Any]:
+    """Inventaire structuré des capacités locales du projet (zéro LLM/réseau).
+
+    Agrège sous ``project_root/.opencode`` les skills (SKILL.md), commands,
+    agents et plugins (locaux + déclarés) en entrées compactes
+    ``{name, kind, path, description}``. Réutilise les scanners déterministes
+    existants ; toute anomalie de lecture devient un warning, jamais un crash.
+    """
+
+    root = Path(project_root)
+    skills, _, skill_warnings = _markdown_records(root, ".opencode/skills", skill=True)
+    commands, _, command_warnings = _markdown_records(root, ".opencode/commands")
+    agents, _, agent_warnings = _markdown_records(root, ".opencode/agents", parent_identity=True)
+    local_plugins, plugin_warnings, _ = _local_plugin_records(root)
+    declared_plugins, _, _, _, config_warnings = _read_plugin_config(root)
+
+    items: list[dict[str, Any]] = []
+    for record in skills:
+        items.append(
+            {
+                "name": record.name,
+                "kind": "skill",
+                "path": record.path,
+                "description": _markdown_description(root / record.path),
+            }
+        )
+    for record in commands:
+        items.append(
+            {
+                "name": record.name,
+                "kind": "command",
+                "path": record.path,
+                "description": _markdown_description(root / record.path),
+            }
+        )
+    for record in agents:
+        items.append(
+            {
+                "name": record.name,
+                "kind": "agent",
+                "path": record.path,
+                "description": _markdown_description(root / record.path),
+            }
+        )
+    # Plugin : aucune description locale fiable (spec brute ou fichier vide).
+    for record in [*local_plugins, *declared_plugins]:
+        items.append(
+            {"name": record.name, "kind": "plugin", "path": record.path, "description": ""}
+        )
+    items.sort(key=lambda item: (item["kind"], casefold(item["name"]), item["path"]))
+    warnings = [
+        *skill_warnings,
+        *command_warnings,
+        *agent_warnings,
+        *plugin_warnings,
+        *config_warnings,
+    ]
+    return {"items": items, "warnings": sorted(set(warnings))}
+
+
+def _tokens(text: object) -> frozenset[str]:
+    """Jetons normalisés d'un texte : minuscules, split non-alphanum, ≥3 chars."""
+
+    return frozenset(
+        token for token in _TOKEN_SPLIT_RE.split(str(text or "").casefold()) if len(token) >= 3
+    )
+
+
+def hints_for(fiche: Mapping[str, Any], inventory_items: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Noms locaux pertinents pour une fiche, par intersection de jetons (cap 5).
+
+    Jetons de ``name+summary`` (côté fiche) croisés avec ceux de la seule
+    ``description`` locale ; un seul jeton commun suffit. Déterministe : ordre
+    de l'inventaire, noms dédoublonnés.
+    """
+
+    fiche_tokens = _tokens(f"{fiche.get('name') or ''} {fiche.get('summary') or ''}")
+    if not fiche_tokens:
+        return []
+    hints: list[str] = []
+    for item in inventory_items:
+        name = str(item.get("name") or "")
+        if not name or name in hints or len(hints) >= HINTS_CAP:
+            continue
+        if fiche_tokens & _tokens(item.get("description")):
+            hints.append(name)
+    return hints
+
+
+def _validate_candidates(payload: object) -> str | None:
+    """Contrat minimal d'un snapshot watch-candidates ; message d'erreur sinon."""
+
+    if not isinstance(payload, Mapping):
+        return "watch-candidates invalide : racine non objet"
+    candidates = payload.get("candidates")
+    is_list = isinstance(candidates, Sequence) and not isinstance(
+        candidates, (str, bytes, bytearray)
+    )
+    if payload.get("mode") != "distill" or not is_list:
+        return "watch-candidates invalide : mode/candidats inattendus"
+    if not all(isinstance(row, Mapping) for row in candidates):
+        return "watch-candidates invalide : fiche non objet"
+    return None
+
+
+def _load_valid_candidates(path: Path | None) -> tuple[Mapping[str, Any] | None, str | None]:
+    """Charge un snapshot watch-candidates ; ``(payload, erreur)``."""
+
+    if path is None:
+        return None, None
+    payload = load_jsonc(path)
+    if payload is None:
+        return None, f"watch-candidates illisible ({Path(path).name}) : flux legacy conservé"
+    error = _validate_candidates(payload)
+    if error is not None:
+        return None, f"{error} ({Path(path).name}) : flux legacy conservé"
+    return payload, None
+
+
+def _candidate_ids(payload: Mapping[str, Any]) -> tuple[set[str], set[str]]:
+    """Ids des fiches retenues + ids bloqués sécurité (annexe), ensemblistes."""
+
+    fiches = payload.get("candidates")
+    kept = {
+        str(row.get("id"))
+        for row in (fiches if isinstance(fiches, Sequence) else [])
+        if isinstance(row, Mapping) and row.get("id")
+    }
+    annex = payload.get("security_annex")
+    blocked: set[str] = set()
+    if isinstance(annex, Sequence) and not isinstance(annex, (str, bytes, bytearray)):
+        blocked = {
+            str(row.get("id")) for row in annex if isinstance(row, Mapping) and row.get("id")
+        }
+    return kept, blocked
+
+
+def _item_identity(item: Mapping[str, Any]) -> str:
+    """Id canonique d'un item écosystème (même calcul que le distill)."""
+
+    return normalize_id(str(item.get("name") or ""), item.get("npm_package"), item.get("repo_url"))
+
+
+def _residual_entries(
+    ecosystem: Mapping[str, Any],
+    *,
+    exclude_ids: set[str],
+    now: datetime,
+    extra_keywords: Sequence[str] = (),
+) -> list[dict[str, Any]]:
+    """Bande sous cutoff : entrées compactes scorées, triées, plafonnées à 50.
+
+    Réutilise le scoring du distill (import tardif : évite le cycle
+    watch_distill → watch_context) avec les poids par défaut ; tri
+    ``(-score, id)`` pour un plafonnage reproductible. Les ids exclus
+    (candidats retenus + bloqués sécurité) n'y figurent jamais.
+    """
+
+    from .watch_distill import DEFAULT_WEIGHTS, score_item, truncate_summary
+
+    keywords = tuple(extra_keywords)
+    rows: list[tuple[float, str, dict[str, Any]]] = []
+    for item in _ecosystem_items(ecosystem):
+        identity = _item_identity(item)
+        if identity in exclude_ids:
+            continue
+        total = float(
+            score_item(item, weights=dict(DEFAULT_WEIGHTS), now=now, extra_keywords=keywords)[
+                "total"
+            ]
+        )
+        rows.append(
+            (
+                total,
+                identity,
+                {
+                    "id": identity,
+                    "name": str(item.get("name") or ""),
+                    "description": truncate_summary(
+                        item.get("description"), ENRICHED_DESCRIPTION_MAX_CHARS
+                    ),
+                    "score_total": round(total, 3),
+                },
+            )
+        )
+    rows.sort(key=lambda row: (-row[0], row[1]))
+    return [row[2] for row in rows[:RESIDUAL_CAP]]
+
+
 def build_watch_context(
     project_root: Path,
     ecosystem: Mapping[str, Any],
     *,
     generated_at: datetime | str | None = None,
     ecosystem_path: Path | None = None,
+    candidates_path: Path | None = None,
+    extra_keywords: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Build a deterministic watch context from one ecosystem report.
 
@@ -645,9 +878,19 @@ def build_watch_context(
     fetch, mutate, deduplicate across runs, or write lifecycle state.  The
     caller controls the timestamp so repeated runs with the same anchor and
     worktree produce stable context content apart from filesystem changes.
+
+    Crosswalk candidats (T6) : si ``candidates_path`` pointe un snapshot
+    ``watch-candidates-<date>.json`` valide (mode ``distill``), les
+    ``market_matches`` sont restreints aux fiches retenues ET aux items
+    résiduels sous cutoff (plafonnés, hors annexe sécurité) afin que leurs
+    findings passent la validation 3.6. Snapshot absent → comportement legacy
+    inchangé ; corrompu/invalide → legacy + warning.
     """
 
     inventory = inventory_environment(Path(project_root))
+    candidates, candidates_error = _load_valid_candidates(candidates_path)
+    if candidates_error is not None:
+        inventory.warnings.append(candidates_error)
     if generated_at is None:
         run_time = datetime.now(UTC)
         generated = iso(run_time)
@@ -661,8 +904,21 @@ def build_watch_context(
     else:
         parsed = parse_iso_ts(str(generated_at))
         run_time = parsed.astimezone(UTC) if parsed is not None else datetime.now(UTC)
+        generated = iso(run_time)
     environment = _environment_items(inventory)
-    market_matches = [_match_market_item(item, inventory) for item in _ecosystem_items(ecosystem)]
+    eco_items = _ecosystem_items(ecosystem)
+    if candidates is not None:
+        kept_ids, blocked_ids = _candidate_ids(candidates)
+        if kept_ids:
+            residual = _residual_entries(
+                ecosystem,
+                exclude_ids=kept_ids | blocked_ids,
+                now=run_time,
+                extra_keywords=extra_keywords,
+            )
+            scope_ids = kept_ids | {row["id"] for row in residual}
+            eco_items = [item for item in eco_items if _item_identity(item) in scope_ids]
+    market_matches = [_match_market_item(item, inventory) for item in eco_items]
     market_matches.sort(
         key=lambda item: (
             str(item.get("name") or "").casefold(),
@@ -703,6 +959,60 @@ def build_watch_context(
     if isinstance(ecosystem.get("generated_at"), str):
         context["ecosystem_generated_at"] = ecosystem["generated_at"]
     return context
+
+
+def enrich_candidates(
+    candidates: Mapping[str, Any] | None,
+    context: Mapping[str, Any],
+    ecosystem: Mapping[str, Any],
+    inventory_items: Sequence[Mapping[str, Any]],
+    *,
+    now: datetime,
+    extra_keywords: Sequence[str] = (),
+) -> dict[str, Any] | None:
+    """Fusion fiches × contexte local → ``watch-candidates-enriched-<date>.json``.
+
+    Chaque fiche reçoit ``existing_state``, ``market_match`` (preuve issue du
+    contexte scoppé) et ``local_relevance_hints`` remplies ; les items éco-
+    système sous cutoff forment ``residual`` (entrées compactes scorées,
+    plafonnées, hors fiches retenues et bloqués sécurité). Retourne ``None``
+    si le snapshot candidats est invalide : l'appelant retombe alors sur le
+    flux legacy sans fichier enrichi. Aucune écriture ici — l'appelant persiste.
+    """
+
+    if _validate_candidates(candidates) is not None:
+        return None
+    kept_ids, blocked_ids = _candidate_ids(candidates)
+    matches_by_id: dict[str, Mapping[str, Any]] = {}
+    for match in context.get("market_matches") or []:
+        if isinstance(match, Mapping):
+            matches_by_id[_item_identity(match)] = match
+
+    enriched_fiches: list[dict[str, Any]] = []
+    for fiche in candidates["candidates"]:
+        out = dict(fiche)
+        match = matches_by_id.get(str(fiche.get("id")))
+        state = match.get("existing_state") if match is not None else None
+        out["existing_state"] = (
+            str(state) if isinstance(state, str) and state in EXISTING_STATES else "unknown"
+        )
+        out["market_match"] = match.get("match") if match is not None else None
+        out["local_relevance_hints"] = hints_for(fiche, inventory_items)
+        enriched_fiches.append(out)
+
+    return {
+        "schema_version": ENRICHED_SCHEMA_VERSION,
+        "mode": "enriched",
+        "date": now.strftime("%Y-%m-%d"),
+        "candidates": enriched_fiches,
+        "residual": _residual_entries(
+            ecosystem,
+            exclude_ids=kept_ids | blocked_ids,
+            now=now,
+            extra_keywords=extra_keywords,
+        ),
+        "warnings": [],
+    }
 
 
 def load_ecosystem_report(path: Path) -> tuple[dict[str, Any] | None, str | None]:

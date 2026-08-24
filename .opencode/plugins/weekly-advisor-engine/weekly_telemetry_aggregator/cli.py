@@ -186,9 +186,21 @@ def _cmd_releases(args, cfg) -> int:
 
 
 def _cmd_watch_context(args, cfg) -> int:
-    """Join the dated ecosystem report with the local project worktree."""
+    """Join the dated ecosystem report with the local project worktree.
+
+    T6 : si le snapshot ``watch-candidates-<date>.json`` du run existe, le
+    contexte est scoppé aux candidats + résiduels et le fichier fusionné
+    ``watch-candidates-enriched-<date>.json`` (fiches × état local + hints)
+    est écrit à côté. Snapshot absent/corrompu → flux legacy inchangé.
+    """
     from .main import EXIT_OK, EXIT_TOTAL_FAILURE, _parse_anchor
-    from .watch_context import build_watch_context, load_ecosystem_report
+    from .util import load_jsonc
+    from .watch_context import (
+        build_local_inventory,
+        build_watch_context,
+        enrich_candidates,
+        load_ecosystem_report,
+    )
     from .writer import write_json_atomic
 
     run_time = _parse_anchor(args.anchor)
@@ -213,19 +225,48 @@ def _cmd_watch_context(args, cfg) -> int:
         return EXIT_TOTAL_FAILURE
 
     project_root = cfg.project_root or Path.cwd()
+    candidates_path = out / f"watch-candidates-{date}.json"
+    candidates = load_jsonc(candidates_path) if candidates_path.is_file() else None
+    extra_keywords = tuple(getattr(cfg, "release_keywords", None) or ())
     context = build_watch_context(
         project_root,
         ecosystem,
         generated_at=run_time,
         ecosystem_path=ecosystem_path,
+        candidates_path=candidates_path,
+        extra_keywords=extra_keywords,
     )
     out_path = out / f"weekly-watch-context-{date}.json"
     write_json_atomic(out_path, context)
+    enriched_note = ""
+    if candidates is not None:
+        inventory = build_local_inventory(project_root)
+        enriched = enrich_candidates(
+            candidates,
+            context,
+            ecosystem,
+            inventory["items"],
+            now=run_time,
+            extra_keywords=extra_keywords,
+        )
+        if enriched is not None:
+            enriched_path = out / f"watch-candidates-enriched-{date}.json"
+            write_json_atomic(enriched_path, enriched, indent=None)
+            enriched_note = f" enriched={len(enriched['candidates'])}+{len(enriched['residual'])}"
+            print(f"watch-context: enriched file={enriched_path}", flush=True)
+        else:
+            print(
+                "watch-context: WARNING: watch-candidates illisible/invalide — "
+                "pas de fichier enrichi, flux legacy conservé",
+                file=sys.stderr,
+                flush=True,
+            )
     for warning in context["warnings"]:
         print(f"watch-context: WARNING: {warning}", flush=True)
     print(
         f"watch-context: items={len(context['market_matches'])} "
-        f"declared_plugins={context['counts']['declared_plugins']} file={out_path}",
+        f"declared_plugins={context['counts']['declared_plugins']}{enriched_note} "
+        f"file={out_path}",
         flush=True,
     )
     return EXIT_OK
