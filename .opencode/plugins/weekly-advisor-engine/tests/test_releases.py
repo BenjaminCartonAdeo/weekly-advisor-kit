@@ -929,7 +929,10 @@ def _radar_handler(tools_call):
                 json={
                     "jsonrpc": "2.0",
                     "id": 1,
-                    "result": {"protocolVersion": "2025-06-18", "serverInfo": {"name": "agents-radar"}},
+                    "result": {
+                        "protocolVersion": "2025-06-18",
+                        "serverInfo": {"name": "agents-radar"},
+                    },
                 },
                 headers={"mcp-session-id": "sess-42"},
             )
@@ -946,11 +949,23 @@ def _radar_handler(tools_call):
 
 def test_fetch_radar_happy_path_mcp(tmp_path):
     """initialize + tools/call → liens markdown datés ; non datés et hors fenêtre exclus."""
-    root = _radar_opencode_json(tmp_path, {RADAR_ENTRY["name"]: {"type": "remote", "url": RADAR_URL}})
-    client = httpx.Client(transport=httpx.MockTransport(_radar_handler(lambda _rq: httpx.Response(
-        200,
-        json={"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": RADAR_MARKDOWN}]}},
-    ))))
+    root = _radar_opencode_json(
+        tmp_path, {RADAR_ENTRY["name"]: {"type": "remote", "url": RADAR_URL}}
+    )
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            _radar_handler(
+                lambda _rq: httpx.Response(
+                    200,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {"content": [{"type": "text", "text": RADAR_MARKDOWN}]},
+                    },
+                )
+            )
+        )
+    )
     items = releases._fetch_radar(client, RADAR_ENTRY, PERIOD_START, PERIOD_END, project_root=root)
 
     names = [i["name"] for i in items]
@@ -967,10 +982,14 @@ def test_fetch_radar_happy_path_mcp(tmp_path):
 
 def test_fetch_radar_parses_sse_tools_call(tmp_path):
     """Réponse tools/call en flux SSE (`event:`/`data:`) → dernière ligne data parsée."""
-    root = _radar_opencode_json(tmp_path, {RADAR_ENTRY["name"]: {"type": "remote", "url": RADAR_URL}})
+    root = _radar_opencode_json(
+        tmp_path, {RADAR_ENTRY["name"]: {"type": "remote", "url": RADAR_URL}}
+    )
 
     def tools_call(_request):
-        return httpx.Response(200, text=SSE_TOOLS_CALL, headers={"content-type": "text/event-stream"})
+        return httpx.Response(
+            200, text=SSE_TOOLS_CALL, headers={"content-type": "text/event-stream"}
+        )
 
     client = httpx.Client(transport=httpx.MockTransport(_radar_handler(tools_call)))
     items = releases._fetch_radar(client, RADAR_ENTRY, PERIOD_START, PERIOD_END, project_root=root)
@@ -981,10 +1000,12 @@ def test_fetch_radar_parses_sse_tools_call(tmp_path):
 
 def test_fetch_radar_falls_back_to_rss_when_tools_call_500(tmp_path):
     """tools/call en 500 → repli RSS déclaré dans l'entrée radar."""
-    root = _radar_opencode_json(tmp_path, {RADAR_ENTRY["name"]: {"type": "remote", "url": RADAR_URL}})
+    root = _radar_opencode_json(
+        tmp_path, {RADAR_ENTRY["name"]: {"type": "remote", "url": RADAR_URL}}
+    )
     fallback_atom = (
         '<?xml version="1.0"?>\n<feed xmlns="http://www.w3.org/2005/Atom">\n'
-        '  <entry><title>Fallback Item</title>'
+        "  <entry><title>Fallback Item</title>"
         '<link href="https://github.com/acme/fallback"/>'
         "<updated>2026-08-05T09:00:00Z</updated></entry>\n</feed>"
     )
@@ -1003,7 +1024,9 @@ def test_fetch_radar_falls_back_to_rss_when_tools_call_500(tmp_path):
 
 def test_fetch_radar_both_dead_raises_source_error(tmp_path):
     """MCP mort ET flux RSS mort → SourceError (warning source, run inchangé)."""
-    root = _radar_opencode_json(tmp_path, {RADAR_ENTRY["name"]: {"type": "remote", "url": RADAR_URL}})
+    root = _radar_opencode_json(
+        tmp_path, {RADAR_ENTRY["name"]: {"type": "remote", "url": RADAR_URL}}
+    )
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "GET":

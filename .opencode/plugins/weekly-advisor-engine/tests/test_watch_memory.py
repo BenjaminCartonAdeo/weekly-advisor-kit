@@ -45,7 +45,9 @@ def _write_lines(path: Path, *entries: dict) -> None:
 def test_normalize_id_prefers_npm_then_repo_then_url():
     assert wm.normalize_id("x", "@v/x", "https://github.com/v/x") == "npm:@v/x"
     assert wm.normalize_id("x", None, "https://github.com/v/x") == "gh:v/x"
-    assert wm.normalize_id("Some Tool", None, "https://example.com/a") == "url:https://example.com/a"
+    assert (
+        wm.normalize_id("Some Tool", None, "https://example.com/a") == "url:https://example.com/a"
+    )
 
 
 def test_normalize_id_handles_git_suffix_case_and_name_fallback():
@@ -58,7 +60,10 @@ def test_normalize_id_handles_git_suffix_case_and_name_fallback():
 
 def test_load_skips_malformed_lines_with_warning(tmp_path: Path):
     p = tmp_path / "watch-memory.jsonl"
-    p.write_text('{"id":"a"}\nnot-json\n{"id":"b","name":"b","first_seen_week":"2026-W1","last_seen_week":"2026-W1","occurrences":1,"history":[],"last_signature":{}}\n', encoding="utf-8")
+    p.write_text(
+        '{"id":"a"}\nnot-json\n{"id":"b","name":"b","first_seen_week":"2026-W1","last_seen_week":"2026-W1","occurrences":1,"history":[],"last_signature":{}}\n',
+        encoding="utf-8",
+    )
     entries, warnings = wm.load_memory(p)
     assert set(entries) == {"a", "b"}
     assert len(warnings) == 1
@@ -108,7 +113,9 @@ def test_signature_changed_on_version_or_newer_published_at():
     assert wm.signature_changed(entry, {"version": "2.0.0"})
     assert not wm.signature_changed(entry, {"version": "1.0.0"})
     assert wm.signature_changed(entry, {"version": "1.0.0", "published_at": "2026-07-01T00:00:00Z"})
-    assert not wm.signature_changed(entry, {"version": "1.0.0", "published_at": "2026-01-01T00:00:00Z"})
+    assert not wm.signature_changed(
+        entry, {"version": "1.0.0", "published_at": "2026-01-01T00:00:00Z"}
+    )
 
 
 def test_signature_unknown_when_no_stored_signature():
@@ -157,13 +164,20 @@ def test_filter_flags_stale_seen_within_four_weeks():
 
 def test_append_merges_existing_id_and_keeps_append_only_store(tmp_path: Path):
     p = tmp_path / "watch-memory.jsonl"
-    first = wm.entry_from_item({"name": "tool", "npm_package": "tool", "version": "1.0.0"}, "2026-W30")
+    first = wm.entry_from_item(
+        {"name": "tool", "npm_package": "tool", "version": "1.0.0"}, "2026-W30"
+    )
 
     assert wm.append_entries(p, [first]) == []
     warnings = wm.append_entries(
         p,
         [
-            {"id": "npm:tool", "week": "2026-W34", "status": "recommended", "signature": {"version": "1.0.0"}},
+            {
+                "id": "npm:tool",
+                "week": "2026-W34",
+                "status": "recommended",
+                "signature": {"version": "1.0.0"},
+            },
             {"name": "pas-d-id"},
         ],
     )

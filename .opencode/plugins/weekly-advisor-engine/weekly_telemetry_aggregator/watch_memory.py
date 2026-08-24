@@ -31,9 +31,7 @@ RECURRENT_MIN_OCCURRENCES = 3
 MAX_RECENTLY_IGNORED = 20
 MAX_PREVIOUSLY_RECOMMENDED = 30
 
-VALID_STATUSES = frozenset(
-    {"seen", "candidate", "recommended", "ignored", "blocked-security"}
-)
+VALID_STATUSES = frozenset({"seen", "candidate", "recommended", "ignored", "blocked-security"})
 _RETAINED_STATUSES = frozenset({"recommended", "blocked-security"})
 
 _WEEK_RE = re.compile(r"^(\d{4})-W(\d{1,2})$")
@@ -138,11 +136,7 @@ def signature_changed(entry: Mapping[str, Any], sig: Mapping[str, Any]) -> bool:
     if not isinstance(stored, Mapping):
         return False
     old_version, new_version = stored.get("version"), sig.get("version")
-    if (
-        isinstance(old_version, str)
-        and isinstance(new_version, str)
-        and old_version != new_version
-    ):
+    if isinstance(old_version, str) and isinstance(new_version, str) and old_version != new_version:
         return True
     old_at, new_at = stored.get("published_at"), sig.get("published_at")
     if isinstance(old_at, str) and isinstance(new_at, str):
@@ -235,7 +229,9 @@ def _is_full_snapshot(update: Mapping[str, Any]) -> bool:
     return any(key in update for key in ("history", "occurrences", "first_seen_week"))
 
 
-def _merge_snapshot(existing: Mapping[str, Any] | None, update: Mapping[str, Any]) -> dict[str, Any]:
+def _merge_snapshot(
+    existing: Mapping[str, Any] | None, update: Mapping[str, Any]
+) -> dict[str, Any]:
     """Fusionne un instantané complet (type ``entry_from_item``) dans l'existant."""
 
     base = _normalized_entry(existing) if isinstance(existing, Mapping) else None
@@ -267,9 +263,7 @@ def _merge_snapshot(existing: Mapping[str, Any] | None, update: Mapping[str, Any
         entry["occurrences"] = base_occ + 1
     else:
         entry["occurrences"] = max(int(incoming["occurrences"]), base_occ)
-    entry["history"] = _merge_history(
-        (base or {}).get("history", []), incoming["history"]
-    )
+    entry["history"] = _merge_history((base or {}).get("history", []), incoming["history"])
     return entry
 
 
@@ -440,9 +434,7 @@ def filter_items(
             continue
         result = dict(item)
         result["id"] = iid
-        elapsed = (
-            weeks_between(str(entry.get("last_seen_week") or ""), week) if entry else None
-        )
+        elapsed = weeks_between(str(entry.get("last_seen_week") or ""), week) if entry else None
         result["_stale_seen"] = elapsed is not None and elapsed < STALE_SEEN_WEEKS
         kept.append(result)
     return kept, dropped
@@ -493,6 +485,8 @@ def build_digest(memory: dict[str, dict[str, Any]], week: str) -> dict[str, Any]
     recurrents.sort()
     return {
         "recently_ignored": recently_ignored,
-        "previously_recommended": [eid for _latest, eid in recommended[:MAX_PREVIOUSLY_RECOMMENDED]],
+        "previously_recommended": [
+            eid for _latest, eid in recommended[:MAX_PREVIOUSLY_RECOMMENDED]
+        ],
         "recurrents": [eid for _neg_occ, eid in recurrents],
     }

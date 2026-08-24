@@ -167,9 +167,7 @@ def score_item(
     w_multi = weights.get("multi_source", DEFAULT_WEIGHTS["multi_source"])
     w_traction = weights.get("traction", DEFAULT_WEIGHTS["traction"])
 
-    found_via = [
-        entry for entry in (item.get("found_via") or []) if isinstance(entry, str)
-    ]
+    found_via = [entry for entry in (item.get("found_via") or []) if isinstance(entry, str)]
     authorities = [
         AUTHORITY_BY_SOURCE[source]
         for source in (_authority_source(entry) for entry in found_via)
@@ -180,9 +178,7 @@ def score_item(
     haystack = f"{item.get('name') or ''}\n{item.get('description') or ''}".casefold()
     keywords = tuple(dict.fromkeys((*RELEVANCE_KEYWORDS, *(k.casefold() for k in extra_keywords))))
     matches = sum(1 for keyword in keywords if keyword and keyword in haystack)
-    relevance = (
-        _round(min(w_relevance, w_relevance * matches / len(keywords))) if keywords else 0.0
-    )
+    relevance = _round(min(w_relevance, w_relevance * matches / len(keywords))) if keywords else 0.0
 
     published = _published_dt(item.get("published_at"))
     anchor = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
@@ -388,9 +384,7 @@ def _fuse_items(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         for source in record.get("found_via") or []:
             if isinstance(source, str) and source not in existing.setdefault("found_via", []):
                 existing["found_via"].append(source)
-        if len(str(record.get("description") or "")) > len(
-            str(existing.get("description") or "")
-        ):
+        if len(str(record.get("description") or "")) > len(str(existing.get("description") or "")):
             # La description gagnante met à jour les scalaires, jamais id/sources.
             for key, value in record.items():
                 if key not in ("id", "found_via"):
@@ -434,11 +428,9 @@ def _apply_quotas(
         applied[cat] = len(take)
         selected.extend(take)
         selected_ids.update(str(candidate.get("id")) for candidate in take)
-    fill = [
-        candidate
-        for candidate in ranked
-        if str(candidate.get("id")) not in selected_ids
-    ][: max(0, top_n - len(selected))]
+    fill = [candidate for candidate in ranked if str(candidate.get("id")) not in selected_ids][
+        : max(0, top_n - len(selected))
+    ]
     applied["fill_best"] = len(fill)
     return rank(selected + fill), applied
 
@@ -525,8 +517,10 @@ def _run_impl(cfg, *, anchor: str | None = None) -> tuple[dict[str, Any], int]:
     payload = load_jsonc(ecosystem_path)
     if payload is None:
         return _fallback(
-            [f"DÉPENDANCE: écosystème absent ou illisible ({ecosystem_path.name}) "
-             "— exécuter releases (étape 2) d'abord"],
+            [
+                f"DÉPENDANCE: écosystème absent ou illisible ({ecosystem_path.name}) "
+                "— exécuter releases (étape 2) d'abord"
+            ],
             2,
         )
 
@@ -559,7 +553,9 @@ def _run_impl(cfg, *, anchor: str | None = None) -> tuple[dict[str, Any], int]:
     top_n = int(getattr(wd_cfg, "top_n", None) or DEFAULT_TOP_N)
     raw_quotas = getattr(wd_cfg, "quotas", None) or QUOTAS
     quotas = {
-        cat: int(raw_quotas.get(cat, QUOTAS[cat])) if isinstance(raw_quotas, Mapping) else QUOTAS[cat]
+        cat: int(raw_quotas.get(cat, QUOTAS[cat]))
+        if isinstance(raw_quotas, Mapping)
+        else QUOTAS[cat]
         for cat in _QUOTA_ORDER
     }
     selected, quotas_applied = _apply_quotas(rank(kept), memory, top_n=top_n, quotas=quotas)

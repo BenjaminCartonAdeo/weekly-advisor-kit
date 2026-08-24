@@ -394,7 +394,11 @@ def _parse(p: Path) -> TelemetryConfig:
             if entry.get("rss_fallback"):
                 watch_entry["rss_fallback"] = str(entry["rss_fallback"])
             window_days = entry.get("window_days")
-            if isinstance(window_days, int) and not isinstance(window_days, bool) and window_days >= 1:
+            if (
+                isinstance(window_days, int)
+                and not isinstance(window_days, bool)
+                and window_days >= 1
+            ):
                 watch_entry["window_days"] = window_days
         cfg.watch.append(watch_entry)
     # rétrocompat : watch_repos → entrées type repo (dédupliquées)

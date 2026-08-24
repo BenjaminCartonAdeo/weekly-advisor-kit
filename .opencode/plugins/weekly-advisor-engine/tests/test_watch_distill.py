@@ -116,9 +116,9 @@ def test_score_freshness_decays_to_zero_after_90_days():
     old = _score(_item(published_at=(NOW - timedelta(days=120)).isoformat()))
     assert fresh > 0
     assert old["breakdown"]["freshness"] == pytest.approx(0)
-    assert _score(_item(published_at=(NOW - timedelta(days=45)).isoformat()))[
-        "breakdown"
-    ]["freshness"] == pytest.approx(20 * (1 - 45 / 90))
+    assert _score(_item(published_at=(NOW - timedelta(days=45)).isoformat()))["breakdown"][
+        "freshness"
+    ] == pytest.approx(20 * (1 - 45 / 90))
 
 
 def test_score_traction_from_stars_else_neutral():
@@ -131,10 +131,7 @@ def test_score_traction_from_stars_else_neutral():
 def test_score_multi_source_needs_two_distinct_sources():
     assert _score(_item(found_via=["npm"]))["breakdown"]["multi_source"] == 0
     assert _score(_item(found_via=["npm", "npm"]))["breakdown"]["multi_source"] == 0
-    assert (
-        _score(_item(found_via=["npm", "github:topic:x"]))["breakdown"]["multi_source"]
-        == 15
-    )
+    assert _score(_item(found_via=["npm", "github:topic:x"]))["breakdown"]["multi_source"] == 15
 
 
 def test_score_accepts_datetime_published_at_and_ignores_garbage():
@@ -216,7 +213,9 @@ def test_screen_postinstall_suspicious():
 def test_screen_recent_without_known_traction_not_flagged():
     """Traction inconnue (npm, stars=None) ≠ zéro traction : pas de badge suspicious."""
 
-    recent_unknown = _item(published_at=(datetime.now(UTC) - timedelta(days=3)).isoformat(), stars=None)
+    recent_unknown = _item(
+        published_at=(datetime.now(UTC) - timedelta(days=3)).isoformat(), stars=None
+    )
     assert wd.screen_item(recent_unknown)[0] == "clean"
     recent_zero = dict(recent_unknown, stars=0)
     assert wd.screen_item(recent_zero)[0] == "suspicious"
@@ -228,12 +227,9 @@ def test_screen_recent_without_known_traction_not_flagged():
 
 
 def test_rank_orders_by_total_desc_then_published_desc_then_id():
-    a = {"id": "a", "published_at": (NOW - timedelta(days=2)).isoformat(),
-         "score": {"total": 50}}
-    b = {"id": "b", "published_at": (NOW - timedelta(days=1)).isoformat(),
-         "score": {"total": 50}}
-    c = {"id": "c", "published_at": (NOW - timedelta(days=9)).isoformat(),
-         "score": {"total": 90}}
+    a = {"id": "a", "published_at": (NOW - timedelta(days=2)).isoformat(), "score": {"total": 50}}
+    b = {"id": "b", "published_at": (NOW - timedelta(days=1)).isoformat(), "score": {"total": 50}}
+    c = {"id": "c", "published_at": (NOW - timedelta(days=9)).isoformat(), "score": {"total": 90}}
     ranked = wd.rank([a, c, b])
     assert [entry["id"] for entry in ranked] == ["c", "b", "a"]
 
@@ -513,8 +509,7 @@ def test_run_fill_best_takes_highest_remaining_scores(tmp_path: Path):
     strong = [_eco_item(f"pkg-g{i:02d}", stars=500) for i in range(12)]
     weak_stars = [30, 20, 10, 5, 3, 1]
     weak = [
-        _eco_item(f"pkg-w{i:02d}", stars=stars, days_old=200)
-        for i, stars in enumerate(weak_stars)
+        _eco_item(f"pkg-w{i:02d}", stars=stars, days_old=200) for i, stars in enumerate(weak_stars)
     ]
     _write_eco(tmp_path, [*strong, *weak])
 
