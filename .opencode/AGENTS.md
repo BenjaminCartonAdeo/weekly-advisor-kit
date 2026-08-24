@@ -8,8 +8,8 @@ remédiation harness-eval et rapport final.
 
 - `README.md` — présentation et usage général
 - `INSTALL.md` — installation, configuration et exécution des étapes
-- `ARCHITECTURE.md` — architecture du kit et du pipeline
-- `opencode-weekly-advisor` — spec du plugin (fichier plat à la racine)
+- `doc/ARCHITECTURE.md` — architecture du kit et du pipeline
+- `doc/spec-opencode-weekly-advisor` — spec du plugin (fichier plat, dossier `doc/`)
 
 ## Structure
 

@@ -8,7 +8,7 @@ Temps total : ~10 min (hors run complet de test : 30-45 min).
 > agent de lire `https://raw.githubusercontent.com/BenjaminCartonAdeo/weekly-advisor-kit/master/INSTALL_PROMPT.md`
 > et de l'exécuter. Ce guide reste la référence humaine (explications, dépannage, cron).
 
-> Vue d'ensemble et architecture : [`README.md`](README.md) · Contrat complet : `opencode-weekly-advisor`
+> Vue d'ensemble et architecture : [`README.md`](README.md) · Contrat complet : `doc/spec-opencode-weekly-advisor`
 
 ## 1. Prérequis (binaires du poste)
 
@@ -79,7 +79,6 @@ Toutes les autres clés ont des défauts raisonnables (fenêtre 7 j, budgets, se
 veille `watch`). `~` est supporté des deux côtés — le moteur Python (`expanduser()`)
 et le plugin TS (`os.homedir()`) l'expandent avec la même sémantique ; un chemin
 absolu reste recommandé. Personnalisez `watch` (sources de veille) et les budgets selon votre usage.
-veille `watch`). Personnalisez `watch` (sources de veille) et les budgets selon votre usage.
 
 #### Veille : `watch_distill` (étape 2.2) et sources radar
 
@@ -233,7 +232,7 @@ opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"
 ```
 
-`doctor` est à relancer après chaque mise à jour (contrat spec §1.12).
+`doctor` est à relancer après chaque mise à jour (contrat spec §4 — capacité « Diagnostic » et §5.1).
 
 ## 4. Désinstallation
 

@@ -2,7 +2,7 @@
 
 Vue d'ensemble technique du kit : moteur, multi-harnais, coûts, drafting,
 lint et remédiation. Le contrat détaillé reste la spec
-[`opencode-weekly-advisor`](opencode-weekly-advisor) ; ce document décrit
+[`spec-opencode-weekly-advisor`](spec-opencode-weekly-advisor) ; ce document décrit
 l'architecture telle qu'implémentée et les invariants à préserver.
 
 ## Périmètre
@@ -12,7 +12,7 @@ l'architecture telle qu'implémentée et les invariants à préserver.
 | `README.md` | Usage, étapes du pipeline, quickstart |
 | `INSTALL.md` / `INSTALL_PROMPT.md` | Installation pas à pas (humain / agent) |
 | `ARCHITECTURE.md` | Structure technique et invariants (ce document) |
-| `opencode-weekly-advisor` | Spec complète (8 parties), source de vérité contractuelle |
+| `spec-opencode-weekly-advisor` | Spécification fonctionnelle, source de vérité contractuelle |
 
 ## Moteur et orchestration
 
@@ -47,7 +47,8 @@ Chaîne déterministe encadrant l'unique passe LLM (3.5) :
   `weekly-watch-findings-raw-<date>.json`, limité aux catégories
   `install-new` / `improve-existing` / `ignore`.
 - **Étape 3.6 — `watch-validate`** : validation déterministe du brut — coercitions
-  d'état (declared→verify-existing, observed→improve-existing), coercition de
+  d'état (`absent`→install-new, `declared`→verify-existing, `observed`→improve-existing,
+  `unknown`→verify-existing), coercition de
   cible locale hors inventaire → `install-new` (racine projet = config
   `project_root`), fiche `suspicious` sans mention de risque citable → sévérité
   `high` ; writer mémoire post-validation ; annexe sécurité recopiée depuis le

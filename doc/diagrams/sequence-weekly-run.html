@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Séquence run() — pipeline télémétrie weekly-advisor-kit</title>
+<title>Séquence run() + watch-distill — pipeline hebdo weekly-advisor-kit</title>
 <style>
   :root{
     --paper:#f5f5f5; --ink:#2d3142; --muted:#4f5d75; --soft:#7a8399;
@@ -27,14 +27,14 @@
 <body>
 <div class="wrap">
   <header>
-    <p class="eyebrow">weekly-advisor-kit · weekly_telemetry_aggregator · sequence · cli _cmd_run → main.run()</p>
-    <h1>Pipeline run() — fusion multi-sources, dédup, coûts estimés, repli local</h1>
-    <p class="sub">Flux complet de la sous-commande <code>run</code> : construction fail-soft des providers, listing fenêtré + univers d'ids, dédup premier-source-gagne, re-namespacing parent_id, lecture télémétrie par session, agrégation, cost_estimates, écriture du summary dans le run UUID.</p>
+    <p class="eyebrow">weekly-advisor-kit · weekly_telemetry_aggregator · sequence · cli _cmd_run → main.run() puis _cmd_watch_distill → watch_distill.run()</p>
+    <h1>Pipeline hebdo — collecte run(), puis watch-distill (étape 2.2)</h1>
+    <p class="sub">Phase 1 — sous-commande <code>run</code> : providers fail-soft, listing fenêtré + univers d'ids, dédup premier-source-gagne, agrégation, cost_estimates, summary UUID. Phase 2 — étape 2.2 <code>watch-distill</code> : lecture de l'écosystème écrit par releases (étape 2), screening supply-chain local, scoring déterministe, filtrage mémoire inter-run, quotas, fiches candidates + digest mémoire.</p>
   </header>
   <figure>
-  <svg viewBox="0 0 1840 1408" role="img" aria-labelledby="seq-wk-run-title seq-wk-run-desc">
-    <title id="seq-wk-run-title">Séquence run() du collecteur télémétrique weekly-advisor-kit</title>
-    <desc id="seq-wk-run-desc">Diagramme de séquence UML : la CLI invoque run() qui construit les providers de sessions (avec repli sur la base OpenCode locale si aucun), liste et déduplique les sessions multi-harnais, lit la télémétrie fenêtrée de chacune, agrège, estime les coûts des sessions sans prix et écrit le résumé JSON dans un répertoire de run UUID ; codes de sortie 0 ou 1.</desc>
+  <svg viewBox="0 0 1840 1984" role="img" aria-labelledby="seq-wk-run-title seq-wk-run-desc">
+    <title id="seq-wk-run-title">Séquence run() puis watch-distill du moteur weekly-advisor-kit</title>
+    <desc id="seq-wk-run-desc">Diagramme de séquence UML en deux phases : la CLI invoque run() qui construit les providers de sessions avec repli local éventuel, liste et déduplique les sessions multi-harnais, lit la télémétrie fenêtrée, agrège, estime les coûts et écrit le résumé JSON ; puis elle invoque watch_distill.run() qui charge la mémoire inter-run JSONL, fusionne et filtre l'écosystème publié par releases, score et quota les candidats, écrit les fiches candidates et le digest mémoire, met à jour la mémoire et retourne exit 0, 1 ou 2.</desc>
     <defs>
       <marker id="swr-a" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4f5d75"/></marker>
       <marker id="swr-ac" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#eb6c36"/></marker>
@@ -43,25 +43,33 @@
     <rect width="100%" height="100%" fill="#f5f5f5"/>
 
     <!-- ===== lifelines ===== -->
-    <line x1="128" y1="104" x2="128" y2="1332" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
-    <line x1="560" y1="104" x2="560" y2="1332" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
-    <line x1="1012" y1="104" x2="1012" y2="1332" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
-    <line x1="1432" y1="104" x2="1432" y2="1332" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
-    <line x1="1736" y1="104" x2="1736" y2="1332" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="128" y1="104" x2="128" y2="1892" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="560" y1="104" x2="560" y2="1892" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="786" y1="104" x2="786" y2="1892" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="1012" y1="104" x2="1012" y2="1892" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="1432" y1="104" x2="1432" y2="1892" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="1736" y1="104" x2="1736" y2="1892" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
 
     <!-- ===== actors (drawn after lifelines) ===== -->
     <!-- CLI -->
-    <rect x="52" y="40" width="152" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="36" y="40" width="184" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
     <rect x="100" y="48" width="56" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
     <text x="128" y="57" fill="rgba(45,49,66,0.80)" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">CLI PY</text>
-    <text x="128" y="78" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">_cmd_run</text>
-    <text x="128" y="94" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">cli.py</text>
+    <text x="128" y="78" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">cli.py</text>
+    <text x="128" y="94" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">_cmd_run · _cmd_watch_distill</text>
     <!-- run() -->
     <rect x="456" y="40" width="208" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
     <rect x="532" y="48" width="56" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
     <text x="560" y="57" fill="rgba(45,49,66,0.80)" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">ORCH</text>
     <text x="560" y="78" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">run()</text>
     <text x="560" y="94" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">main.py — pipeline</text>
+    <!-- watch_distill -->
+    <rect x="682" y="40" width="208" height="64" rx="6" fill="rgba(235,108,54,0.10)" stroke="#eb6c36" stroke-width="1"/>
+    <rect x="754" y="48" width="64" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="0.8"/>
+    <text x="786" y="57" fill="rgba(235,108,54,0.90)" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">ÉTAPE 2.2</text>
+    <text x="786" y="78" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">watch_distill.run()</text>
+    <text x="786" y="94" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">watch_distill.py — pur calcul</text>
+
     <!-- registry -->
     <rect x="916" y="40" width="192" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
     <rect x="984" y="48" width="56" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
@@ -79,7 +87,7 @@
     <rect x="1708" y="48" width="56" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
     <text x="1736" y="57" fill="rgba(79,93,117,0.90)" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">STORE</text>
     <text x="1736" y="78" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">Writer</text>
-    <text x="1736" y="94" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">write_summary</text>
+    <text x="1736" y="94" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">writer.py — json atomique</text>
 
     <!-- ===== activation bars ===== -->
     <rect x="124" y="144" width="8" height="1204" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
@@ -237,25 +245,80 @@
     <rect x="196" y="1280" width="300" height="16" rx="2" fill="#f5f5f5"/>
     <text x="346" y="1293" fill="#b3541f" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">exit 0 · sinon 1 si ≥1 warning partial</text>
 
+
+    <!-- ===== PHASE 2 : étape 2.2 watch-distill ===== -->
+    <text x="52" y="1388" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.14em">PHASE 2 · ÉTAPE 2.2 — WATCH-DISTILL (SÉQUENTIEL APRÈS RELEASES · ÉTAPE 2)</text>
+    <line x1="30" y1="1396" x2="1810" y2="1396" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <rect x="782" y="1412" width="8" height="476" fill="rgba(235,108,54,0.07)" stroke="#eb6c36" stroke-width="0.8"/>
+    <rect x="1728" y="1748" width="8" height="112" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+
+    <!-- 2.1 CLI -> watch_distill -->
+    <line x1="132" y1="1444" x2="776" y2="1444" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="330" y="1420" width="240" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="450" y="1433" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">run(cfg, anchor) — lit l'écosystème du run</text>
+
+    <!-- OPT : dépendance absente / étape désactivée -->
+    <rect x="484" y="1468" width="1076" height="124" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <rect x="484" y="1468" width="40" height="16" rx="2" fill="#f5f5f5" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <text x="504" y="1480" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.12em">OPT</text>
+    <text x="532" y="1480" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">[écosystème absent | watch_distill.enabled=false]</text>
+    <path d="M 790 1512 h 28 v 24 h -24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="826" y="1504" width="340" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="830" y="1515" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">warning DÉPENDANCE : « exécuter releases (étape 2) d'abord »</text>
+    <line x1="776" y1="1560" x2="136" y2="1560" stroke="#eb6c36" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#swr-ac)"/>
+    <rect x="220" y="1536" width="320" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="380" y="1549" fill="#b3541f" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">résultat mode=fallback — EXIT 2 · aval legacy garanti</text>
+
+    <!-- mémoire inter-run -->
+    <path d="M 790 1632 h 28 v 24 h -24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="826" y="1624" width="430" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="830" y="1635" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">load_memory(&lt;output_dir&gt;/watch-memory.jsonl) — purge &gt; 26 sem (sauf recommended|blocked-security)</text>
+
+    <!-- fusion + screen + score -->
+    <path d="M 790 1676 h 28 v 24 h -24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="826" y="1668" width="430" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="830" y="1679" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">fusion normalize_id → screen_item (blocked → annexe sécurité) → score_item 0-100</text>
+
+    <!-- filter + rank + quotas -->
+    <path d="M 790 1720 h 28 v 24 h -24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="826" y="1712" width="430" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="830" y="1723" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">filter_items (ignored inchangés droppés) → rank → quotas → top_n = 30 fiches</text>
+
+    <!-- écritures artefacts -->
+    <line x1="790" y1="1772" x2="1724" y2="1772" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="900" y="1748" width="480" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="1140" y="1761" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">write_json_atomic ×2 — watch-candidates · watch-memory-digest (run courant)</text>
+    <line x1="790" y1="1820" x2="1724" y2="1820" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <rect x="900" y="1796" width="460" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="1130" y="1809" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">append_entries — snapshots « seen » des gardés uniquement · flush + fsync</text>
+    <line x1="1724" y1="1856" x2="794" y2="1856" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#swr-a)"/>
+    <rect x="1050" y="1832" width="170" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="1135" y="1845" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">écrits · mémoire à jour</text>
+
+    <!-- exit final 2.2 -->
+    <line x1="776" y1="1884" x2="136" y2="1884" stroke="#eb6c36" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#swr-ac)"/>
+    <rect x="200" y="1860" width="360" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="380" y="1873" fill="#b3541f" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">exit 0 distill · 1 fallback exception · 2 dépendance/désactivé</text>
+
     <!-- ===== legend ===== -->
-    <line x1="30" y1="1340" x2="1810" y2="1340" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
-    <text x="30" y="1358" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.14em">LEGEND</text>
-    <line x1="120" y1="1355" x2="164" y2="1355" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
-    <text x="174" y="1358" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">appel synchrone</text>
-    <line x1="330" y1="1355" x2="374" y2="1355" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#swr-a)"/>
-    <text x="384" y="1358" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">retour / réponse</text>
-    <line x1="540" y1="1355" x2="584" y2="1355" stroke="#eb6c36" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#swr-ac)"/>
-    <text x="594" y="1358" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">issue de contrôle (exit / estimation)</text>
-    <rect x="880" y="1346" width="40" height="16" rx="2" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
-    <text x="900" y="1357" fill="#4f5d75" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.10em">ALT</text>
-    <text x="930" y="1358" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">fragment alt / opt / loop</text>
-    <rect x="1190" y="1347" width="8" height="16" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
-    <text x="1208" y="1358" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">barre d'activation</text>
-    <text x="1460" y="1358" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">ids canoniques « harness:sid » partout</text>
+    <line x1="30" y1="1916" x2="1810" y2="1916" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <text x="30" y="1934" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.14em">LEGEND</text>
+    <line x1="120" y1="1931" x2="164" y2="1931" stroke="#4f5d75" stroke-width="1" marker-end="url(#swr-a)"/>
+    <text x="174" y="1934" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">appel synchrone</text>
+    <line x1="330" y1="1931" x2="374" y2="1931" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#swr-a)"/>
+    <text x="384" y="1934" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">retour / réponse</text>
+    <line x1="540" y1="1931" x2="584" y2="1931" stroke="#eb6c36" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#swr-ac)"/>
+    <text x="594" y="1934" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">issue de contrôle (exit / estimation)</text>
+    <rect x="880" y="1922" width="40" height="16" rx="2" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <text x="900" y="1933" fill="#4f5d75" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.10em">ALT</text>
+    <text x="930" y="1934" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">fragment alt / opt / loop</text>
+    <rect x="1190" y="1923" width="8" height="16" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+    <text x="1208" y="1934" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">barre d'activation</text>
+    <text x="1460" y="1934" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">ids canoniques « harness:sid » partout</text>
   </svg>
   </figure>
   <footer>
-    weekly-advisor-kit · reports/diagrams/sequence-weekly-run.html · généré depuis main.py run(), providers/registry.py, implementations/{opencode,claude_code}.py · design system diagram-design v2.6
+    weekly-advisor-kit · reports/diagrams/sequence-weekly-run.html · généré depuis main.py run(), providers/registry.py, implementations/{opencode,claude_code}.py, cli.py (_cmd_watch_distill), watch_distill.py (_run_impl), watch_memory.py · design system diagram-design v2.6 · 2026-08-24
   </footer>
 </div>
 </body>

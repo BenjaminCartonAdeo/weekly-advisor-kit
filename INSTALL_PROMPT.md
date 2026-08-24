@@ -76,7 +76,7 @@ SRC=/tmp/weekly-advisor-kit-src
 
 ```sh
 grep -m1 "^kit_version:" "$SRC/INSTALL_PROMPT.md"   # doit contenir `6.1`
-for f in INSTALL.md README.md opencode-weekly-advisor \
+for f in INSTALL.md README.md doc/spec-opencode-weekly-advisor \
   .opencode/plugins/weekly-advisor.ts \
   .opencode/agents/weekly-advisor/weekly-advisor.md \
   .opencode/agents/harness-remediator/harness-remediator.md \
@@ -98,14 +98,15 @@ Parcours chaque fichier de `$SRC/.opencode` (exclusions : `.venv/`, `__pycache__
 - présent et `cmp -s` OK → identique, rien à faire
 - présent et différent → **CONFLIT** : STOP immédiat + rapport avec la liste complète
 
-Fais de même pour `README.md`, `INSTALL.md`, `opencode-weekly-advisor` à la racine de `<TARGET>`.
+Fais de même pour `README.md`, `INSTALL.md`, `doc/spec-opencode-weekly-advisor` à la racine de `<TARGET>`.
 Si `<TARGET>/.opencode` était absent (5.0), il n'y a aucun conflit possible.
 
 ### 5.4 Copie
 
 ```sh
 cp -a "$SRC/.opencode/." <TARGET>/.opencode/
-cp -a "$SRC/README.md" "$SRC/INSTALL.md" "$SRC/opencode-weekly-advisor" <TARGET>/
+cp -a "$SRC/README.md" "$SRC/INSTALL.md" <TARGET>/
+cp -a "$SRC/doc/spec-opencode-weekly-advisor" <TARGET>/doc/spec-opencode-weekly-advisor
 ```
 
 (5.3 garantit qu'aucun fichier préexistant n'est écrasé → aucune perte.)

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1824 1472" role="img"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1824 1936" role="img"
        aria-labelledby="uml-wak-title uml-wak-desc">
     <title id="uml-wak-title">UML classes — moteur weekly-advisor-kit</title>
-    <desc id="uml-wak-desc">Diagramme de classes UML du moteur : le protocol SessionProvider est réalisé par les providers OpenCode, Claude Code et Copilot VS Code ; WeeklySummary compose Totals, TopSession et WarningEntry ; TelemetryConfig compose quatre blocs de configuration ; les constantes de draft_targets alimentent ResolvedDraftTarget puis RemediationSurface.</desc>
+    <desc id="uml-wak-desc">Diagramme de classes UML du moteur : le protocol SessionProvider est réalisé par les providers OpenCode, Claude Code et Copilot VS Code ; WeeklySummary compose Totals, TopSession et WarningEntry ; TelemetryConfig compose cinq blocs de configuration dont WatchDistillConfig ; les constantes de draft_targets alimentent ResolvedDraftTarget puis RemediationSurface ; le sous-système veille regroupe les utilitaires watch_distill et watch_memory autour du contrat JSON fiche candidate.</desc>
 
     <defs>
       <marker id="tri-a" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto">
@@ -385,19 +385,116 @@
     <text x="1164" y="976" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">Surface 5.5 : projection (.opencode natif) · portability (mapping portability.yaml)</text>
     <text x="1164" y="1000" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">· combined — décision pure, aucune lecture disque.</text>
 
+
+    <!-- ======== package watch (PR technology-scanning-optimisation) ======== -->
+    <rect x="24" y="1408" width="1768" height="420" rx="8" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.10)"/>
+    <text x="40" y="1432" font-family="var(--mono)" font-size="8" letter-spacing=".18em" fill="#4f5d75">PACKAGE · WATCH — WATCH_DISTILL.PY · WATCH_MEMORY.PY · CONTRAT FICHE CANDIDATE</text>
+
+    <!-- composition TelemetryConfig ◆-> WatchDistillConfig -->
+    <path d="M 188 1012 V 1464" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-start="url(#dia-f)"/>
+    <rect x="196" y="1224" width="100" height="12" fill="#efeff1"/>
+    <text x="200" y="1233" font-family="var(--mono)" font-size="8" letter-spacing=".06em" fill="#7a8399">+ watch_distill</text>
+    <rect x="196" y="1028" width="14" height="12" fill="#efeff1"/>
+    <text x="200" y="1037" font-family="var(--mono)" font-size="8" fill="#4f5d75">1</text>
+    <rect x="196" y="1444" width="14" height="12" fill="#efeff1"/>
+    <text x="200" y="1453" font-family="var(--mono)" font-size="8" fill="#4f5d75">1</text>
+
+    <!-- dépendances defaults / mémoire -->
+    <path d="M 328 1560 H 368" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#arr-o)"/>
+    <rect x="330" y="1540" width="48" height="12" fill="#efeff1"/>
+    <text x="354" y="1549" text-anchor="middle" font-family="var(--mono)" font-size="8" letter-spacing=".06em" fill="#7a8399">defaults</text>
+    <path d="M 736 1560 H 792" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#arr-o)"/>
+    <rect x="740" y="1540" width="48" height="12" fill="#efeff1"/>
+    <text x="764" y="1549" text-anchor="middle" font-family="var(--mono)" font-size="8" letter-spacing=".06em" fill="#7a8399">mémoire</text>
+
+    <!-- association produit fiches -->
+    <path d="M 552 1672 V 1690 A 8 8 0 0 0 560 1698 H 1340 A 8 8 0 0 0 1348 1690 V 1676"
+          fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arr-o)"/>
+    <rect x="900" y="1680" width="128" height="12" fill="#efeff1"/>
+    <text x="964" y="1689" text-anchor="middle" font-family="var(--mono)" font-size="8" letter-spacing=".06em" fill="#7a8399">produit _build_fiche</text>
+    <rect x="556" y="1656" width="14" height="12" fill="#efeff1"/>
+    <text x="560" y="1665" font-family="var(--mono)" font-size="8" fill="#4f5d75">1</text>
+    <rect x="1296" y="1656" width="34" height="12" fill="#efeff1"/>
+    <text x="1330" y="1665" text-anchor="end" font-family="var(--mono)" font-size="8" fill="#4f5d75">0..*</text>
+
+
+    <!-- WatchDistillConfig -->
+    <rect x="56" y="1464" width="264" height="208" rx="6" fill="#ffffff" stroke="#2d3142"/>
+    <text x="188" y="1479" text-anchor="middle" font-family="var(--mono)" font-size="8" letter-spacing=".08em" fill="#7a8399">«DATACLASS · SLOTS · CONFIG.PY»</text>
+    <text x="188" y="1495" text-anchor="middle" font-family="var(--sans)" font-size="12" font-weight="600" fill="#2d3142">WatchDistillConfig</text>
+    <line x1="56" y1="1504" x2="320" y2="1504" stroke="rgba(45,49,66,0.25)" stroke-width="0.8"/>
+    <text x="68" y="1518" font-family="var(--mono)" font-size="9" fill="#444a59">+ enabled: bool = True</text>
+    <text x="68" y="1534" font-family="var(--mono)" font-size="9" fill="#444a59">+ top_n: int = 30</text>
+    <text x="68" y="1550" font-family="var(--mono)" font-size="9" fill="#444a59">+ quotas: dict[str,int] 12·8·5</text>
+    <text x="68" y="1566" font-family="var(--mono)" font-size="9" fill="#444a59">+ weights: dict[str,int] Σ=100</text>
+    <text x="68" y="1582" font-family="var(--mono)" font-size="9" fill="#444a59">+ memory_file: str = …jsonl</text>
+    <text x="68" y="1598" font-family="var(--mono)" font-size="9" fill="#444a59">+ retention_weeks: int = 26</text>
+    <text x="68" y="1614" font-family="var(--mono)" font-size="9" fill="#7a8399">+ min_candidates: int = 20 (filet B)</text>
+
+    <!-- utilitaire watch_distill -->
+    <rect x="376" y="1464" width="352" height="208" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75"/>
+    <text x="552" y="1479" text-anchor="middle" font-family="var(--mono)" font-size="8" letter-spacing=".08em" fill="#7a8399">«UTILITY · ÉTAPE 2.2 · WATCH_DISTILL.PY»</text>
+    <text x="552" y="1495" text-anchor="middle" font-family="var(--sans)" font-size="12" font-weight="600" fill="#2d3142">watch_distill — distill déterministe</text>
+    <line x1="376" y1="1504" x2="728" y2="1504" stroke="rgba(45,49,66,0.25)" stroke-width="0.8"/>
+    <text x="388" y="1518" font-family="var(--mono)" font-size="9" fill="#444a59">+ score_item(item,*,weights,now,kw): dict</text>
+    <text x="388" y="1534" font-family="var(--mono)" font-size="9" fill="#444a59">+ screen_item(item): (clean|suspicious|blocked, r)</text>
+    <text x="388" y="1550" font-family="var(--mono)" font-size="9" fill="#444a59">+ rank(candidates): list  (-score, -date, id)</text>
+    <text x="388" y="1566" font-family="var(--mono)" font-size="9" fill="#444a59">+ truncate_summary(desc, limit=200): str</text>
+    <text x="388" y="1582" font-family="var(--mono)" font-size="9" fill="#444a59">+ run(cfg, anchor=None): (résultat, exit)</text>
+    <text x="388" y="1602" font-family="var(--mono)" font-size="8" fill="#7a8399">DEFAULT_WEIGHTS auth25·rel30·fresh20·multi15·tract10</text>
+    <text x="388" y="1618" font-family="var(--mono)" font-size="8" fill="#7a8399">QUOTAS new12 · improvable 8 · resurfaced 5 · TOP_N 30</text>
+    <text x="388" y="1634" font-family="var(--mono)" font-size="8" fill="#7a8399">screen local : env-exfil · prompt-injection · typosquat ≤2</text>
+    <text x="388" y="1650" font-family="var(--mono)" font-size="8" fill="#7a8399">exception → mode=fallback exit 1 (mémoire intacte)</text>
+
+    <!-- utilitaire watch_memory -->
+    <rect x="800" y="1464" width="352" height="208" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75"/>
+    <text x="976" y="1479" text-anchor="middle" font-family="var(--mono)" font-size="8" letter-spacing=".08em" fill="#7a8399">«UTILITY · STORE INTER-RUN · WATCH_MEMORY.PY»</text>
+    <text x="976" y="1495" text-anchor="middle" font-family="var(--sans)" font-size="12" font-weight="600" fill="#2d3142">watch_memory — mémoire JSONL</text>
+    <line x1="800" y1="1504" x2="1152" y2="1504" stroke="rgba(45,49,66,0.25)" stroke-width="0.8"/>
+    <text x="812" y="1518" font-family="var(--mono)" font-size="9" fill="#444a59">+ load_memory(path, now): ({id: entrée}, warn)</text>
+    <text x="812" y="1534" font-family="var(--mono)" font-size="9" fill="#444a59">+ append_entries(path, updates): warnings</text>
+    <text x="812" y="1550" font-family="var(--mono)" font-size="9" fill="#444a59">+ filter_items(items, memory): (kept, dropped)</text>
+    <text x="812" y="1566" font-family="var(--mono)" font-size="9" fill="#444a59">+ build_digest(memory): dict borné</text>
+    <text x="812" y="1582" font-family="var(--mono)" font-size="9" fill="#444a59">+ normalize_id(name, npm, repo): str</text>
+    <text x="812" y="1598" font-family="var(--mono)" font-size="9" fill="#444a59">+ last_status(entry): str|None</text>
+    <text x="812" y="1618" font-family="var(--mono)" font-size="8" fill="#7a8399">RETENTION_WEEKS 26 · RECURRENT_MIN_OCC 3 · CAP 20</text>
+    <text x="812" y="1634" font-family="var(--mono)" font-size="8" fill="#7a8399">VALID_STATUSES seen·candidate·recommended·ignored·</text>
+    <text x="812" y="1648" font-family="var(--mono)" font-size="8" fill="#7a8399">blocked-security · purge épargne recommended|blocked</text>
+
+    <!-- contrat fiche candidate -->
+    <rect x="1224" y="1464" width="248" height="208" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-dasharray="4 3"/>
+    <text x="1348" y="1479" text-anchor="middle" font-family="var(--mono)" font-size="8" letter-spacing=".08em" fill="#7a8399">«JSON · WATCH-CANDIDATES-&lt;DATE&gt;.JSON»</text>
+    <text x="1348" y="1495" text-anchor="middle" font-family="var(--sans)" font-size="12" font-weight="600" fill="#2d3142">Fiche candidate (FICHE_KEYS)</text>
+    <line x1="1224" y1="1504" x2="1472" y2="1504" stroke="rgba(45,49,66,0.25)" stroke-width="0.8"/>
+    <text x="1236" y="1518" font-family="var(--mono)" font-size="9" fill="#444a59">id · name · sources[*]</text>
+    <text x="1236" y="1534" font-family="var(--mono)" font-size="9" fill="#444a59">score {total 0-100, breakdown}</text>
+    <text x="1236" y="1550" font-family="var(--mono)" font-size="9" fill="#444a59">security {verdict, reason}</text>
+    <text x="1236" y="1566" font-family="var(--mono)" font-size="9" fill="#444a59">summary ≤ 200 chars</text>
+    <text x="1236" y="1582" font-family="var(--mono)" font-size="9" fill="#444a59">signature (item_signature)</text>
+    <text x="1236" y="1598" font-family="var(--mono)" font-size="9" fill="#444a59">local_relevance_hints[] (ét. 2.5)</text>
+    <text x="1236" y="1622" font-family="var(--mono)" font-size="8" fill="#7a8399">+ security_annex[] top-level :</text>
+    <text x="1236" y="1636" font-family="var(--mono)" font-size="8" fill="#7a8399">les blocked ne sortent jamais</text>
+    <text x="1236" y="1650" font-family="var(--mono)" font-size="8" fill="#7a8399">du snapshot vers le LLM (3.5)</text>
+
+    <!-- aside règles mémoire -->
+    <line x1="48" y1="1694" x2="48" y2="1748" stroke="rgba(45,49,66,0.25)" stroke-width="2"/>
+    <text x="64" y="1706" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">Blocked : jamais soumis au LLM — annexe séparée du snapshot, recopiée telle quelle par la validation (étape 3.6).</text>
+    <text x="64" y="1726" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">Mémoire : seuls les gardés sont ré-enregistrés « seen » ; un ignored à signature inchangée est droppé,</text>
+    <text x="64" y="1746" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">et toute nouvelle version ou publication le fait ressusciter en catégorie « resurfaced ».</text>
+
     <!-- légende -->
-    <line x1="24" y1="1412" x2="1800" y2="1412" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
-    <text x="24" y="1432" font-family="var(--mono)" font-size="8" letter-spacing=".14em" fill="#4f5d75">LEGEND</text>
-    <path d="M 24 1451 H 60" stroke="#2d3142" stroke-width="1.2" marker-end="url(#tri-i)"/>
-    <text x="72" y="1454" font-family="var(--mono)" font-size="8" fill="#7a8399">inheritance</text>
-    <path d="M 280 1451 H 316" stroke="#eb6c36" stroke-width="1.2" stroke-dasharray="5 4" marker-end="url(#tri-a)"/>
-    <text x="328" y="1454" font-family="var(--mono)" font-size="8" fill="#7a8399">realization</text>
-    <path d="M 560 1451 H 600" stroke="#4f5d75" stroke-width="1.2" marker-start="url(#dia-f)"/>
-    <text x="612" y="1454" font-family="var(--mono)" font-size="8" fill="#7a8399">composition (owner ◆)</text>
-    <path d="M 900 1451 H 940" stroke="#4f5d75" stroke-width="1.2" marker-start="url(#dia-h)"/>
-    <text x="952" y="1454" font-family="var(--mono)" font-size="8" fill="#7a8399">aggregation</text>
-    <path d="M 1120 1451 H 1160" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arr-o)"/>
-    <text x="1172" y="1454" font-family="var(--mono)" font-size="8" fill="#7a8399">association · mult both ends</text>
-    <path d="M 1470 1451 H 1510" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#arr-o)"/>
-    <text x="1522" y="1454" font-family="var(--mono)" font-size="8" fill="#7a8399">dependency (uses)</text>
+    <line x1="24" y1="1852" x2="1800" y2="1852" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <text x="24" y="1872" font-family="var(--mono)" font-size="8" letter-spacing=".14em" fill="#4f5d75">LEGEND</text>
+    <path d="M 24 1891 H 60" stroke="#2d3142" stroke-width="1.2" marker-end="url(#tri-i)"/>
+    <text x="72" y="1894" font-family="var(--mono)" font-size="8" fill="#7a8399">inheritance</text>
+    <path d="M 280 1891 H 316" stroke="#eb6c36" stroke-width="1.2" stroke-dasharray="5 4" marker-end="url(#tri-a)"/>
+    <text x="328" y="1894" font-family="var(--mono)" font-size="8" fill="#7a8399">realization</text>
+    <path d="M 560 1891 H 600" stroke="#4f5d75" stroke-width="1.2" marker-start="url(#dia-f)"/>
+    <text x="612" y="1894" font-family="var(--mono)" font-size="8" fill="#7a8399">composition (owner ◆)</text>
+    <path d="M 900 1891 H 940" stroke="#4f5d75" stroke-width="1.2" marker-start="url(#dia-h)"/>
+    <text x="952" y="1894" font-family="var(--mono)" font-size="8" fill="#7a8399">aggregation</text>
+    <path d="M 1120 1891 H 1160" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arr-o)"/>
+    <text x="1172" y="1894" font-family="var(--mono)" font-size="8" fill="#7a8399">association · mult both ends</text>
+    <path d="M 1470 1891 H 1510" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#arr-o)"/>
+    <text x="1522" y="1894" font-family="var(--mono)" font-size="8" fill="#7a8399">dependency (uses)</text>
   </svg>
