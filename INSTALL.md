@@ -156,7 +156,7 @@ run cron (mesuré v5.32).
 
 ```sh
 cd .opencode/plugins/weekly-advisor-engine
-uv run python -m pytest -q     # 458 tests — tout doit passer
+uv run python -m pytest -q     # 457 tests — tout doit passer
 cd ../../..
 opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"
