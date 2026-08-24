@@ -63,10 +63,11 @@ ci-dessous sont inchangés — ils vivent dans ce répertoire.
 | 0 | `weekly_doctor` — diagnostic du kit, **systématique** (rc 0/1 = OK, 2 = fatale → stopper sans rapport) | texte |
 | 1 | `weekly_run` (5-15 min — lancer en arrière-plan et poller si timeout) | `weekly-summary-<date>.json` |
 | 2 | `weekly_releases` (réseau ; warnings sources tolérés) | `weekly-ecosystem-<date>.json` |
-| 2.5 | `weekly_watch_context` (worktree uniquement ; warnings d'inventaire tolérés) — ⚠ **séquentiel après 2** : il lit l'écosystème écrit par 2 ; jamais en parallèle, jamais avant (exit 2 « DÉPENDANCE » sinon) | `weekly-watch-context-<date>.json` |
+| 2.2 | `weekly_watch_distill` — séquentiel après 2 (lit l'écosystème) ; exit 2 si écosystème absent ; exit 1 → continuer, 3.5 utilisera le fallback legacy | `watch-candidates-<date>.json` |
+| 2.5 | `weekly_watch_context` (worktree uniquement ; warnings d'inventaire tolérés) — ⚠ **séquentiel après 2** : il lit l'écosystème écrit par 2 ; jamais en parallèle, jamais avant (exit 2 « DÉPENDANCE » sinon) ; consomme `watch-candidates-<date>.json` s'il existe et produit alors aussi `watch-candidates-enriched-<date>.json` (fiches × état local) | `weekly-watch-context-<date>.json` |
 | 3 | **Skill `weekly-quality-audit`** : `weekly_audit_candidates` → `weekly_show_session` → constats | `weekly-quality-findings-<date>.json` |
-| 3.5 | **Skill `weekly-watch-review`** : veille critique croisée (marché × existant × findings), écrit le brut | `weekly-watch-findings-raw-<date>.json` |
-| 3.6 | `weekly_watch_validate` — validation déterministe des findings contre le contexte | `weekly-watch-findings-<date>.json` |
+| 3.5 | **Skill `weekly-watch-review`** : veille critique croisée (fiches enrichies × existant × findings), écrit le brut ; enriched/digest absents → **fallback legacy** (écosystème complet) ; filet B phase 0 conditionnelle (fiches < `min_candidates` ET résiduel non vide) | `weekly-watch-findings-raw-<date>.json` |
+| 3.6 | `weekly_watch_validate` — validation déterministe des findings contre le contexte (coercitions état + cible locale, fiche suspicious sans risque → severity high) ; écrit la mémoire post-validation (`<output_dir>/watch-memory.jsonl`) et l'**annexe sécurité** depuis les candidats | `weekly-watch-findings-<date>.json` |
 | 4 | **Skill `weekly-drafting`** : `weekly_draft_candidates` → rédaction skills/commands + `weekly_commit_draft` (≤ plafond) | commits `skill:`/`command:` |
 | 5 | `weekly_harness` (pin 7.9.0 ; rc 0/1 = OK) | `weekly-harness-digest-<date>.json` |
 | 5.5 | **Skill `harness-remediation`** : analyse les findings, écrit les propositions puis appelle `weekly_harness_remediate` | `weekly-harness-remediation-<date>.json` |
@@ -103,6 +104,8 @@ Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sa
   boucle de re-délibération sur un constat déjà archivé
 - Les findings (3/3.5/3.6/6.5) sont une **archive** : échec d'écriture → continuer (le run suivant
   re-détecte) ; un findings mal formé ne casse rien
+- Veille : les fiches **blocked-security ne sont jamais soumises au LLM** — exclues amont
+  par le distill (2.2), elles ne réapparaissent que dans l'annexe du findings final (3.6)
 - Ne jamais modifier : bases SQLite, config du projet, CI/CD, contrats API
 - Lire les JSON en source de vérité ; incohérence/warning → le signaler au rapport, pas corriger
 - Commit auto : uniquement drafting via `weekly_commit_draft` (scoped au fichier, identité config,

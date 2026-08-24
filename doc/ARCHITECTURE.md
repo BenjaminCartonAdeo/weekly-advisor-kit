@@ -18,10 +18,40 @@ l'architecture telle qu'implémentée et les invariants à préserver.
 
 - Moteur Python déterministe `weekly-telemetry-aggregator` dans
   `.opencode/plugins/weekly-advisor-engine/`, zéro LLM sur les étapes chiffrées.
-- Plugin enveloppe OpenCode : 16 tools `weekly_*` (`weekly_run`, `weekly_harness`,
+- Plugin enveloppe OpenCode : 17 tools `weekly_*` (`weekly_run`, `weekly_harness`,
   `weekly_doctor`, `weekly_commit_draft`, etc.) qui pilotent le moteur.
 - Sorties JSON reproductibles dans `<output_dir>/runs/<date>-<uuid8>/`, alias
   stable `runs/current/`. Codes de sortie : `0` complet, `1` partiel, `2` fatal.
+
+## Veille écosystème (étapes 2 → 3.6)
+
+Chaîne déterministe encadrant l'unique passe LLM (3.5) :
+
+- **Étape 2 — `releases`** : collecte réseau (npm, topics, registre MCP, RSS,
+  repos/listes/radar suivis) → `weekly-ecosystem-<date>.json`.
+- **Étape 2.2 — `watch-distill`** (séquentiel après 2) : fusion multi-sources,
+  screening sécurité local (blocked/suspicious/clean), scoring déterministe,
+  quotas `{new, improvable, resurfaced}` → top-N fiches dans
+  `watch-candidates-<date>.json`. Les items **blocked ne sont jamais soumis au
+  LLM** : ils vivent dans une annexe séparée du snapshot. Mémoire inter-run
+  `<output_dir>/watch-memory.jsonl` (`watch_distill.memory_file`) : statuts des
+  semaines passées, dédup et résurrection bornée. Écosystème absent ou étape
+  désactivée (`watch_distill.enabled=false`) → exit 2, le flux aval retombe sur
+  l'écosystème complet (fallback legacy de la skill 3.5).
+- **Étape 2.5 — `watch-context`** : crosswalk marché/existant ; consomme les
+  candidats s'ils existent et produit alors
+  `watch-candidates-enriched-<date>.json` (fiches × état local + bande résiduelle).
+- **Étape 3.5 — skill `weekly-watch-review`** (LLM) : lit les fiches enrichies +
+  digest mémoire + findings coûteux ; filet B phase 0 conditionnelle (fiches <
+  `min_candidates` ET résiduel non vide) ; écrit le brut
+  `weekly-watch-findings-raw-<date>.json`, limité aux catégories
+  `install-new` / `improve-existing` / `ignore`.
+- **Étape 3.6 — `watch-validate`** : validation déterministe du brut — coercitions
+  d'état (declared→verify-existing, observed→improve-existing), coercition de
+  cible locale hors inventaire → `install-new` (racine projet = config
+  `project_root`), fiche `suspicious` sans mention de risque citable → sévérité
+  `high` ; writer mémoire post-validation ; annexe sécurité recopiée depuis le
+  snapshot candidats (clé top-level réservée, inusurpable par le brut).
 
 ## Multi-harnais : providers de sessions
 

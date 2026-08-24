@@ -23,11 +23,17 @@ subagent (tool `task`) : le weekly-advisor est déjà l'orchestrateur.
 0. `weekly_doctor` — diagnostic du kit (2 = fatal → stopper sans rapport)
 1. `weekly_run` — télémétrie (5-15 min : lancer en arrière-plan et poller si timeout)
 2. `weekly_releases` — veille écosystème
+2.2. `weekly_watch_distill` — distillation déterministe (~30 fiches candidates) ;
+     ⚠ séquentiel après 2 — exit 2 si écosystème absent, exit 1 → continuer
+     (3.5 utilisera le fallback legacy)
 2.5. `weekly_watch_context` — inventaire worktree ; ⚠ **séquentiel après 2** (jamais
-    en parallèle, jamais avant — exit 2 « DÉPENDANCE »)
+    en parallèle, jamais avant — exit 2 « DÉPENDANCE ») ; consomme les candidats 2.2
+    s'ils existent et produit alors aussi le fichier enriched
 3. Audit qualitatif (skill `weekly-quality-audit`) — `weekly_audit_candidates` + `weekly_show_session`
-3.5. Veille critique (skill `weekly-watch-review`) → brut `weekly-watch-findings-raw-<date>.json`
-3.6. `weekly_watch_validate` — validation déterministe, obligatoire avant l'étape 4
+3.5. Veille critique (skill `weekly-watch-review`) — fiches enrichies × existant ×
+     constats, fallback legacy si enriched absent → brut `weekly-watch-findings-raw-<date>.json`
+3.6. `weekly_watch_validate` — validation déterministe (mémoire + annexe sécurité),
+     obligatoire avant l'étape 4
 4. Auto-drafting (skill `weekly-drafting`) — `weekly_draft_candidates` + `weekly_commit_draft`
 5. `weekly_harness` — lint `.opencode/` (rc 0/1 = OK)
 5.5. Remédiation harness (skill `harness-remediation`) — propositions puis `weekly_harness_remediate`

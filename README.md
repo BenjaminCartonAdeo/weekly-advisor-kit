@@ -15,7 +15,7 @@ quels skills/commands sont inutilisés ou redondants, quoi surveiller dans l'éc
 et quelles corrections peuvent être auto-rédigées (proposées, jamais imposées).
 
 Le kit s'articule autour d'**un dossier cœur** `.opencode/` : deux agents dédiés, 6 skills
-qualitatifs, 3 commands, un **plugin enveloppe** (16 tools `weekly_*`) et un
+qualitatifs, 3 commands, un **plugin enveloppe** (17 tools `weekly_*`) et un
 **moteur Python** déterministe (`weekly-telemetry-aggregator`) ; à la racine : la spec,
 les guides d'installation (humain + agent) et les scripts de validation.
 
@@ -35,9 +35,10 @@ anti-hallucination.
 | Étape | Contenu | Exécuté par |
 |---|---|---|
 | 1 · Télémétrie | coûts, tokens, cache, modèles, sessions top/outliers, usage tools/skills/commands, prompts répétés, subagents | `weekly_run` (déterministe) |
-| 2 · Veille écosystème | npm, topics GitHub, registre MCP, releases OpenCode, repos/listes/RSS suivis | `weekly_releases` (déterministe) |
+| 2 · Veille écosystème | npm, topics GitHub, registre MCP, releases OpenCode, repos/listes/RSS/radar suivis → distillation déterministe (~30 fiches scorées, screening sécurité) | `weekly_releases` + `weekly_watch_distill` + `weekly_watch_context` (déterministes) |
 | 3 · Audit qualitatif | sessions candidates (coût, outliers, boucles, cache, prompts répétés) → constats archivés | skill `weekly-quality-audit` |
-| 3.5 · Veille critique | marché × environnement × constats → recommandations adopt / improve / ignore | skill `weekly-watch-review` |
+| 3.5 · Veille critique | fiches enrichies × environnement × constats → recommandations install-new / improve-existing / ignore (fallback legacy si distill absent) | skill `weekly-watch-review` |
+| 3.6 · Validation veille | coercitions déterministes des findings bruts, mémoire inter-run, annexe sécurité | `weekly_watch_validate` (déterministe) |
 | 4 · Auto-drafting | candidats skills/commands → rédaction + commit sécurisé et scoped (gate portabilité `skill-verify` avant commit) | skill `weekly-drafting` + `weekly_commit_draft` |
 | 5 · Lint | `harness-eval` sur une projection étendue au harnais détecté (règles `portability.yaml`, baseline findings) | `weekly_harness` (déterministe) |
 | 5.5 · Remédiation | findings harness → décisions et corrections bornées, sans commit automatique | skill `harness-remediation` + `weekly_harness_remediate` |
@@ -152,7 +153,7 @@ racine/
     ├── skills/{weekly-*,harness-remediation}/SKILL.md ← 6 étapes qualitatives (chargées à la demande)
     ├── commands/weekly-review.md / weekly-report.md / harness-remediate.md
     └── plugins/
-        ├── weekly-advisor.ts                     ← plugin enveloppe : 16 tools weekly_* (chemins dérivés)
+        ├── weekly-advisor.ts                     ← plugin enveloppe : 17 tools weekly_* (chemins dérivés)
         └── weekly-advisor-engine/                ← moteur Python (package, config, tests, providers multi-harnais)
 ```
 
@@ -185,9 +186,11 @@ racine/
 # le projet uv (pyproject + uv.lock) vit dans le dossier moteur
 cd .opencode/plugins/weekly-advisor-engine
 uv run python -m pytest -q  # 436 tests
+uv run python -m pytest -q  # 456 tests
 uv run ruff check .          # lint
 uv run ruff format --check . # format
 ```
 
 CI GitHub Actions (`.github/workflows/ci.yml`) : install lockfile `--frozen`, lint,
 format, 436 tests, packaging et syntaxe du plugin TS — vérifiés sur chaque push/PR.
+format, 456 tests, packaging et syntaxe du plugin TS — vérifiés sur chaque push/PR.
