@@ -691,33 +691,16 @@ def build_local_inventory(project_root: Path) -> dict[str, Any]:
     declared_plugins, _, _, _, config_warnings = _read_plugin_config(root)
 
     items: list[dict[str, Any]] = []
-    for record in skills:
-        items.append(
-            {
-                "name": record.name,
-                "kind": "skill",
-                "path": record.path,
-                "description": _markdown_description(root / record.path),
-            }
-        )
-    for record in commands:
-        items.append(
-            {
-                "name": record.name,
-                "kind": "command",
-                "path": record.path,
-                "description": _markdown_description(root / record.path),
-            }
-        )
-    for record in agents:
-        items.append(
-            {
-                "name": record.name,
-                "kind": "agent",
-                "path": record.path,
-                "description": _markdown_description(root / record.path),
-            }
-        )
+    for records, kind in ((skills, "skill"), (commands, "command"), (agents, "agent")):
+        for record in records:
+            items.append(
+                {
+                    "name": record.name,
+                    "kind": kind,
+                    "path": record.path,
+                    "description": _markdown_description(root / record.path),
+                }
+            )
     # Plugin : aucune description locale fiable (spec brute ou fichier vide).
     for record in [*local_plugins, *declared_plugins]:
         items.append(

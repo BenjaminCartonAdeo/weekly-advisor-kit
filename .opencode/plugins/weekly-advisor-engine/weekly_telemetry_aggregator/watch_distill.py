@@ -26,12 +26,12 @@ from typing import Any
 from .util import load_jsonc, parse_anchor, parse_iso_ts
 from .watch_context import normalize_npm_package
 from .watch_memory import (
-    VALID_STATUSES,
     append_entries,
     build_digest,
     entry_from_item,
     filter_items,
     item_signature,
+    last_status,
     load_memory,
     normalize_id,
     week_of,
@@ -329,20 +329,6 @@ def truncate_summary(description: object, limit: int = SUMMARY_MAX_CHARS) -> str
     return cut.rstrip()[: limit - 1].rstrip() + "…"
 
 
-def _last_status(entry: Mapping[str, Any] | None) -> str | None:
-    """Miroir local de ``watch_memory._last_status`` (interface T1 figée)."""
-
-    if entry is None:
-        return None
-    history = entry.get("history")
-    if not isinstance(history, Sequence) or isinstance(history, str | bytes | bytearray):
-        return None
-    for stamp in reversed(history):
-        if isinstance(stamp, Mapping) and stamp.get("status") in VALID_STATUSES:
-            return str(stamp["status"])
-    return None
-
-
 def _category(entry: Mapping[str, Any] | None) -> str:
     """Bucket quotas d'un candidat selon la mémoire : new/improvable/resurfaced.
 
@@ -355,7 +341,7 @@ def _category(entry: Mapping[str, Any] | None) -> str:
 
     if entry is None:
         return "new"
-    return "resurfaced" if _last_status(entry) == "ignored" else "improvable"
+    return "resurfaced" if last_status(entry) == "ignored" else "improvable"
 
 
 def _fuse_items(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -549,15 +535,10 @@ def _run_impl(cfg, *, anchor: str | None = None) -> tuple[dict[str, Any], int]:
         scored.append(item)
     security_annex.sort(key=lambda row: row["id"])
 
-    kept, dropped = filter_items(scored, memory, week)
+    kept, dropped = filter_items(scored, memory)
     top_n = int(getattr(wd_cfg, "top_n", None) or DEFAULT_TOP_N)
     raw_quotas = getattr(wd_cfg, "quotas", None) or QUOTAS
-    quotas = {
-        cat: int(raw_quotas.get(cat, QUOTAS[cat]))
-        if isinstance(raw_quotas, Mapping)
-        else QUOTAS[cat]
-        for cat in _QUOTA_ORDER
-    }
+    quotas = {cat: int(raw_quotas.get(cat, QUOTAS[cat])) for cat in _QUOTA_ORDER}
     selected, quotas_applied = _apply_quotas(rank(kept), memory, top_n=top_n, quotas=quotas)
     candidates = [_build_fiche(candidate) for candidate in selected]
 
@@ -580,7 +561,7 @@ def _run_impl(cfg, *, anchor: str | None = None) -> tuple[dict[str, Any], int]:
     digest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "week": week,
-        **build_digest(memory_post, week),
+        **build_digest(memory_post),
     }
     write_json_atomic(out / f"watch-candidates-{date}.json", result, indent=None)
     write_json_atomic(out / f"watch-memory-digest-{date}.json", digest, indent=None)

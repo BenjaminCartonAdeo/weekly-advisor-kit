@@ -26,7 +26,6 @@ from urllib.parse import urlsplit
 from .util import parse_iso_ts
 
 RETENTION_WEEKS = 26
-STALE_SEEN_WEEKS = 4
 RECURRENT_MIN_OCCURRENCES = 3
 MAX_RECENTLY_IGNORED = 20
 MAX_PREVIOUSLY_RECOMMENDED = 30
@@ -338,7 +337,7 @@ def _read_entries(path: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:
 
 
 def _retained(entry: Mapping[str, Any], now: datetime) -> bool:
-    last = _last_status(entry)
+    last = last_status(entry)
     # Statuts protégés et statut inconnu (ligne partielle) : conservation prudente.
     if last is None or last in _RETAINED_STATUSES:
         return True
@@ -357,7 +356,9 @@ def load_memory(
     """
 
     entries, warnings = _read_entries(path)
-    current = now.astimezone(UTC) if now is not None and now.tzinfo else (now or datetime.now(UTC))
+    if now is None:
+        now = datetime.now(UTC)
+    current = now.astimezone(UTC) if now.tzinfo else now.replace(tzinfo=UTC)
     survivors = {eid: entry for eid, entry in entries.items() if _retained(entry, current)}
     return survivors, warnings
 
@@ -396,7 +397,7 @@ def append_entries(path: Path, updates: Iterable[Mapping[str, Any]]) -> list[str
 # ---------------------------------------------------------------- filtrage
 
 
-def _last_status(entry: Mapping[str, Any]) -> str | None:
+def last_status(entry: Mapping[str, Any]) -> str | None:
     """Dernier statut valide de l'historique (None si jamais statué)."""
 
     history = entry.get("history")
@@ -409,13 +410,12 @@ def _last_status(entry: Mapping[str, Any]) -> str | None:
 
 
 def filter_items(
-    items: list[dict[str, Any]], memory: dict[str, dict[str, Any]], week: str
+    items: list[dict[str, Any]], memory: dict[str, dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Sépare (kept, dropped[{id, reason}]) selon la mémoire inter-run.
 
     Un item ``ignored`` à signature inchangée est droppé ; il resurface dès que
-    la version change ou qu'une publication plus récente apparaît. Tout item
-    gardé porte ``_stale_seen`` (vu dans les 4 dernières semaines) pour le tri.
+    la version change ou qu'une publication plus récente apparaît.
     """
 
     kept: list[dict[str, Any]] = []
@@ -429,15 +429,13 @@ def filter_items(
         entry = memory.get(iid)
         if (
             entry is not None
-            and _last_status(entry) == "ignored"
+            and last_status(entry) == "ignored"
             and not signature_changed(entry, item_signature(item))
         ):
             dropped.append({"id": iid, "reason": "ignored-unchanged"})
             continue
         result = dict(item)
         result["id"] = iid
-        elapsed = weeks_between(str(entry.get("last_seen_week") or ""), week) if entry else None
-        result["_stale_seen"] = elapsed is not None and elapsed < STALE_SEEN_WEEKS
         kept.append(result)
     return kept, dropped
 
@@ -457,15 +455,17 @@ def _latest_status_week(entry: Mapping[str, Any], status: str) -> date:
     return latest
 
 
-def build_digest(memory: dict[str, dict[str, Any]], week: str) -> dict[str, Any]:
-    """Résumé borné pour le prompt LLM : ignorés récents, recommandations, récurents."""
+def build_digest(memory: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Résumé borné pour le prompt LLM : ignorés récents, recommandations, récurents.
 
-    del week  # la borne temporelle vient de la purge au chargement ; signature réservée
+    La borne temporelle vient de la purge au chargement.
+    """
+
     recently_ignored: list[dict[str, str]] = []
     recommended: list[tuple[date, str]] = []
     recurrents: list[tuple[int, str]] = []
     for eid, entry in memory.items():
-        if _last_status(entry) == "ignored":
+        if last_status(entry) == "ignored":
             recently_ignored.append(
                 {
                     "id": eid,
@@ -473,8 +473,9 @@ def build_digest(memory: dict[str, dict[str, Any]], week: str) -> dict[str, Any]
                     "note": str(entry.get("note") or ""),
                 }
             )
-        if _latest_status_week(entry, "recommended") > date.min:
-            recommended.append((_latest_status_week(entry, "recommended"), eid))
+        latest_rec = _latest_status_week(entry, "recommended")
+        if latest_rec > date.min:
+            recommended.append((latest_rec, eid))
         occurrences = entry.get("occurrences")
         if isinstance(occurrences, int) and occurrences >= RECURRENT_MIN_OCCURRENCES:
             recurrents.append((-occurrences, eid))

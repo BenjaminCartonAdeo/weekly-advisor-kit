@@ -134,32 +134,11 @@ def test_filter_drops_ignored_with_unchanged_signature_but_resurfaces_version_bu
     same = {"name": "pkg", "npm_package": "pkg", "version": "1.0.0"}
     bumped = {"name": "pkg", "npm_package": "pkg", "version": "2.0.0"}
 
-    kept, dropped = wm.filter_items([same, bumped], memory, "2026-W34")
+    kept, dropped = wm.filter_items([same, bumped], memory)
 
     assert dropped == [{"id": "npm:pkg", "reason": "ignored-unchanged"}]
     assert [item["id"] for item in kept] == ["npm:pkg"]
     assert kept[0]["version"] == "2.0.0"
-
-
-def test_filter_flags_stale_seen_within_four_weeks():
-    memory = {
-        "npm:fresh": _line("npm:fresh", week="2026-W32", status="candidate"),
-        "npm:old": _line("npm:old", week="2026-W20", status="candidate"),
-    }
-    items = [
-        {"name": "fresh", "npm_package": "fresh"},
-        {"name": "old", "npm_package": "old"},
-        {"name": "brand-new"},
-    ]
-
-    kept, dropped = wm.filter_items(items, memory, "2026-W34")
-
-    assert dropped == []
-    flags = {item["id"]: item["_stale_seen"] for item in kept}
-    assert flags == {"npm:fresh": True, "npm:old": False, "url:brand-new": False}
-
-
-# -------------------------------------------------------------------- append
 
 
 def test_append_merges_existing_id_and_keeps_append_only_store(tmp_path: Path):
@@ -208,7 +187,7 @@ def test_append_snapshot_each_week_increments_occurrences(tmp_path: Path):
         {"week": "2026-W31", "status": "seen"},
         {"week": "2026-W32", "status": "seen"},
     ]
-    assert wm.build_digest(entries, "2026-W34")["recurrents"] == ["npm:tool"]
+    assert wm.build_digest(entries)["recurrents"] == ["npm:tool"]
 
     # même semaine re-persistée : pas de double comptage
     wm.append_entries(p, [wm.entry_from_item({"name": "tool", "npm_package": "tool"}, "2026-W32")])
@@ -231,7 +210,7 @@ def test_digest_bounds_and_recurrents():
         memory[eid] = entry
     memory["big"] = _line("big", week="2026-W33", status="seen", occurrences=3)
 
-    digest = wm.build_digest(memory, "2026-W34")
+    digest = wm.build_digest(memory)
 
     assert len(digest["recently_ignored"]) == 20
     assert set(digest["recently_ignored"][0]) == {"id", "week", "note"}
@@ -249,7 +228,7 @@ def test_digest_caps_recurrents_by_occurrences_then_id():
     memory["hot"] = _line("hot", week="2026-W31", status="seen", occurrences=10)
     memory["ahot"] = _line("ahot", week="2026-W31", status="seen", occurrences=10)
 
-    digest = wm.build_digest(memory, "2026-W34")
+    digest = wm.build_digest(memory)
 
     assert len(digest["recurrents"]) == wm.RECURRENTS_CAP
     # tri (-occurrences, id) : occ=10 d'abord (alpha), puis occ=3 (alpha), queue coupée

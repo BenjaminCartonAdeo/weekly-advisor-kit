@@ -601,7 +601,7 @@ def _radar_post(client, url: str, payload: dict, *, session: str | None) -> tupl
     rpc_error = decoded.get("error")
     if isinstance(rpc_error, dict):
         raise SourceError(f"{url}: erreur JSON-RPC {rpc_error.get('message') or rpc_error}")
-    session_out = resp.headers.get("mcp-session-id") if hasattr(resp, "headers") else None
+    session_out = resp.headers.get("mcp-session-id")
     return decoded, session_out
 
 
