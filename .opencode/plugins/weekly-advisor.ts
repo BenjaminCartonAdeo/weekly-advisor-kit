@@ -393,19 +393,30 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
 
       weekly_show_session: tool({
         description:
-          "Étape 3 : transcrit une session (show-session) dans le répertoire du run actif " +
-          "(<output_dir>/runs/current/extracts/, fallback <output_dir>/extracts/) et " +
-          "retourne le texte structuré. Utiliser après audit-candidates.",
+          "Étape 3 : transcrit une session (show-session) et retourne le texte structuré. " +
+          "L'extrait est écrit à <run>/extracts/transcript-extract-<session_id>.md sous le run actif " +
+          "(<output_dir>/runs/current/extracts/, fallback legacy <output_dir>/extracts/) : faire Read sur " +
+          "CE FICHIER EXACT (chemin imprimé par le tool), JAMAIS sur le répertoire extracts/ lui-même " +
+          "(opencode Read ne liste pas les dirs). Appeler le tool AVANT toute lecture d'extraits. " +
+          "Utiliser après audit-candidates.",
         args: {
           session_id: tool.schema.string().describe("id de session (ses_...)"),
           include_children: tool.schema.boolean().optional().describe("inclure les subagents"),
         },
         async execute(args) {
           const { outputDir } = resolveEngine(worktree)
-          // v6.0.k (F1) : extraits dans le run actif (uuid), legacy en fallback.
-          const runBase = fs.existsSync(path.join(outputDir, "current"))
-            ? path.join(outputDir, "current")
-            : outputDir
+          // v6.0.k (F1) : extraits dans le run actif, legacy en fallback.
+          // E1 : l'alias à jour du moteur est <output_dir>/runs/current — le
+          // symlink top-level <output_dir>/current peut rester accroché à un run
+          // périmé (observé 2026-08-25 : extracts écrits dans le run de la
+          // veille). Priorité runs/current, puis current top-level (legacy).
+          const runsCurrent = path.join(outputDir, "runs", "current")
+          const legacyCurrent = path.join(outputDir, "current")
+          const runBase = fs.existsSync(runsCurrent)
+            ? runsCurrent
+            : fs.existsSync(legacyCurrent)
+              ? legacyCurrent
+              : outputDir
           const cliArgs = ["show-session", args.session_id, "--extract-dir", path.join(runBase, "extracts")]
           if (args.include_children) cliArgs.push("--include-children")
           return runCli(worktree, cliArgs, 300_000)
