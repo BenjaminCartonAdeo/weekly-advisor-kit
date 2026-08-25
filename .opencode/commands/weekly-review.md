@@ -1,5 +1,5 @@
 ---
-description: "Lance la revue hebdomadaire d'usage OpenCode (même chaîne que le cron) — pipeline weekly-advisor complet, spec v6.0."
+description: "Lance la revue hebdomadaire d'usage OpenCode (même chaîne que le cron) — orchestration parallèle en waves de subagents, spec v6.1."
 agent: weekly-advisor
 # model: décidé par le poste (--model <votre-modèle>) — sinon défaut de la config (l'agent n'impose plus de modèle)
 ---
@@ -7,41 +7,22 @@ agent: weekly-advisor
 # Revue hebdomadaire
 
 Lance la revue hebdomadaire complète de l'usage OpenCode, dans l'ordre figé de la
-spec `opencode-weekly-advisor` v6.0 : télémétrie, veille, audit qualitatif, veille
-critique, drafting, lint harness, insights, cohérence, rapport final.
+spec `opencode-weekly-advisor` v6.1 : orchestration par waves parallèles de subagents,
+télémétrie, veille, audit qualitatif, veille critique, drafting, lint harness, insights,
+cohérence, rapport final.
 
-La procédure de référence (tableau des étapes : tools, sorties, détails) est
+La procédure de référence (tableau des étapes : tools, sorties, détails, architecture DAG) est
 l'agent `weekly-advisor` (`.opencode/agents/weekly-advisor/weekly-advisor.md`).
-L'ancre est gérée par le plugin via `<output_dir>/anchor-last.txt` — aucun calcul
-manuel.
+L'ancre est gérée par le plugin via `<output_dir>/anchor-last.txt` — aucun calcul manuel.
 
 ## Déroulement
 
-Ordre figé, exécution directe dans la session courante — jamais de dispatch en
-subagent (tool `task`) : le weekly-advisor est déjà l'orchestrateur.
-
-0. `weekly_doctor` — diagnostic du kit (2 = fatal → stopper sans rapport)
-1. `weekly_run` — télémétrie (5-15 min : lancer en arrière-plan et poller si timeout)
-2. `weekly_releases` — veille écosystème
-2.2. `weekly_watch_distill` — distillation déterministe (~30 fiches candidates) ;
-     ⚠ séquentiel après 2 — exit 2 si écosystème absent, exit 1 → continuer
-     (3.5 utilisera le fallback legacy)
-2.5. `weekly_watch_context` — inventaire worktree ; ⚠ **séquentiel après 2** (jamais
-    en parallèle, jamais avant — exit 2 « DÉPENDANCE ») ; consomme les candidats 2.2
-    s'ils existent et produit alors aussi le fichier enriched
-3. Audit qualitatif (skill `weekly-quality-audit`) — `weekly_audit_candidates` + `weekly_show_session`
-3.5. Veille critique (skill `weekly-watch-review`) — fiches enrichies × existant ×
-     constats, fallback legacy si enriched absent → brut `weekly-watch-findings-raw-<date>.json`
-3.6. `weekly_watch_validate` — validation déterministe (mémoire + annexe sécurité),
-     obligatoire avant l'étape 4
-4. Auto-drafting (skill `weekly-drafting`) — `weekly_draft_candidates` + `weekly_commit_draft`
-5. `weekly_harness` — lint `.opencode/` (rc 0/1 = OK)
-5.5. Remédiation harness (skill `harness-remediation`) — propositions puis `weekly_harness_remediate`
-6. `weekly_insights` — deltas, alertes, maintenance
-6.5. Cohérence environnement (skill `weekly-coherence-review`)
-7. Rapport : `weekly_report_prep` → `weekly_report_blocks_draft` → prose (skill
-   `weekly-report-prose`) → `weekly_report_assemble` → `weekly-report-<date>.md`
-8. `weekly_self_cost` — coût du run
+Orchestration par waves (design doc §2). La session principale agit comme coordinateur léger :
+gate (étape 0), dispatch WAVE 1 en parallèle (3 subagents de l'agent `weekly-advisor-worker`), JOIN (synthèse), WAVE 2 optionnelle, TAIL.
+Ordre figé des étapes (tokens d'outils) : `weekly_doctor`, `weekly_run`, `weekly_releases`, `weekly_watch_distill`,
+`weekly_watch_context`, `weekly_watch_validate`, `weekly_audit_candidates`, `weekly_show_session`, `weekly_harness`,
+`weekly_harness_remediate`, `weekly_draft_candidates`, `weekly_commit_draft`, `weekly_insights`,
+`weekly_report_prep`, `weekly_report_blocks_draft`, `weekly_report_assemble`, `weekly_self_cost`.
 
 ## Règles
 

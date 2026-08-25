@@ -41,13 +41,13 @@ uv sync --project .opencode/plugins/weekly-advisor-engine --extra dev
 
 1. **Adaptez la configuration** : `project_root` et `output_dir` (chemins absolus) dans [`.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`](.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json).
 2. **Vérifiez le poste** : `opencode run --agent weekly-advisor "Exécute weekly_doctor et donne son verdict"`. Sortie attendue : un verdict base, config et binaires, sans erreur.
-3. **Lancez la revue** : `opencode run --agent weekly-advisor "Lance la revue hebdomadaire"`. Comptez 10 à 30 minutes ; à la fin le rapport HTML s'ouvre dans votre navigateur.
+3. **Lancez la revue** : `opencode run --agent weekly-advisor "Lance la revue hebdomadaire"`. Comptez environ 8 à 12 minutes (orchestration parallèle en waves) ; à la fin le rapport HTML s'ouvre dans votre navigateur.
 
 Résultat visible : `reports/html/weekly-report-latest.html` (rapport HTML autonome) et `reports/runs/current/weekly-report-<date>.md` (archive MD).
 
 ## Usage
 
-**Revue manuelle complète** : après le quickstart, relancez la commande de l'étape 3 chaque fois que vous voulez un état frais. Le run enchaîne les 8 étapes, écrit un JSON daté par étape dans le répertoire du run, puis assemble le rapport. Un run partiel renvoie le code 1 (warnings tolérés), un run fatal le code 2, sans rapport.
+**Revue manuelle complète** : après le quickstart, relancez la commande de l'étape 3 chaque fois que vous voulez un état frais. Le run est orchestré en **waves parallèles de subagents** (branches télémétrie, veille et harnais exécutées en parallèle, puis drafting/insights/cohérence), écrit un JSON daté par étape dans le répertoire du run, puis assemble le rapport. Un récapitulatif des durées par branche est écrit dans `weekly-timings-<date>.json`. Un run partiel renvoie le code 1 (warnings tolérés), un run fatal le code 2, sans rapport.
 
 **Planning hebdomadaire (cron)** :
 
