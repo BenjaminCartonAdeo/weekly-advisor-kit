@@ -218,9 +218,21 @@ type PortabilityOutcome =
   | { kind: "pass"; warnings: string[] }
   | { kind: "ignored"; reason: string }
   | { kind: "unusable"; reason: string }
+  | { kind: "skipped"; reason: string }
 
-/** Exécute la gate et tranche : bloqué / passage (warnings seuls) / ignorée (binaire absent) / refusée (environnement défaillant). */
-export async function runPortabilityGate(file: string): Promise<PortabilityOutcome> {
+/** Exécute la gate et tranche : bloqué / passage (warnings seuls) / ignorée (binaire absent) / refusée (environnement défaillant) / skippée (commands). */
+export async function runPortabilityGate(file: string, kind: "skill" | "command"): Promise<PortabilityOutcome> {
+  // E2 : harness-eval skill-verify n'inspecte que les dossiers SKILL.md (≥ 7.10.1).
+  // Pour une command, lancer la gate produirait un crash systématique
+  // (« No agent components found ») → refus injustifié. Skip explicite avec
+  // motif remonté au résultat du tool — jamais de silence ni de faux vert.
+  if (kind === "command") {
+    return {
+      kind: "skipped",
+      reason:
+        "Gate portabilité non applicable aux commands (harness-eval 7.10.1 : skills uniquement) — commit autorisé sans gate.",
+    }
+  }
   const scan = prepareScanDir(file)
   try {
     let stdout: string
@@ -474,6 +486,7 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
           "Étape 4 : commit auto-rédigé d'un skill/command draft (commit-draft). " +
           "Gate de portabilité (skill-verify) avant chaque commit : erreur → refus + fix manuel requis, " +
           "warnings seuls → passage avec note, environnement défaillant (timeout/crash/sortie illisible) → refus. " +
+          "kind=command → gate non applicable (harness-eval 7.10.1 : skills uniquement), skip explicite avec note dans le résultat. " +
           "1 commit par écriture, pré-checks git intégrés.",
         args: {
           kind: tool.schema.enum(["skill", "command"]),
@@ -484,7 +497,7 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
           // pas de gate, l'erreur vient du CLI (comportement inchangé).
           let note = ""
           if (fs.existsSync(args.file)) {
-            const gate = await runPortabilityGate(args.file)
+            const gate = await runPortabilityGate(args.file, args.kind)
             if (gate.kind === "blocked") {
               throw new Error(
                 `commit REFUSÉ par la gate de portabilité (skill-verify) — fix manuel requis\n` +
@@ -509,6 +522,10 @@ export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
                 gate.warnings.map((w) => `  - ${w}`).join("\n")
             } else if (gate.kind === "ignored") {
               note = `⚠ gate portabilité ignorée (fail-soft) : ${gate.reason}`
+            } else if (gate.kind === "skipped") {
+              // E2 : skip visible dans le résultat du tool (commands hors
+              // périmètre skill-verify) — le commit part SANS gate, dit haut et fort.
+              note = `ℹ gate portabilité SKIPPED : ${gate.reason}`
             }
           }
           const result = await runCli(

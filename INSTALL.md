@@ -136,8 +136,11 @@ règles custom `.harness-eval/rules/portability.yaml`, ids `custom/portability/*
 - binaire `harness-eval` absent → **note ⚠ gate ignorée** (fail-soft — gap d'install, signalé par le doctor) ;
 - timeout, crash du scanner ou sortie illisible → **commit refusé** (« gate non exécutable ») — jamais de faux vert.
 
-**Limite connue (honnête)** : en harness-eval 7.10.1, la gate couvre les **skills**
-uniquement — les commands/agents ne sont pas inspectés par les règles custom.
+**Comportement par artefact (honnête)** : `harness-eval skill-verify` n'inspecte que
+les dossiers **skills** (`SKILL.md` + fichiers frères). Pour une **command**, la gate
+est **skippée explicitement** — non applicable en harness-eval 7.10.1 — et le résultat
+du tool affiche une note de skip visible (« Gate portabilité non applicable aux
+commands… ») : le commit part sans gate, jamais de silence ni de faux vert.
 
 ### 2.4 Permissions user + auth (une fois par poste)
 
