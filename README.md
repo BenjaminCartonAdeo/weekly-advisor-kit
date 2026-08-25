@@ -109,4 +109,3 @@ Le CI (`.github/workflows/ci.yml`) répète lint, format, 517 tests, packaging e
 ## Licence
 
 [MIT](LICENSE) © Benjamin CARTON
-À définir : aucun fichier `LICENSE` n'est présent dans le dépôt. À ajouter avant publication publique.
