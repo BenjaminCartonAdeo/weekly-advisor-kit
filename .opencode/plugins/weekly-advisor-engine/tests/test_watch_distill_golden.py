@@ -43,7 +43,10 @@ def test_golden_real_ecosystem_distill(tmp_path: Path):
     candidates_file = tmp_path / f"watch-candidates-{DATE}.json"
     assert candidates_file.is_file()
     size_bytes = candidates_file.stat().st_size
-    assert size_bytes < 20_480, f"sortie trop lourde : {size_bytes} octets"
+    # Plafond recalibré pour le JSON indenté (défaut writer) : les artefacts de
+    # veille sont lus par l'agent en 3.5 via Read (tronque à 2000 car/ligne) —
+    # l'indentation prime sur le poids disque depuis l'incident 2026-08-25.
+    assert size_bytes < 40_960, f"sortie trop lourde : {size_bytes} octets"
 
     ids = {fiche["id"] for fiche in candidates}
     annex = result.get("security_annex", [])

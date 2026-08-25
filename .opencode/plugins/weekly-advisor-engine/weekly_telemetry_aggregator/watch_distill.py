@@ -563,6 +563,8 @@ def _run_impl(cfg, *, anchor: str | None = None) -> tuple[dict[str, Any], int]:
         "week": week,
         **build_digest(memory_post),
     }
-    write_json_atomic(out / f"watch-candidates-{date}.json", result, indent=None)
-    write_json_atomic(out / f"watch-memory-digest-{date}.json", digest, indent=None)
+    # indent par défaut (2) : artefacts lus par l'agent en 3.5 (Read tronque
+    # à ~2000 car/ligne ; un JSON mono-ligne devient illisible/inventable).
+    write_json_atomic(out / f"watch-candidates-{date}.json", result)
+    write_json_atomic(out / f"watch-memory-digest-{date}.json", digest)
     return result, 0

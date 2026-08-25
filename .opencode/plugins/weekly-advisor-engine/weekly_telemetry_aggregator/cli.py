@@ -251,7 +251,10 @@ def _cmd_watch_context(args, cfg) -> int:
         )
         if enriched is not None:
             enriched_path = out / f"watch-candidates-enriched-{date}.json"
-            write_json_atomic(enriched_path, enriched, indent=None)
+            # indent par défaut (2) : fichier lu par l'agent en 3.5 — un JSON
+            # mono-ligne est tronqué par le Read (2000 car/ligne) et a causé un
+            # exit 2 injustifié le 2026-08-25 15:32.
+            write_json_atomic(enriched_path, enriched)
             enriched_note = f" enriched={len(enriched['candidates'])}+{len(enriched['residual'])}"
             print(f"watch-context: enriched file={enriched_path}", flush=True)
         else:

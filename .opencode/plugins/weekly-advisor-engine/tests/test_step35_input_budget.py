@@ -70,10 +70,10 @@ def test_step35_llm_inputs_stay_under_ten_percent_of_legacy(tmp_path: Path):
     assert enriched is not None
     assert enriched["mode"] == "enriched"
 
-    # Sérialisation identique à la CLI : enriched compact (indent=None),
-    # contexte legacy indenté (défaut writer).
+    # Sérialisation identique à la CLI : enriched indenté (défaut writer,
+    # lisible par Read de l'agent en 3.5), contexte legacy indenté aussi.
     enriched_path = tmp_path / f"watch-candidates-enriched-{DATE}.json"
-    write_json_atomic(enriched_path, enriched, indent=None)
+    write_json_atomic(enriched_path, enriched)
     digest_path = tmp_path / f"watch-memory-digest-{DATE}.json"
     new_inputs = enriched_path.stat().st_size + digest_path.stat().st_size
 
@@ -82,4 +82,7 @@ def test_step35_llm_inputs_stay_under_ten_percent_of_legacy(tmp_path: Path):
     old_inputs = len(eco_text.encode("utf-8")) + len(legacy_payload.encode("utf-8"))
 
     ratio = new_inputs / old_inputs
-    assert ratio < 0.10, f"inputs 3.5 = {new_inputs} o / {old_inputs} o = {ratio:.1%}"
+    # Plafond 12 % (vs 10 % initial) : les artefacts 3.5 sont indentés (défaut
+    # writer) depuis l'incident 2026-08-25 15:32 — lisibilité agent > octets,
+    # l'objectif anti-blocage (ordre de grandeur sous le dump legacy) est tenu.
+    assert ratio < 0.12, f"inputs 3.5 = {new_inputs} o / {old_inputs} o = {ratio:.1%}"

@@ -98,7 +98,11 @@ Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sa
   projet ne sont jamais lus
 - **Un échec de tool n'arrête pas le run** (permission rejetée, source indisponible) :
   constater, signaler au rapport, continuer l'ordre figé (exit 1 partiel — exit 2 réservé
-  aux fatalités moteur)
+  aux fatalités moteur). **Une donnée illisible ou tronquée** (ex. JSON volumineux coupé
+  par le budget de lecture) suit la même règle : exploiter uniquement la partie lisible,
+  borner les conclusions au vérifiable — ne JAMAIS inventer ce qui n'a pas été lu, et
+  continuer (exit 1). Chercher un autre chemin de lecture légal au plus une fois ; en
+  aucun cas tenter des accès hors worktree ni escalader en exit 2.
 - **Décision tranchée une fois** : chaque choix (sessions à auditer, candidats retenus,
   recommandations) est décidé, **écrit dans le findings, jamais re-dérivé** — pas de
   boucle de re-délibération sur un constat déjà archivé
