@@ -64,7 +64,7 @@ ci-dessous sont inchangés — ils vivent dans ce répertoire.
 | 1 | `weekly_run` (5-15 min — lancer en arrière-plan et poller si timeout) | `weekly-summary-<date>.json` |
 | 2 | `weekly_releases` (réseau ; warnings sources tolérés) | `weekly-ecosystem-<date>.json` |
 | 2.2 | `weekly_watch_distill` — séquentiel après 2 (lit l'écosystème) ; exit 2 si écosystème absent ; exit 1 → continuer, 3.5 utilisera le fallback legacy | `watch-candidates-<date>.json` |
-| 2.5 | `weekly_watch_context` (worktree uniquement ; warnings d'inventaire tolérés) — ⚠ **séquentiel après 2** : il lit l'écosystème écrit par 2 ; jamais en parallèle, jamais avant (exit 2 « DÉPENDANCE » sinon) ; consomme `watch-candidates-<date>.json` s'il existe et produit alors aussi `watch-candidates-enriched-<date>.json` (fiches × état local) | `weekly-watch-context-<date>.json` |
+| 2.5 | `weekly_watch_context` (worktree uniquement ; warnings d'inventaire tolérés) — ⚠ **séquentiel après 2.2** : il lit les fiches distillées par 2.2 ; jamais en parallèle, jamais avant (exit 2 « DÉPENDANCE » sinon) ; consomme `watch-candidates-<date>.json` s'il existe et produit alors aussi `watch-candidates-enriched-<date>.json` (fiches × état local) | `weekly-watch-context-<date>.json` |
 | 3 | **Skill `weekly-quality-audit`** : `weekly_audit_candidates` → `weekly_show_session` → constats | `weekly-quality-findings-<date>.json` |
 | 3.5 | **Skill `weekly-watch-review`** : veille critique croisée (fiches enrichies × existant × findings), écrit le brut ; enriched/digest absents → **fallback legacy** (écosystème complet) ; filet B phase 0 conditionnelle (fiches < `min_candidates` ET résiduel non vide) | `weekly-watch-findings-raw-<date>.json` |
 | 3.6 | `weekly_watch_validate` — validation déterministe des findings contre le contexte (coercitions état + cible locale, fiche suspicious sans risque → severity high) ; écrit la mémoire post-validation (`<output_dir>/watch-memory.jsonl`) et l'**annexe sécurité** depuis les candidats | `weekly-watch-findings-<date>.json` |
@@ -91,7 +91,7 @@ Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sa
 
 ## Invariants (transverses à toutes les étapes)
 
-- Étapes déterministes (1/2/2.5/3.6/5/5.5/6/7) : **ne jamais réécrire les JSON/summary produits par le CLI**
+- Étapes déterministes (1/2/2.2/2.5/3.6/5/5.5/6/7) : **ne jamais réécrire les JSON/summary produits par le CLI**
 - **Périmètre lecture/écriture = worktree uniquement** (v6.0.c) : une cible résolue hors
   worktree (ex. commande globale `~/.config/opencode/commands/`) est **hors périmètre** →
   constat report-only, jamais de lecture ni de draft ; les doublons globaux d'une commande
