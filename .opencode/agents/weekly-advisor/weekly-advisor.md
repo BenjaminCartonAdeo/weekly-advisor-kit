@@ -144,17 +144,8 @@ note une violation et **continue en fail-soft** (exit 1).
 | **7c** | `weekly_report_assemble` → **signal du cron** ; génère le **rapport HTML** dans `<project_root>/reports/html/` (`weekly-report-latest.html` + copie datée) ; ⚠ un assemble réussi **supprime le draft** | `weekly-report-<date>.md` |
 | **8** | `weekly_self_cost` (annexe) | texte |
 
-**Contrat de retour worker (obligatoire, dernière sortie)** :
-```json
-{
-  "branch": "V",
-  "rc": 0,
-  "steps_done": ["releases", "distill", "context", "watch-review", "validate"],
-  "warnings": ["..."],
-  "artifacts": ["weekly-watch-findings-2026-08-25.json"],
-  "elapsed_s": 412
-}
-```
+**Contrat de retour worker (obligatoire, dernière sortie)** : structure `{branch, rc, steps_done,
+warnings, artifacts, elapsed_s}` définie dans `.opencode/agents/weekly-advisor/weekly-advisor-worker.md`.
 
 **Gating merge rc (JOIN)** :
 - Un seul rc=2 parmi les workers (ou crash) → STOP sans rapport.
