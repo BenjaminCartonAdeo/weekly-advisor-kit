@@ -238,7 +238,10 @@ def _validate_proposal(
     new_text = raw.get("new_text")
     if not isinstance(rule, str) or not rule:
         return None, "malformed proposal: rule must be a non-empty string"
-    if not isinstance(line, int) or isinstance(line, bool) or line < 1:
+    # ``line`` is informative metadata only: it is never consumed downstream
+    # (apply relies on exact old_text matching), so ``null`` means "unknown"
+    # and is accepted.  Non-null values must still be positive integers.
+    if line is not None and (not isinstance(line, int) or isinstance(line, bool) or line < 1):
         return None, "malformed proposal: line must be a positive integer"
     if not isinstance(decision, str) or decision not in VALID_DECISIONS:
         return None, f"malformed proposal: decision must be one of {sorted(VALID_DECISIONS)}"

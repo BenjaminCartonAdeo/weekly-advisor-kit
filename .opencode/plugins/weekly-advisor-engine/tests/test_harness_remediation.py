@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from weekly_telemetry_aggregator.config import TelemetryConfig
 from weekly_telemetry_aggregator.harness_remediation import run
 from weekly_telemetry_aggregator.main import EXIT_OK, EXIT_PARTIAL, EXIT_TOTAL_FAILURE
@@ -507,3 +509,94 @@ def test_run_result_reports_projection_for_opencode_project(tmp_path: Path):
     assert run(cfg, proposal_path=proposal, mode="dry-run", anchor=ANCHOR) == EXIT_OK
 
     assert _result(cfg)["draft_target"]["decision"] == "projection"
+
+
+# ---- line:null accepté comme « inconnu informatif » ---------------------------
+
+
+def test_line_null_is_accepted_as_informative_unknown(tmp_path: Path):
+    """line est informatif : null passe la gate (jamais consommé en aval)."""
+    project, target = _project(tmp_path)
+    cfg = _config(tmp_path, project)
+    cfg.harness_auto_fix_rules = ["quality/example-rule"]
+    proposal = _proposal(cfg.output_dir / "proposal.json", line=None)
+    _write_baseline(cfg)
+
+    assert run(cfg, proposal_path=proposal, mode="dry-run", anchor=ANCHOR) == EXIT_OK
+
+    assert target.read_text(encoding="utf-8") == "old"
+    result = _result(cfg)
+    assert result["summary"]["proposed"] == 1
+    assert result["proposals"][0]["status"] == "proposed"
+    assert result["proposals"][0]["line"] is None
+
+
+def test_line_null_apply_passes_line_check_and_stays_subject_to_apply_gates(tmp_path: Path):
+    """decision=apply avec line=null suit le chemin complet (allowlist, digest, postcheck)."""
+    project, target = _project(tmp_path)
+    cfg = _config(tmp_path, project)
+    cfg.harness_auto_fix_rules = ["quality/example-rule"]
+    proposal = _proposal(cfg.output_dir / "proposal.json", line=None)
+    _write_baseline(cfg)
+
+    def fake_harness(post_cfg: TelemetryConfig, *, anchor: str | None = None) -> int:
+        _ = anchor
+        digest = {
+            "inspection": {"uncategorized": [{"path": ".opencode/commands/foo.md", "findings": []}]}
+        }
+        (post_cfg.output_dir / f"weekly-harness-digest-{DATE}.json").write_text(
+            json.dumps(digest), encoding="utf-8"
+        )
+        return EXIT_OK
+
+    assert (
+        run(
+            cfg,
+            proposal_path=proposal,
+            mode="apply",
+            anchor=ANCHOR,
+            harness_runner=fake_harness,
+        )
+        == EXIT_OK
+    )
+
+    assert target.read_text(encoding="utf-8") == "new"
+    result = _result(cfg)
+    assert result["summary"]["applied"] == 1
+    assert result["proposals"][0]["status"] == "applied"
+    assert result["postcheck"]["status"] == "passed"
+
+
+def test_line_null_apply_blocked_by_confidence_gate_not_line_gate(tmp_path: Path):
+    """line=null ne court-circuite plus ; les règles apply existantes restent appliquées."""
+    project, target = _project(tmp_path)
+    cfg = _config(tmp_path, project)
+    cfg.harness_auto_fix_rules = ["quality/example-rule"]
+    proposal = _proposal(
+        cfg.output_dir / "proposal.json", line=None, confidence="medium", old_text=None
+    )
+    _write_baseline(cfg)
+
+    assert run(cfg, proposal_path=proposal, mode="dry-run", anchor=ANCHOR) == EXIT_OK
+
+    result = _result(cfg)
+    assert result["summary"]["blocked"] == 1
+    reason = result["proposals"][0]["reason"]
+    assert reason != "malformed proposal: line must be a positive integer"
+
+
+@pytest.mark.parametrize("bad_line", ["12", 0, -1, True])
+def test_line_invalid_non_null_values_are_still_rejected(tmp_path: Path, bad_line: object):
+    """Régression : str/0/-1/bool restent rejetés avec le même message."""
+    project, _target = _project(tmp_path)
+    cfg = _config(tmp_path, project)
+    proposal = _proposal(cfg.output_dir / "proposal.json", line=bad_line)
+
+    assert run(cfg, proposal_path=proposal, mode="dry-run", anchor=ANCHOR) == EXIT_OK
+
+    result = _result(cfg)
+    assert result["summary"]["blocked"] == 1
+    assert (
+        result["proposals"][0]["reason"]
+        == "malformed proposal: line must be a positive integer"
+    )
