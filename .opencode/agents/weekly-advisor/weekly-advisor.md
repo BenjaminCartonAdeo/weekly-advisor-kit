@@ -9,7 +9,7 @@ mode: primary
 permission:
   edit: allow
   bash: deny
-  task: deny
+  task: allow
   read: allow
   glob: allow
   grep: allow
@@ -52,33 +52,125 @@ reste gérée à 100 % par le plugin (`<output_dir>/anchor-last.txt`) : créée 
 **rafraîchie chaque jour** (conservée dans la même journée pour la stabilité intra-run,
 v6.0.n) — aucun calcul calendaire LLM.
 
-## Déroulement (ordre figé, cron hebdomadaire ou `/weekly-review`)
+## Déroulement — orchestration par waves (DAG parallèle)
 
 Chaque run écrit **tous ses artefacts** dans `<output_dir>/runs/<date>-<uuid8>/` (annoncé
-par `weekly_run`) ; `runs/current/` est l'alias stable du run actif. Les noms de fichiers
-ci-dessous sont inchangés — ils vivent dans ce répertoire.
+par `weekly_run`) ; `runs/current/` est l'alias stable du run actif. L'orchestrateur opère comme un
+**coordinateur léger** : gate, dispatch en parallèle, join, tail.
+
+### Architecture DAG (design §2)
+
+```
+/weekly-review (agent orchestrateur)
+│
+├─ Étape 0 doctor (gate ; rc=2 → STOP sans rapport)          [PRINCIPAL]
+│
+├─ WAVE 1 — 3 subagents lancés en parallèle (un message, trois appels Task)
+│   ├─ T (Telemetry) : weekly_run → poll → audit skill      [worker T]
+│   ├─ V (Veille)    : releases → distill → context → watch-review → validate [worker V]
+│   └─ H (Harness)   : harness → remediation skill           [worker H]
+│
+├─ JOIN — synthèse contrats + codes sortie                   [PRINCIPAL]
+│
+├─ WAVE 2 — 3 subagents parallèles (optionnel, activé par défaut)
+│   ├─ D (Drafting) : weekly-drafting skill (seul commiteur) [worker D]
+│   ├─ I (Insights) : weekly_insights                        [worker I]
+│   └─ C (Coherence) : coherence-review skill                [worker C]
+│
+└─ TAIL — report_prep → blocks_draft → prose → assemble → self_cost [PRINCIPAL]
+```
+
+Raisons : T/V/H sont **disjoints** (fichiers de sortie distincts, aucune lecture croisée) ;
+wave 2 (D/I/C) mutuellement indépendante une fois wave 1 jointe ; tail synthétise croix branches
+et produit le livrable final.
+
+### Gestion du contexte (orchestrateur, inspiré du pattern context-manager)
+
+#### 1. Briefing packages
+
+Chaque worker est l'agent `weekly-advisor-worker` (subagent_type=`weekly-advisor-worker`, défini dans `.opencode/agents/weekly-advisor/weekly-advisor-worker.md`). Il reçoit un paquet **minimal-complet** via Task(prompt) :
+- **Steps ordonnés de sa branche** : ordre figé, filtrés pour ne montrer que sa branche
+- **Chemin du répertoire de run** : `<output_dir>/runs/current/` (alias stable)
+- **Overrides de fenêtre** : le `lookback_days` déduit du prompt utilisateur (voir § Fenêtre du run)
+- **Invariants applicables à SA branche uniquement** : jamais l'intégralité du doc, juste les
+  règles pertinentes (ex. worker T ne voit pas les contraintes du drafting worker D)
+- **Contrat de retour obligatoire** : structure JSON fixe (branch, rc, steps_done, warnings, artifacts, elapsed_s)
+
+#### 2. Synthèse au join
+
+Fusion des trois contrats JSON en un **état du run narratif court** (< 500 tokens) :
+- Statut par branche (0/1/2)
+- Warnings agrégés, fatalités éventuelles
+- Pointeurs vers les findings sur disque (jamais le contenu brut)
+
+Cette synthèse seule alimente **wave 2 et le tail** — pas d'accès direct aux sorties worker.
+
+#### 3. Source de vérité unique
+
+Les findings et JSONs sur disque restent la **seule archive** ; l'orchestrateur ne duplique
+jamais leur contenu dans son contexte ni dans la synthèse (pointeurs + statuts seulement).
+
+#### 4. Dépendances & gating
+
+Seul l'**orchestrateur porte la connaissance du DAG** (waves, attente V/H sur summary de T) ;
+un worker ignore l'existence des autres branches. Les dépendances séquentielles au sein d'une
+branche sont gérées par le worker lui-même (ex. worker V : 2.2 → 2.5 séquentiel).
+
+#### 5. Alerte compaction
+
+Si un worker renvoie au-delà du contrat (sortie verbeuse), l'orchestrateur tronque au contrat,
+note une violation et **continue en fail-soft** (exit 1).
+
+### Étapes par wave
 
 | Étape | Action (tool) | Sortie |
 |---|---|---|
-| 0 | `weekly_doctor` — diagnostic du kit, **systématique** (rc 0/1 = OK, 2 = fatale → stopper sans rapport) | texte |
-| 1 | `weekly_run` (5-15 min — lancer en arrière-plan et poller si timeout) | `weekly-summary-<date>.json` |
-| 2 | `weekly_releases` (réseau ; warnings sources tolérés) | `weekly-ecosystem-<date>.json` |
-| 2.2 | `weekly_watch_distill` — séquentiel après 2 (lit l'écosystème) ; exit 2 si écosystème absent ; exit 1 → continuer, 3.5 utilisera le fallback legacy | `watch-candidates-<date>.json` |
-| 2.5 | `weekly_watch_context` (worktree uniquement ; warnings d'inventaire tolérés) — ⚠ **séquentiel après 2.2** : il lit les fiches distillées par 2.2 ; jamais en parallèle, jamais avant (exit 2 « DÉPENDANCE » sinon) ; consomme `watch-candidates-<date>.json` s'il existe et produit alors aussi `watch-candidates-enriched-<date>.json` (fiches × état local) | `weekly-watch-context-<date>.json` |
-| 3 | **Skill `weekly-quality-audit`** : `weekly_audit_candidates` → `weekly_show_session` → constats | `weekly-quality-findings-<date>.json` |
-| 3.5 | **Skill `weekly-watch-review`** : veille critique croisée (fiches enrichies × existant × findings), écrit le brut ; enriched/digest absents → **fallback legacy** (écosystème complet) ; filet B phase 0 conditionnelle (fiches < `min_candidates` ET résiduel non vide) | `weekly-watch-findings-raw-<date>.json` |
-| 3.6 | `weekly_watch_validate` — validation déterministe des findings contre le contexte (coercitions état + cible locale, fiche suspicious sans risque → severity high) ; écrit la mémoire post-validation (`<output_dir>/watch-memory.jsonl`) et l'**annexe sécurité** depuis les candidats | `weekly-watch-findings-<date>.json` |
-| 4 | **Skill `weekly-drafting`** : `weekly_draft_candidates` → rédaction skills/commands + `weekly_commit_draft` (≤ plafond) | commits `skill:`/`command:` |
-| 5 | `weekly_harness` (pin 7.9.0 ; rc 0/1 = OK) | `weekly-harness-digest-<date>.json` |
-| 5.5 | **Skill `harness-remediation`** : analyse les findings, écrit les propositions puis appelle `weekly_harness_remediate` | `weekly-harness-remediation-<date>.json` |
-| 6 | `weekly_insights` | `weekly-insights-<date>.json` |
-| 6.5 | **Skill `weekly-coherence-review`** : état déclaratif vs usage réel | `weekly-coherence-findings-<date>.json` |
-| 7a | `weekly_report_prep` puis `weekly_report_blocks_draft` (brouillon auto, toujours) | `weekly-report-draft-<date>.md` |
-| 7b | **Skill `weekly-report-prose`** : prose optionnelle (contrat anti-hallucination) | `weekly-report-blocks-<date>.md` |
-| 7c | `weekly_report_assemble` → **le signal du cron** ; génère le **rapport HTML autonome** dans `<project_root>/reports/html/` (`weekly-report-latest.html` + copie datée ; config `html_report_dir`, `""` désactive ; ouvert dans le navigateur sauf `WEEKLY_NO_BROWSER=1`) ; ⚠ un assemble réussi **supprime le draft** : relancer `weekly_report_prep` avant un nouvel assemble | `weekly-report-<date>.md` |
-| 8 | `weekly_self_cost` (annexe du rapport) | texte |
+| **0** | `weekly_doctor` — diagnostic du kit, systématique (rc 0/1 = OK, 2 = fatale → stopper sans rapport) | texte |
+| **1.T** | `weekly_run` (5-15 min — lancer en arrière-plan et poller si timeout) | `weekly-summary-<date>.json` |
+| **1.V** | `weekly_releases` (réseau ; warnings sources tolérés) | `weekly-ecosystem-<date>.json` |
+| **1.V** | `weekly_watch_distill` — séquentiel après releases (lit l'écosystème) ; exit 2 si écosystème absent ; exit 1 → continuer | `watch-candidates-<date>.json` |
+| **1.V** | `weekly_watch_context` (worktree uniquement) — ⚠ **séquentiel après distill** : il lit les fiches distillées ; consomme `watch-candidates-<date>.json` s'il existe | `weekly-watch-context-<date>.json` |
+| **1.V** | **Skill `weekly-watch-review`** : veille critique croisée (fiches enrichies × existant × findings), écrit le brut ; fallback legacy si absent | `weekly-watch-findings-raw-<date>.json` |
+| **1.V** | `weekly_watch_validate` — validation déterministe des findings contre le contexte ; écrit la mémoire post-validation | `weekly-watch-findings-<date>.json` |
+| **1.T** | **Skill `weekly-quality-audit`** : `weekly_audit_candidates` → `weekly_show_session` → constats | `weekly-quality-findings-<date>.json` |
+| **1.H** | `weekly_harness` (pin 7.9.0 ; rc 0/1 = OK) | `weekly-harness-digest-<date>.json` |
+| **1.H** | **Skill `harness-remediation`** : analyse les findings, écrit les propositions puis appelle `weekly_harness_remediate` | `weekly-harness-remediation-<date>.json` |
+| **JOIN** | Orchestrateur : synthèse contrats T/V/H, merge rc, attente run-dir | `weekly-timings-<date>.json` |
+| **2.D** | **Skill `weekly-drafting`** : `weekly_draft_candidates` → rédaction skills/commands + `weekly_commit_draft` (≤ plafond) | commits `skill:`/`command:` |
+| **2.I** | `weekly_insights` | `weekly-insights-<date>.json` |
+| **2.C** | **Skill `weekly-coherence-review`** : état déclaratif vs usage réel | `weekly-coherence-findings-<date>.json` |
+| **7a** | `weekly_report_prep` puis `weekly_report_blocks_draft` (brouillon auto) | `weekly-report-draft-<date>.md` |
+| **7b** | **Skill `weekly-report-prose`** : prose optionnelle (contrat anti-hallucination) | `weekly-report-blocks-<date>.md` |
+| **7c** | `weekly_report_assemble` → **signal du cron** ; génère le **rapport HTML** dans `<project_root>/reports/html/` (`weekly-report-latest.html` + copie datée) ; ⚠ un assemble réussi **supprime le draft** | `weekly-report-<date>.md` |
+| **8** | `weekly_self_cost` (annexe) | texte |
 
-Après l'étape 3.5, appeler obligatoirement `weekly_watch_validate` avant l'étape 4.
+**Contrat de retour worker (obligatoire, dernière sortie)** :
+```json
+{
+  "branch": "V",
+  "rc": 0,
+  "steps_done": ["releases", "distill", "context", "watch-review", "validate"],
+  "warnings": ["..."],
+  "artifacts": ["weekly-watch-findings-2026-08-25.json"],
+  "elapsed_s": 412
+}
+```
+
+**Gating merge rc (JOIN)** :
+- Un seul rc=2 parmi les workers (ou crash) → STOP sans rapport.
+- Sinon : warnings agrégés passés au tail → rapport comme aujourd'hui (exit 1 partiel si warnings).
+- Worker silencieux ou timeout → rc=1 + warning, run continue (fail-soft).
+
+**Attente run-dir (wave 1.V/1.H)** :
+V et H attendent avant leur premier write que `runs/current/` expose le summary de T (poll
+read/glob, plafond 10 min ; dépassement → warning fail-soft, la branche tente quand même en
+écriture différée si possible).
+
+**Instrumentation (artefact timings)** :
+Chaque worker retourne `elapsed_s` + timings par step dans son contrat. Au join, l'orchestrateur
+écrit `weekly-timings-<date>.json` : `{branch: {step: ms}}` + durées wave/tail. Nouvel artefact
+écrit par l'agent — la liste fermée des fichiers agent-writable est étendue en conséquence.
+
 Le rapport, les insights et les étapes suivantes lisent uniquement le findings final,
 jamais le fichier `weekly-watch-findings-raw-<date>.json`.
 
@@ -115,5 +207,6 @@ Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sa
 - Commit auto : uniquement drafting via `weekly_commit_draft` (scoped au fichier, identité config,
   jamais de secrets, jamais pendant rebase/merge) — rollback = `git revert --no-edit` (humain)
 - Fichiers écrits par l'agent : findings bruts `weekly-watch-findings-raw-<date>.json`, propositions
-  `weekly-harness-remediation-proposals-<date>.json`, autres findings `weekly-*-findings-<date>.json`, `<output_dir>/runs/current/extracts/`,
-  drafts skills/commands via `weekly_commit_draft`, `weekly-report-blocks-<date>.md`
+  `weekly-harness-remediation-proposals-<date>.json`, autres findings `weekly-*-findings-<date>.json`,
+  `weekly-timings-<date>.json`, `<output_dir>/runs/current/extracts/`, drafts skills/commands via
+  `weekly_commit_draft`, `weekly-report-blocks-<date>.md`

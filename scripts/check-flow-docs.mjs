@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Contrat de flux docs ↔ code (G1, v6.0.p) — 6 surfaces vérifiées statiquement.
+ * Contrat de flux docs ↔ code (G1, v6.0.p) — 7 surfaces vérifiées statiquement.
  *
  *  1. Tools TS → sous-commandes CLI : chaque outil du plugin invoque une
  *     sous-commande réelle du moteur (aucun argv fantôme).
@@ -16,6 +16,11 @@
  *     « Déroulement » de la commande /weekly-review sont EXACTEMENT ceux du
  *     tableau de l'agent weekly-advisor, dans le même ordre (dérive observée :
  *     sémantique d'ancre contradictoire commande/agent, ré-alignée en v6.0.p).
+ *  7. Orchestration waves : l'orchestrateur, son worker et la commande lanceuse
+ *     documentent le dispatch parallèle de façon cohérente (frontmatter
+ *     `task: allow`, marqueurs WAVE/JOIN, contrat retour JSON du worker,
+ *     référence agent dans la commande — dérive observée : phrase interdisant
+ *     encore le dispatch en subagent côté commande).
  *
  * Zéro dépendance (node stdlib). Lancé par la CI après pytest ; exit 0/1.
  */
@@ -236,5 +241,44 @@ ok(
   `agent: [${agentTools.join(", ")}] | commande: [${commandTools.join(", ")}]`,
 )
 
-console.log(failures === 0 ? "\nFLOW-DOCS OK — contrat de flux 6 surfaces vérifié" : `\n${failures} échec(s)`)
+// ------------------------------------------------------------------ surface 7
+
+// Orchestration waves : le dispatch parallèle (orchestrateur → workers
+// subagents) doit être documenté de façon cohérente entre l'agent orchestrateur,
+// son worker et la commande lanceuse. Détecte une re-divergence (ex. retour à
+// un flux séquentiel décrit, ou phrase interdisant le dispatch en subagent).
+const WORKER_FILE = path.join(ROOT, ".opencode", "agents", "weekly-advisor", "weekly-advisor-worker.md")
+const agentSrc7 = read(AGENT_FILE)
+const commandSrc7 = read(COMMAND_FILE)
+const frontmatter = (src) => src.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? ""
+const workerSrc = fs.existsSync(WORKER_FILE) ? read(WORKER_FILE) : ""
+console.log("— Surface 7 : cohérence orchestration waves")
+ok(
+  "agent orchestrateur déclare task: allow dans son frontmatter",
+  /\btask:\s*allow\b/.test(frontmatter(agentSrc7)),
+)
+ok(
+  "commande sans phrase interdite « jamais de dispatch en subagent »",
+  !commandSrc7.includes("jamais de dispatch en subagent"),
+)
+for (const marker of ["WAVE 1", "WAVE 2", "JOIN"]) {
+  ok(`orchestrateur documente la vague « ${marker} »`, agentSrc7.includes(marker))
+}
+const RETURN_FIELDS = ["branch", "rc", "steps_done", "warnings", "artifacts", "elapsed_s"]
+for (const field of RETURN_FIELDS) {
+  ok(
+    `worker weekly-advisor-worker déclare le champ retour "${field}"`,
+    new RegExp(`"${field}"\\s*:`).test(workerSrc),
+  )
+}
+ok(
+  "commande référence agent: weekly-advisor dans son frontmatter",
+  /agent:\s*weekly-advisor\b/.test(frontmatter(commandSrc7)),
+)
+
+console.log(
+  failures === 0
+    ? "\nFLOW-DOCS OK — contrat de flux 7 surfaces vérifié"
+    : `\n${failures} échec(s)`,
+)
 process.exit(failures === 0 ? 0 : 1)

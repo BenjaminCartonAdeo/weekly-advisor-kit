@@ -1,7 +1,7 @@
 # INSTALL.md — Installation & validation du kit
 
 Guide pas à pas pour installer, configurer et valider `weekly-advisor-kit` sur un poste.
-Temps total : ~10 min (hors run complet de test : 30-45 min).
+Temps total : ~10 min (hors run complet de test : ~8-12 min).
 
 > **Installation pilotée par agent ?** Utilisez [`INSTALL_PROMPT.md`](INSTALL_PROMPT.md) :
 > collez son contenu dans une session OpenCode (substituez `<TARGET>`), ou demandez à un
@@ -177,7 +177,7 @@ opencode run --port 4097 --agent weekly-advisor --model <votre-modèle> \
     --dir . "Lance la revue hebdomadaire"
 ```
 
-- Durée : 30-45 min (ordre figé en 17 étapes ; `weekly_harness` ≈ 100 s à elle seule)
+- Durée : ~8-12 min (orchestration parallèle en waves de subagents ; `weekly_harness` ≈ 100 s à elle seule)
 - Artefact attendu : le **rapport HTML** `<project_root>/reports/html/weekly-report-<date>.html`
   (+ `weekly-report-latest.html`) — il s'ouvre automatiquement dans votre navigateur ;
   l'archive `<output_dir>/runs/current/weekly-report-<date>.md` (alias stable `runs/current/`)
@@ -197,6 +197,12 @@ PATH=/home/<TOI>/.local/bin:/usr/local/bin:/usr/bin:/bin
     >> /var/log/weekly-advisor.log 2>&1
 ```
 
+- **Comportement externe inchangé** : le point d'entrée est identique à l'exécution
+  séquentielle historique — seule l'orchestration interne change, le run s'exécute
+  désormais en **waves parallèles de subagents** (branches télémétrie/veille/harnais
+  en parallèle, puis drafting/insights/cohérence). Le signal (rapport présent =
+  run terminé, rapport absent = échec), l'exit 1/2 et `WEEKLY_NO_BROWSER` restent
+  inchangés ; la durée indicative passe à ~8-12 min
 - **Rien de plus sur PATH** : la pipeline résout elle-même python (`<moteur>/.venv/bin/python`)
   et `harness-eval` via le plugin ; seul `git` doit rester résolu (défaut)
 - **Signal** : rapport présent = run terminé ; **rapport absent** = échec → alerter ;

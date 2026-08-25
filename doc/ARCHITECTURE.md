@@ -22,10 +22,67 @@ l'architecture telle qu'implémentée et les invariants à préserver.
   `weekly_doctor`, `weekly_commit_draft`, etc.) qui pilotent le moteur.
 - Sorties JSON reproductibles dans `<output_dir>/runs/<date>-<uuid8>/`, alias
   stable `runs/current/`. Codes de sortie : `0` complet, `1` partiel, `2` fatal.
+- L'exécution du run est **orchestrée en waves parallèles de subagents** (spec v6.1,
+  design `doc/2026-08-25-parallel-orchestration-design.md`) : la session principale
+  devient un coordinateur léger (gate, dispatch, join, tail). Le moteur Python et le
+  plugin enveloppe restent inchangés — seule la couche d'orchestration agent évolue.
+
+## Orchestration du run — DAG en waves
+
+La session principale (`/weekly-review`, agent `weekly-advisor`) agit comme un
+**coordinateur léger** : gate, dispatch en parallèle, join, tail. Elle n'exécute plus
+elle-même les étapes longues — chaque branche indépendante est confiée à un
+**worker subagent unique**.
+
+```
+/weekly-review (agent weekly-advisor = coordinateur + gestionnaire de contexte)
+│
+├─ Étape 0 doctor (gate ; rc=2 → STOP sans rapport)          [session principale]
+│
+├─ WAVE 1 — 3 subagents lancés en parallèle
+│   ├─ T : weekly_run → poll achèvement → skill weekly-quality-audit
+│   ├─ V : weekly_releases → watch_distill → watch_context
+│   │      → skill weekly-watch-review → watch_validate
+│   └─ H : weekly_harness → skill harness-remediation
+│
+├─ JOIN — fusion des résultats + codes sortie                 [session principale]
+│
+├─ WAVE 2 — activée par défaut (optionnelle)
+│   ├─ D : skill weekly-drafting (seul worker autorisé à committer)
+│   ├─ I : weekly_insights
+│   └─ C : skill weekly-coherence-review
+│
+└─ TAIL — report_prep → blocks_draft → prose → assemble → self_cost
+                                                             [session principale]
+```
+
+- **Rôle du coordinateur** : chaque worker reçoit un **briefing minimal-complet**
+  (steps ordonnés de sa branche, chemin du répertoire de run, invariants de branche,
+  contrat de retour JSON obligatoire). Au join, l'orchestrateur fusionne les contrats
+  en une synthèse narrative courte qui seule alimente la wave 2 et le tail — les JSON
+  sur disque restent la source de vérité unique.
+- **Worker subagent unique** : un subagent `weekly-advisor-worker` (mode subagent)
+  n'exécute que sa branche ; il ne connaît ni les autres branches ni la logique de
+  merge. Les dépendances séquentielles internes à une branche (ex. V : 2.2 → 2.5)
+  restent gérées par le worker lui-même.
+- **Attente V/H sur le summary de T** : avant leur premier write, les workers V et H
+  attendent que `runs/current/` expose `weekly-summary-<date>.json` (poll read/glob,
+  **plafond 10 min** ; dépassement → warning fail-soft, la branche tente quand même
+  en écriture différée si possible).
+- **Merge des codes sortie (JOIN)** : un seul rc=2 parmi les workers (ou crash sans
+  résultat sur étape critique) → **STOP sans rapport** — le rapport absent reste le
+  signal du cron. Sinon, les warnings des branches sont agrégés et passés au tail :
+  succès partiel préservé, exit 1. Worker silencieux ou timeout → rc=1 + warning,
+  le run continue (fail-soft).
+- **Instrumentation** : chaque worker retourne `elapsed_s` et des timings par step
+  dans son contrat ; au join, l'orchestrateur écrit **`weekly-timings-<date>.json`**
+  (`{branch: {step: ms}}` + durées wave/tail). Nouvel artefact écrit par l'agent, la
+  liste des fichiers agent-writable est étendue en conséquence.
 
 ## Veille écosystème (étapes 2 → 3.6)
 
-Chaîne déterministe encadrant l'unique passe LLM (3.5) :
+Chaîne déterministe de la **branche V (wave 1)**, encadrant l'unique passe LLM de la
+branche (3.5) — exécutée par le worker V, qui gère seul l'ordre séquentiel interne :
 
 - **Étape 2 — `releases`** : collecte réseau (npm, topics, registre MCP, RSS,
   repos/listes/radar suivis) → `weekly-ecosystem-<date>.json`.
@@ -142,3 +199,6 @@ Le drafting (étape 4) cible un harnais unique, pas seulement `.opencode/` :
 - Baseline findings jamais réécrite ; remédiation jamais appliquée sans gate.
 - Commits d'auto-drafting : un commit par écriture, scoped à `.opencode/` du
   worktree.
+- Orchestration en waves : l'invariant « jamais de dispatch en subagent » est levé
+  (spec v6.1) ; le merge rc au join reste le seul point de décision d'arrêt, et le
+  moteur/plugin restent inchangés (la parallélisation ne touche que l'agent).
