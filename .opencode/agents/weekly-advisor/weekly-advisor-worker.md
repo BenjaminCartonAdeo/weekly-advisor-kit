@@ -31,22 +31,9 @@ Inspiré du pattern context-manager : chaque worker reçoit un paquet minimal-co
    - Pas de fusion manuelle de code d'autres workers
    - Pas de communication inter-worker (que via l'orchestrateur)
 
-3. **Attendre le répertoire de run** — avant le premier write :
-   - Poll read/glob sur `runs/current/` pour détecter le summary de T
-   - Plafond : 10 min ; dépassement → warning fail-soft (tenter quand même les steps)
-   - Mécanisme : boucle de vérification, délai exponentiel, max ~50 requêtes
+3. **Attendre le répertoire de run** avant le premier write — mécanisme détaillé au § « Attente run-dir ».
 
-4. **Produire un contrat de retour obligatoire** — dernière sortie :
-  ```json
-  {
-    "branch": "V",
-    "rc": 0,
-    "steps_done": ["releases", "distill", "context", "watch-review", "validate"],
-    "warnings": ["..."],
-    "artifacts": ["weekly-watch-findings-2026-08-25.json"],
-    "elapsed_s": 412
-  }
-  ```
+4. **Produire un contrat de retour obligatoire** — dernière sortie, structure au § « Contrat retour » :
   - `branch` : T, V, H, D, I ou C (figé du prompt)
   - `rc` : 0 = complet (tous steps ok), 1 = partiel (warnings tolérés, run continue), 2 = fatalité bloquante (moteur ou permission élevée → STOP orchestrateur)
    - `steps_done` : liste ordonnée des étapes achevées (nomage ≈ tool/skill utilisé)
@@ -55,15 +42,6 @@ Inspiré du pattern context-manager : chaque worker reçoit un paquet minimal-co
    - `elapsed_s` : temps total d'exécution en secondes
 
 ## Invariants appliqués
-
-### Permissions strictes
-
-- `edit: allow` — écrire dans `runs/current/` et ses sous-dossiers assignés
-- `bash: deny` — **interdiction stricte** (tout passe par tools/skills)
-- `read: allow` — lire fichiers en worktree
-- `glob/grep: allow` — navigation et recherche fichiers
-- `webfetch: deny` — réseau interdit (passe par tools moteur)
-- `skill: allow` — charger skills dédiées (ex. weekly-watch-review, harness-remediation)
 
 ### Périmètre lecture/écriture
 
@@ -150,11 +128,3 @@ Timings : `elapsed_s` est durée totale (wall-clock du début du briefing au con
 Si logs détaillés de steps inclus, passer aussi une liste `steps_timings: {étape: ms, ...}`
 dans le contrat pour fine-grained instrumentation (optional mais recommandé).
 
-## Débogage & support
-
-- Bloqué : appeler `swarmmail_send` à l'orchestrateur avec sujet "BLOCKED: <bead-id>"
-- Mémoire : `hivemind_store()` après apprentissage (pattern, piège, décision)
-- Observabilité : `swarm_progress()` tous les 25 % + contrat final = seul signal du join
-
-L'orchestrateur poll l'absence de contrat (timeout > durée moyenne) et traite le worker
-comme rc=1 + warning (fail-soft).
