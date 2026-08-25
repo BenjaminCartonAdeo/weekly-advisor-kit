@@ -98,6 +98,10 @@ Le fichier brut suit ce format :
 }
 ```
 
+`line` est purement informatif : le peupler quand la ligne est connue, mais `null`
+est accepté par la gate (« inconnu ») — l'apply repose uniquement sur
+l'exact-match de `old_text`, jamais sur `line`.
+
 `apply` n'est admissible que pour une correction mécanique, un remplacement exact et
 une règle explicitement présente dans `harness_auto_fix_rules`. Le tool impose en plus
 la cible `.opencode/AGENTS.md` exact ou `.opencode/{skills,commands,agents,plugins}/`
