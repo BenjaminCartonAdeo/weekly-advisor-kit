@@ -250,7 +250,7 @@ ok(
 const WORKER_FILE = path.join(ROOT, ".opencode", "agents", "weekly-advisor", "weekly-advisor-worker.md")
 const agentSrc7 = read(AGENT_FILE)
 const commandSrc7 = read(COMMAND_FILE)
-const frontmatter = (src) => src.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? ""
+const frontmatter = (src) => src.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1]?.replace(/\r/g, "") ?? ""
 const workerSrc = fs.existsSync(WORKER_FILE) ? read(WORKER_FILE) : ""
 console.log("— Surface 7 : cohérence orchestration waves")
 ok(
