@@ -6,7 +6,12 @@ from datetime import timedelta
 
 from helpers import make_step, make_usage, tzutc
 
-from weekly_telemetry_aggregator.aggregator import OUTLIER_MIN_ROOTS, aggregate
+from weekly_telemetry_aggregator.aggregator import (
+    OUTLIER_MIN_ROOTS,
+    aggregate,
+    dedup_resumed_usages,
+    resume_fingerprint,
+)
 from weekly_telemetry_aggregator.models import (
     Period,
     SkillCatalogEntry,
@@ -445,3 +450,80 @@ def test_aggregate_merges_child_across_canonical_ids():
     assert abs(summary.totals.total_cost_usd - 1.5) < 1e-9
     top = {t.session_id: t for t in summary.top_sessions_by_cost}
     assert top["alpha:root"].includes_subagents is True
+
+
+# --------------------------------------------------------------------------- resume dedup
+
+
+def _turns(n: int, seed: str = "t") -> list[str]:
+    return [f"{seed}-{i}" for i in range(n)]
+
+
+def test_resume_fingerprint_none_below_threshold():
+    from weekly_telemetry_aggregator.aggregator import RESUME_FINGERPRINT_TURNS
+
+    short = make_usage("ses_a", [], user_turns=_turns(RESUME_FINGERPRINT_TURNS - 1))
+    assert resume_fingerprint(short) is None
+
+
+def test_dedup_resumed_keeps_richest_and_drops_copy():
+    """Fork : la copie reprise partage les premiers turns → on ne garde que la plus riche."""
+    base = _turns(10)
+    original = make_usage("ses_old", [], user_turns=base)
+    resumed = make_usage(
+        "ses_new", [], user_turns=[*base, "suite-10", "suite-11"], title="continued"
+    )
+    kept, records = dedup_resumed_usages([original, resumed])
+    assert [u.session_id for u in kept] == ["ses_new"]  # la plus complète gagne
+    assert records == [{"kept_session_id": "ses_new", "dropped_session_id": "ses_old"}]
+
+
+def test_dedup_resumed_tie_breaks_on_smallest_session_id():
+    turns = _turns(8)
+    a = make_usage("ses_bbb", [], user_turns=turns)
+    b = make_usage("ses_aaa", [], user_turns=turns)
+    kept, records = dedup_resumed_usages([a, b])
+    assert [u.session_id for u in kept] == ["ses_aaa"]
+    assert records == [{"kept_session_id": "ses_aaa", "dropped_session_id": "ses_bbb"}]
+
+
+def test_dedup_resumed_ignores_identical_first_prompt_only():
+    """Invocations distinctes d'une même commande : seul le turn 1 coïncide → rien à fusionner."""
+    a = make_usage("ses_cmd1", [], user_turns=[*["prompt commun"], *_turns(9, seed="a")])
+    b = make_usage("ses_cmd2", [], user_turns=[*["prompt commun"], *_turns(9, seed="b")])
+    kept, records = dedup_resumed_usages([a, b])
+    assert {u.session_id for u in kept} == {"ses_cmd1", "ses_cmd2"}
+    assert records == []
+
+
+def test_dedup_resumed_skips_short_sessions():
+    """Moins de RESUME_FINGERPRINT_TURNS turns → pas de dédup (risque de faux positifs)."""
+    a = make_usage("ses_s1", [], user_turns=_turns(3))
+    b = make_usage("ses_s2", [], user_turns=_turns(3))
+    kept, records = dedup_resumed_usages([a, b])
+    assert {u.session_id for u in kept} == {"ses_s1", "ses_s2"}
+    assert records == []
+
+
+def test_dedup_resumed_scoped_by_harness_and_project():
+    """Même contenu mais harnais/projet différents → sessions distinctes."""
+    turns = _turns(8)
+    a = make_usage("ses_x", [], user_turns=turns)
+    b = make_usage("ses_y", [], user_turns=turns)
+    b.harness = "claude"
+    b.project_path = "/other/project"
+    kept, records = dedup_resumed_usages([a, b])
+    assert {u.session_id for u in kept} == {"ses_x", "ses_y"}
+    assert records == []
+
+
+def test_dedup_resumed_chain_keeps_single_survivor():
+    """Chaîne de reprises A ⊂ B ⊂ C → un seul survivant, 2 enregistrements de fusion."""
+    base = _turns(12)
+    a = make_usage("ses_a", [], user_turns=base[:8])
+    b = make_usage("ses_b", [], user_turns=base[:10])
+    c = make_usage("ses_c", [], user_turns=base)
+    kept, records = dedup_resumed_usages([c, a, b])
+    assert [u.session_id for u in kept] == ["ses_c"]
+    assert {r["dropped_session_id"] for r in records} == {"ses_a", "ses_b"}
+    assert all(r["kept_session_id"] == "ses_c" for r in records)

@@ -10,6 +10,7 @@ Output: `WeeklySummary` following the spec's normative serialization rules (v5.2
 from __future__ import annotations
 
 import difflib
+import hashlib
 import math
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -254,6 +255,73 @@ def _cost_outliers(
             out.append(CostOutlier(session_id=sid, cost_usd=cost, z_score=zs[str(i)]))
     out.sort(key=lambda o: (-o.z_score, o.session_id))
     return out
+
+
+#: Nombre de turns de tête (user_turns, y c. textes synthétiques) hachés pour la
+#: détection de session reprise (v6.1 R3). Une reprise OpenCode copie tout le
+#: transcript sous un NOUVEL id de session ; les 30 premiers parts restent
+#: byte-identiques (vérifié sur données terrain), alors que deux invocations
+#: distinctes d'une même commande ne partagent que le prompt initial (1/30).
+RESUME_FINGERPRINT_TURNS = 8
+
+
+def resume_fingerprint(usage: SessionUsage) -> str | None:
+    """Empreinte SHA-256 des premiers turns d'une session — None si trop courte.
+
+    Les sessions plus courtes que `RESUME_FINGERPRINT_TURNS` ne participent pas
+    au dédup : deux vraies sessions peuvent partager leur unique prompt initial
+    (invocations répétées d'une même commande) sans être des reprises.
+    """
+    turns = [t for t in usage.user_turns if t and t.strip()]
+    if len(turns) < RESUME_FINGERPRINT_TURNS:
+        return None
+    joined = "\x1f".join(turns[:RESUME_FINGERPRINT_TURNS])
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+
+def dedup_resumed_usages(
+    usages: list[SessionUsage],
+) -> tuple[list[SessionUsage], list[dict]]:
+    """Fusionne les copies de sessions reprises (resume-fork) dans l'original.
+
+    Cause racine (R3) : une reprise OpenCode copie le transcript sous un nouvel
+    id de session en conservant les timestamps d'origine des messages → la copie
+    retombe dans la fenêtre avec les mêmes coûts/tokens que l'original : les deux
+    ids sont comptés comme 2 sessions distinctes (totaux, top sessions,
+    candidats d'audit). Aucune métadonnée de lineage n'existe dans le schéma DB
+    (`session` V1 sans fork_session_id) → détection par contenu.
+
+    Clé de dédup : (harness, project_path, empreinte des premiers turns).
+    Primaire conservé = transcript le plus complet (la continuation) ;
+    tie-break = session_id lexicographiquement minimal. Déterministe.
+    """
+    groups: dict[tuple[str, str, str], list[int]] = {}
+    for i, usage in enumerate(usages):
+        fp = resume_fingerprint(usage)
+        if fp is None:
+            continue
+        groups.setdefault((usage.harness or "", usage.project_path or "", fp), []).append(i)
+    dropped: dict[int, int] = {}  # index supprimé -> index conservé
+    for _key, idxs in sorted(groups.items()):
+        if len(idxs) < 2:
+            continue
+        ordered = sorted(
+            idxs, key=lambda i: (-len(usages[i].user_turns), usages[i].session_id)
+        )
+        kept_index = ordered[0]
+        for i in ordered[1:]:
+            dropped[i] = kept_index
+    if not dropped:
+        return usages, []
+    kept = [u for i, u in enumerate(usages) if i not in dropped]
+    records = [
+        {
+            "kept_session_id": usages[kept_index].session_id,
+            "dropped_session_id": usages[i].session_id,
+        }
+        for i, kept_index in sorted(dropped.items())
+    ]
+    return kept, records
 
 
 def aggregate(

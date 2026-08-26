@@ -1899,3 +1899,58 @@ def test_doctor_prints_remediation_surface_5_5(tmp_path: Path, fake_opencode, ca
     out = capsys.readouterr().out
     assert "surface de remédiation 5.5: portability" in out
     assert "cibles de drafting: claude-code" in out
+
+
+def test_run_dedups_resumed_session_fork(tmp_path: Path, monkeypatch):
+    """R3 : une session reprise (copie du transcript sous un nouvel id) est comptée UNE fois.
+
+    La copie partage ses premiers turns avec l'original (contenu copié au fork,
+    timestamps d'origine conservés) → seule la plus complète est retenue ;
+    trace `resumed-duplicate` dans l'audit de sélection + warning.
+    """
+    import weekly_telemetry_aggregator.main as main_mod
+    from helpers import FakeSessionProvider, fake_meta, make_step
+
+    turns = [f"turn {i} — contenu partagé" for i in range(10)]
+
+    class TurnProvider(FakeSessionProvider):
+        def __init__(self, harness, metas, *, turns_by_session, **kw):
+            super().__init__(harness, metas, **kw)
+            self._turns = {
+                self._key(sid): list(ts) for sid, ts in turns_by_session.items()
+            }
+
+        def session_user_turns(self, session_id: str, start_ms: int, end_ms: int):
+            return self._turns.get(session_id, [])
+
+    original = fake_meta("opencode", "ses_old", title="Original", updated=FAKE_TS)
+    resumed = fake_meta("opencode", "ses_new", title="Resumed copy", updated=FAKE_TS)
+    src = TurnProvider(
+        "opencode",
+        [original, resumed],
+        steps_by_session={
+            "ses_old": [make_step("ses_old", FAKE_TS, cost=0.4)],
+            "ses_new": [make_step("ses_new", FAKE_TS, cost=0.2)],
+        },
+        turns_by_session={
+            "ses_old": turns[:8],
+            "ses_new": [*turns, "turn 10 — suite après reprise"],
+        },
+    )
+    monkeypatch.setattr(main_mod, "build_providers", lambda _cfg: [src])
+    cfg = _cfg(tmp_path, tmp_path / "absent.db")
+    rc = run(cfg, anchor=RUN_TIME.isoformat())
+    assert rc == EXIT_OK
+    data = json.loads(
+        (active_run_file(tmp_path, "weekly-summary-2026-08-12.json")).read_text(encoding="utf-8")
+    )
+    # La copie est PLUS complète (11 turns vs 8) → elle survit ; l'originale,
+    # strictement préfixe de la copie, est absorbée (sémantique resume-fork).
+    assert data["totals"]["session_count"] == 1
+    assert data["selection"]["resumed_duplicates"] == 1
+    statuses = {r["session_id"]: r["status"] for r in data["selection"]["recent"]}
+    merged = [sid for sid, st in statuses.items() if st == "resumed-duplicate"]
+    kept = {t["session_id"] for t in data["top_sessions_by_cost"]}
+    assert len(merged) == 1 and merged[0] not in kept
+    warn_msgs = [w["message"] for w in data.get("warnings", [])]
+    assert any("session reprise fusionnée" in m for m in warn_msgs)

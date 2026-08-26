@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from warnings import warn as _warn_user
 
-from .aggregator import _cap_warnings, aggregate
+from .aggregator import _cap_warnings, aggregate, dedup_resumed_usages
 from .config import TelemetryConfig, apply_lookback_override
 from .draft_targets import DRAFT_HARNESS_TARGETS, describe_draft_target, resolve_draft_targets
 from .harness_scope import (
@@ -404,6 +404,7 @@ def _build_selection(
         "excluded_no_activity": counts.get("no-activity", 0),
         "excluded_unflushed": counts.get("unflushed", 0),
         "excluded_error": counts.get("error", 0),
+        "resumed_duplicates": counts.get("resumed-duplicate", 0),
         "recent": recent,
     }
 
@@ -558,11 +559,29 @@ def run(
                     read_failed = True
                 if usage is not None:
                     usages.append(usage)
-        if read_failed and cfg.fail_on_missing_telemetry:
-            return EXIT_PARTIAL
     finally:
         for provider in providers:
             provider.close()
+
+    if read_failed and cfg.fail_on_missing_telemetry:
+        return EXIT_PARTIAL
+
+    # R3 (v6.1) : dédup des sessions reprises — une resume-fork copie le transcript
+    # sous un nouvel id avec timestamps d'origine → sinon double comptage sessions/
+    # coûts/tokens et 2 candidats d'audit pour une seule session logique.
+    usages, resumed_merges = dedup_resumed_usages(usages)
+    for merge in resumed_merges:
+        dropped_id = merge["dropped_session_id"]
+        for rec in audit:
+            if rec["session_id"] == dropped_id and rec["status"] == "included":
+                rec["status"] = "resumed-duplicate"
+                rec["merged_into"] = merge["kept_session_id"]
+        warnings.append(
+            WarningEntry(
+                session_id=dropped_id,
+                message=f"session reprise fusionnée dans {merge['kept_session_id']} (dédup resume)",
+            )
+        )
 
     print("telemetry-aggregator: agrégation…", flush=True)
     catalog_names, catalog_count, catalog_entries = scan_skill_catalog(cfg.project_root)
