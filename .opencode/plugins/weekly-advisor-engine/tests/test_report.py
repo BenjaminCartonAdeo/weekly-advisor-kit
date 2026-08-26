@@ -532,6 +532,19 @@ def test_validate_llm_blocks_rejects_digits_and_unknown():
     assert any("chiffres" in v for v in violations)
     assert coverage == []
 
+def test_validate_llm_blocks_allows_dates_percent_versions():
+    from weekly_telemetry_aggregator.report import validate_llm_blocks
+
+    # dates ISO, pourcentages et versions sémantiques ne sont pas des « chiffres libres »
+    text = "Bogue corrigé en v6.0.l le 2026-08-26 (reprise à 12,5% de couverture).\n"
+    violations, coverage = validate_llm_blocks(text, None, None)
+    assert violations == []
+    assert coverage == []
+
+    # un coût libre reste interdit
+    violations2, _ = validate_llm_blocks("coût de 39$ cette semaine.\n", None, None)
+    assert any("chiffres" in v for v in violations2)
+
 
 def test_report_annex_groups_identical_warnings(tmp_path: Path):
     """v5.30 (F) : les warnings identiques sont groupés avec compteur dans l'annexe."""

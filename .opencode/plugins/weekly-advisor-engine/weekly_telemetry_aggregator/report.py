@@ -401,9 +401,20 @@ def validate_llm_blocks(text: str, findings: dict | None, insights: dict | None)
     # les balises [F:...]/[M:...]/[A:...] portent des ids/session_ids (chiffres) —
     # le check chiffres ne s'applique qu'au texte visible (hors balises).
     text_no_tags = re.sub(r"\[[FMA]:[^\]]+\]", "", text)
-    if re.search(r"\d", text_no_tags):
+    # chiffres autorisés hors balise : dates ISO, pourcentages, numéros de version.
+    # la spec interdit toujours les chiffres « libres » (coûts, décomptes, durées).
+    _ALLOWED_NUM = re.compile(
+        r"\b\d{4}-\d{2}-\d{2}\b"  # date ISO
+        r"|\b\d{1,3}([.,]\d+)?%"  # pourcentage
+        r"|\bv?\d+\.\d+(\.\d+)?\b"  # version sémantique
+    )
+    text_no_allowed = _ALLOWED_NUM.sub(" ", text_no_tags)
+    illegal_digits = re.findall(r"\d+", text_no_allowed)
+    if illegal_digits:
+        snippet = ", ".join(illegal_digits[:5])
         violations.append(
-            "chiffres interdits dans le bloc LLM (spec : catégories/sévérités uniquement)"
+            "chiffres interdits dans le bloc LLM (spec : catégories/sévérités "
+            f"uniquement) — chiffres hors date/pourcentage/version : {snippet}"
         )
 
     n_lines = len(text.splitlines())
