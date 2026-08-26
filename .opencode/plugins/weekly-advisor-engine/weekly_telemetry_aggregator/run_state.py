@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from .util import load_json
+from .util import HARNESS_BASELINE_FILE, load_json
 from .writer import write_json_atomic
 
 RUNS_DIR = "runs"
@@ -185,6 +185,8 @@ def _migrate_legacy_root(output_dir: Path, run_dir: Path) -> None:
     for p in sorted(output_dir.glob("weekly-*")):
         if p.is_symlink() or not p.is_file():
             continue
+        if p.name == HARNESS_BASELINE_FILE:
+            continue  # artefact stable (v6.2.x) : la détection de régression en dépend
         try:
             legacy.mkdir(parents=True, exist_ok=True)
             p.rename(legacy / p.name)

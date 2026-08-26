@@ -14,6 +14,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+#: Baseline findings harness — artefact racine STABLE entre runs (comme
+#: run_state.json). La migration legacy racine ne doit JAMAIS la déplacer.
+HARNESS_BASELINE_FILE = "weekly-harness-baseline.json"
+
 
 def parse_iso_ts(value: object) -> datetime | None:
     """Tolerant ISO-8601 parse (Z→+00:00, naive→UTC); None on garbage/absent.

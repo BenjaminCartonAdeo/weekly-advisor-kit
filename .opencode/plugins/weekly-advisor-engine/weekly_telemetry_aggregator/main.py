@@ -45,7 +45,14 @@ from .providers import SessionProvider, build_providers
 from .providers.base import HARNESS_OPENCODE, HarnessSession
 from .run_state import activate_run, resolve_active_run_dir
 from .sqlite_reader import MIGRATION_MIN_V1, DataSourceError, SessionMeta, _to_ms, detect_db
-from .util import _abs, iter_digest_findings, load_json, parse_iso_ts, root_and_orphan_ids
+from .util import (
+    HARNESS_BASELINE_FILE,
+    _abs,
+    iter_digest_findings,
+    load_json,
+    parse_iso_ts,
+    root_and_orphan_ids,
+)
 from .util import parse_anchor as _parse_anchor
 from .writer import write_json_atomic, write_summary
 
@@ -910,9 +917,6 @@ def doctor(
 # (fichiers .harness-eval/rules + version harness-eval). Une baseline sans
 # empreinte (v1) est rafraîchie une fois puis réutilisée.
 HARNESS_BASELINE_SCHEMA_VERSION = 2
-#: Nom de l'artefact baseline (racine output_dir — survit aux runs, comme
-#: `previous_run.json` ; un run ne doit jamais réécrire l'histoire).
-HARNESS_BASELINE_FILE = "weekly-harness-baseline.json"
 
 
 def _engine_kit_root(cfg: TelemetryConfig) -> Path | None:

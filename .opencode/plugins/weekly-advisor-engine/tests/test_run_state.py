@@ -25,6 +25,32 @@ RUN_DATE = "2026-08-16"
 RUN_TIME = datetime(2026, 8, 18, 10, 0, tzinfo=UTC)
 
 
+def test_migrate_legacy_root_preserves_harness_baseline(tmp_path):
+    """Baseline harness = artefact stable : jamais déplacée vers runs/<id>/legacy/."""
+    baseline = tmp_path / "weekly-harness-baseline.json"
+    baseline.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "captured_on": "2026-08-25",
+                "finding_count": 1,
+                "findings": [{"rule": "quality/a", "path": ".opencode/cmd.md"}],
+                "rules_version": "4c6961df",
+            }
+        ),
+        encoding="utf-8",
+    )
+    stray = tmp_path / "weekly-summary-vieux.json"
+    stray.write_text("{}", encoding="utf-8")
+
+    run = activate_run(tmp_path, RUN_DATE, RUN_TIME)
+
+    assert baseline.is_file(), "la baseline harness ne doit pas être migrée"
+    legacy_dir = tmp_path / "runs" / run.run_id / "legacy"
+    assert (legacy_dir / "weekly-summary-vieux.json").is_file()
+    assert not (legacy_dir / "weekly-harness-baseline.json").exists()
+
+
 def test_activate_creates_uuid_run_dir_and_state(tmp_path):
     active = activate_run(tmp_path, RUN_DATE, RUN_TIME)
     assert active.run_id.startswith(RUN_DATE + "-")
