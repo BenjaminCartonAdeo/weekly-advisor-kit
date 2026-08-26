@@ -351,6 +351,28 @@ def test_doctor_valid_config_no_placeholder_problem(tmp_path: Path, capsys):
     assert "jamais adaptée" not in out
 
 
+def test_doctor_warns_output_dir_under_plugins_tree(tmp_path: Path, fake_opencode, capsys):
+    """Run lancé cwd=moteur → reports/ dans le plugin : doctor doit nommer le défaut.
+
+    Le warning est non-bloquant (rc reste EXIT_OK) : la racine du kit contient
+    bien .opencode et la config est chargée, seul l'output_dir pollue l'arbre
+    plugins (observé 24/08)."""
+    kit = tmp_path / "kit"
+    plugin_reports = (
+        kit / ".opencode" / "plugins" / "weekly-advisor-engine" / "reports"
+    )
+    plugin_reports.mkdir(parents=True)
+    db = _seed_n(tmp_path / "sessions.db", 3)
+    cfg = _cfg(tmp_path, db, output_dir=plugin_reports)
+    cfg.project_root = kit  # racine du kit (contient .opencode) — repo audité légitime
+
+    rc = doctor(cfg, cwd=tmp_path, config_loaded=True)
+
+    assert rc in (EXIT_OK, EXIT_PARTIAL)  # warning, pas un problème bloquant
+    out = capsys.readouterr().out
+    assert "output_dir résout sous l'arbre plugins" in out
+
+
 def test_placeholder_fields_detect_windows_style_separators(tmp_path: Path):
     """CI Windows : str(Path) y produit des « \\ » — le substring « path/to » ne
     matchait plus et la garde devenait muette (doctor muet + run sans warning).

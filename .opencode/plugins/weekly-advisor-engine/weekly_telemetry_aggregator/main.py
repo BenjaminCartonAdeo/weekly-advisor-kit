@@ -752,6 +752,22 @@ def doctor(
     if _fields:
         problems.append(_placeholder_message(_fields))
 
+    # Garde-fou : un output_dir résolu sous .opencode/plugins/ signale un run
+    # lancé avec cwd = moteur du plugin — les artefacts (reports/, baselines)
+    # finissent dans le dépôt du plugin au lieu du projet audité (observé 24/08).
+    resolved_out = Path(_abs(cfg.output_dir)).resolve()
+    parts = resolved_out.parts
+    if (
+        ".opencode" in parts
+        and "plugins" in parts
+        and parts.index(".opencode") + 1 == parts.index("plugins")
+    ):
+        warnings.append(
+            f"output_dir résout sous l'arbre plugins ({resolved_out}) — run "
+            "probablement lancé depuis le dossier du moteur ; déplacer reports/ "
+            "hors du plugin et relancer les étapes depuis la racine du projet"
+        )
+
     try:
         # Windows : shutil.which résout "opencode" → "opencode.cmd"/".exe" (un
         # argv nu n'est pas exécutable tel quel via subprocess sans shell).
