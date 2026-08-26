@@ -512,3 +512,49 @@ def test_baseline_legacy_without_rules_version_refreshed_once(tmp_path: Path):
 
     second = _baseline_capture(output_dir, root, date="2026-08-19")
     assert second["status"] == "reused"
+
+
+def test_baseline_restored_from_legacy_copy_and_reused(tmp_path: Path):
+    """Copie legacy valide + racine vide → restauration puis réutilisation."""
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    root = _rules_project(tmp_path)
+
+    first = _baseline_capture(output_dir, root)
+    assert first["status"] == "created"
+    original = json.loads((output_dir / HARNESS_BASELINE_FILE).read_text(encoding="utf-8"))
+
+    # Simule l'effet du bug de migration : la baseline finit sous runs/<id>/legacy/
+    legacy_dir = output_dir / "runs" / "2026-08-20-legacy00" / "legacy"
+    legacy_dir.mkdir(parents=True)
+    (output_dir / HARNESS_BASELINE_FILE).rename(legacy_dir / HARNESS_BASELINE_FILE)
+
+    second = _baseline_capture(output_dir, root, date="2026-08-19")
+
+    assert second["status"] == "reused"          # PAS created : la capture a retrouvé son état
+    assert second["captured_on"] == "2026-08-12"
+    restored = json.loads((output_dir / HARNESS_BASELINE_FILE).read_text(encoding="utf-8"))
+    assert restored == original                  # réécrite à l'identique à la racine
+
+
+def test_baseline_restored_when_root_corrupted(tmp_path: Path, capsys):
+    """Racine illisible + copie legacy valide → restauration, pas de recapture."""
+    output_dir = tmp_path / "out-corrupt"
+    output_dir.mkdir()
+    root = _rules_project(tmp_path)
+
+    first = _baseline_capture(output_dir, root)
+    assert first["status"] == "created"
+    good = json.loads((output_dir / HARNESS_BASELINE_FILE).read_text(encoding="utf-8"))
+    capsys.readouterr()
+
+    legacy_dir = output_dir / "runs" / "2026-08-20-legacy00" / "legacy"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / HARNESS_BASELINE_FILE).write_text(json.dumps(good), encoding="utf-8")
+    (output_dir / HARNESS_BASELINE_FILE).write_text('{"findings": "broken"', encoding="utf-8")
+
+    second = _baseline_capture(output_dir, root, date="2026-08-19")
+
+    assert second["status"] == "reused"
+    assert "baseline restaurée depuis" in capsys.readouterr().out
+    assert json.loads((output_dir / HARNESS_BASELINE_FILE).read_text(encoding="utf-8")) == good

@@ -7,6 +7,7 @@ SchemaAdapter (sqlite_reader.py, v5.16/v5.24) — no SDK, no server, no pricing 
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import re
@@ -43,7 +44,7 @@ from .models import (
 )
 from .providers import SessionProvider, build_providers
 from .providers.base import HARNESS_OPENCODE, HarnessSession
-from .run_state import activate_run, resolve_active_run_dir
+from .run_state import RUNS_DIR, activate_run, resolve_active_run_dir
 from .sqlite_reader import MIGRATION_MIN_V1, DataSourceError, SessionMeta, _to_ms, detect_db
 from .util import (
     HARNESS_BASELINE_FILE,
@@ -952,6 +953,17 @@ def _baseline_finding_keys(digest: Mapping) -> list[tuple[str, str]]:
     )
 
 
+def _valid_baseline(payload: object) -> dict | None:
+    """Forme attendue d'une baseline stockée : dict + findings list + captured_on str."""
+    if (
+        isinstance(payload, dict)
+        and isinstance(payload.get("findings"), list)
+        and isinstance(payload.get("captured_on"), str)
+    ):
+        return payload
+    return None
+
+
 def _capture_or_reuse_baseline(
     output_dir: Path,
     date: str,
@@ -982,16 +994,36 @@ def _capture_or_reuse_baseline(
             loaded = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
             loaded = None
-        if (
-            isinstance(loaded, dict)
-            and isinstance(loaded.get("findings"), list)
-            and isinstance(loaded.get("captured_on"), str)
-        ):
-            stored = loaded
-        else:
+        stored = _valid_baseline(loaded)
+        if stored is None:
             # Faiblesse #14 : JSON cassé OU forme invalide = corruption — la
             # recapture reste automatique mais n'est plus silencieuse.
             corrupted = True
+
+    # Restauration best-effort depuis les copies legacy (bug de migration
+    # v6.0.l→v6.0.p ayant déplacé la baseline racine vers runs/<id>/legacy/).
+    if stored is None and output_dir.is_dir():
+        for legacy_path in sorted(
+            output_dir.glob(f"{RUNS_DIR}/*/legacy/{HARNESS_BASELINE_FILE}"),
+            reverse=True,
+        ):
+            try:
+                candidate = json.loads(legacy_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            stored = _valid_baseline(candidate)
+            if stored is None:
+                continue
+            corrupted = False
+            print(
+                f"harness: baseline restaurée depuis "
+                f"{legacy_path.relative_to(output_dir)}",
+                flush=True,
+            )
+            with contextlib.suppress(OSError):
+                # logique intacte ce run ; réécriture retentée au suivant
+                write_json_atomic(path, stored)
+            break
     baseline_keys = sorted(
         {
             (str(item.get("rule")), str(item.get("path")))
