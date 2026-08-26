@@ -596,7 +596,4 @@ def test_line_invalid_non_null_values_are_still_rejected(tmp_path: Path, bad_lin
 
     result = _result(cfg)
     assert result["summary"]["blocked"] == 1
-    assert (
-        result["proposals"][0]["reason"]
-        == "malformed proposal: line must be a positive integer"
-    )
+    assert result["proposals"][0]["reason"] == "malformed proposal: line must be a positive integer"

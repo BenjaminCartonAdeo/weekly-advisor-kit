@@ -358,9 +358,7 @@ def test_doctor_warns_output_dir_under_plugins_tree(tmp_path: Path, fake_opencod
     bien .opencode et la config est chargée, seul l'output_dir pollue l'arbre
     plugins (observé 24/08)."""
     kit = tmp_path / "kit"
-    plugin_reports = (
-        kit / ".opencode" / "plugins" / "weekly-advisor-engine" / "reports"
-    )
+    plugin_reports = kit / ".opencode" / "plugins" / "weekly-advisor-engine" / "reports"
     plugin_reports.mkdir(parents=True)
     db = _seed_n(tmp_path / "sessions.db", 3)
     cfg = _cfg(tmp_path, db, output_dir=plugin_reports)
@@ -1930,17 +1928,16 @@ def test_run_dedups_resumed_session_fork(tmp_path: Path, monkeypatch):
     timestamps d'origine conservés) → seule la plus complète est retenue ;
     trace `resumed-duplicate` dans l'audit de sélection + warning.
     """
-    import weekly_telemetry_aggregator.main as main_mod
     from helpers import FakeSessionProvider, fake_meta, make_step
+
+    import weekly_telemetry_aggregator.main as main_mod
 
     turns = [f"turn {i} — contenu partagé" for i in range(10)]
 
     class TurnProvider(FakeSessionProvider):
         def __init__(self, harness, metas, *, turns_by_session, **kw):
             super().__init__(harness, metas, **kw)
-            self._turns = {
-                self._key(sid): list(ts) for sid, ts in turns_by_session.items()
-            }
+            self._turns = {self._key(sid): list(ts) for sid, ts in turns_by_session.items()}
 
         def session_user_turns(self, session_id: str, start_ms: int, end_ms: int):
             return self._turns.get(session_id, [])

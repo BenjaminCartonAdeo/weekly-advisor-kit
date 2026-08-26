@@ -305,9 +305,7 @@ def dedup_resumed_usages(
     for _key, idxs in sorted(groups.items()):
         if len(idxs) < 2:
             continue
-        ordered = sorted(
-            idxs, key=lambda i: (-len(usages[i].user_turns), usages[i].session_id)
-        )
+        ordered = sorted(idxs, key=lambda i: (-len(usages[i].user_turns), usages[i].session_id))
         kept_index = ordered[0]
         for i in ordered[1:]:
             dropped[i] = kept_index

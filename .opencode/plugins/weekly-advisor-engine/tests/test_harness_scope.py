@@ -531,10 +531,10 @@ def test_baseline_restored_from_legacy_copy_and_reused(tmp_path: Path):
 
     second = _baseline_capture(output_dir, root, date="2026-08-19")
 
-    assert second["status"] == "reused"          # PAS created : la capture a retrouvé son état
+    assert second["status"] == "reused"  # PAS created : la capture a retrouvé son état
     assert second["captured_on"] == "2026-08-12"
     restored = json.loads((output_dir / HARNESS_BASELINE_FILE).read_text(encoding="utf-8"))
-    assert restored == original                  # réécrite à l'identique à la racine
+    assert restored == original  # réécrite à l'identique à la racine
 
 
 def test_baseline_restored_when_root_corrupted(tmp_path: Path, capsys):

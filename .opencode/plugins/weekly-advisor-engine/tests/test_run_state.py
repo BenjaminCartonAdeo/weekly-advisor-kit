@@ -225,9 +225,7 @@ def test_baseline_survives_consecutive_activations(tmp_path):
         "findings": [{"rule": "quality/a", "path": ".opencode/cmd.md"}],
         "rules_version": "4c6961dfdeadbeef",
     }
-    (tmp_path / "weekly-harness-baseline.json").write_text(
-        json.dumps(payload), encoding="utf-8"
-    )
+    (tmp_path / "weekly-harness-baseline.json").write_text(json.dumps(payload), encoding="utf-8")
 
     first = activate_run(tmp_path, RUN_DATE, RUN_TIME)
     second = activate_run(tmp_path, RUN_DATE, RUN_TIME.replace(hour=11))

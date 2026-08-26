@@ -1032,8 +1032,7 @@ def _capture_or_reuse_baseline(
                 continue
             corrupted = False
             print(
-                f"harness: baseline restaurée depuis "
-                f"{legacy_path.relative_to(output_dir)}",
+                f"harness: baseline restaurée depuis {legacy_path.relative_to(output_dir)}",
                 flush=True,
             )
             with contextlib.suppress(OSError):

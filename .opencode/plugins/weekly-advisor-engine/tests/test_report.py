@@ -532,6 +532,7 @@ def test_validate_llm_blocks_rejects_digits_and_unknown():
     assert any("chiffres" in v for v in violations)
     assert coverage == []
 
+
 def test_validate_llm_blocks_allows_dates_percent_versions():
     from weekly_telemetry_aggregator.report import validate_llm_blocks
 
