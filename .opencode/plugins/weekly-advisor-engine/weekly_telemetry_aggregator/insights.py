@@ -161,7 +161,12 @@ def compute(
                 "rule": "weekly_budget_usd",
                 "threshold": insights_cfg.weekly_budget_usd,
                 "observed": round(current_cost, 4),
+                "over_by": round(current_cost - insights_cfg.weekly_budget_usd, 4),
                 "severity": "high",
+                "recommended_action": (
+                    "budget hebdo dépassé — cibler les sessions top-coût "
+                    "(context-bloat, loops swarm silent-empty)"
+                ),
             }
         )
 
@@ -177,7 +182,12 @@ def compute(
                 "rule": "monthly_budget_usd",
                 "threshold": insights_cfg.monthly_budget_usd,
                 "observed": round(month_cost, 4),
+                "over_by": round(month_cost - insights_cfg.monthly_budget_usd, 4),
                 "severity": "high",
+                "recommended_action": (
+                    "budget mensuel dépassé — cibler les sessions top-coût "
+                    "(context-bloat : relectures répétées ; loops swarm silent-empty)"
+                ),
             }
         )
 
@@ -359,6 +369,34 @@ def compute(
                 "impact_order_of_magnitude": "small",
             }
         )
+
+    # token-risk (v6.0.q) : sessions top-coût dépassant le cap de tokens
+    # (drivers réels : context-bloat / loops swarm silent-empty).
+    token_cap = insights_cfg.session_token_cap
+    for s in current_summary.get("top_sessions_by_cost", []):
+        total = s.get("total_tokens") or 0
+        if total > token_cap:
+            sid = s.get("session_id")
+            if _ignored(ignored_findings, "token-risk", sid or ""):
+                continue
+            findings.append(
+                {
+                    "session_id": sid,
+                    "category": "token-risk",
+                    "severity": "medium",
+                    "description": (
+                        f"session {sid} : {total:,} tokens > cap {token_cap:,} "
+                        f"(coût ${s.get('cost_usd', 0.0):.2f})"
+                    ),
+                    "evidence_summary": f"top_sessions_by_cost: {total} tokens",
+                    "recommendation": (
+                        "réduire le context-bloat (lectures répétées de gros fichiers) "
+                        "et les loops swarm silent-empty (worker task_result vide)"
+                    ),
+                    "recommendation_type": "token-budget",
+                    "impact_order_of_magnitude": "medium",
+                }
+            )
 
     # R4/R5 from lint digest findings (v1: report only, never automatic)
     trivial_kw = ("frontmatter", "description", "missing", "invalid")

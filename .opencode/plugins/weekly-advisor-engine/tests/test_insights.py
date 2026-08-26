@@ -97,6 +97,26 @@ def test_monthly_budget_via_recent_summaries():
     assert any(a["rule"] == "monthly_budget_usd" for a in out["alerts"])
 
 
+def test_token_risk_finding_above_cap():
+    cur = _summary(("A", "B"), cost=10.0)
+    cur["top_sessions_by_cost"] = [
+        {"session_id": "s1", "cost_usd": 3.0, "total_tokens": 5_000_000},
+        {"session_id": "s2", "cost_usd": 1.0, "total_tokens": 1_000_000},
+    ]
+    out = compute(
+        run_time=RUN,
+        current_summary=cur,
+        previous_summary=None,
+        current_digest=None,
+        previous_digest=None,
+        recent_summaries=[cur],
+        insights_cfg=_cfg(session_token_cap=4_000_000),
+        ignored_findings=[],
+    )
+    cats = [f["category"] for f in out["maintenance"]["findings"]]
+    assert "token-risk" in cats
+
+
 def test_daily_spike_alert():
     cur = _summary(("A", "B"), daily=[{"date": "2026-08-12", "cost_usd": 20.0}])
     prior = _summary(("C", "D"), daily=[{"date": d, "cost_usd": 0.1} for d in range(6)])

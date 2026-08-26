@@ -92,6 +92,8 @@ class InsightsConfig:
     never_loaded_runs_threshold: int = 8
     #: consecutive runs with cache_write_tokens == 0 before alerting (v5.28).
     cache_write_zero_runs: int = 2
+    #: cap de tokens par session avant alerte maintenance token-risk (v6.0.q).
+    session_token_cap: int = 4_000_000
 
 
 @dataclass(slots=True)
