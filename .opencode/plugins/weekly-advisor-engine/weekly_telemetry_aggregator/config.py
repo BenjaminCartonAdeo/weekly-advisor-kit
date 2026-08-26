@@ -88,7 +88,8 @@ class InsightsConfig:
     lint_violations_max: int = 10
     #: part des surfaces .opencode/ hors allowlist tolérée avant alerte (v6.0.n).
     lint_coverage_min: float = 0.70
-    never_loaded_runs_threshold: int = 4
+    #: runs consécutifs sans chargement avant fiche retire-candidate (v6.0.n).
+    never_loaded_runs_threshold: int = 8
     #: consecutive runs with cache_write_tokens == 0 before alerting (v5.28).
     cache_write_zero_runs: int = 2
 

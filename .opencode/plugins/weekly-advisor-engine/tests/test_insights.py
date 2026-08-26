@@ -822,3 +822,35 @@ def test_run_lint_coverage_no_alert_when_allowlist_wide(tmp_path: Path):
     assert run(cfg, anchor=RUN.isoformat()) == EXIT_OK
     out = json.loads((tmp_path / f"weekly-insights-{date}.json").read_text(encoding="utf-8"))
     assert all(a["rule"] != "lint_coverage" for a in out["alerts"])
+
+
+# ============================================================ seuil retrait R1
+
+
+def _retire_kwargs(cur):
+    return dict(
+        run_time=RUN,
+        current_summary=cur,
+        previous_summary=None,
+        current_digest=None,
+        previous_digest=None,
+        insights_cfg=_cfg(),
+        ignored_findings=[],
+    )
+
+
+def test_retire_candidate_default_threshold_frozen():
+    """Fige le comportement : seuil par défaut never_loaded = 8 runs (doublé, ex-4)."""
+    from dataclasses import fields
+
+    defaults = {f.name: f.default for f in fields(InsightsConfig)}
+    assert defaults["never_loaded_runs_threshold"] == 8
+    cur = _summary(("A", "B"), never=["dead-skill"], catalog=3)
+    recents7 = [cur] + [_summary(("X", "Y"), never=["dead-skill"]) for _ in range(6)]
+    below = compute(recent_summaries=recents7, **_retire_kwargs(cur))
+    cats_below = [f["category"] for f in below["maintenance"]["findings"]]
+    assert "retire-candidate" not in cats_below
+    recents8 = recents7 + [_summary(("X", "Y"), never=["dead-skill"])]
+    at = compute(recent_summaries=recents8, **_retire_kwargs(cur))
+    cats_at = [f["category"] for f in at["maintenance"]["findings"]]
+    assert "retire-candidate" in cats_at
