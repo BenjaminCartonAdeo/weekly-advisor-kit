@@ -213,3 +213,29 @@ def test_resolve_legacy_beyond_midnight_tolerance(tmp_path):
     # date antérieure au run : jamais active
     assert resolve_active_run_dir(tmp_path, "2026-08-15") == tmp_path
     assert active_run_meta(tmp_path, "2026-08-18") is None
+
+
+def test_baseline_survives_consecutive_activations(tmp_path):
+    """Régression v6.0.l-v6.0.p : deux activate_run successifs ne doivent
+    ni déplacer ni réécrire la baseline racine (status created éternel)."""
+    payload = {
+        "schema_version": 1,
+        "captured_on": "2026-08-25",
+        "finding_count": 1,
+        "findings": [{"rule": "quality/a", "path": ".opencode/cmd.md"}],
+        "rules_version": "4c6961dfdeadbeef",
+    }
+    (tmp_path / "weekly-harness-baseline.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+    first = activate_run(tmp_path, RUN_DATE, RUN_TIME)
+    second = activate_run(tmp_path, RUN_DATE, RUN_TIME.replace(hour=11))
+
+    root = tmp_path / "weekly-harness-baseline.json"
+    assert root.is_file()
+    assert json.loads(root.read_text(encoding="utf-8")) == payload
+    for active in (first, second):
+        assert not (
+            tmp_path / "runs" / active.run_id / "legacy" / "weekly-harness-baseline.json"
+        ).exists()
