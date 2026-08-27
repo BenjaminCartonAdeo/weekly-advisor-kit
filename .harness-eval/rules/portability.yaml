@@ -54,7 +54,7 @@ target: skill
 category: frontmatter
 patterns:
   - label: "champ frontmatter non autorisé"
-    regex: '^(?!(?:name|description|metadata|license|compatibility|note|notes|warning|caution|tip|important|remarque|attention|exemple|example|usage|source|sources|sortie|entree|entrée|input|output|voir|see|ref|reference|référence|http|https|ftp|mailto|data|json|yaml|toml|args|params?|returns|throws|raises|env)\s*:)[a-z][a-z0-9_-]*:[ \t]*\S'
+    regex: '^(?!(?:name|description|metadata|license|compatibility|note|notes|warning|caution|tip|important|remarque|attention|exemple|example|usage|source|sources|sortie|entree|entrée|input|output|voir|see|ref|reference|référence|http|https|ftp|mailto|data|json|yaml|toml|args|params?|parameters?|options|returns|throws|triggers?|raises|result|results|error|errors|type|default|required|mode|modes|env)\s*:)[a-z][a-z0-9_-]*:[ \t]*\S'
 message: "Portabilité : '{{label}}' détecté ligne {{line}} — le frontmatter ne doit contenir que name/description (+ metadata/license/compatibility)."
 ---
 # -----------------------------------------------------------------------------
