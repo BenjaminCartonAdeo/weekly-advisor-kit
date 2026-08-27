@@ -52,6 +52,19 @@ reste gérée à 100 % par le plugin (`<output_dir>/anchor-last.txt`) : créée 
 **rafraîchie chaque jour** (conservée dans la même journée pour la stabilité intra-run,
 v6.0.n) — aucun calcul calendaire LLM.
 
+## Worktree & cwd (fail-fast, Étape 0)
+
+Le moteur python est résolu depuis le **worktree** du lancement (`--dir` du cron, ou cwd du
+lancement manuel). Un lancement hors du worktree Adeo (ex. `cwd=$HOME`) fait échouer la
+résolution du moteur (`Glob .opencode/plugins/weekly-advisor-engine/**/*.py` → 0 match) et
+l'orchestrateur démarre à vide (incident 15:47, exit=2).
+
+**Pre-check Étape 0 (avant `weekly_doctor`)** : `glob` `.opencode/plugins/weekly-advisor-engine/**/*.py`
+depuis le worktree. Si **0 match** → STOP immédiat avec message clair :
+« worktree Adeo requis — relancer avec `--dir /home/benjamin/Dev/Adeo` (ou via le cron) ».
+Les crons (`#45 18 * * 1`, `#35 15 * * 4`) passent déjà `--dir /home/benjamin/Dev/Adeo` ; ce
+gard est pour les lancements manuels/interactifs.
+
 ## Déroulement — orchestration par waves (DAG parallèle)
 
 Chaque run écrit **tous ses artefacts** dans `<output_dir>/runs/<date>-<uuid8>/` (annoncé
@@ -65,8 +78,9 @@ par `weekly_run`) ; `runs/current/` est l'alias stable du run actif. L'orchestra
 │
 ├─ Étape 0 doctor (gate ; rc=2 → STOP sans rapport)          [PRINCIPAL]
 │
-├─ WAVE 1 — 3 subagents lancés en parallèle (un message, trois appels Task)
+├─ WAVE 1 — T d'abord (séquentiel), PUIS V + H en parallèle
 │   ├─ T (Telemetry) : weekly_run → poll → audit skill      [worker T]
+│   │   (l'orchestrateur attend l'activation de runs/current AVANT de lancer V/H)
 │   ├─ V (Veille)    : releases → distill → context → watch-review → validate [worker V]
 │   └─ H (Harness)   : harness → remediation skill           [worker H]
 │
@@ -153,9 +167,15 @@ warnings, artifacts, elapsed_s}` définie dans `.opencode/agents/weekly-advisor/
 - Worker silencieux ou timeout → rc=1 + warning, run continue (fail-soft).
 
 **Attente run-dir (wave 1.V/1.H)** :
-V et H attendent avant leur premier write que `runs/current/` expose le summary de T (poll
-read/glob, plafond 10 min ; dépassement → warning fail-soft, la branche tente quand même en
-écriture différée si possible).
+L'orchestrateur lance T (`weekly_run`) en **premier et seul** ; il attend que `runs/current/`
+existe (activation du run dir par `weekly_run` — l'alias est créé dès la naissance du dir) **avant**
+de dispatcher V et H. Sinon V/H résolvent `run_state.json["run_dir"]` avant activation et
+écrivent dans un run dir **différent de T** (fragmentation d'artefacts, incident 15:47).
+Une fois `runs/current/` présent, V et H sont lancés en parallèle et attendent ensuite le
+**summary** de T (poll read/glob, plafond 10 min ; dépassement → warning fail-soft, la branche
+tente quand même en écriture différée si possible). `weekly_run` est le **seul** caller de
+`activate_run` (moteur) ; releases/harness ne font que résolver le run actif — d'où
+l'obligation de sérialiser T avant le fan-out.
 
 **Instrumentation (artefact timings)** :
 Chaque worker retourne `elapsed_s` + timings par step dans son contrat. Au join, l'orchestrateur
