@@ -65,6 +65,24 @@ depuis le worktree. Si **0 match** → STOP immédiat avec message clair :
 Les crons (`#45 18 * * 1`, `#35 15 * * 4`) passent déjà `--dir /home/benjamin/Dev/Adeo` ; ce
 gard est pour les lancements manuels/interactifs.
 
+## Étape 0 — Garde anti-re-run (TRÈS PREMIÈRE action, avant tout tool)
+
+Avant même le pre-check worktree et `weekly_doctor`, vérifier qu'un run **déjà
+terminé** pour l'ancre courante n'existe pas — pour éviter la ré-agrégation
+coûteuse d'un run déjà produit :
+
+1. Lire `<output_dir>/anchor-last.txt` (ancre active, ligne unique).
+2. Chercher `<output_dir>/runs/current/summary-*.json`.
+3. Si un `summary-*.json` existe **ET** `exit == 0` (run terminé sans fatale)
+   **ET** que `anchor-last.txt` est **non modifié** (même ancre que celle ayant
+   produit le summary) → **STOP immédiat (short-circuit)** avec le message exact :
+   `SKIP: completed run for anchor exists (use --force to re-run)`.
+4. Sinon → continuer normalement (pre-check worktree, doctor, …).
+
+`--force` (restitué par l'orchestrateur) ignore cette garde. Détection
+**agent-guided** : le résumé porte `exit` ; l'ancre est la ligne unique de
+`anchor-last.txt`. Aucune ré-écriture de JSON existant.
+
 ## Déroulement — orchestration par waves (DAG parallèle)
 
 Chaque run écrit **tous ses artefacts** dans `<output_dir>/runs/<date>-<uuid8>/` (annoncé
@@ -79,12 +97,17 @@ par `weekly_run`) ; `runs/current/` est l'alias stable du run actif. L'orchestra
 ├─ Étape 0 doctor (gate ; rc=2 → STOP sans rapport)          [PRINCIPAL]
 │
 ├─ WAVE 1 — T d'abord (séquentiel), PUIS V + H en parallèle
-│   ├─ T (Telemetry) : weekly_run → poll → audit skill      [worker T]
+│   ├─ T (Telemetry) : weekly_run → poll → audit_candidates [worker T]
 │   │   (l'orchestrateur attend l'activation de runs/current AVANT de lancer V/H)
 │   ├─ V (Veille)    : releases → distill → context → watch-review → validate [worker V]
 │   └─ H (Harness)   : harness → remediation skill           [worker H]
 │
-├─ JOIN — synthèse contrats + codes sortie                   [PRINCIPAL]
+├─ WAVE 1.5 — AUDIT fan-out (K sessions, parallèle)          [PRINCIPAL + K workers A]
+│   └─ A_k (k=1..K) : weekly-advisor-worker (branch A, audit single-session)
+│       → audit-findings-<id>.json  ; barrier sur K fichiers puis consolidation
+│       → weekly-quality-findings-<date>.json  (PRINCIPAL, consolidation seule, no re-LLM)
+│
+├─ JOIN — synthèse contrats T/V/H/A + codes sortie          [PRINCIPAL]
 │
 ├─ WAVE 2 — 3 subagents parallèles (optionnel, activé par défaut)
 │   ├─ D (Drafting) : weekly-drafting skill (seul commiteur) [worker D]
@@ -146,7 +169,9 @@ note une violation et **continue en fail-soft** (exit 1).
 | **1.V** | `weekly_watch_context` (worktree uniquement) — ⚠ **séquentiel après distill** : il lit les fiches distillées ; consomme `watch-candidates-<date>.json` s'il existe | `weekly-watch-context-<date>.json` |
 | **1.V** | **Skill `weekly-watch-review`** : veille critique croisée (fiches enrichies × existant × findings), écrit le brut ; fallback legacy si absent | `weekly-watch-findings-raw-<date>.json` |
 | **1.V** | `weekly_watch_validate` — validation déterministe des findings contre le contexte ; écrit la mémoire post-validation | `weekly-watch-findings-<date>.json` |
-| **1.T** | **Skill `weekly-quality-audit`** : `weekly_audit_candidates` → `weekly_show_session` → constats | `weekly-quality-findings-<date>.json` |
+| **1.T** | `weekly_audit_candidates` (déterministe) → liste JSON de K session ids candidates | `weekly-audit-candidates-<date>.json` |
+| **1.5.A_k** | **worker A** (`weekly-advisor-worker`, branch `A`) : `weekly_show_session(<id>)` + audit qualitatif → `audit-findings-<id>.json` (K spawn en parallèle via `task`) | `audit-findings-<id>.json` (×K) |
+| **1.5.JOIN** | **Consolidation PRINCIPAL** : merge des K `audit-findings-*.json` → `weekly-quality-findings-<date>.json` (aucun re-LLM par session au merge) | `weekly-quality-findings-<date>.json` |
 | **1.H** | `weekly_harness` (pin 7.9.0 ; rc 0/1 = OK) | `weekly-harness-digest-<date>.json` |
 | **1.H** | **Skill `harness-remediation`** : analyse les findings, écrit les propositions puis appelle `weekly_harness_remediate` | `weekly-harness-remediation-<date>.json` |
 | **JOIN** | Orchestrateur : synthèse contrats T/V/H, merge rc, attente run-dir | `weekly-timings-<date>.json` |
@@ -176,6 +201,18 @@ Une fois `runs/current/` présent, V et H sont lancés en parallèle et attenden
 tente quand même en écriture différée si possible). `weekly_run` est le **seul** caller de
 `activate_run` (moteur) ; releases/harness ne font que résolver le run actif — d'où
 l'obligation de sérialiser T avant le fan-out.
+
+**WAVE 1.5 (audit fan-out)** :
+Seulement après que T a produit `weekly-audit-candidates-<date>.json` (K ids connus),
+l'orchestrateur spawn **K workers A en parallèle** via `task`
+(`subagent_type=weekly-advisor-worker`, `branch=A`, briefing = `session_id` + `run_dir`
++ invariants d'audit). Chaque worker A écrit `audit-findings-<id>.json` dans `runs/current/`.
+L'orchestrateur **barrière** sur l'existence des K fichiers (poll glob
+`runs/current/audit-findings-*.json`, plafond 10 min ; dépassement → warning fail-soft)
+puis **consolide** en `weekly-quality-findings-<date>.json` — **aucun re-LLM par session**
+au merge (consolidation déterministe des `findings` déjà produits par les workers).
+Les workers A sont disjoints (un fichier par session) ; la consolidation ne relit pas
+les sessions.
 
 **Instrumentation (artefact timings)** :
 Chaque worker retourne `elapsed_s` + timings par step dans son contrat. Au join, l'orchestrateur
@@ -219,5 +256,6 @@ Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sa
   jamais de secrets, jamais pendant rebase/merge) — rollback = `git revert --no-edit` (humain)
 - Fichiers écrits par l'agent : findings bruts `weekly-watch-findings-raw-<date>.json`, propositions
   `weekly-harness-remediation-proposals-<date>.json`, autres findings `weekly-*-findings-<date>.json`,
-  `weekly-timings-<date>.json`, `<output_dir>/runs/current/extracts/`, drafts skills/commands via
-  `weekly_commit_draft`, `weekly-report-blocks-<date>.md`
+  `weekly-timings-<date>.json`, `weekly-audit-candidates-<date>.json`, `audit-findings-<id>.json`
+  (workers A), `weekly-quality-findings-<date>.json` (consolidation), `<output_dir>/runs/current/extracts/`,
+  drafts skills/commands via `weekly_commit_draft`, `weekly-report-blocks-<date>.md`

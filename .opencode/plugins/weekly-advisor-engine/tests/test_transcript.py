@@ -183,3 +183,91 @@ def test_render_session_include_children_canonical_parents(tmp_path: Path):
         provider.close()
     assert "child turn" not in alone
     assert "child turn" in with_child
+
+
+# ============================================================ borne anti-OOM (Engine B1)
+
+
+def test_render_session_truncates_oversized_transcript():
+    """Engine B1 : sessions géantes bornées — sinon OOM (exit=137)."""
+    from helpers import FakeSessionProvider, fake_meta, fake_part, tzutc
+
+    ts = tzutc(2026, 8, 11, 22)
+    # ~8000 parts × ~300 car. → bien au-delà de la borne par défaut 2_000_000 octets.
+    # Chaque part est unique (index sérialisé) pour ne PAS être compactée :
+    # c'est le cas réel OOM (transcript hétérogène, pas une répétition).
+    big = "x" * 300
+    parts = [fake_part("user", ts, text=f"{big}-{i}") for i in range(8000)]
+    provider = FakeSessionProvider(
+        "gamma",
+        [fake_meta("gamma", "huge", title="Huge", updated=ts)],
+        parts_by_session={"huge": parts},
+    )
+    try:
+        # Au-delà de la borne par défaut → tronqué avec marqueur explicite.
+        out = render_session(provider, "gamma:huge")
+        assert "[truncated:" in out
+        assert "bytes omitted]" in out
+        # Cap explicite large → texte intégral préservé (pas de marqueur).
+        full = render_session(provider, "gamma:huge", max_extract_bytes=10_000_000)
+        assert "[truncated:" not in full
+        assert big in full
+        # max_extract_bytes=None → comportement historique non borné.
+        uncapped = render_session(provider, "gamma:huge", max_extract_bytes=None)
+        assert "[truncated:" not in uncapped
+        assert big in uncapped
+    finally:
+        provider.close()
+
+
+def test_render_session_small_transcript_not_truncated():
+    """Sessions normales : texte intégral, aucun marqueur de troncature."""
+    from helpers import FakeSessionProvider, fake_meta, fake_part, tzutc
+
+    ts = tzutc(2026, 8, 11, 22)
+    provider = FakeSessionProvider(
+        "gamma",
+        [fake_meta("gamma", "s1", title="S1", updated=ts)],
+        parts_by_session={"s1": [fake_part("user", ts, text="tour gamma")]},
+    )
+    try:
+        out = render_session(provider, "gamma:s1")
+        assert "[truncated:" not in out
+        assert "tour gamma" in out
+    finally:
+        provider.close()
+
+
+def test_render_session_output_respects_byte_cap_contract():
+    """Contrat anti-OOM (Engine B1) : rendu borné STRICTEMENT sous max_extract_bytes.
+
+    Garantit l'invariant qui protège le fan-out S2 (WAVE 1.5) : aucun artifact
+    `audit-findings-<id>.json` ne peut être alimenté par un transcript géant qui
+    ferait OOM le step-3 (exit=137). Le cap par défaut doit être respecté à l'octet.
+    """
+    from helpers import FakeSessionProvider, fake_meta, fake_part, tzutc
+    from weekly_telemetry_aggregator.transcript import (
+        MAX_EXTRACT_BYTES,
+        render_session,
+    )
+
+    ts = tzutc(2026, 8, 11, 22)
+    big = "x" * 300
+    parts = [fake_part("user", ts, text=f"{big}-{i}") for i in range(8000)]
+    provider = FakeSessionProvider(
+        "gamma",
+        [fake_meta("gamma", "huge", title="Huge", updated=ts)],
+        parts_by_session={"huge": parts},
+    )
+    try:
+        # Cap par défaut → borné strictement sous MAX_EXTRACT_BYTES.
+        out = render_session(provider, "gamma:huge")
+        assert len(out.encode("utf-8")) <= MAX_EXTRACT_BYTES
+        assert "[truncated:" in out
+
+        # Cap explicite → borné sous CE cap, pas seulement sous le défaut.
+        capped = render_session(provider, "gamma:huge", max_extract_bytes=5000)
+        assert len(capped.encode("utf-8")) <= 5000
+        assert "[truncated:" in capped
+    finally:
+        provider.close()

@@ -60,7 +60,7 @@ def _cmd_show_session(args, cfg) -> int:
     from .providers import build_providers
     from .providers.implementations.opencode import OpenCodeSessionProvider
     from .sqlite_reader import DataSourceError, detect_db
-    from .transcript import render_session
+    from .transcript import MAX_EXTRACT_BYTES, render_session
 
     providers = build_providers(cfg)
     if not providers:
@@ -78,7 +78,14 @@ def _cmd_show_session(args, cfg) -> int:
         providers = [OpenCodeSessionProvider(_path, adapter)]
     try:
         # render_session route vers le provider du harnais déduit de l'id canonique.
-        text = render_session(providers, args.session_id, include_children=args.include_children)
+        # max_extract_bytes borne le texte rendu (évite l'OOM exit=137 sur sessions
+        # géantes) ; --extract-dir et le stdout sont préservés.
+        text = render_session(
+            providers,
+            args.session_id,
+            include_children=args.include_children,
+            max_extract_bytes=MAX_EXTRACT_BYTES,
+        )
         sys.stdout.write(text)
         if args.extract_dir:
             target = Path(args.extract_dir) / f"transcript-extract-{args.session_id}.md"
