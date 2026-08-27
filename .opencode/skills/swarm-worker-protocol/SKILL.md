@@ -8,6 +8,20 @@ description: Survival checklist for any agent spawned as a swarm worker (subtask
 Tu es un agent worker dans une mission swarm. Ton coordinateur décompose, spawn,
 review — il n'exécute jamais le travail lui-même. Toi si.
 
+## Anti-empty-dispatch (résumé — lire AVANT la checklist)
+
+Règles anti livraison vide / re-spawn silencieux (incident 16:35 « content is required
+and must be a non-empty array » + boucle de re-spawn à coût doublé) :
+
+- **Dispatch non-vide** : le `content` passé à toute tâche spawnée DOIT être non-vide.
+  Si vide → **avorter le spawn** avec une erreur claire (« content is required and must
+  be a non-empty array »). Jamais de spawn avec un tableau vide.
+- **Résultat non-vide** : le `summary`/`task_result` d'un worker DOIT être non-vide.
+  Si vide → **exactement UNE retry**, puis **FAIL** (jamais de boucle de re-spawns
+  silencieux).
+- **Timeout par worker** : chaque worker a un plafond (ex. 10 min). En cas de dépassement
+  → **fail-fast** avec une ligne de log explicite, pas d'attente indéfinie.
+
 ## Checklist de survie (9 étapes — DANS L'ORDRE)
 
 1. **`swarmmail_init(project_path)`** — PREMIER appel, avant tout le reste.
@@ -30,10 +44,17 @@ review — il n'exécute jamais le travail lui-même. Toi si.
    (patterns, pièges, contraintes découvertes).
 9. **`swarm_complete(...)`** — PAS `hive_close`. Seul moyen de clore : libère les
     réservations et enregistre l'outcome. Échoue sans l'étape 1.
-   - **Summary OBLIGATOIRE non-vide** : jamais de `swarm_complete` avec un summary vide ou
-     absent. Un `task_result` vide (state=completed mais corps vide) est un **échec silencieux**,
-     pas un succès — le coordinateur doit le traiter comme un crash (re-spawn / rc=1), jamais
-     comme une livraison (incident swarm 24→26/08 : re-spawns en boucle, coût doublé).
+    - **Summary OBLIGATOIRE non-vide** : jamais de `swarm_complete` avec un summary vide ou
+      absent. Un `task_result` vide (state=completed mais corps vide) est un **échec silencieux**,
+      pas un succès — le coordinateur doit le traiter comme un crash (re-spawn / rc=1), jamais
+      comme une livraison (incident swarm 24→26/08 : re-spawns en boucle, coût doublé).
+    - **Retry unique sur résultat vide** : si le `summary`/`task_result` est vide, le
+      coordinateur effectue **exactement UNE retry**, puis **FAIL** — jamais de boucle de
+      re-spawns silencieux (cf. Anti-empty-dispatch).
+    - **Timeout par worker (fail-fast)** : chaque worker a un plafond (ex. 10 min). En cas de
+      dépassement → **FAIL immédiat** avec une ligne de log explicite
+      (ex. `swarm-worker <bead-id> TIMEOUT after 10m — fail-fast`). Pas d'attente indéfinie,
+      pas de nouveau spawn.
 
 ## Non négociables
 

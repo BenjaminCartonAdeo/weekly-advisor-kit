@@ -30,6 +30,10 @@ COMPACT_SIMILARITY = 0.9
 ARGS_CAP = 200
 OUTPUT_CAP = 300
 TEXT_CAP = 400
+#: Hard ceiling on rendered transcript bytes. Giant sessions once OOM-killed the
+#: step-3 audit (observed exit=137, 2026-08-24 07:41). `render_session` truncates
+#: past this with a clear marker instead of accumulating an unbounded string.
+MAX_EXTRACT_BYTES = 2_000_000
 
 
 def _canonical_id(provider: SessionProvider, session_id: str) -> str:
@@ -126,11 +130,17 @@ def render_session(
     session_id: str,
     *,
     include_children: bool = False,
+    max_extract_bytes: int | None = MAX_EXTRACT_BYTES,
 ) -> str:
     """Render a session transcript (with optional subagent children) to readable text.
 
     Multi-harnais : `providers` est une liste (ou un provider seul) ; la source
     est choisie d'après le préfixe canonique de `session_id`.
+
+    `max_extract_bytes` borne la taille du texte rendu (défaut `MAX_EXTRACT_BYTES`).
+    Au-delà, le corps est tronqué et un marqueur ``[truncated: N bytes omitted]``
+    est ajouté — évite l'OOM (exit=137) sur les sessions géantes. `None` désactive
+    la borne (comportement historique, non borné).
     """
     sources: list[SessionProvider] = (
         list(providers) if isinstance(providers, (list, tuple)) else [providers]
@@ -148,4 +158,15 @@ def render_session(
     lines = [f"# Session {session_id}  —  {len(ids)} session(s)", ""]
     entries = [ln for rec in records if (ln := _render_part(rec))]
     lines.extend(_compact(entries))
-    return "\n".join(lines) + "\n"
+    text = "\n".join(lines) + "\n"
+
+    if max_extract_bytes is not None:
+        full_bytes = len(text.encode("utf-8"))
+        if full_bytes > max_extract_bytes:
+            marker = f"\n… [truncated: {full_bytes - max_extract_bytes} bytes omitted]\n"
+            # Réserve la place du marqueur pour rester sous la borne.
+            cap = max_extract_bytes - len(marker.encode("utf-8"))
+            cap = cap if cap >= 0 else 0
+            truncated = text.encode("utf-8")[:cap].decode("utf-8", errors="ignore")
+            text = truncated + marker
+    return text

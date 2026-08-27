@@ -34,7 +34,7 @@ Inspiré du pattern context-manager : chaque worker reçoit un paquet minimal-co
 3. **Attendre le répertoire de run** avant le premier write — mécanisme détaillé au § « Attente run-dir ».
 
 4. **Produire un contrat de retour obligatoire** — dernière sortie, structure au § « Contrat retour » :
-  - `branch` : T, V, H, D, I ou C (figé du prompt)
+  - `branch` : T, V, H, D, I, C ou A (figé du prompt)
   - `rc` : 0 = complet (tous steps ok), 1 = partiel (warnings tolérés, run continue), 2 = fatalité bloquante (moteur ou permission élevée → STOP orchestrateur)
    - `steps_done` : liste ordonnée des étapes achevées (nomage ≈ tool/skill utilisé)
    - `warnings` : liste des warnings non fatals rencontrés (ex. source indisponible, écoulement dépassé)
@@ -76,11 +76,36 @@ Chaque worker reçoit son ordre figé d'étapes. Invariants ci-dessus s'applique
 
 Exécutées en **wave 1** (parallèle).
 
-- **T** : `weekly_run` (long, ~5-15 min, poll si dépassement) → `weekly-quality-audit` skill
+- **T** : `weekly_run` (long, ~5-15 min, poll si dépassement) → `weekly_audit_candidates` (déterministe, écrit `weekly-audit-candidates-<date>.json`)
 - **V** : `weekly_releases` → `weekly_watch_distill` (séquentiel après releases) →
   `weekly_watch_context` (séquentiel après distill) → `weekly-watch-review` skill →
   `weekly_watch_validate` (déterministe)
 - **H** : `weekly_harness` → `harness-remediation` skill
+
+### Branche A (Audit single-session) — WAVE 1.5
+
+Exécutée en **parallèle** : K workers (un par session candidate), spawnés par
+l'orchestrateur via `task` (`subagent_type=weekly-advisor-worker`, `branch=A`)
+**uniquement après** que T a produit `weekly-audit-candidates-<date>.json`.
+Chaque worker A reçoit en briefing : `session_id`, `run_dir` (`runs/current/`),
+`lookback_days`, et les invariants d'audit.
+
+**Contrat de la branche A (obligatoire)** :
+1. Appeler `weekly_show_session(<session_id>)` — lit la session (transcript structuré,
+   écrit l'extrait dans `runs/current/extracts/`).
+2. Effectuer l'audit qualitatif (catégories de constats du skill `weekly-quality-audit`,
+   paraphrase stricte, lien session → commande lanceuse).
+3. Écrire `audit-findings-<session_id>.json` dans `runs/current/` :
+   - Schéma minimal : `{session_id, summary, findings: [...], rc}`
+   - **`summary` non-vide OBLIGATOIRE** : si `weekly_show_session` renvoie un extrait
+     vide/illisible → `rc=1` + warning, **écrire quand même** le fichier (avec
+     `summary: null` et le warning) ; ne pas crasher le worker (fail-soft).
+4. Retourner le contrat standard (branch=`A`, artifacts=[`audit-findings-<session_id>.json`]).
+
+**Isolation** : un worker A ne lit QUE sa session ; il ne consolide pas, ne lit pas les
+autres `audit-findings-*.json`, ne touche pas aux autres branches. La consolidation
+(merge → `weekly-quality-findings-<date>.json`) est faite par l'orchestrateur
+(WAVE 1.5 JOIN, consolidation déterministe, no re-LLM).
 
 ### Branches D (Drafting), I (Insights), C (Cohérence)
 
