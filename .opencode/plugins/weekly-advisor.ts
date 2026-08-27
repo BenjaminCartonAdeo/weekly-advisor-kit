@@ -221,7 +221,7 @@ type PortabilityOutcome =
   | { kind: "skipped"; reason: string }
 
 /** Exécute la gate et tranche : bloqué / passage (warnings seuls) / ignorée (binaire absent) / refusée (environnement défaillant) / skippée (commands). */
-export async function runPortabilityGate(file: string, kind: "skill" | "command"): Promise<PortabilityOutcome> {
+async function runPortabilityGate(file: string, kind: "skill" | "command"): Promise<PortabilityOutcome> {
   // E2 : harness-eval skill-verify n'inspecte que les dossiers SKILL.md (≥ 7.10.1).
   // Pour une command, lancer la gate produirait un crash systématique
   // (« No agent components found ») → refus injustifié. Skip explicite avec
@@ -338,7 +338,7 @@ function withLookback(cliArgs: string[], lookbackDays: number | undefined): stri
   return lookbackDays ? [...cliArgs, "--lookback-days", String(lookbackDays)] : cliArgs
 }
 
-export const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
+const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
   worktree = ctx.worktree ?? ctx.directory
   return {
     tool: {

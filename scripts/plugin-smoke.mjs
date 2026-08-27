@@ -21,7 +21,7 @@ import path from "node:path"
 
 register(new URL("./plugin-smoke-hook.mjs", import.meta.url))
 
-const { WeeklyAdvisorPlugin } = await import("../.opencode/plugins/weekly-advisor.ts")
+const { default: WeeklyAdvisorPlugin } = await import("../.opencode/plugins/weekly-advisor.ts")
 
 // ---------------------------------------------------------------- faux moteur
 
