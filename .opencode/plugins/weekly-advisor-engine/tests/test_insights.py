@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from helpers import tzutc
@@ -41,10 +42,7 @@ RUN = tzutc(2026, 8, 12)
 
 
 def _cfg(**over):
-    cfg = InsightsConfig()
-    for k, v in over.items():
-        setattr(cfg, k, v)
-    return cfg
+    return replace(InsightsConfig(), **over)
 
 
 def test_weekly_budget_alert_and_cost_delta():
@@ -115,6 +113,38 @@ def test_token_risk_finding_above_cap():
     )
     cats = [f["category"] for f in out["maintenance"]["findings"]]
     assert "token-risk" in cats
+
+
+def test_architecture_drift_is_observation_only_and_thresholded():
+    cur = _summary(("A", "B"))
+    prev = _summary(("C", "D"))
+    older = _summary(("E", "F"))
+    cur["architecture_observations"] = {
+        "state_counts": {"declared": 2, "observed": 0, "absent": 0, "unknown": 0},
+        "config": {"available": True, "valid": True},
+        "inventory_counts": {"plugins": 2},
+        "harness_scope": {"profile": "advisory"},
+    }
+    prev["architecture_observations"] = {
+        "state_counts": {"declared": 1, "observed": 0, "absent": 0, "unknown": 0},
+        "config": {"available": True, "valid": True},
+        "inventory_counts": {"plugins": 1},
+        "harness_scope": {"profile": "advisory"},
+    }
+    older["architecture_observations"] = prev["architecture_observations"]
+    out = compute(
+        run_time=RUN,
+        current_summary=cur,
+        previous_summary=prev,
+        current_digest=None,
+        previous_digest=None,
+        recent_summaries=[cur, prev, older],
+        insights_cfg=_cfg(),
+        ignored_findings=[],
+    )
+    drift = [f for f in out["maintenance"]["findings"] if f["category"] == "architecture-drift"]
+    assert drift and drift[0]["observation_only"] is True
+    assert not any(a["rule"] == "architecture-drift" for a in out["alerts"])
 
 
 def test_daily_spike_alert():
@@ -874,3 +904,26 @@ def test_retire_candidate_default_threshold_frozen():
     at = compute(recent_summaries=recents8, **_retire_kwargs(cur))
     cats_at = [f["category"] for f in at["maintenance"]["findings"]]
     assert "retire-candidate" in cats_at
+
+
+def test_agent_loop_finding_uses_tool_fingerprint_thresholds():
+    cur = _summary(("A", "B"))
+    cur["tool_argument_fingerprints"] = {"task": {"fp": 3}, "read": {"fp": 2}}
+    cur["tool_result_fingerprints"] = {"task": {"empty": 3}}
+    out = compute(
+        run_time=RUN,
+        current_summary=cur,
+        previous_summary=None,
+        current_digest=None,
+        previous_digest=None,
+        recent_summaries=[cur],
+        insights_cfg=_cfg(),
+        ignored_findings=[],
+        loop_min_repeats=2,
+        loop_task_min_repeats=3,
+    )
+    loops = [f for f in out["maintenance"]["findings"] if f["category"] == "agent-loop"]
+    assert [f["evidence_summary"] for f in loops] == [
+        "tool=read; repeats=2; threshold=2",
+        "tool=task; repeats=3; threshold=3",
+    ]

@@ -137,14 +137,14 @@ def _request_tokens(request: dict) -> tuple[float, float, float, float, float]:
             key: value
             for key, value in request.items()
             if key in ("inputTokens", "outputTokens", "tokenCount")
-            and isinstance(value, (int, float))
+            and isinstance(value, int | float)
         }
     total = counts.get("tokenCount")
 
     def _num(*keys: str) -> float:
         for key in keys:
             value = counts.get(key)
-            if isinstance(value, (int, float)):
+            if isinstance(value, int | float):
                 return float(value)
         return 0.0
 
@@ -175,14 +175,14 @@ def _tool_field(tool: dict, *keys: str) -> str:
         value = tool.get(key)
         if isinstance(value, str):
             return value
-        if isinstance(value, (dict, list)):
+        if isinstance(value, dict | list):
             return json.dumps(value)
     return ""
 
 
 def _request_ts_ms(request: dict, fallback_ms: int | None) -> int | None:
     ts = request.get("timestamp")
-    if isinstance(ts, (int, float)) and ts > 0:
+    if isinstance(ts, int | float) and ts > 0:
         return int(ts)
     return fallback_ms
 
@@ -436,7 +436,7 @@ class CopilotVSCodeSessionProvider:
 
 
 def _positive_ms(value: object) -> int | None:
-    return int(value) if isinstance(value, (int, float)) and value > 0 else None
+    return int(value) if isinstance(value, int | float) and value > 0 else None
 
 
 def build_provider(source_cfg: dict, _cfg: TelemetryConfig) -> CopilotVSCodeSessionProvider | None:

@@ -1,6 +1,6 @@
 ---
 name: harness-remediation
-description: Analyse les findings harness-eval du digest et prépare des propositions de correction (étape 5.5 du weekly-advisor). Use when: corrections à haute confiance, validées par la gate déterministe — dry-run par défaut, aucun commit automatique.
+description: "Analyse les findings harness-eval du digest et prépare des propositions de correction (étape 5.5 du weekly-advisor). Use when: corrections à haute confiance, validées par la gate déterministe — dry-run par défaut, aucun commit automatique."
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: pipeline-step
@@ -57,7 +57,7 @@ décision pure déduite du harnais résolu (`resolve_remediation_surface`) :
 
 - cible unique `opencode` → `projection` (surface native `.opencode` déjà couverte) ;
 - cible unique hors `.opencode` → `portability` (remédiation conditionnée au mapping
-  `portability.yaml` — règle YAML elle-même : cellule 3.1) ;
+  .harness-eval/rules/portability.yaml — règle YAML elle-même : cellule 3.1) ;
 - plusieurs cibles avec `opencode` → `combined` ; sans `opencode` → `portability` ;
 - entrée vide ou harnais inconnu → repli sûr `projection`, raison explicite.
 
@@ -104,7 +104,7 @@ l'exact-match de `old_text`, jamais sur `line`.
 
 `apply` n'est admissible que pour une correction mécanique, un remplacement exact et
 une règle explicitement présente dans `harness_auto_fix_rules`. Le tool impose en plus
-la cible `.opencode/AGENTS.md` exact ou `.opencode/{skills,commands,agents,plugins}/`
+la cible .opencode/AGENTS.md exacte, ciblée uniquement lorsque ce fichier optionnel existe, ou `.opencode/{skills,commands,agents,plugins}/`
 (hors `plugins/weekly-advisor-engine/` — le moteur n'est jamais une cible), une seule
 occurrence et une limite de taille (v6.0.k F2).
 
@@ -116,8 +116,9 @@ occurrence et une limite de taille (v6.0.k F2).
 - Ne jamais appliquer automatiquement une règle `security/*`, même avec `confidence=high`.
 - Ne jamais éditer directement un fichier pendant cette étape.
 - Ne jamais éditer un fichier directement pendant cette étape : seules les propositions
-  validées par la gate sont appliquées (jamais `.opencode/opencode.json`, jamais le moteur
-  `weekly-advisor-engine/`, jamais la base SQLite, jamais la CI, jamais hors worktree).
+  validées par la gate sont appliquées (jamais .opencode/opencode.json, qui peut être inspecté
+  mais ne doit jamais être modifié, jamais le moteur `weekly-advisor-engine/`, jamais la base SQLite,
+  jamais la CI, jamais hors worktree).
 - Ne jamais inventer une correction à partir du seul message du scanner.
 - Une correction sémantique devient `propose` ou `manual`, avec une explication claire.
 - Le mode `dry-run` ne modifie jamais le worktree et sert pour une exécution manuelle.

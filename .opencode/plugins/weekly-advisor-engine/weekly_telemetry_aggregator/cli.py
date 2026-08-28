@@ -2,23 +2,37 @@
 
 Subcommands: run (default), show-session, releases, watch-context, watch-distill,
 watch-validate, insights, report-prep, report-assemble, harness, harness-remediate,
-commit-draft, doctor, self-cost.
+audit-candidates, draft-candidates, commit-draft, doctor, self-cost, skill-curate,
+graphify-state.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 from . import __version__
 from .config import load_config
 from .costing import self_cost
-from .main import doctor, run
+from .curation import (
+    _skill_fields,
+    build_catalog_from_skills,
+    catalog_entry_is_complete,
+    decide_actions,
+    manifest_metadata,
+    normalize_curation_findings,
+    read_carry,
+    select_catalog_entry,
+    ttl_archive_candidates,
+)
+from .main import _run_provenance, doctor, run
 
 
 def _load_cfg(args) -> object:
-
     cfg = load_config(args.config)
     if getattr(args, "output_dir", None):
         cfg.output_dir = Path(args.output_dir).expanduser()
@@ -33,6 +47,46 @@ def _out_dir(cfg, date: str) -> Path:
     from .run_state import resolve_active_run_dir
 
     return resolve_active_run_dir(cfg.output_dir, date)
+
+
+def _deduplicate_worker_statuses(records: list[object]) -> list[dict]:
+    """Return one compact worker outcome record per session."""
+    by_session: dict[str, dict] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        session_id = record.get("session_id")
+        if not session_id or not any(
+            key in record for key in ("rc", "truncated", "worker_status")
+        ):
+            continue
+        key = str(session_id)
+        compact = {
+            field: record[field]
+            for field in ("session_id", "rc", "truncated", "worker_status", "status")
+            if field in record
+        }
+        merged = by_session.setdefault(key, {})
+        # Status sources can arrive in different order (summary, selection,
+        # candidates). Never let a later healthy record erase a failure.
+        if "session_id" in compact:
+            merged["session_id"] = compact["session_id"]
+        if "rc" in compact:
+            try:
+                rc = int(compact["rc"])
+            except (TypeError, ValueError):
+                rc = 1
+            merged["rc"] = max(int(merged.get("rc", 0) or 0), rc)
+        if "truncated" in compact:
+            merged["truncated"] = bool(merged.get("truncated", False) or compact["truncated"])
+        for field in ("worker_status", "status"):
+            if field in compact and compact[field]:
+                # Truncation provenance is monotonic: a later healthy record
+                # must not erase a previously observed truncation.
+                if field == "worker_status" and merged.get(field) == "truncated":
+                    continue
+                merged[field] = compact[field]
+    return list(by_session.values())
 
 
 def _positive_int(value: str) -> int:
@@ -132,6 +186,15 @@ def _cmd_audit_candidates(args, cfg) -> int:
         "audited": audited,
         "unaudited": unaudited,
         "limit": cfg.audit_max_sessions,
+        # Preserve worker outcomes even when candidates are bounded or output
+        # was compacted by the orchestrator.
+        "worker_statuses": _deduplicate_worker_statuses(
+            [
+                *(summary.get("worker_statuses") or []),
+                *((summary.get("selection") or {}).get("worker_statuses") or []),
+                *candidates,
+            ]
+        ),
     }
     out_path = out / f"weekly-audit-candidates-{date}.json"
     write_json_atomic(out_path, data)
@@ -449,12 +512,543 @@ def _cmd_commit_draft(args, cfg) -> int:
     return 0 if ok else 1
 
 
+def _read_json_arg(path) -> object | None:
+    """Lit un fichier JSON fourni en argument CLI; None si non fourni."""
+    if not path:
+        return None
+    p = Path(path).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"fichier introuvable: {p}")
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def _auto_load(out: Path, output_dir: Path, date: str, stem: str) -> dict | None:
+    """Charge un artefact de run par date, avec repli legacy (racine output_dir).
+
+    Cherche ``<out>/<stem>-<date>.json`` puis un glob ``<stem>-*.json`` dans
+    ``out`` (run actif), enfin dans ``output_dir`` racine (mode legacy). Retourne
+    le dict ou ``None`` si introuvable. Ne lève jamais.
+    """
+    primary = out / f"{stem}-{date}.json"
+    if primary.is_file():
+        return _read_json_arg(str(primary))
+    candidates = sorted(out.glob(f"{stem}-*.json"), reverse=True)
+    if not candidates:
+        candidates = sorted(Path(output_dir).glob(f"{stem}-*.json"), reverse=True)
+    for path in candidates:
+        data = _read_json_arg(str(path))
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def _auto_load_catalog(out: Path, cfg, date: str) -> list[dict]:
+    """Catalogue de skills pour l'auto-load (Phase 1), sans piping LLM.
+
+    Priorité : ``--catalog`` (override, géré par l'appelant) → ``weekly-summary``
+    du run (champ ``skill_catalog`` si présent, sinon ``skill_catalog_entries``
+    mappés) → scan disque autorité (``build_catalog_from_skills``) qui lit
+    ``metadata.origin``/``ttl_policy``/``usage``. Retourne [] si tout absent.
+    """
+    summary = _auto_load(out, cfg.output_dir, date, "weekly-summary")
+    if isinstance(summary, dict):
+        catalog = summary.get("skill_catalog")
+        if isinstance(catalog, list) and catalog:
+            return [entry for entry in catalog if isinstance(entry, dict)]
+        entries = summary.get("skill_catalog_entries")
+        if isinstance(entries, list) and entries:
+            catalog: list[dict] = []
+            for raw_entry in entries:
+                if not isinstance(raw_entry, dict):
+                    continue
+                entry = dict(raw_entry)
+                raw_metadata = entry.get("metadata")
+                metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+                # ``skill_catalog_entries`` is serialized from a dataclass in
+                # older summaries, while newer producers may put lifecycle
+                # fields at either level.  Preserve every protection field
+                # instead of replacing metadata with an empty mapping.
+                for key in (
+                    "skill_id",
+                    "origin",
+                    "ttl_policy",
+                    "usage",
+                    "last_verified_at",
+                    "verification",
+                ):
+                    if key not in entry:
+                        continue
+                    value = entry[key]
+                    current = metadata.get(key)
+                    # Lifecycle protection is monotonic when producers disagree:
+                    # user/pin may never be weakened by a nested/flattened row.
+                    if (
+                        (key == "origin" and str(value).strip().casefold() == "user")
+                        or (key == "ttl_policy" and str(value).strip().casefold() == "pin")
+                        or key not in metadata
+                        or current in (None, "")
+                    ):
+                        metadata[key] = value
+                skill_id = entry.get("skill_id") or entry.get("name") or metadata.get("skill_id")
+                if not isinstance(skill_id, str) or not skill_id.strip():
+                    continue
+                entry["skill_id"] = skill_id.strip()
+                entry["metadata"] = metadata
+                catalog.append(entry)
+            if catalog:
+                return catalog
+    return build_catalog_from_skills(cfg.project_root)
+
+
+def _skill_dirs_for(cfg) -> list[Path]:
+    """Project-local skill roots eligible for future apply moves.
+
+    ``main._skill_dirs`` also returns the global OpenCode skills directory for
+    telemetry discovery.  Curation deliberately narrows that universe to the
+    three project roots so ``--apply`` can never mutate global skills.
+    """
+    try:
+        project_root = (cfg.project_root or Path.cwd()).expanduser().resolve()
+    except (OSError, RuntimeError):
+        # Apply must fail closed when even the project root cannot be resolved.
+        return []
+    roots = [
+        project_root / ".opencode" / "skills",
+        project_root / ".claude" / "skills",
+        project_root / ".agents" / "skills",
+    ]
+    global_roots = _global_skill_roots()
+    return [root for root in roots if not _path_is_global_or_unresolvable(root, global_roots)]
+
+
+def _global_skill_roots() -> tuple[Path, ...]:
+    """All supported user-level skill roots, resolved for symlink protection."""
+
+    return (
+        Path.home() / ".config" / "opencode" / "skills",
+        Path.home() / ".claude" / "skills",
+        Path.home() / ".agents" / "skills",
+    )
+
+
+def _path_is_safely_within(path: Path, root: Path) -> bool:
+    """Return true only when containment is proven without an OS error."""
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    """Containment predicate for deny-list checks; resolution errors deny access."""
+
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, RuntimeError):
+        return True
+    except ValueError:
+        return False
+    return True
+
+
+def _path_is_global_or_unresolvable(path: Path, global_roots: tuple[Path, ...]) -> bool:
+    """Deny a path inside a global root, or one whose resolution is uncertain."""
+
+    return any(_path_is_within(path, global_root) for global_root in global_roots)
+
+
+def _normalize_skill_relative(skill_id: str) -> Path | None:
+    """Normalize one relative skill id without changing its identity."""
+
+    requested = str(skill_id or "").strip()
+    if not requested or "\\" in requested or requested.startswith("/") or requested.startswith("~"):
+        return None
+    raw_parts = requested.split("/")
+    if any(part in {"", ".", ".."} for part in raw_parts):
+        return None
+    normalized = Path(*raw_parts)
+    if normalized.is_absolute() or normalized.parts != tuple(raw_parts):
+        return None
+    if "_archive" in normalized.parts:
+        return None
+    return normalized
+
+
+def _archive_skill(
+    skill_id: str,
+    skills_dirs: list[Path],
+    date: str,
+    mover,
+    *,
+    catalog_entry: Mapping[str, object] | None = None,
+) -> tuple[str, str | None]:
+    """Déplace un skill (dir) vers ``<skills_dir>/_archive/<date>/<id>`` (idempotent).
+
+    Retourne le statut de ``safe_git_move``. Aucun delete. Si introuvable sur
+    disque, retourne ``("missing", None)`` (compté skipped, jamais fatale).
+    """
+    requested_path = _normalize_skill_relative(skill_id)
+    if requested_path is None:
+        return "missing", "skill_id absent or unsafe"
+    if not isinstance(date, str) or re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) is None:
+        return "missing", "date archive absente ou unsafe"
+    global_roots = _global_skill_roots()
+    candidates: list[tuple[Path, Path, Path]] = []
+    for skills_dir in skills_dirs:
+        if _path_is_global_or_unresolvable(skills_dir, global_roots):
+            continue
+        src = skills_dir / requested_path
+        dst = skills_dir / "_archive" / date / requested_path
+        try:
+            # Check every resolved path before consulting exists/is_dir.  In
+            # particular, an existing destination symlink must not short-circuit
+            # the global-root and project-root containment gates.
+            if any(
+                _path_is_global_or_unresolvable(candidate, global_roots)
+                for candidate in (src, src / "SKILL.md", dst, dst.parent)
+            ):
+                return "missing", "skill source/destination hors périmètre projet"
+            if (
+                not _path_is_safely_within(src, skills_dir)
+                or not _path_is_safely_within(src / "SKILL.md", skills_dir)
+                or not _path_is_safely_within(dst.parent, skills_dir)
+            ):
+                return "missing", "skill source/destination hors périmètre projet"
+            destination_exists = dst.exists()
+            source_exists = src.is_dir()
+        except (OSError, RuntimeError) as exc:
+            return "rejected", f"chemin source illisible: {exc}"
+        if destination_exists or source_exists:
+            candidates.append((skills_dir, src, dst))
+
+    if not candidates:
+        return "missing", None
+    if len(candidates) > 1:
+        return "ambiguous", "skill_id existe dans plusieurs racines projet"
+
+    _skills_dir, src, dst = candidates[0]
+    # A previous successful run leaves the source absent but destination present.
+    # Report ``exists`` rather than ``missing`` and never attempt a second move.
+    if dst.exists():
+        return "exists", f"{dst} déjà présent (idempotent)"
+    if not src.is_dir():
+        return "missing", "skill source absent ou non-répertoire"
+    catalog_sid, catalog_origin, catalog_ttl = _skill_fields(catalog_entry)
+    if catalog_origin == "user" or catalog_ttl == "pin":
+        return "protected", "catalogue protège cette skill (origin=user ou ttl_policy=pin)"
+    if catalog_entry is None or not catalog_entry_is_complete(catalog_entry):
+        # A name-only or absent catalogue entry is sufficient for a dry-run
+        # proposal, never for an apply move.  Still inspect the source so a
+        # stale proposal cannot hide user/pinned protection behind missing data.
+        from .safe_git_write import validate_skill_source
+
+        _valid, metadata, detail = validate_skill_source(src / "SKILL.md")
+        if metadata.get("origin") == "user" or metadata.get("ttl_policy") == "pin":
+            return "protected", detail
+        return "unverified", "catalogue incomplet ou absent; archive apply refusé"
+    # Re-read frontmatter on every apply. A stale catalogue must never weaken
+    # source validation or protection metadata.
+    from .safe_git_write import validate_skill_source
+
+    valid, metadata, detail = validate_skill_source(src / "SKILL.md")
+    if metadata.get("origin") == "user" or metadata.get("ttl_policy") == "pin":
+        return "protected", detail
+    if not valid:
+        return "unverified", detail
+    if (
+        catalog_sid != skill_id
+        or metadata.get("origin") != catalog_origin
+        or metadata.get("ttl_policy") != catalog_ttl
+    ):
+        return "unverified", "catalogue et frontmatter source incohérents"
+    # Revalidate immediately before the move: symlink/race changes after the
+    # discovery checks must fail closed, including project-root containment.
+    project_root = _skills_dir.parents[2]
+    try:
+        if any(
+            _path_is_global_or_unresolvable(candidate, global_roots)
+            or not _path_is_safely_within(candidate, project_root)
+            for candidate in (
+                _skills_dir,
+                src,
+                src / "SKILL.md",
+                dst,
+                dst.parent,
+            )
+        ):
+            return "rejected", "skill source/destination hors périmètre projet"
+        if not src.is_dir() or dst.exists():
+            return "rejected", "état source/destination modifié avant déplacement"
+    except (OSError, RuntimeError) as exc:
+        return "rejected", f"chemin source illisible: {exc}"
+    try:
+        return mover(src, dst)
+    except (OSError, ValueError, RuntimeError) as exc:
+        return "rejected", str(exc)
+
+
+def _cmd_skill_curate(args, cfg) -> int:
+    """Curation/décroissance des skills (R4 curation/GC + R8 TTL).
+
+    DRY-RUN par défaut (imprime les décisions, n'écrit rien, ne déplace rien).
+    Auto-load des entrées (Phase 1) : sans ``--coherence``/``--catalog``, lit
+    depuis le run actif (``runs/current`` ou legacy) — aucun piping LLM requis.
+    ``--apply`` exécute les archives (move vers ``_archive/<date>/``, idempotent,
+    jamais delete) et consigne un manifeste ; ``merge``/``reference``/``pin``/
+    ``delete``/``recalibrate`` restent PROPOSITIONS (aucune op fs).
+    ``origin='user'`` jamais touché.
+    """
+
+    from .run_state import resolve_active_run_dir
+    from .safe_git_write import safe_git_move
+    from .util import parse_anchor as _parse_anchor
+
+    engine_dir = Path(__file__).resolve().parent
+    apply = bool(getattr(args, "apply", False))
+    stale_days = int(getattr(args, "stale_days", 90) or 90)
+
+    # --- date + run dir (base de l'auto-load) ---
+    run_time = _parse_anchor(getattr(args, "anchor", None))
+    date = run_time.strftime("%Y-%m-%d")
+    out = resolve_active_run_dir(cfg.output_dir, date)
+
+    # --- Phase 1 : auto-discovery des entrées (override --coherence/--catalog) ---
+    coherence_raw = _read_json_arg(getattr(args, "coherence", None))
+    if coherence_raw is None:
+        coherence_raw = _auto_load(out, cfg.output_dir, date, "weekly-coherence-findings")
+    # Normalization is centralized in curation.py: structured R4 signals and
+    # legacy comma-separated archive findings become individual records once.
+    coherence = normalize_curation_findings(coherence_raw or [])
+
+    catalog = _read_json_arg(getattr(args, "catalog", None))
+    if catalog is None:
+        catalog = _auto_load_catalog(out, cfg, date)
+    catalog = catalog if isinstance(catalog, list) else []
+
+    usage = _read_json_arg(getattr(args, "usage", None))
+    runs_seen = int(getattr(args, "runs_seen", 0) or 0)
+
+    # Carry inter-run: si usage non fourni, on lit le fallback de l'engine.
+    if usage is None:
+        watch_cfg = getattr(cfg, "watch_distill", None)
+        configured_memory = getattr(watch_cfg, "memory_file", None)
+        carry = read_carry(
+            engine_dir,
+            output_dir=cfg.output_dir,
+            memory_file=configured_memory,
+        )
+        runs_seen = max(runs_seen, carry["runs_seen"])
+        usage = [
+            {
+                "skill_id": sid,
+                "origin": u.get("origin"),
+                "ttl_policy": u.get("ttl_policy"),
+                "usage": {
+                    "last_loaded": u.get("last_loaded"),
+                    "load_count": u.get("load_count", 0),
+                },
+            }
+            for sid, u in carry.get("usage", {}).items()
+        ]
+
+    usage = usage if isinstance(usage, list) else []
+    archive_ids = ttl_archive_candidates(usage, runs_seen, stale_days=stale_days)
+    ttl_findings = [
+        {
+            "tag_action": "archive",
+            "target_skill_id": sid,
+            "reason": "TTL stale/zero-load",
+            "_source": "ttl",
+        }
+        for sid in archive_ids
+    ]
+    decisions = decide_actions([*coherence, *ttl_findings], catalog)
+
+    mode = "APPLY" if apply else "DRY-RUN"
+    print(f"=== skill-curate ({mode}) ===", flush=True)
+    print(f"  run_dir: {out}", flush=True)
+    print(
+        f"  coherence={len(coherence)} catalog={len(catalog)} "
+        f"decisions={len(decisions)} ttl-archive={len(archive_ids)}",
+        flush=True,
+    )
+    for d in decisions:
+        print(f"  decision: {d['action']:>10} {d['target_skill_id']} — {d['reason']}", flush=True)
+    print(
+        f"  archive candidates ({len(archive_ids)}): {', '.join(archive_ids) or '<none>'}",
+        flush=True,
+    )
+
+    # --- Phase 2 : dry-run or gated apply execution ---
+    skills_dirs = _skill_dirs_for(cfg)
+    applied = 0
+    proposed = 0
+    skipped = 0
+    skipped_user = 0
+    archive_pending = 0
+    move_status_counts = {
+        "moved": 0,
+        "exists": 0,
+        "missing": 0,
+        "error": 0,
+        "rejected": 0,
+        "ambiguous": 0,
+        "protected": 0,
+        "unverified": 0,
+        "not_attempted": 0,
+    }
+    manifest_decisions: list[dict] = []
+
+    def _record(sid, action, reason, source, status, move_status):
+        manifest_decisions.append(
+            {
+                "skill_id": sid,
+                "target_skill_id": sid,
+                "action": action,
+                "reason": reason,
+                "source": source,
+                "status": status,
+                "move_status": move_status,
+            }
+        )
+
+    # One final decision per skill is guaranteed by decide_actions.  Archive
+    # operations are the only filesystem mutation and only happen in apply mode.
+    for d in decisions:
+        sid = d["target_skill_id"]
+        action = d["action"]
+        reason = d["reason"]
+        source = d.get("source") or "coherence"
+        move_status = "not_attempted"
+        move_status_counts[move_status] += 1
+        if action == "skip":
+            print(f"  SKIP: {sid} — {reason}", flush=True)
+            skipped += 1
+            if "user-origin" in reason:
+                skipped_user += 1
+            _record(sid, action, reason, source, "skipped", move_status)
+            continue
+        if action == "archive":
+            if apply:
+                catalog_entry = select_catalog_entry(catalog, sid)
+                move_status, _ = _archive_skill(
+                    sid,
+                    skills_dirs,
+                    date,
+                    safe_git_move,
+                    catalog_entry=catalog_entry,
+                )
+                move_status_counts["not_attempted"] -= 1
+                move_status_counts.setdefault(move_status, 0)
+                move_status_counts[move_status] += 1
+                status = move_status
+                if move_status in ("moved", "exists"):
+                    applied += 1
+                    print(f"  ARCHIVE: {sid} — {move_status}", flush=True)
+                else:
+                    skipped += 1
+                    if move_status == "protected":
+                        skipped_user += 1
+                    print(f"  SKIP(archive {move_status}): {sid}", flush=True)
+            else:
+                archive_pending += 1
+                status = "not_attempted"
+                print(f"  PROPOSE: {sid} — archive (dry-run, aucune op fs)", flush=True)
+            _record(sid, action, reason, source, status, move_status)
+            continue
+        # merge / reference / pin / delete / recalibrate / fix remain proposals;
+        # no filesystem mutation is performed for them, even with --apply.
+        proposed += 1
+        print(f"  PROPOSE: {sid} — {action} (aucune op fs)", flush=True)
+        _record(sid, action, reason, source, "proposed", move_status)
+
+    manifest = {
+        "schema_version": 1,
+        "rc": 0,
+        "mode": "apply" if apply else "dry-run",
+        "dry_run": not apply,
+        "date": date,
+        "run_dir": str(out),
+        "coherence_count": len(coherence),
+        "catalog_count": len(catalog),
+        "applied": applied,
+        "proposed": proposed,
+        "skipped": skipped,
+        "archive_pending": archive_pending,
+        "decisions": manifest_decisions,
+        "move_status_counts": move_status_counts,
+        # Alias retained for report consumers that call these move counters.
+        "move_counts": dict(move_status_counts),
+        "archive_candidates_ttl": archive_ids,
+        "archive_candidates": archive_ids,
+        "skipped_user": skipped_user,
+        "run_provenance": _run_provenance(cfg.project_root, run_time),
+    }
+    # Missing targets are stale proposals and remain non-fatal; real apply
+    # refusals must reach the orchestrator.
+    curation_rc = 1 if apply and any(
+        move_status_counts.get(status, 0) > 0
+        for status in ("error", "rejected", "ambiguous", "unverified")
+    ) else 0
+    manifest["rc"] = curation_rc
+    manifest.update(
+        manifest_metadata(
+            manifest_decisions,
+            generated_at=run_time.isoformat().replace("+00:00", "Z"),
+            anchor=date,
+        )
+    )
+    out_path = out / f"skill-curate-{date}.json"
+    try:
+        from .writer import write_json_atomic
+
+        write_json_atomic(out_path, manifest)
+        print(
+            f"  manifest written: {out_path} "
+            f"(applied={applied} proposed={proposed} skipped={skipped} "
+            f"moves={move_status_counts})",
+            flush=True,
+        )
+    except OSError as exc:
+        print(f"  manifest write FAILED: {exc}", flush=True)
+        return 1
+    return curation_rc
+
+
 def _cmd_doctor(args, cfg) -> int:
     return doctor(cfg, config_loaded=getattr(args, "config", None) is not None)
 
 
 def _cmd_self_cost(args, cfg) -> int:
     return self_cost(cfg, anchor=args.anchor)
+
+
+def _cmd_graphify_state(args, cfg) -> int:
+    """Project existing Graphify artifacts into the dated run directory."""
+    from .graphify_summary import graphify_state
+    from .main import EXIT_OK, EXIT_PARTIAL, _parse_anchor
+    from .writer import write_json_atomic
+
+    run_time = _parse_anchor(args.anchor)
+    date = run_time.strftime("%Y-%m-%d")
+    out = _out_dir(cfg, date)
+    project_root = cfg.project_root or Path.cwd()
+    configured = getattr(cfg, "graphify_out", None)
+    state = graphify_state(
+        project_root,
+        graphify_out=Path(configured).expanduser() if configured else None,
+        head_commit=getattr(args, "head_commit", None),
+    )
+    state["date"] = date
+    state["generated_at"] = run_time.isoformat().replace("+00:00", "Z")
+    out_path = out / f"weekly-graphify-state-{date}.json"
+    write_json_atomic(out_path, state)
+    if state["status"] != "ok" or state["stale"]:
+        print(f"graphify-state: WARNING: {state['reason']} file={out_path}", flush=True)
+        return EXIT_PARTIAL
+    print(f"graphify-state: ok file={out_path}", flush=True)
+    return EXIT_OK
 
 
 # ------------------------------------------------------------------ parser
@@ -662,6 +1256,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Cost of the pipeline's own run session (Partie 1 §12)",
     )
     p_self.set_defaults(func=_cmd_self_cost)
+
+    p_graphify = sub.add_parser(
+        "graphify-state",
+        parents=[global_parent],
+        help="Read existing Graphify artifacts without invoking Graphify",
+    )
+    p_graphify.add_argument("--head-commit", help=argparse.SUPPRESS)
+    p_graphify.set_defaults(func=_cmd_graphify_state)
+
+    p_sc = sub.add_parser(
+        "skill-curate",
+        parents=[global_parent],
+        help="Curation/décroissance skills (R4 curation/GC + R8 TTL) — dry-run par défaut",
+    )
+    p_sc.add_argument("--coherence", help="JSON: findings de cohérence (tag_action pertinents)")
+    p_sc.add_argument(
+        "--catalog",
+        help="JSON: catalogue de skills (skill_id, metadata.origin/ttl_policy)",
+    )
+    p_sc.add_argument(
+        "--usage",
+        help="JSON: usage_records pour TTL (fallback inter-run .watch-memory.jsonl si absent)",
+    )
+    p_sc.add_argument(
+        "--runs-seen", type=int, default=0, help="Nombre de runs consécutifs observés"
+    )
+    p_sc.add_argument(
+        "--stale-days", type=int, default=90, help="Seuil d'obsolescence last_loaded (jours)"
+    )
+    p_sc.add_argument(
+        "--apply", action="store_true", help="Exécute (sinon dry-run, imprime seulement)"
+    )
+    p_sc.set_defaults(func=_cmd_skill_curate)
 
     return parser
 

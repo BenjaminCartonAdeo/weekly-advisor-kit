@@ -40,6 +40,7 @@ Inspiré du pattern context-manager : chaque worker reçoit un paquet minimal-co
    - `warnings` : liste des warnings non fatals rencontrés (ex. source indisponible, écoulement dépassé)
    - `artifacts` : fichiers créés par cette branche dans `runs/current/` (JSON findings, timings, extraits)
    - `elapsed_s` : temps total d'exécution en secondes
+   - `skills_loaded` : résultat du pre-flight skills F6 — `{ok, primary, secondary, missing}` (§ « Pre-flight skills (F6) »)
 
 ## Invariants appliqués
 
@@ -67,6 +68,34 @@ Avant le premier write, worker V/H attend que `runs/current/` contienne `weekly-
 Stratégie si blocage : logger la raison, tenter quand même l'étape directement.
 Le dépassement ne modifie pas le code sortie (warning fail-soft, branche continue).
 L'orchestrateur gère la synthèse en join (§5 design) : signale la latence, continue.
+
+## Pre-flight skills (F6)
+
+**Avant tout step de branche**, vérifier la présence des skills requises par SA branche
+(glob `skills/<name>/SKILL.md` sous le worktree, lecture seule, jamais de chargement
+implicite) :
+
+| Branche | Skill(s) requise(s) | Rôle |
+|---|---|---|
+| A (Audit) | `weekly-quality-audit` | **primaire** |
+| V (Veille) | `weekly-watch-review` | secondaire |
+| H (Harness) | `harness-remediation` | secondaire |
+| D (Drafting) | `weekly-drafting` | **primaire** |
+| C (Cohérence) | `weekly-coherence-review` | **primaire** |
+| T / I | — (étapes 100 % déterministes, aucun skill) | — |
+
+**Mapping rc** :
+- **Skill primaire absente** → `skills_loaded: {ok: false, missing: [<name>], primary: true}`,
+  contrat `rc=2` (fatalité branche → STOP orchestrateur, pas de rapport). Ne pas démarrer
+  la branche.
+- **Skill secondaire absente** → `skills_loaded: {ok: false, missing: [<name>], primary: false}`,
+  contrat `rc=1` + warning **exact** `skill-missing:<name>` ; branche tente en dégradé
+  (étapes déterministes conservées, étape skill sautée avec note dans `steps_done`).
+- Toutes présentes → `skills_loaded: {ok: true, missing: [], primary: false}` (ou
+  `primary: true` si la branche porte une skill primaire), le déroulement normal suit.
+
+Le check est **déterministe** (glob, zéro LLM) et s'exécute **une seule fois**, au début
+de la branche. `skills_loaded` est obligatoire dans le contrat retour (champ non-nul).
 
 ## Exécution par branche
 
@@ -127,9 +156,11 @@ Exécutées en **wave 2** (parallèle, après JOIN de wave 1 ; optionnel, activ�
 | Écosystème absent pour distill | Distill skip, valider sur contexte ancien | 1 | absence source | oui |
 | Portabilité skill rejetée (error) | Restituer diff, bloquer commit | 1 | détail erreur | oui |
 | Permission edit refusée | Réévaluer perimètre, fail-soft si non critique | 1 | détail erreur | oui |
+| **Skill primaire absente (F6)** | `skills_loaded: ok=false` ; ne pas démarrer la branche | 2 | — | non |
+| **Skill secondaire absente (F6)** | `skills_loaded: ok=false` ; branche en dégradé (étape skill sautée) | 1 | `skill-missing:<name>` | oui |
 
 **Règle centrale** : rc=2 **seul** si moteur Python ou fatalité (permission élevée, espace disque,
-lock contentieux). Tout autre échec → rc=1 + warning + continuer.
+lock contentieux, **skill primaire de branche absente — F6**). Tout autre échec → rc=1 + warning + continuer.
 
 ## Contrat retour — validation et envoi
 
@@ -137,16 +168,22 @@ Dernière sortie du worker **AVANT toute autre sortie verbale** (résumé, logs,
 
 ```json
 {
-  "branch": "T",
+  "branch": "D",
   "rc": 0,
-  "steps_done": ["run", "quality-audit"],
+  "steps_done": ["skill-preflight", "draft-candidates", "commit-draft"],
   "warnings": [],
-  "artifacts": ["weekly-summary-2026-08-25.json", "weekly-quality-findings-2026-08-25.json"],
-  "elapsed_s": 720
+  "artifacts": ["weekly-draft-candidates-2026-08-25.json"],
+  "elapsed_s": 420,
+  "skills_loaded": {
+    "ok": true,
+    "missing": [],
+    "primary": true,
+    "branch_skills": ["weekly-drafting"]
+  }
 }
 ```
 
-Format strict : JSON valide, champs requis non-nuls, no trailing comma, no comments.
+Format strict : JSON valide, champs requis non-nuls (`skills_loaded` inclus), no trailing comma, no comments.
 Contenu hors contrat est **ignoré et tronqué** par l'orchestrateur.
 
 Timings : `elapsed_s` est durée totale (wall-clock du début du briefing au contrat retour).

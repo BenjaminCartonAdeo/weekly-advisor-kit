@@ -18,6 +18,7 @@ import { type Plugin, tool } from "@opencode-ai/plugin"
 import path from "node:path"
 import os from "node:os"
 import fs from "node:fs"
+import { fileURLToPath } from "node:url"
 import { execFile } from "node:child_process"
 
 const ENGINE_REL = [".opencode", "plugins", "weekly-advisor-engine"]
@@ -28,6 +29,64 @@ const ANCHOR_FILE = "anchor-last.txt"
 // déclaration locale au factory `WeeklyAdvisorPlugin` provoquait
 // `ReferenceError: worktree is not defined` au premier appel de tool (layout v6.0).
 let worktree = ""
+
+/** Resolve kit root without depending on the directory from which opencode ran. */
+function resolveWorktree(directory: string | undefined, contextWorktree: string | undefined): string {
+  const configured = process.env.WEEKLY_KIT_ROOT?.trim()
+  if (configured) return path.resolve(configured)
+  const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..")
+  if (fs.existsSync(path.join(pluginRoot, ".opencode", "plugins", "weekly-advisor-engine"))) return pluginRoot
+  return contextWorktree ?? directory ?? process.cwd()
+}
+
+interface PreflightResult {
+  rc: 0 | 3
+  worktree: string
+  engine_ok: boolean
+  python_ok: boolean
+  config_ok: boolean
+  py_count: number
+  message?: string
+}
+
+function preflight(root: string): PreflightResult {
+  const engine = path.join(root, ...ENGINE_REL)
+  const engineOk = fs.existsSync(engine) && fs.statSync(engine).isDirectory()
+  let pythonOk = false
+  let configOk = false
+  let pyCount = 0
+  if (engineOk) {
+    const venvPython = process.platform === "win32"
+      ? path.join(engine, ".venv", "Scripts", "python.exe")
+      : path.join(engine, ".venv", "bin", "python")
+    pythonOk = Boolean(process.env.WEEKLY_PYTHON && fs.existsSync(process.env.WEEKLY_PYTHON)) || fs.existsSync(venvPython)
+    const configPath = path.join(engine, "weekly-telemetry-config.json")
+    try {
+      JSON.parse(fs.readFileSync(configPath, "utf8"))
+      configOk = true
+    } catch {
+      configOk = false
+    }
+    const visit = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const child = path.join(dir, entry.name)
+        if (entry.isDirectory()) visit(child)
+        else if (entry.isFile() && entry.name.endsWith(".py")) pyCount += 1
+      }
+    }
+    visit(engine)
+  }
+  const ok = engineOk && pythonOk && configOk && pyCount > 0
+  return {
+    rc: ok ? 0 : 3,
+    worktree: root,
+    engine_ok: engineOk,
+    python_ok: pythonOk,
+    config_ok: configOk,
+    py_count: pyCount,
+    ...(ok ? {} : { message: "worktree Adeo requis — relancer avec `--dir /home/benjamin/Dev/Adeo` (ou via le cron)" }),
+  }
+}
 
 interface EngineLoc {
   engine: string
@@ -99,12 +158,34 @@ function resolveEngine(worktree: string): EngineLoc {
  */
 function readOrCreateAnchor(outputDir: string): string {
   const file = path.join(outputDir, ANCHOR_FILE)
-  if (fs.existsSync(file)) {
-    const existing = fs.readFileSync(file, "utf8").trim()
-    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(existing)) {
-      const today = new Date().toISOString().slice(0, 10)
-      if (existing.slice(0, 10) === today) return existing
+  let existing: string
+  try {
+    existing = fs.readFileSync(file, "utf8").trim()
+  } catch (err) {
+    // Only a genuinely absent initial anchor is recoverable; preserve evidence
+    // of permission, directory, and other filesystem failures.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw new Error(`lecture de ${file} impossible: ${String(err)}`)
     }
+    existing = ""
+  }
+  if (existing) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z$/.exec(existing)
+    const validDate = match !== null && (() => {
+      const [, year, month, day, hour, minute, second] = match
+      const date = new Date(Date.UTC(+year, +month - 1, +day, +hour, +minute, +second))
+      return date.getUTCFullYear() === +year
+        && date.getUTCMonth() === +month - 1
+        && date.getUTCDate() === +day
+        && date.getUTCHours() === +hour
+        && date.getUTCMinutes() === +minute
+        && date.getUTCSeconds() === +second
+    })()
+    if (!validDate) {
+      throw new Error(`ancre invalide dans ${file}: ${existing}`)
+    }
+    const today = new Date().toISOString().slice(0, 10)
+    if (existing.slice(0, 10) === today) return existing
   }
   const anchor = new Date().toISOString().replace(/\.\d{3}Z$/, "Z")
   fs.mkdirSync(outputDir, { recursive: true })
@@ -148,6 +229,18 @@ function runCli(worktree: string, args: string[], timeoutMs: number): Promise<st
       },
     )
   })
+}
+
+/** Keep large JSON inputs out of argv, whose size limit varies by platform. */
+function stageJsonPayload(payload: string, label: string): { file: string; cleanup: () => void } {
+  // ponytail: file transport is the minimum reliable fix for oversized tool arguments.
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), `weekly-${label}-`))
+  const file = path.join(directory, "input.json")
+  fs.writeFileSync(file, payload, "utf8")
+  return {
+    file,
+    cleanup: () => fs.rmSync(directory, { recursive: true, force: true }),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -288,8 +381,11 @@ function collectPortability(stdout: string): { errors: string[]; warnings: strin
       const entry =
         `[${detail.rule}] ${detail.message ?? ""}` +
         (detail.suggestion ? ` — suggestion : ${detail.suggestion}` : "")
-      // Toute sévérité != error passe en note non bloquante (error seul bloque).
-      ;(detail.severity === "error" ? errors : warnings).push(entry)
+      // Critical findings are safety blockers too; harness-eval normally emits
+      // `error`, but preserving this level avoids a fail-open gate when custom
+      // rules use the stronger severity name.
+      const severity = detail.severity?.toLowerCase()
+      ;(severity === "error" || severity === "critical" ? errors : warnings).push(entry)
     }
   }
   return { errors, warnings }
@@ -339,9 +435,26 @@ function withLookback(cliArgs: string[], lookbackDays: number | undefined): stri
 }
 
 const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
-  worktree = ctx.worktree ?? ctx.directory
+  worktree = resolveWorktree(ctx.directory, ctx.worktree)
   return {
+    "command.execute.before": async (input) => {
+      if (input.command !== "weekly-review") return
+      const result = preflight(worktree)
+      if (result.rc !== 0) throw new Error(`weekly_preflight rc=3 — ${result.message}`)
+    },
+    "chat.message": async (input) => {
+      if (input.agent !== "weekly-advisor") return
+      const result = preflight(worktree)
+      if (result.rc !== 0) throw new Error(`weekly_preflight rc=3 — ${result.message}`)
+    },
     tool: {
+      weekly_preflight: tool({
+        description: "Pré-flight déterministe du kit avant boot agent. Échec: rc=3, aucun run.",
+        args: {},
+        async execute() {
+          return JSON.stringify(preflight(worktree))
+        },
+      }),
       weekly_run: anchorTool(
         "Étape 1 du weekly-advisor : collecte télémétrique complète (run). " +
           "Écrit weekly-summary-<date>.json. L'ancre est lue/créée/rafraîchie dans <output_dir>/anchor-last.txt.",
@@ -559,6 +672,61 @@ const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
         ["doctor"],
         120_000,
       ),
+
+      weekly_skill_curate: tool({
+        description:
+          "Étape 6.6 : curation/décroissance des skills (skill-curate). Consomme les décisions " +
+          "de `weekly-coherence-review` (2.C) : applique archive/merge sur origin∈{weekly-*} " +
+          "(R4 curation/GC + R8 TTL). Protection stricte : JAMAIS origin=user (sans override). " +
+          "dry-run par défaut ; `apply=true` uniquement après validation humaine.",
+        args: {
+          coherence: tool.schema
+            .string()
+            .optional()
+            .describe("JSON: findings de cohérence (tag_action pertinents)"),
+          catalog: tool.schema
+            .string()
+            .optional()
+            .describe("JSON: catalogue de skills (skill_id, metadata.origin/ttl_policy)"),
+          usage: tool.schema
+            .string()
+            .optional()
+            .describe("JSON: usage_records pour TTL (fallback inter-run .watch-memory.jsonl)"),
+          runs_seen: tool.schema
+            .string()
+            .optional()
+            .describe("runs consécutifs observés (décroissance)"),
+          stale_days: tool.schema
+            .string()
+            .optional()
+            .describe("seuil obsolescence last_loaded (jours, défaut 90)"),
+          apply: tool.schema
+            .string()
+            .optional()
+            .describe("'true' pour exécuter (sinon dry-run)"),
+          anchor: tool.schema.string().optional().describe("ISO-8601 override (rare)"),
+        },
+        async execute(args) {
+          const { outputDir } = resolveEngine(worktree)
+          const anchor = anchorArg(args.anchor, outputDir)
+          const cliArgs = ["skill-curate", "--anchor", anchor]
+          let coherenceInput: ReturnType<typeof stageJsonPayload> | undefined
+          if (args.coherence) {
+            coherenceInput = stageJsonPayload(args.coherence, "coherence")
+            cliArgs.push("--coherence", coherenceInput.file)
+          }
+          if (args.catalog) cliArgs.push("--catalog", args.catalog)
+          if (args.usage) cliArgs.push("--usage", args.usage)
+          if (args.runs_seen != null) cliArgs.push("--runs-seen", String(args.runs_seen))
+          if (args.stale_days != null) cliArgs.push("--stale-days", String(args.stale_days))
+          if (args.apply === "true") cliArgs.push("--apply")
+          try {
+            return await runCli(worktree, cliArgs, 900_000)
+          } finally {
+            coherenceInput?.cleanup()
+          }
+        },
+      }),
     },
   }
 }

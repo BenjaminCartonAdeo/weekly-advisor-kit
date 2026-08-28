@@ -76,6 +76,10 @@ class SessionUsage:
     steps: list[StepFinish] = field(default_factory=list)
     tool_calls: dict[str, int] = field(default_factory=dict)
     tool_arg_chars: dict[str, int] = field(default_factory=dict)
+    #: Stable SHA-256 argument fingerprints per tool and occurrence count.
+    tool_arg_fingerprints: dict[str, dict[str, int]] = field(default_factory=dict)
+    #: Stable SHA-256 result fingerprints per tool and occurrence count.
+    tool_result_fingerprints: dict[str, dict[str, int]] = field(default_factory=dict)
     skills_loaded: dict[str, int] = field(default_factory=dict)
     user_turns: list[str] = field(default_factory=list)
     #: Part char counts per category (chars/4 → tokens): file, tool_result, text, reasoning.
@@ -251,6 +255,9 @@ class WeeklySummary:
     skills_targets: dict[str, list[str]] = field(default_factory=dict)
     user_prompt_repeats: list[UserPromptRepeat] = field(default_factory=list)
     subagent_totals: SubagentTotals = field(default_factory=SubagentTotals)
+    #: Additive tool payload fingerprints for deterministic loop analysis.
+    tool_argument_fingerprints: dict[str, dict[str, int]] = field(default_factory=dict)
+    tool_result_fingerprints: dict[str, dict[str, int]] = field(default_factory=dict)
     #: selection audit — why each window-touched session was/wasn't counted (v5.28).
     selection: dict = field(default_factory=dict)
     #: coûts estimés ($, round6) des sessions sans AUCUN coût enregistré,

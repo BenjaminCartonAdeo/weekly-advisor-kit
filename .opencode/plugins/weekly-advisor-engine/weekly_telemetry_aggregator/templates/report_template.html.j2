@@ -14,6 +14,9 @@
 {% set harness_top_rules = (harness_top_rules or []) %}
 {% set watch_findings = (watch_findings or {}) %}
 {% set watch_f = (watch_findings.get("findings") or []) %}
+{% set curation_detail_source = curation_detail if curation_detail is defined and curation_detail else {} %}
+{% set curation_detail = {"decisions": (curation_detail_source.get("decisions") or (skill_curate.get("decisions") or []) if skill_curate is defined and skill_curate else []), "skipped_details": (curation_detail_source.get("skipped_details") or []), "by_action": (curation_detail_source.get("by_action") or {}), "mode": curation_detail_source.get("mode"), "dry_run": curation_detail_source.get("dry_run")} %}
+{% set coherence_items = (coherence_items if coherence_items is defined else ((coherence_findings.get("findings") or []) if coherence_findings is defined else [])) %}
 
 {# ---- Compteurs de sévérité (alertes) ---- #}
 {% set n_high = alerts|selectattr("severity", "equalto", "high")|list|length %}
@@ -550,9 +553,9 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
   <h2>{{ toggle("sante", false) }} {{ secnum(6) }} Santé de l'environnement (harness + cohérence)</h2>
   <div class="section-body" id="sante-body">
     {% set coherence = (coherence_findings or {}) %}
-    {% if coherence.get("findings") %}
+    {% if coherence_items %}
     <h3>Cohérence de l'environnement (passe critique)</h3>
-    {% for f in coherence.findings %}
+    {% for f in coherence_items %}
     <div class="card info">
       <h4><span class="badge badge-info">{{ (f.get("tag") or f.get("category") or "?")|upper }}</span></h4>
       <dl class="fields">
@@ -562,6 +565,55 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
       </dl>
     </div>
     {% endfor %}
+    {% endif %}
+
+{% if skill_curate %}
+    {% set curation_detail = curation_detail|default({}) %}
+    {% if not curation_detail.get("decisions") and skill_curate.get("decisions") %}
+    {% set curation_detail = {"decisions": skill_curate.get("decisions"), "skipped_details": curation_detail.get("skipped_details", []), "by_action": curation_detail.get("by_action", {}), "mode": curation_detail.get("mode"), "dry_run": curation_detail.get("dry_run")} %}
+    {% endif %}
+    {% set manifest_decisions = curation_detail.get("decisions", []) %}
+    {% set manifest_skips = curation_detail.get("skipped_details", []) %}
+    {% set curation_mode = curation_detail.get("mode") or skill_curate.get("mode") or ("dry-run" if skill_curate.get("dry_run") else "apply") %}
+    {% set curation_dry_run = curation_detail.get("dry_run") if curation_detail.get("dry_run") is not none else skill_curate.get("dry_run", curation_mode == "dry-run") %}
+    {% set curation_summary = curation_detail.get("by_action") or skill_curate.get("summary", {}).get("by_action", {}) %}
+    <h3>Curation (WAVE 2.5 — {{ "dry-run — propositions" if curation_dry_run else "appliquée" }})</h3>
+    <div class="kpi-grid">
+      <div class="kpi ok"><div class="k-label">Appliquées</div><div class="k-value">{{ skill_curate.get("applied", 0) }}</div><div class="k-sub">archives réellement déplacées vers <code>_archive/{{ date }}/</code></div></div>
+      <div class="kpi"><div class="k-label">Proposées</div><div class="k-value">{{ skill_curate.get("proposed", 0) }}</div><div class="k-sub">aucune opération fs{% if curation_dry_run %}, dry-run{% endif %}</div></div>
+      <div class="kpi"><div class="k-label">Ignorées</div><div class="k-value">{{ skill_curate.get("skipped", 0) }}</div><div class="k-sub">origin=user ou introuvables</div></div>
+    </div>
+    {% if curation_summary %}<p class="muted">Actions : {% for action, count in curation_summary.items() %}<code>{{ action }}</code>=<b>{{ count }}</b>{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+    {% for d in manifest_decisions if d.get("status") != "skipped" %}
+    <div class="card info">
+      <h4><span class="badge badge-info">{{ d.get("action", "?")|upper }}</span> <code>{{ d.get("skill_id", "?") }}</code></h4>
+      <dl class="fields">
+        <dt>Source</dt><dd>{{ d.get("source", "curation") }}</dd>
+        <dt>Motif</dt><dd>{{ d.get("reason", "n/a") }}</dd>
+        {% if d.get("status") %}<dt>Statut</dt><dd>{{ d.get("status") }}</dd>{% endif %}
+      </dl>
+    </div>
+    {% endfor %}
+    {% for d in manifest_skips %}
+    <div class="card info">
+      <h4><span class="badge badge-info">{{ d.get("action", "skip")|upper }}</span> <code>{{ d.get("skill_id", "?") }}</code></h4>
+      <dl class="fields">
+        <dt>Source</dt><dd>{{ d.get("source", "curation") }}</dd>
+        <dt>Motif</dt><dd>{{ d.get("reason", "n/a") }}</dd>
+        {% if d.get("status") %}<dt>Statut</dt><dd>{{ d.get("status") }}</dd>{% endif %}
+      </dl>
+    </div>
+    {% endfor %}
+    {% elif coherence_curation_signal %}
+    <div class="callout crit"><b>⚠ Curation (WAVE 2.5) requise — non exécutée</b><br>
+      Aucun manifeste <code>skill-curate-{{ date }}.json</code> trouvé bien que les findings de cohérence contiennent des actions de curation (<b>P0</b>). Exécuter <code>weekly_skill_curate --apply</code> puis régénérer le rapport.</div>
+    {% else %}
+    <p class="muted">Curation (WAVE 2.5) : aucun signal de curation dans les findings de cohérence.</p>
+    {% endif %}
+
+    {% if graphify_state %}
+    <h3>État Graphify (hors pipeline)</h3>
+    <div class="callout info">Graphify est une exploration d'architecture <b>out-of-band</b>, optionnelle et hors revue : état informatif, sans effet sur les décisions ni preuve de cohérence.{% if graphify_state.get("status") == "unavailable" %} Artefacts indisponibles ou illisibles : {{ graphify_state.get("reason", "raison non fournie") }}.{% elif graphify_state.get("stale") %} Résumé obsolète par rapport au HEAD : relancer Graphify hors run.{% else %} Résumé disponible en lecture seule ; le graphe n'est jamais modifié par le pipeline.{% endif %}</div>
     {% endif %}
 
     {% set inspection = (digest.get("inspection") or {}).get("summary") or {} %}

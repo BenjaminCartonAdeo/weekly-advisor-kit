@@ -527,3 +527,12 @@ def test_dedup_resumed_chain_keeps_single_survivor():
     assert [u.session_id for u in kept] == ["ses_c"]
     assert {r["dropped_session_id"] for r in records} == {"ses_a", "ses_b"}
     assert all(r["kept_session_id"] == "ses_c" for r in records)
+
+
+def test_aggregate_preserves_deterministic_tool_fingerprints():
+    usage = make_usage("r", [], tools={"task": 3})
+    usage.tool_arg_fingerprints = {"task": {"b": 1, "a": 2}}
+    usage.tool_result_fingerprints = {"task": {"same": 3}}
+    summary = aggregate([usage], period=_period(), generated_at=_period().end)
+    assert summary.tool_argument_fingerprints == {"task": {"a": 2, "b": 1}}
+    assert summary.tool_result_fingerprints == {"task": {"same": 3}}

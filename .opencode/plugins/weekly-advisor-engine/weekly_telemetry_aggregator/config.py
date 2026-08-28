@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .draft_targets import DRAFT_TARGET_PRIORITY, MODE_AUTO, MODE_LEGACY
@@ -68,7 +68,7 @@ def _expand(path: str | Path) -> Path:
     return Path(path).expanduser()
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class AuditConfig:
     """Part 3 session-selection thresholds (Part 1 §6)."""
 
@@ -76,7 +76,7 @@ class AuditConfig:
     cache_efficiency_gap: float = 0.2
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class InsightsConfig:
     """Part 6 alert/maintenance thresholds (Part 1 §6)."""
 
@@ -96,7 +96,7 @@ class InsightsConfig:
     session_token_cap: int = 4_000_000
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class DraftTargetsConfig:
     """Cibles de drafting mono-cible (cellule 2.1) — sémantique décision §2.1.
 
@@ -111,7 +111,7 @@ class DraftTargetsConfig:
     targets: list[str] = field(default_factory=list)
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class WatchDistillConfig:
     """Étape 2.2 distill déterministe — quotas, poids, mémoire inter-run.
 
@@ -128,7 +128,7 @@ class WatchDistillConfig:
     min_candidates: int = 20
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class HarnessIncludeConfig:
     """Allowlist profiles used to build the temporary harness projection."""
 
@@ -283,29 +283,33 @@ def _parse(p: Path) -> TelemetryConfig:
     if isinstance(auto_fix_max_files, int) and not isinstance(auto_fix_max_files, bool):
         cfg.harness_auto_fix_max_files = max(0, auto_fix_max_files)
     include_raw = raw.get("harness_include")
+    harness_include = cfg.harness_include
     if isinstance(include_raw, str):
-        cfg.harness_include.default_profile = include_raw
+        harness_include = replace(harness_include, default_profile=include_raw)
     elif isinstance(include_raw, list):
-        cfg.harness_include.profiles[cfg.harness_include.default_profile] = [
-            str(x) for x in include_raw
-        ]
+        profiles = dict(harness_include.profiles)
+        profiles[harness_include.default_profile] = [str(x) for x in include_raw]
+        harness_include = replace(harness_include, profiles=profiles)
     elif isinstance(include_raw, dict):
         profile = include_raw.get("default_profile")
         if isinstance(profile, str) and profile:
-            cfg.harness_include.default_profile = profile
+            harness_include = replace(harness_include, default_profile=profile)
         profiles = include_raw.get("profiles")
         if isinstance(profiles, dict):
+            merged = dict(harness_include.profiles)
             for name, patterns in profiles.items():
                 if isinstance(name, str) and isinstance(patterns, list):
-                    cfg.harness_include.profiles[name] = [str(x) for x in patterns]
+                    merged[name] = [str(x) for x in patterns]
+            harness_include = replace(harness_include, profiles=merged)
         patterns = include_raw.get("patterns")
         if isinstance(patterns, list):
-            cfg.harness_include.profiles[cfg.harness_include.default_profile] = [
-                str(x) for x in patterns
-            ]
+            merged = dict(harness_include.profiles)
+            merged[harness_include.default_profile] = [str(x) for x in patterns]
+            harness_include = replace(harness_include, profiles=merged)
         excludes = include_raw.get("exclude_patterns", include_raw.get("excludes"))
         if isinstance(excludes, list):
-            cfg.harness_include.exclude_patterns = [str(x) for x in excludes]
+            harness_include = replace(harness_include, exclude_patterns=[str(x) for x in excludes])
+    cfg.harness_include = harness_include
     _bsv = raw.get("baseline_summary_path")
     cfg.baseline_summary_path = str(_bsv) if _bsv else None
     cfg.blocks_min_words = _get("blocks_min_words", cfg.blocks_min_words, int)
@@ -356,8 +360,7 @@ def _parse(p: Path) -> TelemetryConfig:
         pass  # absent → défaut auto conservé
     elif isinstance(dt_raw, list):
         if not dt_raw:
-            cfg.draft_targets.mode = MODE_LEGACY
-            cfg.draft_targets.targets = []
+            cfg.draft_targets = replace(cfg.draft_targets, mode=MODE_LEGACY, targets=[])
         else:
             names = [x.strip() for x in dt_raw if isinstance(x, str)]
             known = set(DRAFT_TARGET_PRIORITY)
@@ -372,11 +375,9 @@ def _parse(p: Path) -> TelemetryConfig:
                 elif name not in valid:
                     valid.append(name)
             if valid:
-                cfg.draft_targets.mode = "override"
-                cfg.draft_targets.targets = valid
+                cfg.draft_targets = replace(cfg.draft_targets, mode="override", targets=valid)
             else:
-                cfg.draft_targets.mode = MODE_AUTO  # fallback détection
-                cfg.draft_targets.targets = []
+                cfg.draft_targets = replace(cfg.draft_targets, mode=MODE_AUTO, targets=[])
     else:
         warnings.warn(
             f"draft_targets mal formé ({type(dt_raw).__name__}, liste attendue) "
@@ -434,40 +435,32 @@ def _parse(p: Path) -> TelemetryConfig:
         cfg.kit_root = _expand(raw["kit_root"])
 
     audit = raw.get("audit") or {}
-    cfg.audit.cost_per_active_minute_min = float(
-        audit.get("cost_per_active_minute_min", cfg.audit.cost_per_active_minute_min)
-    )
-    cfg.audit.cache_efficiency_gap = float(
-        audit.get("cache_efficiency_gap", cfg.audit.cache_efficiency_gap)
+    cfg.audit = replace(
+        cfg.audit,
+        cost_per_active_minute_min=float(
+            audit.get("cost_per_active_minute_min", cfg.audit.cost_per_active_minute_min)
+        ),
+        cache_efficiency_gap=float(
+            audit.get("cache_efficiency_gap", cfg.audit.cache_efficiency_gap)
+        ),
     )
 
     ins = raw.get("insights") or {}
-    cfg.insights.weekly_budget_usd = float(
-        ins.get("weekly_budget_usd", cfg.insights.weekly_budget_usd)
-    )
-    cfg.insights.monthly_budget_usd = float(
-        ins.get("monthly_budget_usd", cfg.insights.monthly_budget_usd)
-    )
-    cfg.insights.daily_spike_z_min = float(
-        ins.get("daily_spike_z_min", cfg.insights.daily_spike_z_min)
-    )
-    cfg.insights.cache_hit_rate_min = float(
-        ins.get("cache_hit_rate_min", cfg.insights.cache_hit_rate_min)
-    )
-    cfg.insights.cost_wow_pct_max = float(
-        ins.get("cost_wow_pct_max", cfg.insights.cost_wow_pct_max)
-    )
-    cfg.insights.lint_violations_max = int(
-        ins.get("lint_violations_max", cfg.insights.lint_violations_max)
-    )
-    cfg.insights.lint_coverage_min = float(
-        ins.get("lint_coverage_min", cfg.insights.lint_coverage_min)
-    )
-    cfg.insights.never_loaded_runs_threshold = int(
-        ins.get("never_loaded_runs_threshold", cfg.insights.never_loaded_runs_threshold)
-    )
-    cfg.insights.cache_write_zero_runs = int(
-        ins.get("cache_write_zero_runs", cfg.insights.cache_write_zero_runs)
+    cfg.insights = replace(
+        cfg.insights,
+        weekly_budget_usd=float(ins.get("weekly_budget_usd", cfg.insights.weekly_budget_usd)),
+        monthly_budget_usd=float(ins.get("monthly_budget_usd", cfg.insights.monthly_budget_usd)),
+        daily_spike_z_min=float(ins.get("daily_spike_z_min", cfg.insights.daily_spike_z_min)),
+        cache_hit_rate_min=float(ins.get("cache_hit_rate_min", cfg.insights.cache_hit_rate_min)),
+        cost_wow_pct_max=float(ins.get("cost_wow_pct_max", cfg.insights.cost_wow_pct_max)),
+        lint_violations_max=int(ins.get("lint_violations_max", cfg.insights.lint_violations_max)),
+        lint_coverage_min=float(ins.get("lint_coverage_min", cfg.insights.lint_coverage_min)),
+        never_loaded_runs_threshold=int(
+            ins.get("never_loaded_runs_threshold", cfg.insights.never_loaded_runs_threshold)
+        ),
+        cache_write_zero_runs=int(
+            ins.get("cache_write_zero_runs", cfg.insights.cache_write_zero_runs)
+        ),
     )
 
     # Distill déterministe (étape 2.2) — style fail-soft : clé absente/mal
@@ -476,37 +469,38 @@ def _parse(p: Path) -> TelemetryConfig:
     if isinstance(wds, dict):
         wd_cfg = cfg.watch_distill
         if isinstance(wds.get("enabled"), bool):
-            wd_cfg.enabled = wds["enabled"]
+            wd_cfg = replace(wd_cfg, enabled=wds["enabled"])
         top_n = wds.get("top_n")
         if isinstance(top_n, int) and not isinstance(top_n, bool) and top_n >= 1:
-            wd_cfg.top_n = top_n
+            wd_cfg = replace(wd_cfg, top_n=top_n)
         quotas_raw = wds.get("quotas")
         if isinstance(quotas_raw, dict):
             for cat in WATCH_QUOTAS:
                 value = quotas_raw.get(cat)
                 if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-                    wd_cfg.quotas[cat] = value
+                    wd_cfg = replace(wd_cfg, quotas={**wd_cfg.quotas, cat: value})
         weights_raw = wds.get("weights")
         if isinstance(weights_raw, dict):
             for key in WATCH_DEFAULT_WEIGHTS:
                 value = weights_raw.get(key)
                 if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-                    wd_cfg.weights[key] = value
+                    wd_cfg = replace(wd_cfg, weights={**wd_cfg.weights, key: value})
         memory_file = wds.get("memory_file")
         if isinstance(memory_file, str) and memory_file.strip():
-            wd_cfg.memory_file = memory_file
+            wd_cfg = replace(wd_cfg, memory_file=memory_file)
         retention_weeks = wds.get("retention_weeks")
         if (
             isinstance(retention_weeks, int)
             and not isinstance(retention_weeks, bool)
             and retention_weeks >= 1
         ):
-            wd_cfg.retention_weeks = retention_weeks
+            wd_cfg = replace(wd_cfg, retention_weeks=retention_weeks)
         min_candidates = wds.get("min_candidates")
         if (
             isinstance(min_candidates, int)
             and not isinstance(min_candidates, bool)
             and min_candidates >= 0
         ):
-            wd_cfg.min_candidates = min_candidates
+            wd_cfg = replace(wd_cfg, min_candidates=min_candidates)
+        cfg.watch_distill = wd_cfg
     return cfg

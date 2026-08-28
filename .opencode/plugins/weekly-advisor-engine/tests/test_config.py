@@ -8,7 +8,27 @@ from pathlib import Path
 
 import pytest
 
-from weekly_telemetry_aggregator.config import _parse
+from weekly_telemetry_aggregator.config import (
+    AuditConfig,
+    DraftTargetsConfig,
+    HarnessIncludeConfig,
+    InsightsConfig,
+    WatchDistillConfig,
+    _parse,
+)
+
+
+def test_focused_config_sections_are_frozen():
+    sections = (
+        (AuditConfig(), "cost_per_active_minute_min"),
+        (InsightsConfig(), "weekly_budget_usd"),
+        (DraftTargetsConfig(), "mode"),
+        (HarnessIncludeConfig(), "default_profile"),
+        (WatchDistillConfig(), "top_n"),
+    )
+    for section, field_name in sections:
+        with pytest.raises(AttributeError):
+            setattr(section, field_name, None)
 
 
 def _config_file(tmp_path: Path, payload: dict) -> Path:

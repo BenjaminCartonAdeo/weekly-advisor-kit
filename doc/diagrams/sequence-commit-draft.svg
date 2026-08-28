@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1840 1000" role="img" aria-labelledby="seq-wk-cd-title seq-wk-cd-desc">
     <title id="seq-wk-cd-title">Séquence weekly_commit_draft avec gate de portabilité</title>
-    <desc id="seq-wk-cd-desc">Diagramme de séquence UML : l'agent invoque le tool weekly_commit_draft qui scanne le draft via harness-eval skill-verify dans un répertoire temporaire, refuse le commit si des erreurs de portabilité existent, joint une note sinon (ou ignore la gate en fail-soft si le binaire manque), puis délègue au CLI Python commit-draft qui valide, pré-vérifie git, committe de façon scopée et synchronise best-effort le kit.</desc>
+    <desc id="seq-wk-cd-desc">Diagramme de séquence UML : l'agent invoque le tool weekly_commit_draft qui, pour un skill, scanne le draft via harness-eval skill-verify dans un répertoire temporaire — refuse le commit si des erreurs de portabilité existent, joint une note si des avertissements seuls, ignore la gate en fail-soft si le binaire manque, refuse en cas d'environnement défaillant (crash, timeout, sortie illisible) — et saute la gate avec note explicite pour les commands ; puis délègue au CLI Python commit-draft qui valide, pré-vérifie git (Safe Git Commit Gate), committe de façon scopée et synchronise best-effort le kit.</desc>
     <defs>
       <marker id="swc-a" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4f5d75"/></marker>
       <marker id="swc-ac" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#eb6c36"/></marker>
@@ -52,7 +52,7 @@
     <rect x="516" y="144" width="8" height="748" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
     <rect x="932" y="208" width="8" height="184" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
     <rect x="1316" y="268" width="8" height="44" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
-    <rect x="1692" y="660" width="8" height="196" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+    <rect x="1692" y="684" width="8" height="208" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
 
     <!-- ===== messages ===== -->
     <line x1="132" y1="148" x2="512" y2="148" stroke="#4f5d75" stroke-width="1" marker-end="url(#swc-a)"/>
@@ -60,13 +60,18 @@
     <text x="330" y="137" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">weekly_commit_draft({kind, file})</text>
 
     <!-- editorial aside -->
-    <text x="1090" y="176" fill="#4f5d75" font-size="14" font-style="italic" font-family="'Instrument Serif',serif">[sinon — fichier absent : gate entièrement sautée, l'erreur viendra du CLI]</text>
+    <text x="1090" y="176" fill="#4f5d75" font-size="14" font-style="italic" font-family="'Instrument Serif',serif">[fichier absent → manifest missing / gate sautée ; approval explicite requis avant apply]</text>
+    <!-- skip command : gate non applicable (harness-eval : skills uniquement) -->
+    <path d="M 516 156 h -28 v 16 h 24" fill="none" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#swc-ac)"/>
+    <rect x="276" y="156" width="200" height="24" rx="2" fill="#f5f5f5"/>
+    <text x="376" y="167" fill="#b3541f" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.04em">kind=command → gate SKIPPED</text>
+    <text x="376" y="179" fill="#b3541f" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.04em">note explicite dans le résultat</text>
 
     <!-- OPT gate block -->
-    <rect x="408" y="188" width="1036" height="472" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <rect x="408" y="188" width="1036" height="500" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
     <rect x="408" y="188" width="40" height="16" rx="2" fill="#f5f5f5" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
     <text x="428" y="200" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.12em">OPT</text>
-    <text x="456" y="200" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">[fs.existsSync(file)]</text>
+    <text x="456" y="200" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">[fs.existsSync(file) ∧ kind=skill — command → skip]</text>
 
     <line x1="524" y1="224" x2="932" y2="224" stroke="#4f5d75" stroke-width="1" marker-end="url(#swc-a)"/>
     <rect x="636" y="200" width="172" height="16" rx="2" fill="#f5f5f5"/>
@@ -96,62 +101,68 @@
     <text x="980" y="386" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">cleanup tmp (finally)</text>
 
     <line x1="932" y1="420" x2="524" y2="420" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#swc-a)"/>
-    <rect x="628" y="396" width="204" height="16" rx="2" fill="#f5f5f5"/>
-    <text x="730" y="409" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">outcome : blocked | pass | ignored</text>
+    <rect x="600" y="396" width="288" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="744" y="409" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">outcome : blocked | pass | ignored | unusable | skipped</text>
 
-    <!-- ALT verdicts -->
-    <rect x="424" y="436" width="624" height="208" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <!-- ALT verdicts (4 régions : error / warning / fail-soft ENOENT / refus environnement) -->
+    <rect x="424" y="436" width="624" height="252" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
     <rect x="424" y="436" width="40" height="16" rx="2" fill="#f5f5f5" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
     <text x="444" y="448" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.12em">ALT</text>
     <text x="472" y="448" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">[errors.length &gt; 0]</text>
-    <path d="M 524 472 h 28 v 20 h -24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swc-a)"/>
-    <rect x="560" y="464" width="232" height="14" rx="2" fill="#f5f5f5"/>
-    <text x="564" y="474" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">throw «commit REFUSÉ — fix manuel»</text>
-    <line x1="516" y1="500" x2="136" y2="500" stroke="#eb6c36" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#swc-ac)"/>
-    <rect x="164" y="480" width="300" height="14" rx="2" fill="#f5f5f5"/>
-    <text x="314" y="490" fill="#b3541f" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.04em">exception — aucun git touché, artefact à corriger</text>
-    <line x1="432" y1="520" x2="1040" y2="520" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
-    <text x="472" y="540" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">[warnings seuls — pass]</text>
-    <path d="M 524 560 h 28 v 20 h -24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swc-a)"/>
-    <rect x="560" y="552" width="220" height="14" rx="2" fill="#f5f5f5"/>
-    <text x="564" y="562" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">note = «gate — N warning(s) non bloquant(s)»</text>
-    <line x1="432" y1="584" x2="1040" y2="584" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
-    <text x="472" y="604" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">[ENOENT → "" · JSON illisible · crash]</text>
-    <path d="M 524 620 h 28 v 16 h -24" fill="none" stroke="#eb6c36" stroke-width="1" marker-end="url(#swc-ac)"/>
-    <rect x="556" y="616" width="256" height="16" rx="2" fill="#f5f5f5"/>
-    <text x="560" y="627" fill="#b3541f" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">⚠ note fail-soft : gate ignorée (reason)</text>
+    <path d="M 524 468 h 28 v 20 h -24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swc-a)"/>
+    <rect x="560" y="460" width="232" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="564" y="470" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">throw «commit REFUSÉ — fix manuel»</text>
+    <line x1="516" y1="496" x2="136" y2="496" stroke="#eb6c36" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#swc-ac)"/>
+    <rect x="164" y="476" width="300" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="314" y="486" fill="#b3541f" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.04em">exception — aucun git touché, artefact à corriger</text>
+    <line x1="432" y1="512" x2="1040" y2="512" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+    <text x="472" y="528" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">[warnings seuls — pass]</text>
+    <path d="M 524 544 h 28 v 12 h -24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swc-a)"/>
+    <rect x="560" y="536" width="220" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="564" y="546" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">note = «gate — N warning(s) non bloquant(s)»</text>
+    <line x1="432" y1="572" x2="1040" y2="572" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+    <text x="472" y="588" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">[binaire absent (ENOENT → "")]</text>
+    <path d="M 524 604 h 28 v 12 h -24" fill="none" stroke="#eb6c36" stroke-width="1" marker-end="url(#swc-ac)"/>
+    <rect x="556" y="596" width="256" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="560" y="607" fill="#b3541f" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">⚠ note fail-soft : gate ignorée (reason)</text>
+    <line x1="432" y1="632" x2="1040" y2="632" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+    <text x="472" y="652" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.04em">[crash · timeout · sortie illisible]</text>
+    <path d="M 524 668 h 28 v 12 h -24" fill="none" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#swc-ac)"/>
+    <rect x="560" y="664" width="264" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="692" y="675" fill="#b3541f" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.04em">REFUS — timeout/crash/rc=2, gate non exécutable, aucun git touché</text>
+    <text x="980" y="688" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.04em">gate matrix : missing manifest → degraded · approval → apply · dry-run → no mutation</text>
 
     <!-- CLI handoff -->
-    <line x1="524" y1="684" x2="1688" y2="684" stroke="#2e5aa8" stroke-width="1" marker-end="url(#swc-al)"/>
-    <rect x="800" y="650" width="360" height="28" rx="2" fill="#f5f5f5"/>
-    <text x="980" y="661" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.04em">runCli : python -m weekly_telemetry_aggregator commit-draft</text>
-    <text x="980" y="673" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.04em">--kind kind --file file · timeout 120 s</text>
+    <line x1="524" y1="708" x2="1688" y2="708" stroke="#2e5aa8" stroke-width="1" marker-end="url(#swc-al)"/>
+    <rect x="800" y="674" width="360" height="28" rx="2" fill="#f5f5f5"/>
+    <text x="980" y="685" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.04em">runCli : python -m weekly_telemetry_aggregator commit-draft</text>
+    <text x="980" y="697" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.04em">--kind kind --file file · timeout 120 s</text>
 
-    <!-- CLI prechecks + git selves (left-mirrored loops) -->
-    <path d="M 1692 716 h -28 v 20 h 24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swc-a)"/>
-    <rect x="1380" y="708" width="276" height="14" rx="2" fill="#f5f5f5"/>
-    <text x="1652" y="718" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="end" letter-spacing="0.04em">validate_draft — frontmatter + kind valides</text>
-    <path d="M 1692 748 h -28 v 20 h 24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swc-a)"/>
-    <rect x="1336" y="732" width="320" height="28" rx="2" fill="#f5f5f5"/>
-    <text x="1652" y="743" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="end" letter-spacing="0.04em">rev-parse --show-toplevel → root</text>
-    <text x="1652" y="755" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="end" letter-spacing="0.04em">scope .opencode/ ? HEAD détaché ? rebase/merge ?</text>
-    <path d="M 1692 780 h -28 v 16 h 24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swc-a)"/>
-    <rect x="1520" y="772" width="136" height="14" rx="2" fill="#f5f5f5"/>
-    <text x="1652" y="782" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="end" letter-spacing="0.04em">git add -- &lt;file&gt;</text>
-    <path d="M 1692 812 h -28 v 20 h 24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swc-a)"/>
-    <rect x="1348" y="804" width="308" height="14" rx="2" fill="#f5f5f5"/>
-    <text x="1652" y="814" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="end" letter-spacing="0.04em">git commit -c user.name/email -m «…» -- &lt;file&gt;</text>
-    <path d="M 1692 844 h -28 v 16 h 24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swc-a)"/>
-    <rect x="1404" y="836" width="252" height="14" rx="2" fill="#f5f5f5"/>
-    <text x="1652" y="846" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="end" letter-spacing="0.04em">_sync_kit_draft — miroir kit best-effort</text>
+    <!-- CLI prechecks + git selves (left-mirrored loops) — Safe Git Commit Gate -->
+    <path d="M 1692 740 h -28 v 20 h 24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swc-a)"/>
+    <rect x="1380" y="732" width="276" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="1652" y="742" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="end" letter-spacing="0.04em">validate_draft — frontmatter + kind valides</text>
+    <path d="M 1692 772 h -28 v 20 h 24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swc-a)"/>
+    <rect x="1336" y="756" width="320" height="28" rx="2" fill="#f5f5f5"/>
+    <text x="1652" y="767" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="end" letter-spacing="0.04em">Safe Git Commit Gate — safe_git_write.py</text>
+    <text x="1652" y="779" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="end" letter-spacing="0.04em">rev-parse → root · scope .opencode/ · HEAD détaché · rebase/merge</text>
+    <path d="M 1692 804 h -28 v 16 h 24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swc-a)"/>
+    <rect x="1520" y="796" width="136" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="1652" y="806" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="end" letter-spacing="0.04em">git add -- &lt;file&gt;</text>
+    <path d="M 1692 836 h -28 v 20 h 24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swc-a)"/>
+    <rect x="1348" y="828" width="308" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="1652" y="838" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="end" letter-spacing="0.04em">git commit -c user.name/email -m «…» -- &lt;file&gt;</text>
+    <path d="M 1692 868 h -28 v 16 h 24" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#swc-a)"/>
+    <rect x="1404" y="860" width="252" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="1652" y="870" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="end" letter-spacing="0.04em">_sync_kit_draft — miroir kit best-effort</text>
 
     <!-- returns -->
-    <line x1="1688" y1="872" x2="528" y2="872" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#swc-a)"/>
-    <rect x="872" y="848" width="400" height="16" rx="2" fill="#f5f5f5"/>
-    <text x="1072" y="861" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">(ok, msg) — «draft committé (HEAD abcd1234) ; synchro kit …»</text>
-    <line x1="516" y1="896" x2="136" y2="896" stroke="#eb6c36" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#swc-ac)"/>
-    <rect x="212" y="876" width="240" height="14" rx="2" fill="#f5f5f5"/>
-    <text x="332" y="886" fill="#b3541f" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.04em">résultat (+ note de gate éventuelle)</text>
+    <line x1="1688" y1="896" x2="528" y2="896" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#swc-a)"/>
+    <rect x="872" y="872" width="400" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="1072" y="885" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">(ok, msg) — «draft committé (HEAD abcd1234) ; synchro kit …»</text>
+    <line x1="516" y1="920" x2="136" y2="920" stroke="#eb6c36" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#swc-ac)"/>
+    <rect x="212" y="900" width="240" height="14" rx="2" fill="#f5f5f5"/>
+    <text x="332" y="910" fill="#b3541f" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.04em">résultat (+ note de gate éventuelle)</text>
 
     <!-- ===== legend ===== -->
     <line x1="30" y1="928" x2="1810" y2="928" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
@@ -166,6 +177,6 @@
     <text x="774" y="946" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">refus / résultat final</text>
     <rect x="980" y="934" width="40" height="16" rx="2" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
     <text x="1000" y="945" fill="#4f5d75" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.10em">ALT</text>
-    <text x="1030" y="946" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">verdict en 3 régions (error / warning / fail-soft)</text>
+    <text x="1030" y="946" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">verdict en 4 régions (error / warning / fail-soft / refus env) + skip command</text>
     <text x="1460" y="946" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace">1 commit par écriture, jamais de git brut côté agent</text>
   </svg>

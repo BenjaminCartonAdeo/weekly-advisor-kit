@@ -500,10 +500,18 @@ def aggregate(
     # ---- tool usage (roots + children, window only) ----
     tool_counts: dict[str, int] = defaultdict(int)
     tool_chars: dict[str, int] = defaultdict(int)
+    argument_fingerprints: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    result_fingerprints: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for u in usages:
         for tool, count in u.tool_calls.items():
             tool_counts[tool] += count
             tool_chars[tool] += u.tool_arg_chars.get(tool, 0)
+        for tool, fingerprints in u.tool_arg_fingerprints.items():
+            for fingerprint, count in fingerprints.items():
+                argument_fingerprints[tool][fingerprint] += count
+        for tool, fingerprints in u.tool_result_fingerprints.items():
+            for fingerprint, count in fingerprints.items():
+                result_fingerprints[tool][fingerprint] += count
     tool_usage = [
         ToolUsage(
             tool=t, call_count=tool_counts[t], estimated_tokens=_estimated_tokens(tool_chars[t])
@@ -588,6 +596,14 @@ def aggregate(
         skills_targets=skills_targets,
         user_prompt_repeats=user_prompt_repeats,
         subagent_totals=subagent_totals,
+        tool_argument_fingerprints={
+            tool: dict(sorted(values.items()))
+            for tool, values in sorted(argument_fingerprints.items())
+        },
+        tool_result_fingerprints={
+            tool: dict(sorted(values.items()))
+            for tool, values in sorted(result_fingerprints.items())
+        },
         warnings=_cap_warnings(all_warnings),
     )
 

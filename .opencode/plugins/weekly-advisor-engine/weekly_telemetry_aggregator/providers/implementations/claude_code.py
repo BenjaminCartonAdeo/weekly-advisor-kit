@@ -139,7 +139,7 @@ def _usage_tokens(message: object) -> tuple[float, float, float, float, float] |
 
     def _num(key: str) -> float:
         value = usage.get(key)
-        return float(value) if isinstance(value, (int, float)) and value > 0 else 0.0
+        return float(value) if isinstance(value, int | float) and value > 0 else 0.0
 
     tin, tout = _num("input_tokens"), _num("output_tokens")
     if tin <= 0 and tout <= 0:

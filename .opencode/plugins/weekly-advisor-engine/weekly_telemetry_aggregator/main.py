@@ -61,6 +61,52 @@ EXIT_OK = 0
 EXIT_PARTIAL = 1
 EXIT_TOTAL_FAILURE = 2
 
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class RunProvenance:
+    """Stable identity attached to every run artefact.
+
+    ``start_time`` is the canonical wall-clock field.  ``run_started_at`` is
+    retained as a compatibility alias for consumers of the previous payload.
+    """
+
+    repository_path: str | None
+    branch: str | None
+    commit_sha: str | None
+    working_tree_dirty: bool | None
+    start_time: str
+    pipeline_version: str
+
+    def as_dict(self) -> dict[str, object]:
+        payload = dataclasses.asdict(self)
+        payload["run_started_at"] = self.start_time
+        return payload
+
+
+def _run_provenance(project_root: Path | None, run_started_at: datetime | None = None) -> dict[str, object]:
+    """Collect stable run identity without making git a pipeline dependency."""
+    root = Path(project_root) if project_root else None
+    provenance = RunProvenance(
+        repository_path=str(root.resolve()) if root else None,
+        branch=None,
+        commit_sha=None,
+        working_tree_dirty=None,
+        start_time=(run_started_at or datetime.now().astimezone()).isoformat(),
+        pipeline_version=__import__("weekly_telemetry_aggregator").__version__,
+    )
+    result = provenance.as_dict()
+    if root is None or not (root / ".git").exists():
+        return result
+    try:
+        def git(*args: str) -> str:
+            return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+        result["branch"] = git("branch", "--show-current") or None
+        result["commit_sha"] = git("rev-parse", "HEAD") or None
+        result["working_tree_dirty"] = bool(git("status", "--porcelain"))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return result
+
 #: Sessions updated within this many minutes of run_time are still active (v5.18: < 10 min).
 ACTIVE_CUTOFF_MINUTES = 10
 #: Skill universe dirs (spec §2): project + global, .opencode/.claude/.agents.
@@ -155,7 +201,7 @@ def _audit_record(meta, status: str) -> dict:
     title = " ".join((meta.title or "").split()).replace("|", "¦")
     if len(title) > 60:
         title = title[:60] + "..."
-    return {
+    record = {
         "session_id": meta.session_id,
         "title": title or None,
         "agent": meta.agent,
@@ -164,6 +210,13 @@ def _audit_record(meta, status: str) -> dict:
         "updated": str(meta.time_updated or ""),
         "status": status,
     }
+    # Providers may attach worker outcome metadata to session descriptors. Keep
+    # it in the audit trace; downstream artifacts must expose partial results.
+    for key in ("rc", "truncated", "worker_status"):
+        value = getattr(meta, key, None)
+        if value is not None:
+            record[key] = value
+    return record
 
 
 def build_usage(
@@ -413,6 +466,18 @@ def _build_selection(
         "excluded_unflushed": counts.get("unflushed", 0),
         "excluded_error": counts.get("error", 0),
         "resumed_duplicates": counts.get("resumed-duplicate", 0),
+        # Keep the complete worker/session disposition index separate from the
+        # bounded ``recent`` view; report consumers must not lose rc/truncation
+        # state when the display limit is small.
+        "worker_statuses": [
+            {
+                key: rec[key]
+                for key in ("session_id", "status", "rc", "truncated", "worker_status")
+                if key in rec
+            }
+            for rec in audit
+            if any(key in rec for key in ("rc", "truncated", "worker_status"))
+        ],
         "recent": recent,
     }
 
@@ -661,6 +726,17 @@ def run(
     out_path = _abs(active.run_dir / f"weekly-summary-{date}.json")
     print("telemetry-aggregator: écriture du summary…", flush=True)
     write_summary(out_path, summary)
+    # Additive metadata keeps the established summary schema intact while making
+    # report/manifest provenance available to downstream steps.
+    summary_data = load_json(out_path) or {}
+    provenance = _run_provenance(cfg.project_root, run_time)
+    # Normalize legacy/provider payloads to canonical ``start_time`` while
+    # retaining the historical alias for downstream readers.
+    if "start_time" not in provenance and "run_started_at" in provenance:
+        provenance["start_time"] = provenance["run_started_at"]
+    provenance.setdefault("run_started_at", provenance.get("start_time"))
+    summary_data["run_provenance"] = provenance
+    write_json_atomic(out_path, summary_data)
 
     print(
         f"telemetry-aggregator: sessions={summary.totals.session_count} "
