@@ -162,17 +162,37 @@ def test_provenance_skill_id_stable():
 
 def test_anti_learning_drop():
     """R2 : patterns à NE PAS capturer → True ; cas légitime → False."""
-    transient = {"description": "transient timeout failure on flaky network", "evidence": "", "recommendation_type": "skill-candidate"}
-    env_specific = {"description": "environment-specific prohibition in staging only", "evidence": "", "recommendation_type": "skill-candidate"}
-    secret = {"description": "leaked api key credential found in logs", "evidence": "password=xyz", "recommendation_type": "skill-candidate"}
-    pr_ref = {"description": "fix applied, see PR #123 for context", "evidence": "JIRA ticket ABC-9 referenced", "recommendation_type": "skill-candidate"}
+    transient = {
+        "description": "transient timeout failure on flaky network",
+        "evidence": "",
+        "recommendation_type": "skill-candidate",
+    }
+    env_specific = {
+        "description": "environment-specific prohibition in staging only",
+        "evidence": "",
+        "recommendation_type": "skill-candidate",
+    }
+    secret = {
+        "description": "leaked api key credential found in logs",
+        "evidence": "password=xyz",
+        "recommendation_type": "skill-candidate",
+    }
+    pr_ref = {
+        "description": "fix applied, see PR #123 for context",
+        "evidence": "JIRA ticket ABC-9 referenced",
+        "recommendation_type": "skill-candidate",
+    }
 
     assert is_anti_learning(transient) is True
     assert is_anti_learning(env_specific) is True
     assert is_anti_learning(secret) is True
     assert is_anti_learning(pr_ref) is True
 
-    legit = {"description": "cache expensive repeated prompts via a memoization skill", "evidence": "", "recommendation_type": "skill-candidate"}
+    legit = {
+        "description": "cache expensive repeated prompts via a memoization skill",
+        "evidence": "",
+        "recommendation_type": "skill-candidate",
+    }
     assert is_anti_learning(legit) is False
 
 
@@ -247,9 +267,24 @@ def test_select_draft_enriches_with_provenance():
     """select_draft_candidates conserve tri/sévérité ET attache provenance (R1/R3)."""
     findings = {
         "findings": [
-            {"session_id": "s1", "name": "Low Skill", "severity": "low", "recommendation_type": "skill-candidate"},
-            {"session_id": "s2", "name": "High Skill", "severity": "high", "recommendation_type": "command-candidate"},
-            {"session_id": "s3", "name": "Med Skill", "severity": "medium", "recommendation_type": "prompting-habit"},
+            {
+                "session_id": "s1",
+                "name": "Low Skill",
+                "severity": "low",
+                "recommendation_type": "skill-candidate",
+            },
+            {
+                "session_id": "s2",
+                "name": "High Skill",
+                "severity": "high",
+                "recommendation_type": "command-candidate",
+            },
+            {
+                "session_id": "s3",
+                "name": "Med Skill",
+                "severity": "medium",
+                "recommendation_type": "prompting-habit",
+            },
         ]
     }
     cands = select_draft_candidates(findings, max_candidates=2)

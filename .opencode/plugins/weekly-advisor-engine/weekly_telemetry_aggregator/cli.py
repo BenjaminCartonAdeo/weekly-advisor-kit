@@ -518,7 +518,9 @@ def _cmd_skill_curate(args, cfg) -> int:
 
     # APPLY: exécution via les helpers de curation, protection origin=user stricte.
     user_ids = {
-        sid for entry in catalog if (sid := _skill_fields(entry)[0]) and _skill_fields(entry)[1] == "user"
+        sid
+        for entry in catalog
+        if (sid := _skill_fields(entry)[0]) and _skill_fields(entry)[1] == "user"
     }
     skipped_user = 0
     applied = 0

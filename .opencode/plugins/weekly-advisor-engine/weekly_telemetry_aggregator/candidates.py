@@ -72,17 +72,14 @@ def is_anti_learning(finding: dict) -> bool:
         str(finding.get(k, "")) for k in ("description", "evidence", "recommendation_type")
     ).lower()
 
-    if any(w in text for w in _ANTI_LEARNING_SECRET):
-        return True
-    if any(w in text for w in _ANTI_LEARNING_REF):
-        return True
-    if any(w in text for w in _ANTI_LEARNING_TRANSIENT):
-        return True
-    if any(w in text for w in _ANTI_LEARNING_ENV):
-        return True
-    if any(w in text for w in _ANTI_LEARNING_ONEOFF):
-        return True
-    return False
+    groups = (
+        _ANTI_LEARNING_SECRET,
+        _ANTI_LEARNING_REF,
+        _ANTI_LEARNING_TRANSIENT,
+        _ANTI_LEARNING_ENV,
+        _ANTI_LEARNING_ONEOFF,
+    )
+    return any(any(w in text for w in group) for group in groups)
 
 
 def _candidate_name(cand: dict) -> str:
@@ -180,7 +177,8 @@ def select_draft_candidates(findings: dict | None, *, max_candidates: int = 3) -
     candidates = [
         f
         for f in findings.get("findings", [])
-        if not is_anti_learning(f) and f.get("recommendation_type") in _DRAFT_TYPES  # R2: drop anti-learning
+        if not is_anti_learning(f)
+        and f.get("recommendation_type") in _DRAFT_TYPES  # R2: drop anti-learning
     ]
     candidates.sort(
         key=lambda f: (_SEVERITY_ORDER.get(f.get("severity", "low"), 3), f.get("session_id") or "")

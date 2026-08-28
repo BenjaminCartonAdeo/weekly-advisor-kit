@@ -128,8 +128,7 @@ def decide_actions(
             {
                 "target_skill_id": skill_id,
                 "action": tag_action,
-                "reason": finding.get("reason")
-                or f"coherence finding tag_action={tag_action}",
+                "reason": finding.get("reason") or f"coherence finding tag_action={tag_action}",
             }
         )
 

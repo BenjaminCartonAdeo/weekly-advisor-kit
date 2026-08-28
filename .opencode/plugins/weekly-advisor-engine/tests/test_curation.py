@@ -42,9 +42,7 @@ def test_curation_protects_user_origin():
 def test_curation_user_explicit_pin_allowed():
     """Un pin explicitement levé sur un skill user est toléré (action='pin')."""
     findings = [{"tag_action": "pin", "target_skill_id": "my/user-skill"}]
-    catalog = [
-        {"skill_id": "my/user-skill", "metadata": {"origin": "user", "ttl_policy": None}}
-    ]
+    catalog = [{"skill_id": "my/user-skill", "metadata": {"origin": "user", "ttl_policy": None}}]
 
     decisions = curation.decide_actions(findings, catalog)
 
@@ -56,7 +54,10 @@ def test_curation_pinned_never_archived_or_deleted():
     """ttl_policy=='pin' force action='pin', jamais delete/archive."""
     findings = [{"tag_action": "delete", "target_skill_id": "pinned/skill"}]
     catalog = [
-        {"skill_id": "pinned/skill", "metadata": {"origin": "weekly-background", "ttl_policy": "pin"}}
+        {
+            "skill_id": "pinned/skill",
+            "metadata": {"origin": "weekly-background", "ttl_policy": "pin"},
+        }
     ]
 
     decisions = curation.decide_actions(findings, catalog)
