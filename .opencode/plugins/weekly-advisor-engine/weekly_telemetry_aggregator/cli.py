@@ -2,18 +2,26 @@
 
 Subcommands: run (default), show-session, releases, watch-context, watch-distill,
 watch-validate, insights, report-prep, report-assemble, harness, harness-remediate,
-commit-draft, doctor, self-cost.
+audit-candidates, draft-candidates, commit-draft, doctor, self-cost, skill-curate.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from datetime import UTC
 from pathlib import Path
 
 from . import __version__
 from .config import load_config
 from .costing import self_cost
+from .curation import (
+    _skill_fields,
+    decide_actions,
+    read_carry,
+    ttl_archive_candidates,
+)
 from .main import doctor, run
 
 
@@ -449,6 +457,111 @@ def _cmd_commit_draft(args, cfg) -> int:
     return 0 if ok else 1
 
 
+def _read_json_arg(path) -> object | None:
+    """Lit un fichier JSON fourni en argument CLI; None si non fourni."""
+    if not path:
+        return None
+    p = Path(path).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"fichier introuvable: {p}")
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def _cmd_skill_curate(args, cfg) -> int:
+    """Curation/décroissance des skills (R4 curation/GC + R8 TTL).
+
+    DRY-RUN par défaut (imprime les décisions, n'écrit rien). ``--apply`` exécute
+    via les helpers de curation et consigne un manifeste ; il ne détruit jamais un
+    skill ``origin='user'`` (protection toujours active, sans override possible).
+    """
+    from datetime import datetime
+
+    engine_dir = Path(__file__).resolve().parent
+    apply = bool(getattr(args, "apply", False))
+    stale_days = int(getattr(args, "stale_days", 90) or 90)
+
+    coherence = _read_json_arg(getattr(args, "coherence", None)) or []
+    catalog = _read_json_arg(getattr(args, "catalog", None)) or []
+    usage = _read_json_arg(getattr(args, "usage", None))
+    runs_seen = int(getattr(args, "runs_seen", 0) or 0)
+
+    # Carry inter-run: si usage non fourni, on lit le fallback de l'engine.
+    if usage is None:
+        carry = read_carry(engine_dir)
+        runs_seen = max(runs_seen, carry["runs_seen"])
+        usage = [
+            {
+                "skill_id": sid,
+                "ttl_policy": None,
+                "usage": {
+                    "last_loaded": u.get("last_loaded"),
+                    "load_count": u.get("load_count", 0),
+                },
+            }
+            for sid, u in carry.get("usage", {}).items()
+        ]
+
+    decisions = decide_actions(coherence, catalog)
+    archive_ids = ttl_archive_candidates(usage, runs_seen, stale_days=stale_days)
+
+    mode = "APPLY" if apply else "DRY-RUN"
+    print(f"=== skill-curate ({mode}) ===", flush=True)
+    for d in decisions:
+        print(f"  decision: {d['action']:>10} {d['target_skill_id']} — {d['reason']}", flush=True)
+    print(
+        f"  archive candidates ({len(archive_ids)}): {', '.join(archive_ids) or '<none>'}",
+        flush=True,
+    )
+
+    if not apply:
+        return 0
+
+    # APPLY: exécution via les helpers de curation, protection origin=user stricte.
+    user_ids = {
+        sid for entry in catalog if (sid := _skill_fields(entry)[0]) and _skill_fields(entry)[1] == "user"
+    }
+    skipped_user = 0
+    applied = 0
+    for d in decisions:
+        sid = d["target_skill_id"]
+        if sid in user_ids:
+            print(
+                f"  SKIP(user): {sid} — user-origin protected",
+                flush=True,
+            )
+            skipped_user += 1
+            continue
+        # Action consignée; aucune destruction de fichier n'est réalisée ici sans
+        # l'orchestration upstream (hors périmètre de cette commande).
+        applied += 1
+    for sid in archive_ids:
+        if sid in user_ids:
+            print(
+                f"  SKIP(user archive): {sid} — user-origin protected",
+                flush=True,
+            )
+            skipped_user += 1
+            continue
+        applied += 1
+
+    manifest = {
+        "mode": "apply",
+        "decisions": decisions,
+        "archive_candidates": archive_ids,
+        "skipped_user": skipped_user,
+        "applied": applied,
+    }
+    out = Path(cfg.output_dir) / f"skill-curate-{datetime.now(UTC).date().isoformat()}.json"
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"  manifest written: {out}", flush=True)
+    except OSError as exc:
+        print(f"  manifest write FAILED: {exc}", flush=True)
+        return 1
+    return 0
+
+
 def _cmd_doctor(args, cfg) -> int:
     return doctor(cfg, config_loaded=getattr(args, "config", None) is not None)
 
@@ -662,6 +775,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Cost of the pipeline's own run session (Partie 1 §12)",
     )
     p_self.set_defaults(func=_cmd_self_cost)
+
+    p_sc = sub.add_parser(
+        "skill-curate",
+        parents=[global_parent],
+        help="Curation/décroissance skills (R4 curation/GC + R8 TTL) — dry-run par défaut",
+    )
+    p_sc.add_argument("--coherence", help="JSON: findings de cohérence (tag_action pertinents)")
+    p_sc.add_argument(
+        "--catalog",
+        help="JSON: catalogue de skills (skill_id, metadata.origin/ttl_policy)",
+    )
+    p_sc.add_argument(
+        "--usage",
+        help="JSON: usage_records pour TTL (fallback inter-run .watch-memory.jsonl si absent)",
+    )
+    p_sc.add_argument(
+        "--runs-seen", type=int, default=0, help="Nombre de runs consécutifs observés"
+    )
+    p_sc.add_argument(
+        "--stale-days", type=int, default=90, help="Seuil d'obsolescence last_loaded (jours)"
+    )
+    p_sc.add_argument(
+        "--apply", action="store_true", help="Exécute (sinon dry-run, imprime seulement)"
+    )
+    p_sc.set_defaults(func=_cmd_skill_curate)
 
     return parser
 

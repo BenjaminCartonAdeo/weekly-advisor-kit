@@ -83,8 +83,9 @@ def draft_name(path: Path, kind: str) -> str:
 
 
 def validate_draft(path: Path, kind: str) -> tuple[bool, str]:
-    """Deterministic post-edit guard (v5.21): frontmatter, name==dir (skills), non-empty description."""
-    meta, _body, err = frontmatter_blocks(path)
+    """Deterministic post-edit guard (v5.21 + R6): frontmatter, name==dir (skills),
+    non-empty description, mandatory metadata.verification + ## section (skill/command)."""
+    meta, body, err = frontmatter_blocks(path)
     if err:
         return False, err
     if not (meta.get("description") or "").strip():
@@ -95,6 +96,11 @@ def validate_draft(path: Path, kind: str) -> tuple[bool, str]:
             return False, "name absent dans le frontmatter"
         if name != path.parent.name:
             return False, f"name ({name}) ≠ nom du dossier ({path.parent.name})"
+    if kind in ("skill", "command"):
+        if not (meta.get("verification") or "").strip():
+            return False, "missing metadata.verification"
+        if not re.search(r"(?m)^##\s", body):
+            return False, "missing mandatory section"
     return True, "ok"
 
 

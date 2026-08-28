@@ -18,8 +18,11 @@ portables, avec commit direct traçable. Jamais de correction du code applicatif
    (`transcript-extract-<session_id>.md`, fallback transcription à la demande),
    **généraliser (jamais verbatim)**, rédiger l'artefact dans la cible résolue
    (voir « Cible unique »).
-3. Vérifier le chevauchement contre les artefacts existants du projet → si chevauchement ⇒
-   **NE PAS committer** : constat environment-change (report-only), pas de création.
+3. Vérifier le chevauchement contre les artefacts existants du projet → si `overlaps_with`
+   non vide **OU** collision de nom ⇒ **PATCH le skill existant (umbrella consolidation)** :
+   **ÉDITE** le skill existant (pose `target_skill_id`, `action=patch`), fusionne le contenu
+   nouveau dans l'existant ; **ne crée PAS de doublon**. Si aucun chevauchement ⇒ création
+   normale via commit-draft.
 4. Commit via la sous-commande commit-draft du plugin (`--kind skill|command --file <absolu>`) :
    la **gate de portabilité** s'exécute d'abord (voir plus bas), puis validation frontmatter,
    pré-checks git, add scopé, message construit depuis le frontmatter ; **1 commit par écriture** ;
@@ -54,8 +57,33 @@ Le drafting écrit dans LE harnais cible du projet (décision mono-cible), jamai
 Tout artefact généré doit rester portable d'un harnais et d'une machine à l'autre.
 Règles de génération NON NÉGOCIABLES :
 
-1. **Frontmatter minimal** — seuls name et description sont requis ; seuls metadata,
-   license et compatibility sont tolérés en plus. Tout autre champ de premier niveau est interdit.
+1. **Frontmatter étendu** — `name` et `description` restent les seuls champs requis ;
+   tout artefact doit porter le bloc `metadata` complet ci-dessous (schéma canonique,
+   à respecter à la lettre) :
+
+   ```yaml
+   metadata:
+     authored_by: opencode-weekly-advisor
+     authored_at: "ISO-8601"
+     origin: weekly-background            # user|bundled|weekly-foreground|weekly-background
+     write_context: "<court>"             # optionnel
+     confidence: medium                   # high|medium|low
+     skill_id: "skill_<8 hex>"            # = 'skill_' + sha256(nom.normalize().lower())[:8]
+     source_sessions: ["ses_xxx"]
+     overlaps_with: []                    # désormais = CIBLE de PATCH (merge), pas blocage
+     target_agents: ["<agent>"]
+     last_verified_at: null               # ISO|null
+     verification: none                   # comment validé, ou 'none' explicite (gate validate_draft / R6)
+     usage: { last_loaded: null, load_count: 0 }
+     ttl_policy: decay                    # decay|pin|null
+   ```
+
+   Mint déterministe du `skill_id` : `skill_` + 8 premiers hex de
+   `sha256(nom.strip().lower())`. `origin` par défaut `weekly-background`
+   (`weekly-foreground` si issu d'un nudge direct de l'utilisateur). `confidence`
+   par défaut `medium`. Le champ `metadata.verification` DOIT être renseigné
+   (comment le skill a été validé, ou `none` explicite) — il est vérifié par la
+   gate `validate_draft` (R6).
 2. **Outils par nom conceptuel** — aucun identifiant technique propre au kit ou à un
    harnais dans le corps : dire « la commande de collecte hebdomadaire », pas son nom interne.
 3. **Section « Comment invoquer » multi-plateforme obligatoire** — tout skill généré décrit
@@ -65,18 +93,35 @@ Règles de génération NON NÉGOCIABLES :
 5. **Scripts auto-contenus** — tout script référencé vit avec l'artefact (ex. `scripts/`)
    et s'appelle en chemin relatif projet ; ni script hors du projet, ni script distant.
 
+6. **Do NOT capture (anti-learning)** — ne JAMAIS créer de skill à partir de :
+   - un échec transitoire (erreur réseau, timeout, crash éphémère) ;
+   - une prohibition spécifique à l'environnement (chemin/absence propre à une machine) ;
+   - un récit one-off (anecdote sans pattern reproductible) ;
+   - un secret (password / token / credential / api key) ;
+   - une référence PR/ticket (JIRA, GH-, PR #…).
+   Ces patterns ne généralisent pas : émettre un constat `environment-change` (report-only)
+   ou ignorer — jamais en faire un artefact.
+
 Format skill (agentskills.io) — gabarit conforme :
 
 ```yaml
 ---
-name: string            # == nom du dossier
-description: string     # une ligne, déclenche le chargement à la demande
+name: string            # == nom du dossier (requis)
+description: string     # une ligne, déclenche le chargement à la demande (requis)
 metadata:
   authored_by: opencode-weekly-advisor
   authored_at: "ISO-8601"
+  origin: weekly-background            # user|bundled|weekly-foreground|weekly-background
+  write_context: "<court>"             # optionnel
+  confidence: medium                   # high|medium|low
+  skill_id: "skill_<8 hex>"            # = 'skill_' + sha256(nom.strip().lower())[:8]
   source_sessions: ["ses_xxx"]        # traçabilité > 6 mois
-  overlaps_with: []                   # vide OBLIGATOIRE pour committer
+  overlaps_with: []                   # CIBLE de PATCH (merge), pas blocage
   target_agents: ["<agent-cible>"]    # public du skill
+  last_verified_at: null              # ISO|null
+  verification: none                  # comment validé, ou 'none' (gate validate_draft / R6)
+  usage: { last_loaded: null, load_count: 0 }
+  ttl_policy: decay                  # decay|pin|null
 ---
 # <Nom>
 ## Quand utiliser
