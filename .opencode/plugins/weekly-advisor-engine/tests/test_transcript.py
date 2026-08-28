@@ -246,6 +246,7 @@ def test_render_session_output_respects_byte_cap_contract():
     ferait OOM le step-3 (exit=137). Le cap par défaut doit être respecté à l'octet.
     """
     from helpers import FakeSessionProvider, fake_meta, fake_part, tzutc
+
     from weekly_telemetry_aggregator.transcript import (
         MAX_EXTRACT_BYTES,
         render_session,
