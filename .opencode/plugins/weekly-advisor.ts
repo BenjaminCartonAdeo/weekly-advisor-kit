@@ -559,6 +559,53 @@ const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
         ["doctor"],
         120_000,
       ),
+
+      weekly_skill_curate: tool({
+        description:
+          "Étape 6.6 : curation/décroissance des skills (skill-curate). Consomme les décisions " +
+          "de `weekly-coherence-review` (2.C) : applique archive/merge sur origin∈{weekly-*} " +
+          "(R4 curation/GC + R8 TTL). Protection stricte : JAMAIS origin=user (sans override). " +
+          "dry-run par défaut ; `apply=true` uniquement après validation humaine.",
+        args: {
+          coherence: tool.schema
+            .string()
+            .optional()
+            .describe("JSON: findings de cohérence (tag_action pertinents)"),
+          catalog: tool.schema
+            .string()
+            .optional()
+            .describe("JSON: catalogue de skills (skill_id, metadata.origin/ttl_policy)"),
+          usage: tool.schema
+            .string()
+            .optional()
+            .describe("JSON: usage_records pour TTL (fallback inter-run .watch-memory.jsonl)"),
+          runs_seen: tool.schema
+            .string()
+            .optional()
+            .describe("runs consécutifs observés (décroissance)"),
+          stale_days: tool.schema
+            .string()
+            .optional()
+            .describe("seuil obsolescence last_loaded (jours, défaut 90)"),
+          apply: tool.schema
+            .string()
+            .optional()
+            .describe("'true' pour exécuter (sinon dry-run)"),
+          anchor: tool.schema.string().optional().describe("ISO-8601 override (rare)"),
+        },
+        async execute(args) {
+          const { outputDir } = resolveEngine(worktree)
+          const anchor = anchorArg(args.anchor, outputDir)
+          const cliArgs = ["skill-curate", "--anchor", anchor]
+          if (args.coherence) cliArgs.push("--coherence", args.coherence)
+          if (args.catalog) cliArgs.push("--catalog", args.catalog)
+          if (args.usage) cliArgs.push("--usage", args.usage)
+          if (args.runs_seen != null) cliArgs.push("--runs-seen", String(args.runs_seen))
+          if (args.stale_days != null) cliArgs.push("--stale-days", String(args.stale_days))
+          if (args.apply === "true") cliArgs.push("--apply")
+          return runCli(worktree, cliArgs, 900_000)
+        },
+      }),
     },
   }
 }

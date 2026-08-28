@@ -21,7 +21,7 @@ Orchestration par waves (design doc §2). La session principale agit comme coord
 gate (étape 0), dispatch WAVE 1 en parallèle (3 subagents de l'agent `weekly-advisor-worker`), JOIN (synthèse), WAVE 2 optionnelle, TAIL.
 Ordre figé des étapes (tokens d'outils) : `weekly_doctor`, `weekly_run`, `weekly_releases`, `weekly_watch_distill`,
 `weekly_watch_context`, `weekly_watch_validate`, `weekly_audit_candidates`, `weekly_show_session`, `weekly_harness`,
-`weekly_harness_remediate`, `weekly_draft_candidates`, `weekly_commit_draft`, `weekly_insights`,
+`weekly_harness_remediate`, `weekly_draft_candidates`, `weekly_commit_draft`, `weekly_insights`, `weekly_skill_curate`,
 `weekly_report_prep`, `weekly_report_blocks_draft`, `weekly_report_assemble`, `weekly_self_cost`.
 
 ## Règles

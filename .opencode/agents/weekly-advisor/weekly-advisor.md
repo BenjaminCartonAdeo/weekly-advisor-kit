@@ -178,6 +178,7 @@ note une violation et **continue en fail-soft** (exit 1).
 | **2.D** | **Skill `weekly-drafting`** : `weekly_draft_candidates` → rédaction skills/commands + `weekly_commit_draft` (≤ plafond) | commits `skill:`/`command:` |
 | **2.I** | `weekly_insights` | `weekly-insights-<date>.json` |
 | **2.C** | **Skill `weekly-coherence-review`** : état déclaratif vs usage réel | `weekly-coherence-findings-<date>.json` |
+| **2.6** | **Étape 6.6 `weekly_skill_curate`** (dry-run par défaut ; `apply=true` après validation) : curation/GC (R4) + décroissance TTL (R8). Consomme `weekly-coherence-findings-<date>.json` de 2.C (décisions archive\|merge\|pin\|reference) ; protège `origin=user` | `skill-curate-<date>.json` (manifest apply) |
 | **7a** | `weekly_report_prep` puis `weekly_report_blocks_draft` (brouillon auto) | `weekly-report-draft-<date>.md` |
 | **7b** | **Skill `weekly-report-prose`** : prose optionnelle (contrat anti-hallucination) | `weekly-report-blocks-<date>.md` |
 | **7c** | `weekly_report_assemble` → **signal du cron** ; génère le **rapport HTML** dans `<project_root>/reports/html/` (`weekly-report-latest.html` + copie datée) ; ⚠ un assemble réussi **supprime le draft** | `weekly-report-<date>.md` |
