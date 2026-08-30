@@ -384,7 +384,8 @@
     <text x="1164" y="936" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">targets=[] ⇒ legacy : toutes les cibles, priorité claude › opencode › copilot › codex.</text>
     <text x="1164" y="976" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">Surface 5.5 : projection (.opencode natif) · portability (mapping portability.yaml)</text>
     <text x="1164" y="1000" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">· combined — décision pure, aucune lecture disque.</text>
-    <text x="1164" y="1024" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">Codex : cible de drafting seule — aucun provider de sessions (télémétrie : OpenCode · Claude Code · Copilot).</text>
+     <text x="1164" y="1024" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">Codex : cible de drafting seule — aucun provider de sessions (télémétrie : OpenCode · Claude Code · Copilot).</text>
+     <text x="1164" y="1042" font-family="var(--mono)" font-size="9" fill="#7a8399">architecture-summary boundary · complete rc=0 · partial rc=1 · fatal rc=2</text>
 
 
     <!-- ======== package watch (PR technology-scanning-optimisation) ======== -->

@@ -29,7 +29,7 @@
   <header>
     <p class="eyebrow">weekly-advisor-kit · weekly_telemetry_aggregator · sequence · cli _cmd_run → main.run() puis _cmd_watch_distill → watch_distill.run()</p>
     <h1>Pipeline hebdo — collecte run(), puis watch-distill (étape 2.2)</h1>
-    <p class="sub">Phase 1 — sous-commande <code>run</code> : providers fail-soft, listing fenêtré + univers d'ids, dédup premier-source-gagne, agrégation, cost_estimates, summary UUID. Phase 2 — étape 2.2 <code>watch-distill</code> : lecture de l'écosystème écrit par releases (étape 2), screening supply-chain local, scoring déterministe, filtrage mémoire inter-run, quotas, fiches candidates + digest mémoire.</p>
+    <p class="sub">Phase 1 — sous-commande <code>run</code> : providers fail-soft, listing fenêtré + univers d'ids, dédup premier-source-gagne, agrégation, cost_estimates, summary UUID. Phase 2 — étape 2.2 <code>watch-distill</code> : lecture de l'écosystème écrit par releases (étape 2), screening supply-chain local, scoring déterministe, filtrage mémoire inter-run, quotas, fiches candidates + digest mémoire. <strong>Paths</strong> : complete rc=0, partial rc=1 (warning/read failure), fatal rc=2 (blocking source or dependency); timeout is partial unless explicitly fatal.</p>
   </header>
   <figure>
   <svg viewBox="0 0 1840 1984" role="img" aria-labelledby="seq-wk-run-title seq-wk-run-desc">
@@ -243,7 +243,7 @@
     <!-- final exit -->
     <line x1="556" y1="1304" x2="136" y2="1304" stroke="#eb6c36" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#swr-ac)"/>
     <rect x="196" y="1280" width="300" height="16" rx="2" fill="#f5f5f5"/>
-    <text x="346" y="1293" fill="#b3541f" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">exit 0 · sinon 1 si ≥1 warning partial</text>
+    <text x="346" y="1293" fill="#b3541f" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">complete rc=0 · partial rc=1 (warning/timeout) · fatal rc=2</text>
 
 
     <!-- ===== PHASE 2 : étape 2.2 watch-distill ===== -->

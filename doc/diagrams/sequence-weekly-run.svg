@@ -210,7 +210,7 @@
     <!-- final exit -->
     <line x1="556" y1="1304" x2="136" y2="1304" stroke="#eb6c36" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#swr-ac)"/>
     <rect x="196" y="1280" width="300" height="16" rx="2" fill="#f5f5f5"/>
-    <text x="346" y="1293" fill="#b3541f" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">exit 0 · sinon 1 si ≥1 warning partial</text>
+    <text x="346" y="1293" fill="#b3541f" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">complete rc=0 · partial rc=1 (warning/timeout) · fatal rc=2</text>
 
 
     <!-- ===== PHASE 2 : étape 2.2 watch-distill ===== -->

@@ -64,7 +64,7 @@
   <header>
     <p class="eyebrow">WEEKLY-ADVISOR-KIT · v6.2 · MULTI-HARNESS TELEMETRY</p>
     <h1>Architecture du kit — moteur déterministe, enveloppe plugin, six couches</h1>
-    <p class="subtitle">Flux de bout en bout : marqueurs de harnais → résolution des cibles de draft → providers de sessions (SQLite · JSONL · chatSessions) → pipeline <em>main.run()</em> → veille écosystème distillée avec mémoire inter-run (étapes 2 → 3.6) → projection harness &amp; gates → artefacts JSON et rapport. L'agent OpenCode ne pilote que l'enveloppe ; le moteur reste 100&nbsp;% déterministe.</p>
+    <p class="subtitle">Flux de bout en bout : marqueurs de harnais → résolution des cibles de draft → providers de sessions (SQLite · JSONL · chatSessions) → pipeline <em>main.run()</em> → veille écosystème distillée avec mémoire inter-run (étapes 2 → 3.6) → projection harness &amp; gates → artefacts JSON et rapport. L'agent OpenCode ne pilote que l'enveloppe ; le moteur reste 100&nbsp;% déterministe. <strong>architecture-summary boundary</strong> : complete (rc=0), partial (rc=1), fatal (rc=2) restent séparés ; le provider de télémétrie n'est jamais Codex.</p>
   </header>
 
   <figure>
@@ -257,7 +257,8 @@
       <text x="964" y="130" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Résolution cibles de draft</text>
       <text x="964" y="150" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">draft_targets.py</text>
       <text x="964" y="166" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">claude-code &gt; opencode &gt; copilot-vscode &gt; codex</text>
-      <text x="964" y="182" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">override · detected · default · legacy ([]) · codex : draft-only</text>
+       <text x="964" y="182" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">override · detected · default · legacy ([]) · codex : draft-only</text>
+       <text x="964" y="196" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">architecture-summary boundary : providers ≠ draft targets (Codex sans sessions)</text>
     </g>
 
     <!-- Bande 2 : providers (rangée 1) + protocole (barre pleine largeur) -->

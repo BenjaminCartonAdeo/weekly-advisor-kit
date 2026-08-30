@@ -188,7 +188,8 @@
       <text x="964" y="130" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Résolution cibles de draft</text>
       <text x="964" y="150" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">draft_targets.py</text>
       <text x="964" y="166" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">claude-code &gt; opencode &gt; copilot-vscode &gt; codex</text>
-      <text x="964" y="182" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">override · detected · default · legacy ([]) · codex : draft-only</text>
+       <text x="964" y="182" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">override · detected · default · legacy ([]) · codex : draft-only</text>
+       <text x="964" y="196" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">architecture-summary boundary : providers ≠ draft targets (Codex sans sessions)</text>
     </g>
 
     <!-- Bande 2 : providers (rangée 1) + protocole (barre pleine largeur) -->
