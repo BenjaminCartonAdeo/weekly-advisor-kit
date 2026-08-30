@@ -38,6 +38,25 @@ def test_config_defaults(tmp_path: Path):
     # v6.1 : rapport HTML autonome — None → défaut <project_root>/reports/html.
     assert cfg.html_report_dir is None
     assert cfg.open_browser is True
+    assert cfg.sources.opencode_db_path == "auto"
+    assert cfg.storage.output_dir == cfg.output_dir
+    assert cfg.cost.insights.weekly_budget_usd == 25.0
+    assert cfg.curation.watch_distill.top_n == 30
+
+
+def test_grouped_config_views_follow_legacy_constructor_values(tmp_path: Path):
+    cfg = TelemetryConfig(
+        opencode_db_path="custom.db",
+        output_dir=tmp_path,
+        session_outlier_z=4.0,
+        ignored_findings=["x"],
+    )
+    assert cfg.sources.opencode_db_path == "custom.db"
+    assert cfg.storage.output_dir == tmp_path
+    assert cfg.cost.session_outlier_z == 4.0
+    assert cfg.curation.ignored_findings == ("x",)
+    with __import__("pytest").raises(AttributeError):
+        cfg.sources.opencode_db_path = "other.db"
 
 
 def test_config_json_overrides(tmp_path: Path):
