@@ -10,7 +10,12 @@ from helpers import make_step, make_usage, tzutc
 from weekly_telemetry_aggregator.aggregator import aggregate
 from weekly_telemetry_aggregator.config import TelemetryConfig
 from weekly_telemetry_aggregator.models import Period
-from weekly_telemetry_aggregator.report import report_assemble, report_blocks_draft, report_prep
+from weekly_telemetry_aggregator.report import (
+    _coherence_has_curation_signal,
+    report_assemble,
+    report_blocks_draft,
+    report_prep,
+)
 from weekly_telemetry_aggregator.writer import summary_to_dict
 
 RUN = tzutc(2026, 8, 12)
@@ -71,6 +76,48 @@ def test_report_assemble_placeholder_without_blocks(tmp_path: Path):
     assert "<!-- QUALITY_BLOCK -->" not in final_path.read_text(encoding="utf-8")
     assert "non disponible" in final_path.read_text(encoding="utf-8")
     assert any("placeholder" in w for w in warnings)
+
+
+def test_report_assemble_requires_curation_manifest_when_signaled(tmp_path: Path):
+    """Curation signal raises partial gate, without applying or moving anything."""
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"weekly-coherence-findings-{DATE}.json").write_text(
+        json.dumps({"curation_signal": {"R4_archive_candidates": {"strong_8of8": ["x"]}}}),
+        encoding="utf-8",
+    )
+    report_prep(cfg, anchor=RUN.isoformat())
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 1
+    assert any("WAVE 2.5" in warning and "skill-curate" in warning for warning in warnings)
+    assert "REQUIRED, non exécutée" in final_path.read_text(encoding="utf-8")
+
+
+def test_report_assemble_curation_manifest_clears_gate(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"weekly-coherence-findings-{DATE}.json").write_text(
+        json.dumps({"findings": [{"tag_action": "archive", "target_skill_id": "x"}]}),
+        encoding="utf-8",
+    )
+    (tmp_path / f"skill-curate-{DATE}.json").write_text(
+        json.dumps({"applied": 0, "proposed": 1, "skipped": 0, "decisions": []}),
+        encoding="utf-8",
+    )
+    report_prep(cfg, anchor=RUN.isoformat())
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 0
+    assert not any("WAVE 2.5" in warning for warning in warnings)
+    assert "Curation (WAVE 2.5 — appliquée)" in final_path.read_text(encoding="utf-8")
+
+
+def test_coherence_curation_signal_accepts_r4_mapping_and_ignores_bad_findings():
+    assert _coherence_has_curation_signal(
+        {"curation_signal": {"R4_archive_candidates": {"strong_8of8": ["x"]}}}
+    )
+    assert not _coherence_has_curation_signal({"findings": ["not-a-finding", None]})
 
 
 def test_report_assemble_injects_blocks(tmp_path: Path):

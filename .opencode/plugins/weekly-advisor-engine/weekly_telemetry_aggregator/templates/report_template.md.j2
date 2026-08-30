@@ -140,6 +140,26 @@
 {% endfor %}
 
 {% endif %}
+{% if skill_curate %}
+#### Curation (WAVE 2.5 — appliquée)
+
+- Appliquées (archives déplacées vers `_archive/<date>/`, jamais supprimées) : **{{ skill_curate.applied }}**
+- Proposées (merge / reference / pin / delete — aucune opération fs) : **{{ skill_curate.proposed }}**
+- Ignorées (origin=user ou introuvables) : **{{ skill_curate.skipped }}**
+
+{% for d in skill_curate.decisions %}
+- `{{ d.action }}` `{{ d.skill_id }}` ({{ d.source }}) — {{ d.reason }}{% if d.status %} [{{ d.status }}]{% endif %}
+{% endfor %}
+{% elif coherence_curation_signal %}
+#### ⚠ Curation (WAVE 2.5 — REQUIRED, non exécutée)
+
+Aucun manifeste `skill-curate-{{ date }}.json` trouvé bien que les findings de cohérence contiennent des actions de curation (**P0**). Exécuter `weekly_skill_curate --apply` puis regénérer le rapport.
+{% else %}
+#### Curation (WAVE 2.5)
+
+Rien à curate (aucun signal de curation dans les findings de cohérence).
+{% endif %}
+
 {% if digest %}
 - Inspection : {{ digest.inspection.summary.errors if digest.inspection.summary is defined else "n/a" }} erreurs, {{ digest.inspection.summary.warnings if digest.inspection.summary is defined else "n/a" }} warnings
 {% if harness_counts %}

@@ -180,6 +180,37 @@ def _top_harness_rules(
     ).most_common(n)
 
 
+_CURATION_TAG_ACTIONS = {"archive", "merge", "pin", "reference", "delete", "recalibrate"}
+
+
+def _coherence_has_curation_signal(coherence: object) -> bool:
+    """Vrai si les findings de cohérence portent ≥1 action de curation.
+
+    Accepte un dict (champ ``curation_signal`` ou ``findings[]``) ou une liste
+    (findings bruts). Défensif : toute entrée illisible est ignorée.
+    """
+    if not coherence:
+        return False
+    if isinstance(coherence, dict):
+        sig = coherence.get("curation_signal")
+        if isinstance(sig, list) and sig:
+            return True
+        # R4 emits a mapping (rather than a list) for archive candidates.  Any
+        # non-empty mapping is an actionable signal; do not require a specific
+        # producer shape here so report gating remains forward-compatible.
+        if isinstance(sig, dict) and sig:
+            return True
+        findings = coherence.get("findings") or []
+    elif isinstance(coherence, list):
+        findings = coherence
+    else:
+        return False
+    return any(
+        isinstance(f, dict) and f.get("tag_action") in _CURATION_TAG_ACTIONS
+        for f in findings
+    )
+
+
 def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> dict | None:
     """Construit le ctx Jinja du rapport (v6.1) — partagé par prep et assemble.
 
@@ -241,6 +272,10 @@ def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> 
         "audit_candidates": _load_json(out / f"weekly-audit-candidates-{date}.json"),
         "watch_findings": _load_json(out / f"weekly-watch-findings-{date}.json"),
         "coherence_findings": _load_json(out / f"weekly-coherence-findings-{date}.json"),
+        "skill_curate": _load_json(out / f"skill-curate-{date}.json"),
+        "coherence_curation_signal": _coherence_has_curation_signal(
+            _load_json(out / f"weekly-coherence-findings-{date}.json")
+        ),
         "harness_budget": (digest or {}).get("budget"),
         "harness_triggers": (digest or {}).get("triggers"),
         "harness_dependencies": (digest or {}).get("dependencies"),
@@ -459,6 +494,22 @@ def report_assemble(
     date = run_time.strftime("%Y-%m-%d")
     out = resolve_active_run_dir(cfg.output_dir, date)
     warnings: list[str] = []
+    rc = 0
+
+    # Phase 4 (gate déterministe) : WAVE 2.5 REQUIRED. Si les findings de cohérence
+    # portent des actions de curation mais le manifeste skill-curate est absent ->
+    # alerte P0 + rc=1 (partiel, jamais fatal). Le détail P0 est rendu dans le
+    # rapport via le contexte (coherence_curation_signal + skill_curate).
+    coherence = _load_json(out / f"weekly-coherence-findings-{date}.json")
+    if _coherence_has_curation_signal(coherence) and _load_json(
+        out / f"skill-curate-{date}.json"
+    ) is None:
+        warnings.append(
+            f"⚠ WAVE 2.5 (curation) REQUIRED : findings de cohérence porte(nt) des "
+            f"actions de curation mais skill-curate-{date}.json est absent — "
+            f"exécuter `weekly_skill_curate --apply` puis regénérer le rapport (P0)."
+        )
+        rc = 1
 
     draft = out / f"weekly-report-draft-{date}.md"
     text = _load_text(draft)
@@ -542,4 +593,5 @@ def report_assemble(
     if ctx is not None:
         html_path = render_html_report(cfg, anchor=anchor, ctx=ctx, quality_block=replacement)
         open_html_report(cfg, html_path)
-    return final_path, warnings, 0
+
+    return final_path, warnings, rc
