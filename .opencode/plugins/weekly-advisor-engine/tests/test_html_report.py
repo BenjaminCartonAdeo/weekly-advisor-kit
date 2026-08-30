@@ -170,6 +170,41 @@ def test_render_without_project_root_warns_and_returns_none(tmp_path: Path, capl
     assert any("project_root" in record.message for record in caplog.records)
 
 
+def test_render_html_reports_curation_manifest_and_required_signal(tmp_path: Path):
+    """HTML exposes applied decisions, or a P0 when the manifest is absent."""
+    from jinja2 import Environment
+
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "weekly_telemetry_aggregator"
+        / "templates"
+        / "report_template.html.j2"
+    ).read_text(encoding="utf-8")
+    start = template.index("{% if skill_curate %}")
+    end = template.index("{% set inspection", start)
+    block = template[start:end]
+    env = Environment(autoescape=False, trim_blocks=True, lstrip_blocks=True)
+    rendered = env.from_string(block).render(
+        date=DATE,
+        skill_curate={
+            "applied": 1,
+            "proposed": 2,
+            "skipped": 3,
+            "decisions": [{"action": "archive", "skill_id": "old/skill", "source": "coherence", "reason": "stale", "status": "moved"}],
+        },
+        coherence_curation_signal=False,
+    )
+    assert "Curation (WAVE 2.5 — appliquée)" in rendered
+    assert "old/skill" in rendered and "moved" in rendered
+    assert "Appliquées" in rendered and "Proposées" in rendered and "Ignorées" in rendered
+
+    required = env.from_string(block).render(
+        date=DATE, skill_curate=None, coherence_curation_signal=True
+    )
+    assert "Curation (WAVE 2.5) requise" in required
+    assert "weekly_skill_curate --apply" in required
+
+
 def test_render_explicit_dir_expands_tilde(tmp_path: Path, monkeypatch):
     # expanduser lit HOME (POSIX) mais USERPROFILE d'abord (Windows).
     monkeypatch.setenv("HOME", str(tmp_path))

@@ -564,6 +564,30 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     {% endfor %}
     {% endif %}
 
+    {% if skill_curate %}
+    <h3>Curation (WAVE 2.5 — appliquée)</h3>
+    <div class="kpi-grid">
+      <div class="kpi ok"><div class="k-label">Appliquées</div><div class="k-value">{{ skill_curate.get("applied", 0) }}</div><div class="k-sub">archives déplacées vers <code>_archive/{{ date }}/</code></div></div>
+      <div class="kpi"><div class="k-label">Proposées</div><div class="k-value">{{ skill_curate.get("proposed", 0) }}</div><div class="k-sub">aucune opération fs</div></div>
+      <div class="kpi"><div class="k-label">Ignorées</div><div class="k-value">{{ skill_curate.get("skipped", 0) }}</div><div class="k-sub">origin=user ou introuvables</div></div>
+    </div>
+    {% for d in skill_curate.get("decisions", []) %}
+    <div class="card info">
+      <h4><span class="badge badge-info">{{ d.get("action", "?")|upper }}</span> <code>{{ d.get("skill_id", "?") }}</code></h4>
+      <dl class="fields">
+        <dt>Source</dt><dd>{{ d.get("source", "n/a") }}</dd>
+        <dt>Motif</dt><dd>{{ d.get("reason", "n/a") }}</dd>
+        {% if d.get("status") %}<dt>Statut</dt><dd>{{ d.get("status") }}</dd>{% endif %}
+      </dl>
+    </div>
+    {% endfor %}
+    {% elif coherence_curation_signal %}
+    <div class="callout crit"><b>⚠ Curation (WAVE 2.5) requise — non exécutée</b><br>
+      Aucun manifeste <code>skill-curate-{{ date }}.json</code> trouvé bien que les findings de cohérence contiennent des actions de curation (<b>P0</b>). Exécuter <code>weekly_skill_curate --apply</code> puis régénérer le rapport.</div>
+    {% else %}
+    <p class="muted">Curation (WAVE 2.5) : aucun signal de curation dans les findings de cohérence.</p>
+    {% endif %}
+
     {% set inspection = (digest.get("inspection") or {}).get("summary") or {} %}
     {% set insp_errors = inspection.get("errors", 0) or 0 %}
     {% set insp_warnings = inspection.get("warnings", 0) or 0 %}
