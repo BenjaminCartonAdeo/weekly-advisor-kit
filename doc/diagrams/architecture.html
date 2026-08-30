@@ -70,7 +70,7 @@
   <figure>
   <svg viewBox="0 0 1560 2512" width="1560" role="img" aria-labelledby="wa-arch-title wa-arch-desc" xmlns="http://www.w3.org/2000/svg">
     <title id="wa-arch-title">Architecture weekly-advisor-kit v6.2 — veille incluse</title>
-    <desc id="wa-arch-desc">Diagramme d'architecture en couches : les marqueurs de harnais alimentent la résolution des cibles de draft ; trois providers lisent les sessions OpenCode (SQLite), Claude Code (JSONL) et Copilot VS Code (chatSessions + state.vscdb) derrière un protocole commun et un registre fail-soft ; le pipeline main.run() agrège usages, coûts estimés et candidats avant écriture des artefacts ; la veille écosystème enchaîne releases, distill déterministe avec mémoire inter-run watch-memory.jsonl, crosswalk local puis validation des findings ; la projection harness et ses gates encadrent lint et remédiation ; l'enveloppe plugin TypeScript expose 17 tools avec gate de portabilité et commit sécurisé ; les sorties regroupent artefacts JSON, rapport HTML/Markdown et diagnostic doctor.</desc>
+    <desc id="wa-arch-desc">Diagramme d'architecture en couches : les marqueurs de harnais alimentent la résolution des cibles de draft (Codex n'est qu'une cible, sans provider) ; trois providers lisent les sessions OpenCode (SQLite), Claude Code (JSONL) et Copilot VS Code (chatSessions + state.vscdb) derrière un protocole commun et un registre fail-soft ; le pipeline main.run() agrège usages, coûts estimés et candidats avant écriture des artefacts ; la veille écosystème enchaîne releases, distill déterministe avec mémoire inter-run watch-memory.jsonl, crosswalk local puis validation des findings ; la projection harness et ses gates encadrent lint et remédiation ; l'enveloppe plugin TypeScript expose 18 tools avec gate de portabilité, gate de commit sécurisé et curation WAVE 2.5 (manifeste dry-run / apply sur validation) ; les sorties regroupent artefacts JSON, rapport HTML/Markdown (tail prep → blocks-draft → prose → assemble → self-cost) et diagnostic doctor.</desc>
 
     <defs>
       <marker id="wa-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
@@ -194,6 +194,12 @@
     <rect x="430" y="2030" width="120" height="12" rx="2" fill="#f5f5f5"/>
     <text x="490" y="2039" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">COMMIT-DRAFT</text>
 
+    <!-- E1 -> W25 gate skill-curate (WAVE 2.5) -->
+    <path d="M 1000,2024 V 2040 Q 1000,2048 1008,2048 H 1240 Q 1248,2048 1248,2056"
+          fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
+    <rect x="900" y="2022" width="88" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="944" y="2031" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">SKILL-CURATE</text>
+
     <!-- ST6 -> FALL artefacts (gutter droit x=1452) -->
     <path d="M 1416,836 H 1444 Q 1452,836 1452,844 V 2184 Q 1452,2192 1444,2192 H 712 Q 704,2192 704,2200 V 2206"
           fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#wa-arrow)"/>
@@ -251,7 +257,7 @@
       <text x="964" y="130" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Résolution cibles de draft</text>
       <text x="964" y="150" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">draft_targets.py</text>
       <text x="964" y="166" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">claude-code &gt; opencode &gt; copilot-vscode &gt; codex</text>
-      <text x="964" y="182" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">override · detected · default · legacy ([])</text>
+      <text x="964" y="182" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">override · detected · default · legacy ([]) · codex : draft-only</text>
     </g>
 
     <!-- Bande 2 : providers (rangée 1) + protocole (barre pleine largeur) -->
@@ -466,10 +472,10 @@
       <rect x="384" y="1856" width="640" height="168" rx="6" fill="rgba(235,108,54,0.10)" stroke="#eb6c36" stroke-width="1"/>
       <rect x="392" y="1862" width="76" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.5)" stroke-width="0.8"/>
       <text x="430" y="1871" fill="rgba(235,108,54,0.9)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PLUGIN TS</text>
-      <text x="704" y="1894" fill="#2d3142" font-size="13" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">weekly-advisor.ts — enveloppe 17 tools weekly_*</text>
+      <text x="704" y="1894" fill="#2d3142" font-size="13" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">weekly-advisor.ts — enveloppe 18 tools weekly_*</text>
       <text x="704" y="1914" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">ancre glissante anchor-last.txt : lue / créée / rafraîchie dans &lt;output_dir&gt;</text>
       <text x="704" y="1932" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">run · releases · watch-distill · watch-context · watch-validate · audit-candidates · show-session</text>
-      <text x="704" y="1948" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">draft-candidates · commit-draft · harness · harness-remediate · insights</text>
+      <text x="704" y="1948" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">draft-candidates · commit-draft · harness · harness-remediate · insights · skill-curate</text>
       <text x="704" y="1964" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">report-prep · report-blocks-draft · report-assemble · self-cost · doctor</text>
       <text x="704" y="1986" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">zéro logique métier : 1 tool = 1 sous-commande CLI du moteur · venv .venv/bin/python</text>
       <text x="704" y="2002" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">export default WeeklyAdvisorPlugin (loader opencode v1.18+) · PYTHONUTF8=1</text>
@@ -483,8 +489,8 @@
       <text x="1248" y="1912" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">runPortabilityGate → harness-eval skill-verify</text>
       <text x="1248" y="1928" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">cwd = worktree · règles custom/portability/*</text>
       <text x="1248" y="1944" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">findings[].details[] · severity error | warning</text>
-      <text x="1248" y="1962" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">ENOENT binaire → gate ignorée ⚠ fail-soft (note)</text>
-      <text x="1248" y="1978" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">scan sur copie tmp de l'artefact seul (mkdtemp)</text>
+      <text x="1248" y="1962" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">ENOENT → gate ignorée ⚠ · crash/illisible → refus</text>
+      <text x="1248" y="1978" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">kind=command → gate SKIPPED (note) · scan copie tmp mkdtemp</text>
     </g>
     <g>
       <rect x="384" y="2056" width="640" height="56" rx="6" fill="#f5f5f5"/>
@@ -493,6 +499,14 @@
       <text x="412" y="2071" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">GATE</text>
       <text x="704" y="2080" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Safe Git Commit Gate — safe_git_write.py</text>
       <text x="704" y="2098" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">commit-draft : pré-checks git · 1 commit par écriture · scoped à .opencode/ du worktree</text>
+    </g>
+    <g>
+      <rect x="1072" y="2056" width="352" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="1072" y="2056" width="352" height="56" rx="6" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.5)" stroke-width="1" stroke-dasharray="4,3"/>
+      <rect x="1080" y="2062" width="40" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.5)" stroke-width="0.8"/>
+      <text x="1100" y="2071" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">GATE</text>
+      <text x="1248" y="2080" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Curation WAVE 2.5 — weekly_skill_curate</text>
+      <text x="1248" y="2098" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">après WAVE 2 · avant le tail — dry-run, apply après validation</text>
     </g>
 
     <!-- Bande 6 -->
@@ -503,7 +517,7 @@
       <text x="482" y="2223" fill="#4f5d75" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">RUNS/&lt;DATE&gt;-&lt;UUID8&gt;/ · CURRENT</text>
       <text x="704" y="2246" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">output_dir — artefacts JSON reproductibles</text>
       <text x="704" y="2266" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">weekly-summary · ecosystem · watch-candidates · watch-memory-digest · watch-findings</text>
-      <text x="704" y="2282" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">audit-candidates · draft-candidates · harness-digest · insights</text>
+      <text x="704" y="2282" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">audit-candidates · draft-candidates · harness-digest · insights · skill-curate</text>
       <text x="704" y="2300" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">extraits show-session dans runs/current/extracts/ · anchor-last.txt</text>
       <text x="704" y="2316" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">baseline harness au niveau output_dir (voir couche 4)</text>
     </g>
@@ -513,7 +527,7 @@
       <text x="1118" y="2223" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">RENDERER</text>
       <text x="1248" y="2246" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">HTML Report Renderer</text>
       <text x="1248" y="2266" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">html_report.py · report.py</text>
-      <text x="1248" y="2282" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">prep → blocks-draft → assemble</text>
+      <text x="1248" y="2282" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">tail : prep → blocks-draft → prose → assemble → self_cost</text>
       <text x="1248" y="2300" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">weekly-report-&lt;date&gt;.md + rendu HTML</text>
       <text x="1248" y="2316" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">assemble consomme le draft (⚠)</text>
     </g>
@@ -554,7 +568,7 @@
   </figure>
 
   <footer>
-    Sources : ARCHITECTURE.md · .opencode/agents/weekly-advisor/weekly-advisor.md · weekly_telemetry_aggregator/{main,draft_targets,harness_scope,providers/*,releases,watch_distill,watch_memory,watch_context,watch_validation}.py — génération 2026-08-24 (post merge PR #1 technology-scanning-optimisation).
+    Sources : ARCHITECTURE.md · .opencode/agents/weekly-advisor/weekly-advisor.md · weekly_telemetry_aggregator/{main,draft_targets,harness_scope,providers/*,releases,watch_distill,watch_memory,watch_context,watch_validation}.py — génération 2026-08-30 (post merge PR #1 technology-scanning-optimisation).
     Écarts vs consigne : ordre réel 2 → 2.2 → 2.5 → (3.5 LLM) → 3.6 (le distill précède watch-context, cf. cli.py et agent doc) · modes réels = override·detected·default·legacy ; Copilot = chatSessions JSON + state.vscdb optionnel.
   </footer>
 </div>

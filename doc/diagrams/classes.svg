@@ -378,12 +378,13 @@
     <text x="732" y="1296" font-family="var(--mono)" font-size="9" fill="#444a59">+ to_dict(): dict</text>
 
     <!-- aside 2 : règles mono-cible / surface 5.5 -->
-    <line x1="1152" y1="872" x2="1152" y2="1010" stroke="rgba(45,49,66,0.25)" stroke-width="2"/>
+    <line x1="1152" y1="872" x2="1152" y2="1044" stroke="rgba(45,49,66,0.25)" stroke-width="2"/>
     <text x="1164" y="888" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">Mono-cible : un seul harnais cible par projet — override config › détection</text>
     <text x="1164" y="912" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">marqueurs (.claude/, .opencode/, .github/prompts, .agents/) › défaut opencode ;</text>
     <text x="1164" y="936" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">targets=[] ⇒ legacy : toutes les cibles, priorité claude › opencode › copilot › codex.</text>
     <text x="1164" y="976" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">Surface 5.5 : projection (.opencode natif) · portability (mapping portability.yaml)</text>
     <text x="1164" y="1000" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">· combined — décision pure, aucune lecture disque.</text>
+    <text x="1164" y="1024" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">Codex : cible de drafting seule — aucun provider de sessions (télémétrie : OpenCode · Claude Code · Copilot).</text>
 
 
     <!-- ======== package watch (PR technology-scanning-optimisation) ======== -->

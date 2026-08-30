@@ -46,6 +46,10 @@ dans le périmètre explicitement autorisé.
   recommandations, l'humain décide.
 - Il ne réécrit pas ses propres consignes ni son propre code à partir de l'audit (hors contrôle
   de santé déclaratif de l'environnement).
+- Il ne réalise **pas** d'exploration d'architecture en dehors de la revue : une telle exploration
+  (ex. analyse de graphe du code) reste **optionnelle et out-of-band**, ses artefacts de sortie
+  sont **ignorés** par le pipeline et n'apparaissent jamais dans le rapport. Une mise à jour de
+  code seule, sans passe LLM, peut s'exécuter indépendamment de la revue hebdomadaire.
 
 ## 1.3 Cycle de vie d'une revue
 
@@ -64,7 +68,7 @@ rapport).
 |---|---|
 | **Revue (hebdomadaire)** | Le cycle complet de collecte, analyse, veille, drafting et rapport, exécuté à cadence régulière sur une fenêtre glissante. |
 | **Session** | Unité d'activité d'un agent de code : une conversation avec ses métadonnées (titre, modèle, agent, coûts, tokens) et son transcript (tours de dialogue, appels d'outils, étapes). |
-| **Harnais** | Écosystème d'agent de code supporté dont le produit lit les sessions. Les harnais supportés sont : **OpenCode**, **Claude Code**, **Copilot VS Code**, **Codex**. Leurs noms sont du vocabulaire métier : le produit opère sur eux. |
+| **Harnais** | Écosystème d'agent de code supporté dont le produit lit les sessions. Les harnais supportés sont : **OpenCode**, **Claude Code**, **Copilot VS Code**, **Codex**. Leurs noms sont du vocabulaire métier : le produit opère sur eux. Les **providers de télémétrie** (sources de sessions lues) sont OpenCode, Claude Code et Copilot VS Code ; **Codex est une cible de drafting seule** (`.agents/`) — le produit ne lit jamais ses sessions. |
 | **Identifiant canonique** | Identifiant unique d'une session sur toutes les sources, de la forme `<harnais>:<identifiant local>`. Un identifiant brut (sans préfixe de harnais) reste accepté et est résolu par la première source qui le possède. |
 | **Run** | Exécution d'une revue ; chaque run est associé à une **ancre** temporelle et à une fenêtre glissante. |
 | **Fenêtre glissante** | Intervalle temporel analysé : `[instant de référence − (nombre de jours × 24 h), instant de référence]`. Par défaut 7 jours. |
@@ -636,13 +640,17 @@ dans les cibles du harnais de drafting résolu.
 5. **Message construit** : préfixe par type (`skill:` / `command:`), mention « auto-rédigé, revue
    hebdo », corps traçant les sessions sources et le chevauchement détecté (lus depuis le document
    lui-même). **Un commit par écriture, jamais groupé.**
-6. **Gate de portabilité (skill-verify)** : avant tout commit d'un skill, une vérification
+6. **Gate de portabilité (skill-verify)** : avant tout commit d'un **skill**, une vérification
    mécanique est appliquée (règles de portabilité) avec pour racine la racine du projet (chargement
    des règles locales) :
    - **≥ 1 erreur → commit refusé** (fix manuel requis) ;
    - **avertissements seuls → commit autorisé**, note jointe au résultat ;
-   - **vérificateur absent ou sortie illisible → note « gate ignorée » (fail-soft)**, le diagnostic
-     signale l'absence du vérificateur.
+   - **vérificateur absent → note « gate ignorée » (fail-soft)**, le diagnostic signale l'absence
+     du vérificateur ;
+   - **vérificateur défaillant (timeout, crash) ou sortie illisible → commit refusé** (environnement
+     à réparer — une gate morte ne produit jamais de faux vert) ;
+   - **type command → gate non applicable** (la vérification mécanique ne couvre que les skills) :
+     **skip explicite** avec note dans le résultat, le commit part sans gate.
 7. **Échec (hooks, autre)** : fichier conservé, **pas de retry en boucle**, rattrapage manuel.
 8. **Rollback** : toujours un revert de commit isolé, **action humaine** (jamais automatisée,
    jamais interactive).
@@ -931,6 +939,9 @@ suffisant pour reconstruire l'ingestion sans prescrire un stockage.
 **Périmètre d'accès exclu** : le produit n'accède jamais aux fichiers d'authentification / jetons
 (OAuth) des harnais — ils ne sont ni lus ni listés.
 
+**Codex** ne figure pas dans les données ingérées : il n'est supporté que comme cible de drafting
+(§5.7), jamais comme source de sessions.
+
 ## 6.2 Données écrites vers les écosystèmes
 
 | Cible | Ce que le produit écrit | Règles |
@@ -1141,7 +1152,7 @@ verdicts **exactement** :
 |---|---|---|---|---|
 | **Validation de forme** | refus (pas de commit) | — | — | frontmatter illisible ; `name` ≠ nom du répertoire (skills) ; `description` vide |
 | **Pré-checks git** | refus (pas de commit) | — | — | tête détachée ; rebase/fusion en cours (le fichier est écrit, non historisé) |
-| **Portabilité (skill-verify)** | refus (pas de commit) | commit autorisé + note | « gate ignorée » (fail-soft) | ≥ 1 erreur de portabilité → refus ; avertissements seuls → note ; vérificateur absent / sortie illisible → ignorée (le diagnostic signale l'absence) |
+| **Portabilité (skill-verify)** | refus (pas de commit) | commit autorisé + note | « gate ignorée » (fail-soft, binaire absent) · **non applicable aux commands** (skip explicite + note) | ≥ 1 erreur de portabilité → refus ; avertissements seuls → note ; vérificateur absent → ignorée ; vérificateur défaillant / sortie illisible → **refus** (fix environnement) ; kind=command → **skip explicite avec note** (skills uniquement) |
 
 Un échec d'historisation (hooks, autre) → fichier conservé, **pas de retry en boucle**, rattrapage
 manuel.

@@ -14,12 +14,21 @@ l'architecture telle qu'implémentée et les invariants à préserver.
 | `ARCHITECTURE.md` | Structure technique et invariants (ce document) |
 | `spec-opencode-weekly-advisor` | Spécification fonctionnelle, source de vérité contractuelle |
 
+## Graphify — exploration out-of-band (hors périmètre)
+
+L'analyse de graphe du code via Graphify (`graphify-out/`) est une **exploration
+d'architecture optionnelle, hors pipeline** : elle ne fait pas partie de la revue
+hebdomadaire, ne nourrit ni les étapes ni le rapport, et ses sorties sont **ignorées**
+par le kit. Une mise à jour de graphe seule (code-only, `graphify update .`) peut
+s'exécuter **sans LLM**, indépendamment de tout run. `graphify-out/` relève du
+développement, jamais de la revue.
+
 ## Moteur et orchestration
 
 - Moteur Python déterministe `weekly-telemetry-aggregator` dans
   `.opencode/plugins/weekly-advisor-engine/`, zéro LLM sur les étapes chiffrées.
-- Plugin enveloppe OpenCode : 17 tools `weekly_*` (`weekly_run`, `weekly_harness`,
-  `weekly_doctor`, `weekly_commit_draft`, etc.) qui pilotent le moteur.
+- Plugin enveloppe OpenCode : 18 tools `weekly_*` (`weekly_run`, `weekly_harness`,
+  `weekly_doctor`, `weekly_commit_draft`, `weekly_skill_curate`, etc.) qui pilotent le moteur.
 - Sorties JSON reproductibles dans `<output_dir>/runs/<date>-<uuid8>/`, alias
   stable `runs/current/`. Codes de sortie : `0` complet, `1` partiel, `2` fatal.
 - L'exécution du run est **orchestrée en waves parallèles de subagents** (spec v6.1,
