@@ -3,7 +3,7 @@
 Revue hebdomadaire automatisée de vos agents de code : analyse de la télémétrie locale, veille écosystème, audit des sessions coûteuses et rapport HTML interactif, avec un moteur 100 % déterministe, zéro LLM pour les chiffres.
 
 [![CI](https://github.com/BenjaminCartonAdeo/weekly-advisor-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/BenjaminCartonAdeo/weekly-advisor-kit/actions/workflows/ci.yml)
-[![tests 585](https://img.shields.io/badge/tests-585-brightgreen)](.opencode/plugins/weekly-advisor-engine)
+[![tests 591](https://img.shields.io/badge/tests-591-brightgreen)](.opencode/plugins/weekly-advisor-engine)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ![Architecture du kit](doc/diagrams/architecture.svg)
@@ -18,13 +18,14 @@ Le cœur est 100 % déterministe : le moteur Python lit directement la télémé
 
 | Fonctionnalité | Ce que vous obtenez |
 |---|---|
-| Multi-harnais | Télémétrie OpenCode, Claude Code et Copilot VS Code via `session_sources`, extensible par source |
+| Multi-harnais | Télémétrie OpenCode, Claude Code et Copilot VS Code via `session_sources`, extensible par source ; Codex reste **cible de drafting seule** (jamais source de télémétrie) |
 | Chiffres déterministes | Moteur Python pur, zéro LLM sur les données : coûts, tokens, cache, outliers, prompts répétés |
 | Coûts estimés | Estimation par session avec surcharge `cost_rate_usd_per_mtok` par source, alertes budget semaine/mois |
 | Audit qualité | Sessions candidates auditées par skill dédié, constats archivés avec baseline pour mesurer la dérive |
 | Veille marché | Distillation hebdomadaire (~30 fiches scorées) confrontée à votre environnement, avec mémoire inter-run |
 | Auto-drafting mono-cible | Drafts skills/commands ciblés vers le harnais du projet, gate de portabilité avant commit (erreur → refus) |
-| Curation WAVE 2.5 | Manifeste déterministe des actions de curation/TTL en **dry-run** ; aucune mutation sans validation humaine explicite |
+| Curation WAVE 2.5 | Manifeste déterministe des actions de curation/TTL en **dry-run** ; gate politique : `apply=true` n'exécute que les **archives** (déplacement idempotent, jamais de suppression), les autres actions restent des propositions |
+| Gouvernance observation-only | Dérive d'architecture/configuration **observée** (projection watch-context + finding insights `architecture-drift`) : jamais bloquante, ne déclenche ni curation ni application |
 | Rapport web final | HTML autonome (dashboard KPI, filtres, dark mode) ouvert automatiquement en fin de run, plus archive MD |
 
 ## Installation
@@ -70,7 +71,7 @@ Les clés principales vivent dans [`weekly-telemetry-config.json`](.opencode/plu
 | `cost_rate_usd_per_mtok` | Taux de coût par source (surcharge) | par modèle |
 | `lookback_days` | Fenêtre analysée par run | 7 |
 
-Le détail des clés, des seuils et des invariants est dans la [spécification](doc/spec-opencode-weekly-advisor) et [`INSTALL.md`](INSTALL.md) §2.3.
+Le détail des clés, des seuils et des invariants est dans la [spécification](doc/spec-opencode-weekly-advisor) et [`INSTALL.md`](INSTALL.md) §2.3. En interne, la configuration est exposée en **vues groupées** (sources, stockage, coûts, curation) — vues en lecture seule **rétro-compatibles** : le fichier JSON garde ses clés plates historiques, aucune migration requise.
 
 ## Contributing
 
@@ -79,7 +80,7 @@ Contributions bienvenues, en particulier : nouveaux providers de harnais, règle
 Validation locale (depuis le dossier moteur `.opencode/plugins/weekly-advisor-engine`) :
 
 ```sh
-uv run python -m pytest -q    # 585 tests
+uv run python -m pytest -q    # 591 tests
 uv run ruff check .           # lint
 uv run ruff format --check .  # format
 ```
@@ -90,7 +91,7 @@ Gate docs ↔ code (depuis la racine du repo, node requis) :
 node scripts/check-flow-docs.mjs   # G1 : comptes de tests cohérents + contrats de flux
 ```
 
-Le CI (`.github/workflows/ci.yml`) répète lint, format, 585 tests, packaging et smoke test du plugin sur Ubuntu et Windows, puis la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec-opencode-weekly-advisor`](doc/spec-opencode-weekly-advisor), l'architecture dans [`doc/ARCHITECTURE.md`](doc/ARCHITECTURE.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
+Le CI (`.github/workflows/ci.yml`) répète lint, format, 591 tests, packaging et smoke test du plugin sur Ubuntu et Windows, puis la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec-opencode-weekly-advisor`](doc/spec-opencode-weekly-advisor), l'architecture dans [`doc/ARCHITECTURE.md`](doc/ARCHITECTURE.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
 
 ### WAVE 2.5 — manifeste de curation (dry-run)
 
@@ -99,8 +100,11 @@ Après la jointure de WAVE 2 (donc après `weekly-coherence-review`), le pipelin
 déterministe liste les actions proposées (`archive`, `merge`, `pin`, `reference`), leurs
 cibles et leur statut. **Par défaut, c'est un dry-run : aucun fichier n'est déplacé,
 fusionné, supprimé ou modifié.** Une application nécessite une validation humaine explicite
-et un appel avec `apply=true`. Les éléments `origin=user` restent protégés. WAVE 2.5 est
-séquentielle et précède le tail de génération du rapport.
+et un appel avec `apply=true`. **Gate politique** : même en `apply`, seule l'action
+`archive` est exécutée (déplacement idempotent vers `_archive/<date>/`, jamais de
+suppression) ; `merge`, `reference`, `pin`, `delete` et `recalibrate` restent des
+propositions, sans aucune opération fichiers. Les éléments `origin=user` restent protégés.
+WAVE 2.5 est séquentielle et précède le tail de génération du rapport.
 
 ## Documentation
 
@@ -116,7 +120,7 @@ séquentielle et précède le tail de génération du rapport.
 
 - Le moteur lit les tables internes de la base SQLite d'opencode : ce n'est pas une API publique, une mise à jour majeure peut rompre la collecte jusqu'à la mise à jour du kit. `weekly_doctor` diagnostique.
 - La veille dépend d'APIs publiques (npm, GitHub, registre MCP) : rate-limits possibles, warnings tolérés, le run continue.
-- L'exploration d'architecture via Graphify (`graphify-out/`) est **hors pipeline** : out-of-band et optionnelle, elle ne nourrit ni la revue ni le rapport, et ses sorties sont ignorées par le kit. Une mise à jour de graphe seule (code-only) peut s'exécuter sans LLM.
+- L'exploration d'architecture via Graphify (`graphify-out/`) est **hors pipeline** : out-of-band et optionnelle, elle ne nourrit ni la revue ni le rapport, et ses sorties sont ignorées par le kit. Une mise à jour de graphe seule (code-only) peut s'exécuter sans LLM. Un **résumé d'architecture déterministe** peut être projeté en lecture seule depuis `graphify-out/graph.json` (`scripts/graphify-architecture-summary.py`) : le graphe n'est jamais modifié et la projection n'entre ni dans la revue ni dans le rapport.
 
 ## Licence
 

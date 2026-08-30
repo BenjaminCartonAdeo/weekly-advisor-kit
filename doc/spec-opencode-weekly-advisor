@@ -49,7 +49,11 @@ dans le périmètre explicitement autorisé.
 - Il ne réalise **pas** d'exploration d'architecture en dehors de la revue : une telle exploration
   (ex. analyse de graphe du code) reste **optionnelle et out-of-band**, ses artefacts de sortie
   sont **ignorés** par le pipeline et n'apparaissent jamais dans le rapport. Une mise à jour de
-  code seule, sans passe LLM, peut s'exécuter indépendamment de la revue hebdomadaire.
+  code seule, sans passe LLM, peut s'exécuter indépendamment de la revue hebdomadaire. Un
+  **résumé d'architecture déterministe** peut être projeté depuis un artefact de graphe
+  (projection **en lecture seule** : le graphe n'est jamais modifié, l'outil de projection ne
+  déclenche jamais l'outil d'exploration) — cette projection est elle-même out-of-band et ne
+  nourrit ni la revue ni le rapport.
 
 ## 1.3 Cycle de vie d'une revue
 
@@ -83,6 +87,8 @@ rapport).
 | **Cible de drafting** | Emplacement de projection des documents de compétence (skills, commands) pour un harnais donné. |
 | **Snooze (ignored_findings)** | Liste manuelle d'identifiants de constats à ne plus proposer ; éditée dans la configuration, jamais maintenue automatiquement. |
 | **Digest** | Extraction bornée d'une sortie volumineuse, destinée à alimenter une étape suivante sans excès de volume. |
+| **Observation d'architecture** | Projection **en lecture seule** de faits d'environnement (compteurs d'états déclaré/observé/absent/inconnu, disponibilité et validité de la configuration, compteurs d'inventaire, périmètre de harnais). Elle n'infère aucune intention, ne propose ni n'applique aucun changement ; utilisée pour détecter une dérive d'architecture/configuration. |
+| **Résumé d'architecture (graphe)** | Projection déterministe compacte d'un graphe de code out-of-band (nœuds/fichiers/relations filtrés, triés). Jamais consommée par la revue ; le graphe source n'est jamais modifié. |
 
 ---
 
@@ -312,6 +318,11 @@ et, si des candidats existent, les fiches **enrichies** (§7.3).
 3. **Séquentiel** : lit l'écosystème (jamais en parallèle) ; les candidats de distillation sont
    consommés s'ils existent (production des fiches enrichies), sinon l'étape travaille sur
    l'écosystème complet.
+4. **Projection d'observation d'architecture** : la sortie inclut un instantané **en lecture
+   seule** des faits d'environnement (compteurs d'états `déclaré | observé | absent | inconnu`,
+   fichiers de configuration, disponibilité/validité de la configuration, compteurs
+   d'inventaire plugins/skills/commands/agents, périmètre de harnais). Aucune inférence
+   d'intention, aucune proposition ni application de changement.
 
 **Erreurs**
 - Contexte absent (panne de veille ou de distillation) → cette étape est **dégradée** : sortie
@@ -480,6 +491,12 @@ snooze manuel.
 | R3 — fusion | doublon déclaratif **ou** paire de skills similaires (couverture complémentaire des skills non vus par le contrôle déclaratif) | fusion, moyenne |
 | R4 — correction de format | violation triviale (frontmatter / description manquante ou invalide, erreur de format) | correction, basse |
 | R5 — réécriture | violation non triviale (budget de tokens dépassé, doublon partiel hors R3) | correction, moyenne — **jamais automatique** |
+| R6 — dérive d'architecture | observation d'architecture modifiée sur ≥ **2** runs consécutifs (seuil configurable `architecture_drift_runs`) | `architecture-drift`, basse, **observation-only**, action `recalibrate` |
+
+**Dérive d'architecture — observation-only** : R6 produit un **constat de rapport** (champs
+`session_id` absent, `observation_only: true`, recommandation de revue manuelle), **jamais une
+alerte bloquante** (sans impact CI) et ne déclenche **ni curation ni application**. Une
+projection absente ou inconnue (premier run, étape dégradée) est ignorée sans signal.
 
 **Règles — cohérence de l'environnement (passe critique finale, qualitative)**
 1. **Fait** : croise l'état déclaratif de l'environnement (agents, skills, commands) avec l'usage
@@ -705,7 +722,10 @@ protégées, les candidats TTL, les compteurs de statut et le mode (`dry-run` ou
    modification n'est effectuée ; le manifeste est néanmoins écrit.
 3. Le mode `apply` n'est recevable qu'après validation humaine explicite et reste borné aux racines
    de skills du projet audité. Les racines globales, les liens symboliques et les chemins hors
-   projet sont refusés.
+   projet sont refusés. **Gate politique** : même en `apply`, seule l'action `archive` est
+   exécutée (déplacement idempotent vers un répertoire d'archives daté, **jamais de suppression**) ;
+   `merge`, `reference`, `pin`, `delete` et `recalibrate` restent des propositions, sans aucune
+   opération fichiers.
 4. La provenance `origin=user` est toujours protégée : ses décisions destructives deviennent
    `skip`, et ne peuvent pas être appliquées. Une politique `pin` reste prioritaire sur archive.
 5. L'archivage TTL exige un dépassement de **90 jours** depuis le dernier chargement, ou zéro
@@ -905,6 +925,9 @@ Exécuter C9 (deltas, alertes, maintenance) puis la passe de cohérence de l'env
 Après la jointure de l'étape 6, exécuter C18. Écrire le manifeste, par défaut en `dry-run`, puis
 transmettre son statut au rapport. Une application éventuelle avec `apply=true` est une action
 séparée, explicitement validée par l'humain ; elle ne fait pas partie du chemin automatique.
+**Gate politique de l'application** : même avec `apply=true`, seules les actions `archive` sont
+exécutées (déplacement idempotent, jamais de suppression) ; les autres actions restent des
+propositions sans opération fichiers.
 
 ## 5.11 Étape 7 — Rapport final
 
@@ -1024,6 +1047,9 @@ Champs de tête (schéma, période, instant) + :
   catégorie (nouvelles 12 / améliorables 8 / réapparues 5).
 - **Candidats enrichis** (C4) : fiche de base + état local (`absent | déclaré | observé |
   inconnu`), état de capacité, adéquation marché, indices de pertinence locale, bande résiduelle.
+- **Observation d'architecture** (C4) : projection **en lecture seule** — compteurs d'états
+  (`déclaré | observé | absent | inconnu`), configuration (fichiers, disponible, valide),
+  compteurs d'inventaire (plugins/skills/commands/agents), périmètre de harnais.
 - **Digest de mémoire** : récemment ignorés (≤ 20), précédemment recommandés (≤ 30), récurrents
   (≥ 3 occurrences, plafonné 20).
 
@@ -1050,6 +1076,8 @@ Champs de tête (schéma, période, date du run précédent, instant) + :
 - **Alertes** : règle, seuil, observé, sévérité.
 - **Maintenance** : findings (même format que l'audit, session non liée), statistiques (runs
   scannés, skills au catalogue, non-chargés consécutifs, jours de baseline réels pour les pics).
+  Les findings **observation-only** (ex. `architecture-drift`, R6) portent
+  `observation_only: true` et une action `recalibrate` — constats de rapport, jamais bloquants.
 
 ## 7.7 Rapport final (C12, C13, C14)
 
@@ -1067,8 +1095,10 @@ Champs de tête (schéma, période, date du run précédent, instant) + :
 5. **Actions du pipeline** : fichiers + commits créés par le run (fenêtre bornée, filtre sujet) ;
    rappel du revert.
 6. **Santé de l'environnement** : cohérence d'abord (passe critique, triée par impact, tags
-   d'action), puis lint déclaratif (violations, budget, triggers, dépendances, findings R1-R5 avec
+    d'action), puis lint déclaratif (violations, budget, triggers, dépendances, findings R1-R5 avec
     preuves), surface de remédiation, baseline (créée / réutilisée), règles de portabilité.
+    Les findings **observation-only** (R6, `architecture-drift`) sont présentés comme des
+    observations, distincts des mutations proposées.
     Le statut C18 est affiché séparément : mode, actions proposées, actions protégées et actions
     appliquées ; un manifeste dry-run ne doit pas être présenté comme une mutation.
 7. **Écosystème** : évolutions du cœur (haute → paragraphe, moyenne → ligne) ; nouveautés notables
@@ -1224,6 +1254,9 @@ présente spécification. Chaque critère est **testable par un humain**.
       10) / 0,6 / 15 / 10 ; R1 ≥ 4 runs ; R2 = R1 + chevauchement ; R5 jamais automatique).
 - [ ] D5. La remédiation n'applique jamais une règle de sécurité, ni une règle hors liste, ni plus
       d'1 fichier ; en cas d'échec de post-vérification, tout est restauré.
+- [ ] D6. La dérive d'architecture (R6) produit un finding **observation-only** (`observation_only`,
+      sévérité basse, action `recalibrate`) après le seuil de runs consécutifs, sans blocage du run
+      et sans déclencher curation ni application.
 
 ## E. Rapport & signal
 - [ ] E1. Le rapport est écrit en **dernier** ; son absence en fin d'exécution est un échec

@@ -54,7 +54,7 @@ Fichier : `.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`
 | `open_browser` | Ouverture automatique du rapport HTML dans le navigateur après l'assemble — mettre `false`, ou poser la variable d'environnement `WEEKLY_NO_BROWSER=1` pour un cron headless | `true` |
 | `kit_root` | (optionnel) Worktree du kit pour la synchro best-effort des drafts auto-rédigés (`commit-draft`, v6.0.l) | absent → désactivé |
 | `harness_include` | Profil et globs allowlistés pour l'étape `harness` (projection étendue au harnais détecté) | `advisory` (policy + documentation) |
-| `session_sources` | Sources de sessions actives (liste d'objets `{type, ...}` : `opencode`, `claude-code`, `copilot-vscode`) ; clé extra `cost_rate_usd_per_mtok` = surcharge du taux d'estimation | `[{"type": "opencode"}]` |
+| `session_sources` | Sources de sessions actives (liste d'objets `{type, ...}` : `opencode`, `claude-code`, `copilot-vscode`) ; clé extra `cost_rate_usd_per_mtok` = surcharge du taux d'estimation. **Codex n'est jamais une source de sessions** : cible de drafting seule (`.agents/`) | `[{"type": "opencode"}]` |
 | `draft_targets` | Cible de drafting mono-cible : liste de harnais (override), `[]` (legacy toutes cibles), absent/invalide (détection auto par marqueurs) | détection auto |
 | `harness_auto_fix_rules` | Règles explicitement autorisées pour l'application automatique | `[]` (aucune) |
 | `harness_auto_fix_max_files` | Nombre maximum de fichiers modifiés par remédiation | `1` |
@@ -79,6 +79,11 @@ Toutes les autres clés ont des défauts raisonnables (fenêtre 7 j, budgets, se
 veille `watch`). `~` est supporté des deux côtés — le moteur Python (`expanduser()`)
 et le plugin TS (`os.homedir()`) l'expandent avec la même sémantique ; un chemin
 absolu reste recommandé. Personnalisez `watch` (sources de veille) et les budgets selon votre usage.
+
+**Vues groupées (compatibilité)** : en interne, `TelemetryConfig` expose des **vues en
+lecture seule** regroupées — `sources`, `storage`, `cost`, `curation` — construites sur
+les mêmes champs plats historiques. Le fichier JSON **ne change pas** : mêmes clés,
+même forme, aucune migration. Les vues sont un confort de code, pas un nouveau format.
 
 #### Veille : `watch_distill` (étape 2.2) et sources radar
 
@@ -152,7 +157,10 @@ et **avant le tail** (`report_prep` → assemble). Elle consomme le findings
 **No-apply par défaut :** sans `apply=true`, l'étape est strictement dry-run. Elle ne
 déplace, ne supprime, ne fusionne et n'édite aucun skill ou command ; elle produit seulement
 le manifeste à vérifier. Une application est hors du chemin automatique et requiert une
-validation humaine explicite, puis un appel séparé avec `apply=true`. La protection
+validation humaine explicite, puis un appel séparé avec `apply=true`. **Gate politique :
+même en `apply`, seule l'action `archive` est exécutée** (déplacement idempotent vers
+`_archive/<date>/`, jamais de suppression) ; `merge`, `reference`, `pin`, `delete` et
+`recalibrate` restent des propositions, sans opération fichiers. La protection
 `origin=user` demeure active. Manifeste absent, illisible ou incohérent : signaler, jamais
 appliquer implicitement.
 
@@ -172,7 +180,7 @@ run cron (mesuré v5.32).
 
 ```sh
 cd .opencode/plugins/weekly-advisor-engine
-uv run python -m pytest -q     # 585 tests — tout doit passer
+uv run python -m pytest -q     # 591 tests — tout doit passer
 cd ../../..
 opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"

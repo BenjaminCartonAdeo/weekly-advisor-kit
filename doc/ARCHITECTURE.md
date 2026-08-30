@@ -23,12 +23,28 @@ par le kit. Une mise à jour de graphe seule (code-only, `graphify update .`) pe
 s'exécuter **sans LLM**, indépendamment de tout run. `graphify-out/` relève du
 développement, jamais de la revue.
 
+**Résumé d'architecture déterministe (out-of-band)** : le module
+`weekly_telemetry_aggregator/graphify_summary.py` projette un **résumé compact en
+lecture seule** depuis un artefact de graphe — il ne met jamais à jour `graph.json`,
+n'invoque jamais Graphify, et n'est consommé par aucune étape de la revue. Le CLI
+`scripts/graphify-architecture-summary.py` lit `graphify-out/graph.json` (défaut) et
+écrit le résumé sur stdout ou via `--output` (le graphe brut n'est jamais touché).
+Projection stable : exclusion des nœuds sans fichier source, des nœuds génériques et
+des sources disparues (`stale`), liens restreints aux nœuds retenus, self-loops omis,
+collections triées (reproductibilité). Sortie : `schema_version`, `built_at_commit`,
+`node_count`, `edge_count`, `source_file_count`, `filtered` (génériques / stale /
+self-loops), `files` (par fichier source), `relations` (triées).
+
 ## Moteur et orchestration
 
 - Moteur Python déterministe `weekly-telemetry-aggregator` dans
   `.opencode/plugins/weekly-advisor-engine/`, zéro LLM sur les étapes chiffrées.
 - Plugin enveloppe OpenCode : 18 tools `weekly_*` (`weekly_run`, `weekly_harness`,
   `weekly_doctor`, `weekly_commit_draft`, `weekly_skill_curate`, etc.) qui pilotent le moteur.
+- **Configuration en vues groupées** : `TelemetryConfig` expose des vues **en lecture
+  seule** — `sources`, `storage`, `cost`, `curation` — construites sur les champs
+  plats historiques. Le fichier JSON garde sa forme (clés plates, aucune migration) ;
+  les vues sont un confort de code rétro-compatible, pas un nouveau format.
 - Sorties JSON reproductibles dans `<output_dir>/runs/<date>-<uuid8>/`, alias
   stable `runs/current/`. Codes de sortie : `0` complet, `1` partiel, `2` fatal.
 - L'exécution du run est **orchestrée en waves parallèles de subagents** (spec v6.1,
@@ -97,6 +113,9 @@ explicite et par défaut** : sans `apply=true`, le manifeste liste les actions (
 pin | reference`) et statuts, mais aucun fichier n'est déplacé, fusionné, supprimé ou édité.
 Validation humaine explicite requise avant un appel séparé avec `apply=true`; `origin=user` reste
 protégé. Manifeste absent/illisible = anomalie reportée, jamais application implicite.
+**Gate politique** : même en `apply`, seule l'action `archive` est exécutée (déplacement
+idempotent vers `_archive/<date>/`, jamais de suppression) ; `merge`, `reference`, `pin`,
+`delete` et `recalibrate` restent des propositions, sans opération fichiers.
 
 ## Veille écosystème (étapes 2 → 3.6)
 
@@ -117,6 +136,11 @@ branche (3.5) — exécutée par le worker V, qui gère seul l'ordre séquentiel
 - **Étape 2.5 — `watch-context`** : crosswalk marché/existant ; consomme les
   candidats s'ils existent et produit alors
   `watch-candidates-enriched-<date>.json` (fiches × état local + bande résiduelle).
+  La sortie embarque une **projection d'observation d'architecture** en lecture seule
+  (`architecture_observations`) : compteurs d'états (`declared`/`observed`/`absent`/
+  `unknown`), configuration (fichiers, disponible, valide), compteurs d'inventaire
+  (plugins/skills/commands/agents) et périmètre de harnais. Cette projection n'infère
+  aucune intention et ne propose ni n'applique aucun changement.
 - **Étape 3.5 — skill `weekly-watch-review`** (LLM) : lit les fiches enrichies +
   digest mémoire + findings coûteux ; filet B phase 0 conditionnelle (fiches <
   `min_candidates` ET résiduel non vide) ; écrit le brut
@@ -149,6 +173,10 @@ VS Code) via une couche d'abstraction :
   - `claude_code.py` — transcripts JSONL `~/.claude/projects/<cwd-mungé>/<sessionId>.jsonl`
     (un fichier = une session ; munging du répertoire projet : séparateurs/points → tirets).
   - `copilot_vscode.py` — source Copilot VS Code.
+- **Distinction provider / cible de drafting** : les **providers de télémétrie** (sources
+  de sessions lues) sont OpenCode, Claude Code et Copilot VS Code. **Codex n'est jamais
+  un provider** : il est supporté uniquement comme cible de drafting (`draft_targets`,
+  marqueur `.agents/`), jamais lu comme source de sessions.
 - **`build_providers(cfg)`** construit les providers des sources actives de
   `cfg.session_sources` et les fusionne. Si aucune source n'est active, repli
   rétrocompatible sur la base OpenCode locale via `detect_db` (contrat
@@ -209,6 +237,21 @@ Le drafting (étape 4) cible un harnais unique, pas seulement `.opencode/` :
   worktree ; findings lus depuis le JSON (`findings[].details[]`) ;
   `error` → refus du commit (fix manuel), `warning` → note, binaire
   `harness-eval` absent → gate ignorée avec note ⚠.
+
+## Gouvernance observation-only (dérive d'architecture)
+
+La dérive d'architecture/configuration est **observée, jamais appliquée** :
+
+- `watch-context` (étape 2.5) projette `architecture_observations` (voir § Veille
+  écosystème) — lecture seule, aucun effet de bord.
+- `insights` (étape 6) compare la projection courante à la précédente sur les champs
+  stables (`state_counts`, `config`, `inventory_counts`, `harness_scope`) ; si elle
+  change sur ≥ **2** runs consécutifs (seuil `architecture_drift_runs`, défaut 2), un
+  finding `architecture-drift` est émis : sévérité **basse**, `observation_only: true`,
+  action `recalibrate`, recommandation de revue manuelle.
+- **Contrat** : ce finding est un **constat de rapport**, jamais une alerte bloquante
+  (pas d'impact CI) et il ne déclenche **ni curation ni application** (`apply`). Il
+  alimente la passe de cohérence qualitative comme signal d'observation.
 
 ## Invariants
 
