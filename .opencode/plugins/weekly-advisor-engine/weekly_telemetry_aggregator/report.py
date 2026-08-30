@@ -206,8 +206,7 @@ def _coherence_has_curation_signal(coherence: object) -> bool:
     else:
         return False
     return any(
-        isinstance(f, dict) and f.get("tag_action") in _CURATION_TAG_ACTIONS
-        for f in findings
+        isinstance(f, dict) and f.get("tag_action") in _CURATION_TAG_ACTIONS for f in findings
     )
 
 
@@ -501,9 +500,10 @@ def report_assemble(
     # alerte P0 + rc=1 (partiel, jamais fatal). Le détail P0 est rendu dans le
     # rapport via le contexte (coherence_curation_signal + skill_curate).
     coherence = _load_json(out / f"weekly-coherence-findings-{date}.json")
-    if _coherence_has_curation_signal(coherence) and _load_json(
-        out / f"skill-curate-{date}.json"
-    ) is None:
+    if (
+        _coherence_has_curation_signal(coherence)
+        and _load_json(out / f"skill-curate-{date}.json") is None
+    ):
         warnings.append(
             f"⚠ WAVE 2.5 (curation) REQUIRED : findings de cohérence porte(nt) des "
             f"actions de curation mais skill-curate-{date}.json est absent — "

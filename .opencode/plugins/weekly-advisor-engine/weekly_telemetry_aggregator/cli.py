@@ -517,7 +517,14 @@ def _auto_load_catalog(out: Path, cfg, date: str) -> list[dict]:
                 # older summaries, while newer producers may put lifecycle
                 # fields at either level.  Preserve every protection field
                 # instead of replacing metadata with an empty mapping.
-                for key in ("skill_id", "origin", "ttl_policy", "usage", "last_verified_at", "verification"):
+                for key in (
+                    "skill_id",
+                    "origin",
+                    "ttl_policy",
+                    "usage",
+                    "last_verified_at",
+                    "verification",
+                ):
                     if key not in entry:
                         continue
                     value = entry[key]
@@ -525,10 +532,11 @@ def _auto_load_catalog(out: Path, cfg, date: str) -> list[dict]:
                     # Lifecycle protection is monotonic when producers disagree:
                     # user/pin may never be weakened by a nested/flattened row.
                     if (
-                        key == "origin" and str(value).strip().casefold() == "user"
-                    ) or (
-                        key == "ttl_policy" and str(value).strip().casefold() == "pin"
-                    ) or key not in metadata or current in (None, ""):
+                        (key == "origin" and str(value).strip().casefold() == "user")
+                        or (key == "ttl_policy" and str(value).strip().casefold() == "pin")
+                        or key not in metadata
+                        or current in (None, "")
+                    ):
                         metadata[key] = value
                 skill_id = entry.get("skill_id") or entry.get("name") or metadata.get("skill_id")
                 if not isinstance(skill_id, str) or not skill_id.strip():
@@ -559,11 +567,7 @@ def _skill_dirs_for(cfg) -> list[Path]:
         project_root / ".agents" / "skills",
     ]
     global_roots = _global_skill_roots()
-    return [
-        root
-        for root in roots
-        if not _path_is_global_or_unresolvable(root, global_roots)
-    ]
+    return [root for root in roots if not _path_is_global_or_unresolvable(root, global_roots)]
 
 
 def _global_skill_roots() -> tuple[Path, ...]:
@@ -607,12 +611,7 @@ def _normalize_skill_relative(skill_id: str) -> Path | None:
     """Normalize one relative skill id without changing its identity."""
 
     requested = str(skill_id or "").strip()
-    if (
-        not requested
-        or "\\" in requested
-        or requested.startswith("/")
-        or requested.startswith("~")
-    ):
+    if not requested or "\\" in requested or requested.startswith("/") or requested.startswith("~"):
         return None
     raw_parts = requested.split("/")
     if any(part in {"", ".", ".."} for part in raw_parts):

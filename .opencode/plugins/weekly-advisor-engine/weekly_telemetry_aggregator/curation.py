@@ -96,11 +96,12 @@ def _skill_fields(entry: Mapping[str, Any] | object) -> tuple[str | None, str | 
     # A duplicate/merged row must never weaken explicit user protection.
     origin = "user" if "user" in origin_values else (origin_values[0] if origin_values else None)
     ttl_values = [
-        _normalized_ttl(value)
-        for value in (meta.get("ttl_policy"), entry.get("ttl_policy"))
+        _normalized_ttl(value) for value in (meta.get("ttl_policy"), entry.get("ttl_policy"))
     ]
-    ttl = "pin" if "pin" in ttl_values else next(
-        (value for value in ttl_values if value is not None), None
+    ttl = (
+        "pin"
+        if "pin" in ttl_values
+        else next((value for value in ttl_values if value is not None), None)
     )
     return skill_id, origin, ttl
 
@@ -298,7 +299,11 @@ def _catalog_priority(entry: Mapping[str, Any] | object) -> tuple[int, int, str]
     metadata = entry.get("metadata") if isinstance(entry, Mapping) else None
     richness = len(metadata) if isinstance(metadata, Mapping) else 0
     # The serialized tie-break makes equal-strength duplicate rows deterministic.
-    stable = repr(sorted((str(key), repr(value)) for key, value in entry.items())) if isinstance(entry, Mapping) else ""
+    stable = (
+        repr(sorted((str(key), repr(value)) for key, value in entry.items()))
+        if isinstance(entry, Mapping)
+        else ""
+    )
     return protection, -richness, stable
 
 
@@ -332,9 +337,7 @@ def catalog_entry_is_complete(entry: Mapping[str, Any] | object) -> bool:
         return False
     raw_meta = entry.get("metadata") if isinstance(entry, Mapping) else None
     meta = raw_meta if isinstance(raw_meta, Mapping) else {}
-    ttl_present = "ttl_policy" in meta or (
-        isinstance(entry, Mapping) and "ttl_policy" in entry
-    )
+    ttl_present = "ttl_policy" in meta or (isinstance(entry, Mapping) and "ttl_policy" in entry)
     return ttl_present and (ttl is None or ttl in {"decay", "pin"})
 
 
@@ -541,7 +544,9 @@ def _carry_usage(obj: Mapping[str, Any]) -> list[dict[str, Any]]:
 
     records: list[dict[str, Any]] = []
 
-    def add_record(skill_id: object, payload: object, inherited: Mapping[str, Any] | None = None) -> None:
+    def add_record(
+        skill_id: object, payload: object, inherited: Mapping[str, Any] | None = None
+    ) -> None:
         if not isinstance(skill_id, str) or not skill_id.strip():
             return
         record = payload if isinstance(payload, Mapping) else {}
@@ -583,7 +588,11 @@ def _carry_usage(obj: Mapping[str, Any]) -> list[dict[str, Any]]:
                 add_record(sid, obj)
         else:
             for skill_id, payload in raw_usage.items():
-                add_record(skill_id, payload, obj.get("metadata") if isinstance(obj.get("metadata"), Mapping) else None)
+                add_record(
+                    skill_id,
+                    payload,
+                    obj.get("metadata") if isinstance(obj.get("metadata"), Mapping) else None,
+                )
     elif isinstance(raw_usage, list):
         for item in raw_usage:
             if isinstance(item, Mapping):

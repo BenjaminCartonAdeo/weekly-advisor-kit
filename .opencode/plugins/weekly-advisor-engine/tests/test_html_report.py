@@ -190,7 +190,15 @@ def test_render_html_reports_curation_manifest_and_required_signal(tmp_path: Pat
             "applied": 1,
             "proposed": 2,
             "skipped": 3,
-            "decisions": [{"action": "archive", "skill_id": "old/skill", "source": "coherence", "reason": "stale", "status": "moved"}],
+            "decisions": [
+                {
+                    "action": "archive",
+                    "skill_id": "old/skill",
+                    "source": "coherence",
+                    "reason": "stale",
+                    "status": "moved",
+                }
+            ],
         },
         coherence_curation_signal=False,
     )

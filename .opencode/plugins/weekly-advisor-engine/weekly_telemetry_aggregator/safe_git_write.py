@@ -118,9 +118,8 @@ def validate_skill_source(
         return False, metadata, "source SKILL.md malformed: description absent"
     verification = (meta.get("verification") or "").strip()
     metadata["verification"] = verification or None
-    if (
-        not allow_legacy_metadata
-        and (not verification or verification.casefold() in {"none", "null", "unverified"})
+    if not allow_legacy_metadata and (
+        not verification or verification.casefold() in {"none", "null", "unverified"}
     ):
         return False, metadata, "source SKILL.md unverified: metadata.verification absent"
     return True, metadata, "source SKILL.md verified"
