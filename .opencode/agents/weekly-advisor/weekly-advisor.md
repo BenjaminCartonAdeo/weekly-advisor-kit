@@ -112,14 +112,20 @@ par `weekly_run`) ; `runs/current/` est l'alias stable du run actif. L'orchestra
 ├─ WAVE 2 — 3 subagents parallèles (optionnel, activé par défaut)
 │   ├─ D (Drafting) : weekly-drafting skill (seul commiteur) [worker D]
 │   ├─ I (Insights) : weekly_insights                        [worker I]
-│   └─ C (Coherence) : coherence-review skill                [worker C]
+│   └─ C (Coherence) : coherence-review skill (read-only)    [worker C]
+│
+├─ WAVE 2.5 — CURATION (séquentiel APRÈS WAVE 2 ; consomme les findings de C)
+│   └─ GC/Curation : weekly_skill_curate (manifest dry-run/no-apply par défaut ; apply=true après validation) [REQUIRED]
+│       lit weekly-coherence-findings-<date>.json (décisions archive|merge|pin|reference)
+│       + décroissance TTL (R8) ; protège origin=user ; écrit skill-curate-<date>.json
 │
 └─ TAIL — report_prep → blocks_draft → prose → assemble → self_cost [PRINCIPAL]
 ```
 
 Raisons : T/V/H sont **disjoints** (fichiers de sortie distincts, aucune lecture croisée) ;
-wave 2 (D/I/C) mutuellement indépendante une fois wave 1 jointe ; tail synthétise croix branches
-et produit le livrable final.
+wave 2 (D/I/C) mutuellement indépendante une fois wave 1 jointe ; la **curation (WAVE 2.5,
+`weekly_skill_curate` dry-run) s'exécute APRÈS la jointure de wave 2** car elle consomme
+les findings de cohérence (C) ; tail synthétise croix branches et produit le livrable final.
 
 ### Gestion du contexte (orchestrateur, inspiré du pattern context-manager)
 
@@ -178,7 +184,7 @@ note une violation et **continue en fail-soft** (exit 1).
 | **2.D** | **Skill `weekly-drafting`** : `weekly_draft_candidates` → rédaction skills/commands + `weekly_commit_draft` (≤ plafond) | commits `skill:`/`command:` |
 | **2.I** | `weekly_insights` | `weekly-insights-<date>.json` |
 | **2.C** | **Skill `weekly-coherence-review`** : état déclaratif vs usage réel | `weekly-coherence-findings-<date>.json` |
-| **2.6** | **Étape 6.6 `weekly_skill_curate`** (dry-run par défaut ; `apply=true` après validation) : curation/GC (R4) + décroissance TTL (R8). Consomme `weekly-coherence-findings-<date>.json` de 2.C (décisions archive\|merge\|pin\|reference) ; protège `origin=user` | `skill-curate-<date>.json` (manifest apply) |
+| **2.6** | **Étape 6.6 `weekly_skill_curate`** [REQUIRED, séquentiel APRÈS WAVE 2 — branche WAVE 2.5] (dry-run par défaut ; `apply=true` après validation) : curation/GC (R4) + décroissance TTL (R8). Consomme `weekly-coherence-findings-<date>.json` de 2.C (décisions archive\|merge\|pin\|reference) ; protège `origin=user` | `skill-curate-<date>.json` (manifest apply) |
 | **7a** | `weekly_report_prep` puis `weekly_report_blocks_draft` (brouillon auto) | `weekly-report-draft-<date>.md` |
 | **7b** | **Skill `weekly-report-prose`** : prose optionnelle (contrat anti-hallucination) | `weekly-report-blocks-<date>.md` |
 | **7c** | `weekly_report_assemble` → **signal du cron** ; génère le **rapport HTML** dans `<project_root>/reports/html/` (`weekly-report-latest.html` + copie datée) ; ⚠ un assemble réussi **supprime le draft** | `weekly-report-<date>.md` |

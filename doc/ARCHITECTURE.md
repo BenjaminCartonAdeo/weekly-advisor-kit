@@ -52,6 +52,9 @@ elle-même les étapes longues — chaque branche indépendante est confiée à 
 │   ├─ I : weekly_insights
 │   └─ C : skill weekly-coherence-review
 │
+├─ WAVE 2.5 — curation séquentielle (REQUIRED, après la jointure de WAVE 2)
+│   └─ weekly_skill_curate → skill-curate-<date>.json (dry-run/no-apply par défaut)
+│
 └─ TAIL — report_prep → blocks_draft → prose → assemble → self_cost
                                                              [session principale]
 ```
@@ -78,6 +81,13 @@ elle-même les étapes longues — chaque branche indépendante est confiée à 
   dans son contrat ; au join, l'orchestrateur écrit **`weekly-timings-<date>.json`**
   (`{branch: {step: ms}}` + durées wave/tail). Nouvel artefact écrit par l'agent, la
   liste des fichiers agent-writable est étendue en conséquence.
+
+**WAVE 2.5 — manifeste et gate** : `weekly_skill_curate` consomme les findings de cohérence
+après la jointure de WAVE 2 et écrit `skill-curate-<date>.json` avant le tail. **No-apply est
+explicite et par défaut** : sans `apply=true`, le manifeste liste les actions (`archive | merge |
+pin | reference`) et statuts, mais aucun fichier n'est déplacé, fusionné, supprimé ou édité.
+Validation humaine explicite requise avant un appel séparé avec `apply=true`; `origin=user` reste
+protégé. Manifeste absent/illisible = anomalie reportée, jamais application implicite.
 
 ## Veille écosystème (étapes 2 → 3.6)
 

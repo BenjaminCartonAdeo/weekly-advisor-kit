@@ -18,7 +18,7 @@ L'ancre est gérée par le plugin via `<output_dir>/anchor-last.txt` — aucun c
 ## Déroulement
 
 Orchestration par waves (design doc §2). La session principale agit comme coordinateur léger :
-gate (étape 0), dispatch WAVE 1 en parallèle (3 subagents de l'agent `weekly-advisor-worker`), JOIN (synthèse), WAVE 2 optionnelle, TAIL.
+gate (étape 0), dispatch WAVE 1 en parallèle (3 subagents de l'agent `weekly-advisor-worker`), JOIN (synthèse), WAVE 2 optionnelle, **WAVE 2.5 curation [REQUIRED] (dry-run par défaut, après la jointure de WAVE 2 car consomme les findings de cohérence)**, TAIL.
 Ordre figé des étapes (tokens d'outils) : `weekly_doctor`, `weekly_run`, `weekly_releases`, `weekly_watch_distill`,
 `weekly_watch_context`, `weekly_watch_validate`, `weekly_audit_candidates`, `weekly_show_session`, `weekly_harness`,
 `weekly_harness_remediate`, `weekly_draft_candidates`, `weekly_commit_draft`, `weekly_insights`, `weekly_skill_curate`,
@@ -39,6 +39,10 @@ Ordre figé des étapes (tokens d'outils) : `weekly_doctor`, `weekly_run`, `week
   (ReferenceError) → constater, signaler, proposer le restart, **stopper le
   diagnostic** ; choix ambigu (ex. fenêtre multi-semaines) → poser UNE seule
   question, ne pas explorer le code du plugin
+
+`weekly_skill_curate` forme WAVE 2.5 : après la jointure de WAVE 2 et avant le tail, elle
+produit `skill-curate-<date>.json` en **dry-run/no-apply par défaut**. Aucune archive,
+fusion, suppression ou édition sans validation humaine explicite suivie de `apply=true`.
 
 ## Fenêtre du run
 

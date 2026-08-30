@@ -24,6 +24,7 @@ Le cœur est 100 % déterministe : le moteur Python lit directement la télémé
 | Audit qualité | Sessions candidates auditées par skill dédié, constats archivés avec baseline pour mesurer la dérive |
 | Veille marché | Distillation hebdomadaire (~30 fiches scorées) confrontée à votre environnement, avec mémoire inter-run |
 | Auto-drafting mono-cible | Drafts skills/commands ciblés vers le harnais du projet, gate de portabilité avant commit (erreur → refus) |
+| Curation WAVE 2.5 | Manifeste déterministe des actions de curation/TTL en **dry-run** ; aucune mutation sans validation humaine explicite |
 | Rapport web final | HTML autonome (dashboard KPI, filtres, dark mode) ouvert automatiquement en fin de run, plus archive MD |
 
 ## Installation
@@ -90,6 +91,16 @@ node scripts/check-flow-docs.mjs   # G1 : comptes de tests cohérents + contrats
 ```
 
 Le CI (`.github/workflows/ci.yml`) répète lint, format, 559 tests, packaging et smoke test du plugin sur Ubuntu et Windows, puis la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec-opencode-weekly-advisor`](doc/spec-opencode-weekly-advisor), l'architecture dans [`doc/ARCHITECTURE.md`](doc/ARCHITECTURE.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
+
+### WAVE 2.5 — manifeste de curation (dry-run)
+
+Après la jointure de WAVE 2 (donc après `weekly-coherence-review`), le pipeline exécute
+`weekly_skill_curate` et écrit `skill-curate-<date>.json` dans `runs/current/`. Ce manifeste
+déterministe liste les actions proposées (`archive`, `merge`, `pin`, `reference`), leurs
+cibles et leur statut. **Par défaut, c'est un dry-run : aucun fichier n'est déplacé,
+fusionné, supprimé ou modifié.** Une application nécessite une validation humaine explicite
+et un appel avec `apply=true`. Les éléments `origin=user` restent protégés. WAVE 2.5 est
+séquentielle et précède le tail de génération du rapport.
 
 ## Documentation
 

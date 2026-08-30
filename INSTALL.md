@@ -139,8 +139,22 @@ règles custom `.harness-eval/rules/portability.yaml`, ids `custom/portability/*
 **Comportement par artefact (honnête)** : `harness-eval skill-verify` n'inspecte que
 les dossiers **skills** (`SKILL.md` + fichiers frères). Pour une **command**, la gate
 est **skippée explicitement** — non applicable en harness-eval 7.10.1 — et le résultat
-du tool affiche une note de skip visible (« Gate portabilité non applicable aux
+  du tool affiche une note de skip visible (« Gate portabilité non applicable aux
 commands… ») : le commit part sans gate, jamais de silence ni de faux vert.
+
+#### WAVE 2.5 — curation gated et manifeste dry-run
+
+La curation intervient **après la jointure de WAVE 2** (drafting, insights et cohérence)
+et **avant le tail** (`report_prep` → assemble). Elle consomme le findings
+`weekly-coherence-findings-<date>.json`, le catalogue des skills et les données TTL, puis
+écrit le manifeste déterministe `skill-curate-<date>.json` dans `runs/current/`.
+
+**No-apply par défaut :** sans `apply=true`, l'étape est strictement dry-run. Elle ne
+déplace, ne supprime, ne fusionne et n'édite aucun skill ou command ; elle produit seulement
+le manifeste à vérifier. Une application est hors du chemin automatique et requiert une
+validation humaine explicite, puis un appel séparé avec `apply=true`. La protection
+`origin=user` demeure active. Manifeste absent, illisible ou incohérent : signaler, jamais
+appliquer implicitement.
 
 ### 2.4 Permissions user + auth (une fois par poste)
 
