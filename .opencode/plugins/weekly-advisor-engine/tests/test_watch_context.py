@@ -155,6 +155,20 @@ def test_missing_config_is_nonfatal_and_does_not_read_global_paths(
     assert any("plugin config not found" in warning for warning in context["warnings"])
 
 
+def test_context_exposes_observation_only_architecture_projection(tmp_path: Path) -> None:
+    root = _project(tmp_path)
+    context = build_watch_context(
+        root,
+        {"new_items": [_item(name="candidate", npm_package="candidate")]},
+        generated_at=ANCHOR,
+        harness_scope={"profile": "advisory", "unscoped_file_count": 2},
+    )
+    observation = context["architecture_observations"]
+    assert observation["state_counts"]["unknown"] == 1
+    assert observation["config"]["available"] is False
+    assert observation["harness_scope"]["profile"] == "advisory"
+
+
 def test_cli_writes_anchor_dated_context(tmp_path: Path, capsys) -> None:
     root = _project(tmp_path)
     (root / ".opencode" / "opencode.json").write_text(

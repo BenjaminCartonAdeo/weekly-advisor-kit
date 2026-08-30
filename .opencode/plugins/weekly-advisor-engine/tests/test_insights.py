@@ -117,6 +117,38 @@ def test_token_risk_finding_above_cap():
     assert "token-risk" in cats
 
 
+def test_architecture_drift_is_observation_only_and_thresholded():
+    cur = _summary(("A", "B"))
+    prev = _summary(("C", "D"))
+    older = _summary(("E", "F"))
+    cur["architecture_observations"] = {
+        "state_counts": {"declared": 2, "observed": 0, "absent": 0, "unknown": 0},
+        "config": {"available": True, "valid": True},
+        "inventory_counts": {"plugins": 2},
+        "harness_scope": {"profile": "advisory"},
+    }
+    prev["architecture_observations"] = {
+        "state_counts": {"declared": 1, "observed": 0, "absent": 0, "unknown": 0},
+        "config": {"available": True, "valid": True},
+        "inventory_counts": {"plugins": 1},
+        "harness_scope": {"profile": "advisory"},
+    }
+    older["architecture_observations"] = prev["architecture_observations"]
+    out = compute(
+        run_time=RUN,
+        current_summary=cur,
+        previous_summary=prev,
+        current_digest=None,
+        previous_digest=None,
+        recent_summaries=[cur, prev, older],
+        insights_cfg=_cfg(),
+        ignored_findings=[],
+    )
+    drift = [f for f in out["maintenance"]["findings"] if f["category"] == "architecture-drift"]
+    assert drift and drift[0]["observation_only"] is True
+    assert not any(a["rule"] == "architecture-drift" for a in out["alerts"])
+
+
 def test_daily_spike_alert():
     cur = _summary(("A", "B"), daily=[{"date": "2026-08-12", "cost_usd": 20.0}])
     prior = _summary(("C", "D"), daily=[{"date": d, "cost_usd": 0.1} for d in range(6)])

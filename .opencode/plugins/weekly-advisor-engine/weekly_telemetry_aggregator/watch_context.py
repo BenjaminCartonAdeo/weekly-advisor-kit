@@ -636,6 +636,40 @@ def _match_market_item(item: Mapping[str, Any], inventory: EnvironmentInventory)
     return result
 
 
+def _architecture_observations(
+    inventory: EnvironmentInventory,
+    market_matches: Sequence[Mapping[str, Any]],
+    harness_scope: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return a read-only snapshot useful for detecting configuration drift.
+
+    This is deliberately a projection of facts already collected by the
+    crosswalk.  It does not infer intent and never proposes or applies a
+    change.  Keeping the three existing states (declared/observed/absent)
+    explicit also prevents an unavailable config from being reported as absent.
+    """
+    states = {state: 0 for state in ("declared", "observed", "absent", "unknown")}
+    for match in market_matches:
+        state = match.get("existing_state")
+        if state in states:
+            states[state] += 1
+    return {
+        "state_counts": states,
+        "config": {
+            "files": list(inventory.config_files),
+            "available": inventory.config_available,
+            "valid": inventory.config_valid,
+        },
+        "inventory_counts": {
+            "plugins": len(inventory.plugins),
+            "skills": len(inventory.skills),
+            "commands": len(inventory.commands),
+            "agents": len(inventory.agents),
+        },
+        "harness_scope": dict(harness_scope) if isinstance(harness_scope, Mapping) else None,
+    }
+
+
 def _ecosystem_items(ecosystem: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     for key in ("new_items", "items"):
         values = ecosystem.get(key)
@@ -854,6 +888,7 @@ def build_watch_context(
     ecosystem_path: Path | None = None,
     candidates_path: Path | None = None,
     extra_keywords: Sequence[str] = (),
+    harness_scope: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic watch context from one ecosystem report.
 
@@ -939,6 +974,9 @@ def build_watch_context(
         "market_matches": market_matches,
         "warnings": sorted(set(inventory.warnings)),
     }
+    context["architecture_observations"] = _architecture_observations(
+        inventory, market_matches, harness_scope
+    )
     if ecosystem_path is not None:
         context["ecosystem_file"] = ecosystem_path.name
     if isinstance(ecosystem.get("generated_at"), str):

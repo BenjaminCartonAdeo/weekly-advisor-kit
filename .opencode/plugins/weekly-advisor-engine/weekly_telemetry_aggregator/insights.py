@@ -27,6 +27,31 @@ DEFAULT_CATALOG_COUNT = 0
 #: plafond du z-score daily_spike — un MAD≈0 produit des z astronomiques
 #: (ex. 99,19) qui sont un artefact, pas un signal plus fort (v5.31).
 DAILY_SPIKE_Z_CAP = 10.0
+ARCHITECTURE_DRIFT_RUNS_DEFAULT = 2
+
+
+def _architecture_observation(summary: dict | None) -> dict | None:
+    """Extract the optional read-only watch-context architecture projection."""
+    if not isinstance(summary, dict):
+        return None
+    value = summary.get("architecture_observations")
+    if isinstance(value, dict):
+        return value
+    context = summary.get("watch_context")
+    if isinstance(context, dict) and isinstance(context.get("architecture_observations"), dict):
+        return context["architecture_observations"]
+    return None
+
+
+def _architecture_drift(current: dict | None, previous: dict | None) -> list[str]:
+    """Compare stable architecture facts; unknown/missing snapshots are ignored."""
+    if not current or not previous:
+        return []
+    changed: list[str] = []
+    for key in ("state_counts", "config", "inventory_counts", "harness_scope"):
+        if current.get(key) != previous.get(key):
+            changed.append(key)
+    return changed
 
 
 def _robust_z_scores(values: list[float]) -> list[float]:
@@ -59,6 +84,7 @@ def compute(
     insights_cfg: InsightsConfig,
     ignored_findings: list[str],
     harness_ignored_rules: list[str] | None = None,
+    architecture_drift_runs: int = ARCHITECTURE_DRIFT_RUNS_DEFAULT,
 ) -> dict:
     """Pure Partie 6 computation. `recent_summaries` = summaries sorted newest-first
     (must include `current_summary` as the first element), for R1 and monthly/spike rules.
@@ -283,6 +309,36 @@ def compute(
 
     # ---- maintenance R1-R4 (findings initialisés avant l'alerte cache K8) ----
     findings: list[dict] = []
+    # Observation-only architecture/config drift.  This intentionally emits a
+    # report finding, not an alert that can block CI or trigger curation/apply.
+    current_arch = _architecture_observation(current_summary)
+    previous_arch = _architecture_observation(previous_summary)
+    drift_fields = _architecture_drift(current_arch, previous_arch)
+    drift_runs = 1 if drift_fields else 0
+    for summary in recent_summaries[1:]:
+        earlier = _architecture_observation(summary)
+        if not drift_fields or not _architecture_drift(current_arch, earlier):
+            break
+        drift_runs += 1
+    drift_threshold = max(1, int(architecture_drift_runs))
+    if drift_fields and drift_runs >= drift_threshold:
+        findings.append(
+            {
+                "session_id": None,
+                "category": "architecture-drift",
+                "severity": "low",
+                "description": "configuration/architecture observations changed: "
+                + ", ".join(drift_fields),
+                "evidence_summary": (
+                    f"watch-context fields={','.join(drift_fields)}; "
+                    f"consecutive_runs={drift_runs}/{drift_threshold}"
+                ),
+                "recommendation": "Review declared/observed/absent state and harness scope manually",
+                "recommendation_type": "architecture-drift",
+                "action": "recalibrate",
+                "observation_only": True,
+            }
+        )
     consecutive_zero_write = 0
     for s in recent_summaries:
         if (s.get("totals", {}) or {}).get("cache_write_tokens", 0) == 0:
