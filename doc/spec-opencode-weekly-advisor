@@ -113,7 +113,7 @@ rapport).
 
 # 4. Capacités exposées
 
-Le produit expose **17 capacités** nommées fonctionnellement. Chaque capacité décrit une
+Le produit expose **18 capacités** nommées fonctionnellement. Chaque capacité décrit une
 intention, des entrées, des sorties, des règles et des erreurs. Les capacités déterministes
 produisent des sorties structurées reproductibles ; certaines sont des capacités qualitatives
 réalisées par l'orchestrateur agent.
@@ -137,6 +137,7 @@ réalisées par l'orchestrateur agent.
 | C15 | **Publication de brouillon** | Déterministe | Valide, gate et historise un document de compétence généré. |
 | C16 | **Coût propre** | Déterministe | Mesure le coût de la session de revue elle-même. |
 | C17 | **Diagnostic** | Déterministe | Vérifie l'installation et la disponibilité des prérequis, sans rien écrire. |
+| C18 | **Curation des compétences** | Déterministe | Produit un manifeste de curation et, sur validation humaine explicite, applique les actions autorisées aux documents de compétence du projet. |
 
 Chacune des capacités est détaillée ci-dessous (intention, entrées, sorties, règles, erreurs).
 
@@ -677,6 +678,38 @@ se voit dans ses propres statistiques (il est par ailleurs exclu des totaux par 
 remédiation, source de sessions retenue) + un code de sortie : **0** prêt, **1** avertissements,
 **2** blocage.
 
+---
+
+## C18 — Curation des compétences
+
+**Intention** : transformer les décisions de cohérence et les signaux de décroissance en un
+manifeste déterministe, puis permettre leur application contrôlée aux skills du projet.
+
+**Entrées** : findings de cohérence, catalogue des skills, données d'usage TTL, ancre du run et
+validation humaine éventuelle.
+
+**Sorties** : un manifeste structuré contenant les décisions proposées, les décisions ignorées ou
+protégées, les candidats TTL, les compteurs de statut et le mode (`dry-run` ou `apply`).
+
+**Règles**
+1. L'étape intervient après la jointure de WAVE 2 et avant la préparation du rapport (WAVE 2.5).
+2. Le mode par défaut est **dry-run** : aucune archive, fusion, suppression, déplacement ou
+   modification n'est effectuée ; le manifeste est néanmoins écrit.
+3. Le mode `apply` n'est recevable qu'après validation humaine explicite et reste borné aux racines
+   de skills du projet audité. Les racines globales, les liens symboliques et les chemins hors
+   projet sont refusés.
+4. La provenance `origin=user` est toujours protégée : ses décisions destructives deviennent
+   `skip`, et ne peuvent pas être appliquées. Une politique `pin` reste prioritaire sur archive.
+5. L'archivage TTL exige un dépassement de **90 jours** depuis le dernier chargement, ou zéro
+   chargement pendant **3 runs consécutifs** ; les skills pinnées ou utilisateur sont exemptées.
+6. Chaque décision porte une cible, une action, une raison et un statut ; les compteurs du manifeste
+   doivent correspondre à ses décisions. Une anomalie de lecture produit un avertissement et ne
+   déclenche jamais une application implicite.
+
+**Erreurs** : entrée absente ou illisible → manifeste dégradé et code partiel ; racine projet
+irrésoluble ou tentative de sortie du périmètre → application refusée ; jamais de fallback vers une
+racine globale.
+
 **Règles**
 1. Configuration parsable et clés requises présentes ; config introuvable → **avertissement**
    (continuation avec valeurs par défaut) sauf si elle était explicitement fournie.
@@ -859,6 +892,12 @@ présent = run terminé (dégradations visibles à l'annexe) ; rapport absent à
 Exécuter C9 (deltas, alertes, maintenance) puis la passe de cohérence de l'environnement
 (§ C9, qualitative). Aucune écriture dans l'environnement.
 
+## 5.10.1 Étape 6.6 — Curation WAVE 2.5
+
+Après la jointure de l'étape 6, exécuter C18. Écrire le manifeste, par défaut en `dry-run`, puis
+transmettre son statut au rapport. Une application éventuelle avec `apply=true` est une action
+séparée, explicitement validée par l'humain ; elle ne fait pas partie du chemin automatique.
+
 ## 5.11 Étape 7 — Rapport final
 
 1. **7a — Préparation** (C12) : rend les sections chiffrées.
@@ -1018,7 +1057,9 @@ Champs de tête (schéma, période, date du run précédent, instant) + :
    rappel du revert.
 6. **Santé de l'environnement** : cohérence d'abord (passe critique, triée par impact, tags
    d'action), puis lint déclaratif (violations, budget, triggers, dépendances, findings R1-R5 avec
-   preuves), surface de remédiation, baseline (créée / réutilisée), règles de portabilité.
+    preuves), surface de remédiation, baseline (créée / réutilisée), règles de portabilité.
+    Le statut C18 est affiché séparément : mode, actions proposées, actions protégées et actions
+    appliquées ; un manifeste dry-run ne doit pas être présenté comme une mutation.
 7. **Écosystème** : évolutions du cœur (haute → paragraphe, moyenne → ligne) ; nouveautés notables
    (≥ 2 sources **ou** nouveau dépôt) ; le reste en « à surveiller ».
 8. **Annexe technique** : artefacts produits, avertissements (plafond 50), statut par étape
