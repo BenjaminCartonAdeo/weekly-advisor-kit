@@ -9,6 +9,7 @@ the agent never types a raw git command.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +22,8 @@ _MESSAGE_PREFIX = {
     "fix": "harness-fix:",
     "agent": "agent:",  # v6.0.n : drafts .opencode/agents/ (java-pro.md, ...)
 }
+_SKILL_ORIGINS = frozenset({"user", "bundled", "weekly-foreground", "weekly-background"})
+_SKILL_TTL_POLICIES = frozenset({"decay", "pin", "null", "none", ""})
 
 
 def _run_git(cwd: Path, *args: str, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -69,6 +72,58 @@ def frontmatter_blocks(path: Path) -> tuple[dict, str, str | None]:
             meta[key] = value.strip().strip('"')
             last_key = key
     return meta, parts[2], None
+
+
+def validate_skill_source(
+    path: Path, *, allow_legacy_metadata: bool = False
+) -> tuple[bool, dict[str, str | None], str]:
+    """Re-read and validate a source ``SKILL.md`` before a curation move.
+
+    This is deliberately stricter than the report/catalogue parser.  A catalogue
+    can be stale or incomplete, while an apply operation must prove that the
+    file currently on disk is a real, verified skill and still carries its
+    protection metadata.  ``frontmatter_blocks`` flattens the tiny YAML subset
+    used by the kit, so both flattened and explicit ``metadata.*`` spellings are
+    accepted here.
+    """
+
+    meta, _body, error = frontmatter_blocks(path)
+    origin = (meta.get("origin") or "").strip().lower()
+    ttl_policy_raw = (meta.get("ttl_policy") or "").strip().lower()
+    ttl_policy = None if ttl_policy_raw in {"", "none", "null"} else ttl_policy_raw
+    metadata = {
+        "origin": origin or None,
+        "ttl_policy": ttl_policy,
+    }
+    if error:
+        return False, metadata, f"source SKILL.md malformed: {error}"
+    try:
+        regular = path.name == "SKILL.md" and path.is_file()
+    except OSError as exc:
+        return False, metadata, f"source SKILL.md unreadable: {exc}"
+    if not regular:
+        return False, metadata, "source SKILL.md absent or not a regular file"
+    if not (meta.get("name") or "").strip():
+        return False, metadata, "source SKILL.md malformed: name absent"
+    if meta.get("name") != path.parent.name:
+        return False, metadata, "source SKILL.md malformed: name does not match directory"
+    if not origin and allow_legacy_metadata:
+        origin = "weekly-background"
+        metadata["origin"] = origin
+    if origin not in _SKILL_ORIGINS:
+        return False, metadata, "source SKILL.md unverified: origin absent or invalid"
+    if ttl_policy_raw not in _SKILL_TTL_POLICIES:
+        return False, metadata, "source SKILL.md malformed: ttl_policy invalid"
+    if not (meta.get("description") or "").strip() and not allow_legacy_metadata:
+        return False, metadata, "source SKILL.md malformed: description absent"
+    verification = (meta.get("verification") or "").strip()
+    metadata["verification"] = verification or None
+    if (
+        not allow_legacy_metadata
+        and (not verification or verification.casefold() in {"none", "null", "unverified"})
+    ):
+        return False, metadata, "source SKILL.md unverified: metadata.verification absent"
+    return True, metadata, "source SKILL.md verified"
 
 
 def draft_name(path: Path, kind: str) -> str:
@@ -239,3 +294,43 @@ def commit_draft(cfg: TelemetryConfig, file_path: Path, kind: str) -> tuple[bool
     if sync_note:
         msg += f" ; {sync_note}"
     return True, msg
+
+
+def safe_git_move(src: Path, dst: Path) -> tuple[str, str | None]:
+    """Déplace ``src`` vers ``dst`` de façon idempotente et SANS suppression.
+
+    Garanties (WAVE 2.5, apply) :
+    - Si ``dst`` existe déjà (fichier ou répertoire) -> ``("exists", None)`` :
+      aucun mouvement (idempotent, le skill est déjà archivé).
+    - Sinon : tente ``git mv`` (préserve l'historique quand ``src`` est suivi) ;
+      en échec (non versionné, répertoire hors git) repli sur ``shutil.move``.
+    - Jamais de ``rm`` / suppression. Toute erreur OSError est capturée et
+      renvoyée comme ``("error", message)`` (aucun crash).
+
+    Retour : ``(status, detail)`` avec ``status`` ∈ {moved, exists, missing, error}.
+    """
+    src = Path(src)
+    dst = Path(dst)
+    if not src.exists():
+        return "missing", f"{src} introuvable"
+    if dst.exists():
+        return "exists", f"{dst} déjà présent (idempotent)"
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        # ``git mv`` is intentionally attempted only when the source and
+        # destination belong to the same repository.  Passing absolute paths
+        # from unrelated directories to git can otherwise produce misleading
+        # failures before the safe shutil fallback.
+        src_root = _repo_root(src)
+        dst_root = _repo_root(dst.parent)
+        if src_root is not None and src_root == dst_root:
+            mv = _run_git(src_root, "mv", "--", str(src), str(dst))
+            if mv.returncode == 0:
+                return "moved", str(dst)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        shutil.move(str(src), str(dst))
+        return "moved", str(dst)
+    except (OSError, shutil.Error) as exc:
+        return "error", str(exc)

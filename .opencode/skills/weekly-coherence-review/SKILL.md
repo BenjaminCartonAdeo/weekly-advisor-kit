@@ -79,6 +79,8 @@ recommendation_type, impact_order_of_magnitude), ranked.
 **Aucune écriture auto** dans `.opencode/` — pas de suppression, pas de fusion, pas
 d'édition, pas d'archivage. La review est **read-only** : les décisions
 (`archive | merge | pin | reference`) sont **ÉMISES** dans le findings JSON, jamais
-appliquées ici. Leur application est déléguée au nouveau module **`weekly-skill-curate`**
-(étape 6.6) qui consomme ces décisions de façon déterministe. Le pipeline détecte et
-recommande ; `weekly-skill-curate` applique ; l'humain valide.
+appliquées ici. Les décisions `archive` (et les autres) sont appliquées par
+**`weekly_skill_curate`** (step 6.6, **dry-run par défaut** ; `apply=true` après validation
+humaine) qui consomme ces décisions de façon déterministe — la boucle est fermée, ce n'est
+plus un point en suspens. Le pipeline détecte et recommande ; `weekly_skill_curate` applique
+(dry-run par défaut) ; l'humain valide.
