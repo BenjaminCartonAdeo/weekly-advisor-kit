@@ -1,4 +1,9 @@
+import json
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 from weekly_telemetry_aggregator.graphify_summary import summarize_graph
 
@@ -32,3 +37,32 @@ def test_summary_is_deterministic_and_groups_files():
     }
     assert summarize_graph(graph) == summarize_graph(graph)
     assert [item["source_file"] for item in summarize_graph(graph)["files"]] == ["a.py", "z.py"]
+
+
+@pytest.mark.parametrize("links", [None, {"source": "a", "target": "b"}])
+def test_summary_treats_non_list_links_as_empty(links: object):
+    graph = {"nodes": [], "links": links}
+
+    summary = summarize_graph(graph)
+
+    assert summary["edge_count"] == 0
+    assert summary["filtered"]["self_loops"] == 0
+
+
+def test_cli_rejects_input_output_collision_without_changing_raw_graph(tmp_path: Path):
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_bytes(json.dumps({"nodes": [], "links": []}).encode())
+    raw_graph = graph_path.read_bytes()
+    script = Path(__file__).parents[4] / "scripts" / "graphify-architecture-summary.py"
+
+    result = subprocess.run(
+        [sys.executable, str(script), str(graph_path), "--output", str(graph_path)],
+        cwd=script.parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "must not overwrite" in result.stderr
+    assert graph_path.read_bytes() == raw_graph

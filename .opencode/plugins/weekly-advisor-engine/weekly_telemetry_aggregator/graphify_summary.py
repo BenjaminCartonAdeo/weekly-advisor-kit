@@ -53,8 +53,10 @@ def summarize_graph(graph: dict[str, Any], *, project_root: Path | None = None) 
         nodes[node_id] = node
 
     links = graph.get("links", graph.get("edges", []))
+    if not isinstance(links, list):
+        links = []
     relations: Counter[tuple[str, str, str]] = Counter()
-    for link in links if isinstance(links, list) else []:
+    for link in links:
         if not isinstance(link, dict):
             continue
         source, target = str(link.get("source", "")), str(link.get("target", ""))
