@@ -18,7 +18,7 @@ Le cœur est 100 % déterministe : le moteur Python lit directement la télémé
 
 | Fonctionnalité | Ce que vous obtenez |
 |---|---|
-| Multi-harnais | Télémétrie OpenCode, Claude Code et Copilot VS Code via `session_sources`, extensible par source ; Codex reste **cible de drafting seule** (jamais source de télémétrie) |
+| Multi-harnais | Télémétrie OpenCode, Claude Code et Copilot VS Code via `session_sources`, extensible par source ; **Codex n'est jamais un provider de télémétrie** — cible de drafting seule (`.agents/`) |
 | Chiffres déterministes | Moteur Python pur, zéro LLM sur les données : coûts, tokens, cache, outliers, prompts répétés |
 | Coûts estimés | Estimation par session avec surcharge `cost_rate_usd_per_mtok` par source, alertes budget semaine/mois |
 | Audit qualité | Sessions candidates auditées par skill dédié, constats archivés avec baseline pour mesurer la dérive |
@@ -98,13 +98,16 @@ Le CI (`.github/workflows/ci.yml`) répète lint, format, 591 tests, packaging e
 Après la jointure de WAVE 2 (donc après `weekly-coherence-review`), le pipeline exécute
 `weekly_skill_curate` et écrit `skill-curate-<date>.json` dans `runs/current/`. Ce manifeste
 déterministe liste les actions proposées (`archive`, `merge`, `pin`, `reference`), leurs
-cibles et leur statut. **Par défaut, c'est un dry-run : aucun fichier n'est déplacé,
+cibles et leur statut. **Par défaut, c'est un dry-run (gate no-apply) : aucun fichier n'est déplacé,
 fusionné, supprimé ou modifié.** Une application nécessite une validation humaine explicite
 et un appel avec `apply=true`. **Gate politique** : même en `apply`, seule l'action
 `archive` est exécutée (déplacement idempotent vers `_archive/<date>/`, jamais de
 suppression) ; `merge`, `reference`, `pin`, `delete` et `recalibrate` restent des
 propositions, sans aucune opération fichiers. Les éléments `origin=user` restent protégés.
-WAVE 2.5 est séquentielle et précède le tail de génération du rapport.
+WAVE 2.5 est séquentielle et précède le tail de génération du rapport ; elle est
+**REQUIRED** à l'assemble : si les findings de cohérence portent des actions de curation
+mais que le manifeste `skill-curate-<date>.json` est absent, le rapport passe en P0 avec
+rc=1 (partiel).
 
 ## Documentation
 
@@ -120,7 +123,7 @@ WAVE 2.5 est séquentielle et précède le tail de génération du rapport.
 
 - Le moteur lit les tables internes de la base SQLite d'opencode : ce n'est pas une API publique, une mise à jour majeure peut rompre la collecte jusqu'à la mise à jour du kit. `weekly_doctor` diagnostique.
 - La veille dépend d'APIs publiques (npm, GitHub, registre MCP) : rate-limits possibles, warnings tolérés, le run continue.
-- L'exploration d'architecture via Graphify (`graphify-out/`) est **hors pipeline** : out-of-band et optionnelle, elle ne nourrit ni la revue ni le rapport, et ses sorties sont ignorées par le kit. Une mise à jour de graphe seule (code-only) peut s'exécuter sans LLM. Un **résumé d'architecture déterministe** peut être projeté en lecture seule depuis `graphify-out/graph.json` (`scripts/graphify-architecture-summary.py`) : le graphe n'est jamais modifié et la projection n'entre ni dans la revue ni dans le rapport.
+- L'exploration d'architecture via Graphify (`graphify-out/`) est **hors pipeline** : out-of-band et optionnelle, elle ne nourrit ni la revue ni le rapport, et ses sorties sont ignorées par le kit. Une mise à jour de graphe seule (code-only) peut s'exécuter sans LLM. État courant : graphe brut `graph.json` — 2766 nœuds · 7032 liens, construit au commit `6b1117d`. Un **résumé d'architecture filtré** peut être projeté en lecture seule (`scripts/graphify-architecture-summary.py`) : 2744 nœuds · 6937 arêtes · 99 fichiers (19 nœuds génériques exclus). Le filtrage exclut les nœuds sans fichier source, les nœuds génériques et les sources disparues (`stale`) ; liens restreints aux nœuds retenus, self-loops omis, collections triées (sortie reproductible). Le graphe n'est jamais modifié et la projection n'entre ni dans la revue ni dans le rapport.
 
 ## Licence
 
