@@ -12,7 +12,9 @@ from weekly_telemetry_aggregator.graphify_summary import load_and_summarize
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("graph", type=Path, nargs="?", default=Path("graphify-out/graph.json"))
+    parser.add_argument(
+        "graph", type=Path, nargs="?", default=Path("graphify-out/graph.json")
+    )
     parser.add_argument(
         "--output", type=Path, help="write summary here; raw graph is never touched"
     )

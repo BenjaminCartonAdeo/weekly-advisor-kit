@@ -38,6 +38,8 @@ def test_config_defaults(tmp_path: Path):
     # v6.1 : rapport HTML autonome — None → défaut <project_root>/reports/html.
     assert cfg.html_report_dir is None
     assert cfg.open_browser is True
+
+
 def test_config_json_overrides(tmp_path: Path):
     conf = tmp_path / "config.json"
     conf.write_text(
