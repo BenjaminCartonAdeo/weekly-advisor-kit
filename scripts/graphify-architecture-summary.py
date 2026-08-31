@@ -12,10 +12,9 @@ ENGINE_ROOT = Path(__file__).resolve().parent.parent / ".opencode" / "plugins" /
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
-from weekly_telemetry_aggregator.graphify_summary import load_and_summarize  # noqa: E402
-
-
 def main() -> int:
+    from weekly_telemetry_aggregator.graphify_summary import load_and_summarize
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "graph", type=Path, nargs="?", default=Path("graphify-out/graph.json")
