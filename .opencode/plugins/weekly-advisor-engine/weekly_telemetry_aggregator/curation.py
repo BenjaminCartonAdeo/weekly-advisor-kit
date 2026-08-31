@@ -509,7 +509,7 @@ def _run_marker(obj: Mapping[str, Any]) -> str | None:
     for key in ("run_id", "run_marker", "run", "run_date", "date", "week"):
         value = obj.get(key)
         if (
-            isinstance(value, (str, int, float))
+            isinstance(value, str | int | float)
             and not isinstance(value, bool)
             and str(value).strip()
         ):
@@ -518,7 +518,7 @@ def _run_marker(obj: Mapping[str, Any]) -> str | None:
             for nested_key in ("run_id", "id", "date", "week"):
                 nested = value.get(nested_key)
                 if (
-                    isinstance(nested, (str, int, float))
+                    isinstance(nested, str | int | float)
                     and not isinstance(nested, bool)
                     and str(nested).strip()
                 ):
@@ -595,7 +595,7 @@ def _carry_usage(obj: Mapping[str, Any]) -> list[dict[str, Any]]:
             if isinstance(item, Mapping):
                 add_record(item.get("skill_id") or item.get("name"), item)
 
-    if sid and not isinstance(raw_usage, (Mapping, list)):
+    if sid and not isinstance(raw_usage, Mapping | list):
         add_record(sid, obj)
 
     raw_skills = obj.get("skills")

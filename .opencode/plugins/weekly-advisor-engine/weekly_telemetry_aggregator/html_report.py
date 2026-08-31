@@ -52,7 +52,7 @@ def _resolve_html_dir(cfg: TelemetryConfig) -> Path | None:
 
 def _json_default(obj: Any) -> Any:
     """Sérialisation défensive du ctx (sets du ctx réel → listes triées)."""
-    if isinstance(obj, (set, frozenset)):
+    if isinstance(obj, set | frozenset):
         return sorted(obj)
     return str(obj)
 

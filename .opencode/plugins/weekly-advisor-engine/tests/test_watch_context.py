@@ -452,7 +452,7 @@ def test_enrich_candidates_fills_state_match_hints_and_residual(tmp_path: Path) 
     assert "npm:delta-pkg" not in residual_ids  # bloqué sécurité : jamais en résiduel
     gamma = next(row for row in enriched["residual"] if row["id"] == "url:gamma")
     assert set(gamma) == {"id", "name", "description", "score_total"}
-    assert isinstance(gamma["score_total"], (int, float))
+    assert isinstance(gamma["score_total"], int | float)
 
 
 def test_enrich_candidates_returns_none_on_invalid_payload(tmp_path: Path) -> None:

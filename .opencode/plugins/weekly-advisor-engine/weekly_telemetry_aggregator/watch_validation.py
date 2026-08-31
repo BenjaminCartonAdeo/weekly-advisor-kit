@@ -65,7 +65,7 @@ def _non_empty_text(value: object) -> str | None:
 
 
 def _is_values(value: object) -> bool:
-    return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
+    return isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray)
 
 
 def _text_tokens(text: object) -> frozenset[str]:
