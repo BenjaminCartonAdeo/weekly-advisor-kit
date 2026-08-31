@@ -34,7 +34,7 @@ jobs:
         run: uv run ruff check .
       - name: Format
         run: uv run ruff format --check .
-      - name: Tests (585, aucun réseau)
+      - name: Tests (594, aucun réseau)
         run: uv run pytest -q
       - name: Packaging
         run: uv build
