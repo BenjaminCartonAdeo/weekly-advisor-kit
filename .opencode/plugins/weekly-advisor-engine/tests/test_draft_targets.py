@@ -200,7 +200,6 @@ def test_config_default_dataclass_is_auto():
     cfg = TelemetryConfig()
     assert cfg.draft_targets.mode == "auto"
     assert cfg.draft_targets.targets == []
-    assert cfg.curation.draft_targets == cfg.draft_targets
 
 
 def test_config_non_empty_list_is_override(tmp_path: Path):

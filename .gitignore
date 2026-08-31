@@ -1,6 +1,7 @@
 # venv et deps locales (jamais versionnées)
 .venv/
 .opencode/node_modules/
+.idea/
 
 # artefacts Python (bytecode/build, jamais versionnés)
 __pycache__/

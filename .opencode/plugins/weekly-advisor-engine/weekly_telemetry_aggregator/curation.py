@@ -34,7 +34,6 @@ _CURATION_ACTIONS = {
     "fix",
 }
 _PROTECTION_ACTIONS = {"pin"}
-_RECALIBRATION_ACTIONS = {"recalibrate", "fix"}
 # Stable tie-breaks keep one final decision per skill regardless of finding order.
 _ACTION_PRIORITY = {
     "pin": 0,
@@ -490,8 +489,6 @@ def _memory_paths(
         elif not configured.is_absolute() and engine_dir is not None:
             configured = Path(engine_dir).expanduser() / configured
         paths.append(configured)
-    elif output_dir is not None:
-        paths.append(Path(output_dir).expanduser() / "watch-memory.jsonl")
     if output_dir is not None:
         paths.append(Path(output_dir).expanduser() / "watch-memory.jsonl")
     if engine_dir is not None:

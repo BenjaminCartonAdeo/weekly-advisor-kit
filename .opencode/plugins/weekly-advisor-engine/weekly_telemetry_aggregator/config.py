@@ -145,55 +145,6 @@ class HarnessIncludeConfig:
     )
 
 
-@dataclass(frozen=True, slots=True)
-class SourcesConfig:
-    """Configuration concerned with telemetry and ecosystem input sources.
-
-    This is a read-only view over the legacy flat fields on
-    :class:`TelemetryConfig`; keeping it as a view avoids changing the JSON
-    shape or constructor accepted by existing callers.
-    """
-
-    opencode_db_path: str = "auto"
-    session_sources: tuple[dict, ...] = field(default_factory=lambda: ({"type": "opencode"},))
-    release_keywords: tuple[str, ...] = ("skill", "cache", "context", "compaction")
-    github_min_stars: int = 5
-    watch_repos: tuple[str, ...] = ()
-    watch: tuple[dict, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class StorageConfig:
-    """Configuration for project, report, and baseline storage locations."""
-
-    project_root: Path | None = None
-    output_dir: Path = field(default_factory=lambda: _expand("~/opencode-weekly-reports"))
-    baseline_summary_path: str | None = None
-    html_report_dir: str | None = None
-    kit_root: Path | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class CostConfig:
-    """Cost and outlier thresholds, exposed without changing legacy fields."""
-
-    session_outlier_z: float = 3.0
-    session_outlier_min_cost_usd: float = 0.5
-    outlier_min_sessions: int = OUTLIER_MIN_SESSIONS
-    cross_check_tolerance_pct: float = 0.25
-    audit: AuditConfig = field(default_factory=AuditConfig)
-    insights: InsightsConfig = field(default_factory=InsightsConfig)
-
-
-@dataclass(frozen=True, slots=True)
-class CurationConfig:
-    """Configuration controlling finding filtering and watch distillation."""
-
-    ignored_findings: tuple[str, ...] = ()
-    draft_targets: DraftTargetsConfig = field(default_factory=DraftTargetsConfig)
-    watch_distill: WatchDistillConfig = field(default_factory=WatchDistillConfig)
-
-
 @dataclass(slots=True)
 class TelemetryConfig:
     project_root: Path | None = None
@@ -269,50 +220,6 @@ class TelemetryConfig:
     draft_targets: DraftTargetsConfig = field(default_factory=DraftTargetsConfig)
     #: veille — distill déterministe (étape 2.2) : quotas, poids, mémoire.
     watch_distill: WatchDistillConfig = field(default_factory=WatchDistillConfig)
-
-    @property
-    def sources(self) -> SourcesConfig:
-        """Return frozen grouped view of legacy source settings."""
-        return SourcesConfig(
-            opencode_db_path=self.opencode_db_path,
-            session_sources=tuple(dict(source) for source in self.session_sources),
-            release_keywords=tuple(self.release_keywords),
-            github_min_stars=self.github_min_stars,
-            watch_repos=tuple(self.watch_repos),
-            watch=tuple(dict(entry) for entry in self.watch),
-        )
-
-    @property
-    def storage(self) -> StorageConfig:
-        """Return frozen grouped view of legacy storage settings."""
-        return StorageConfig(
-            project_root=self.project_root,
-            output_dir=self.output_dir,
-            baseline_summary_path=self.baseline_summary_path,
-            html_report_dir=self.html_report_dir,
-            kit_root=self.kit_root,
-        )
-
-    @property
-    def cost(self) -> CostConfig:
-        """Return frozen grouped view of legacy cost settings."""
-        return CostConfig(
-            session_outlier_z=self.session_outlier_z,
-            session_outlier_min_cost_usd=self.session_outlier_min_cost_usd,
-            outlier_min_sessions=self.outlier_min_sessions,
-            cross_check_tolerance_pct=self.cross_check_tolerance_pct,
-            audit=self.audit,
-            insights=self.insights,
-        )
-
-    @property
-    def curation(self) -> CurationConfig:
-        """Return frozen grouped view of legacy curation settings."""
-        return CurationConfig(
-            ignored_findings=tuple(self.ignored_findings),
-            draft_targets=self.draft_targets,
-            watch_distill=self.watch_distill,
-        )
 
     def window_hours(self) -> float:
         return self.lookback_days * 24.0
