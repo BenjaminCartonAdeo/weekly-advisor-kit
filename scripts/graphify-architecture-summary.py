@@ -20,6 +20,8 @@ def main() -> int:
     args = parser.parse_args()
     if not args.graph.is_file():
         parser.error(f"Graphify artifact not found: {args.graph}")
+    if args.output is not None and args.output.resolve() == args.graph.resolve():
+        parser.error("--output must not overwrite the input Graphify artifact")
     summary = load_and_summarize(args.graph, project_root=args.project_root.resolve())
     rendered = json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     if args.output:

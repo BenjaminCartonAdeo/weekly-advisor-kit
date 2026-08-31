@@ -49,11 +49,14 @@ dans le périmètre explicitement autorisé.
 - Il ne réalise **pas** d'exploration d'architecture en dehors de la revue : une telle exploration
   (ex. analyse de graphe du code) reste **optionnelle et out-of-band**, ses artefacts de sortie
   sont **ignorés** par le pipeline et n'apparaissent jamais dans le rapport. Une mise à jour de
-  code seule, sans passe LLM, peut s'exécuter indépendamment de la revue hebdomadaire. Un
-  **résumé d'architecture déterministe** peut être projeté depuis un artefact de graphe
+  code seule, sans passe LLM, peut s'exécuter indépendamment de la revue hebdomadaire.
+- Un **résumé d'architecture filtré** peut être projeté depuis un **graphe brut** out-of-band
   (projection **en lecture seule** : le graphe n'est jamais modifié, l'outil de projection ne
-  déclenche jamais l'outil d'exploration) — cette projection est elle-même out-of-band et ne
-  nourrit ni la revue ni le rapport.
+  déclenche jamais l'outil d'exploration). La projection est **déterministe** : elle exclut les
+  nœuds sans fichier source, les nœuds génériques (étiquettes absentes, vides ou non
+  significatives) et les sources disparues ; elle restreint les liens aux nœuds retenus, omet
+  les auto-liens et trie toutes les collections (sortie reproductible). Elle n'est **jamais
+  consommée par la revue au moment de son exécution** : ni la revue ni le rapport ne la lisent.
 
 ## 1.3 Cycle de vie d'une revue
 
@@ -72,7 +75,7 @@ rapport).
 |---|---|
 | **Revue (hebdomadaire)** | Le cycle complet de collecte, analyse, veille, drafting et rapport, exécuté à cadence régulière sur une fenêtre glissante. |
 | **Session** | Unité d'activité d'un agent de code : une conversation avec ses métadonnées (titre, modèle, agent, coûts, tokens) et son transcript (tours de dialogue, appels d'outils, étapes). |
-| **Harnais** | Écosystème d'agent de code supporté dont le produit lit les sessions. Les harnais supportés sont : **OpenCode**, **Claude Code**, **Copilot VS Code**, **Codex**. Leurs noms sont du vocabulaire métier : le produit opère sur eux. Les **providers de télémétrie** (sources de sessions lues) sont OpenCode, Claude Code et Copilot VS Code ; **Codex est une cible de drafting seule** (`.agents/`) — le produit ne lit jamais ses sessions. |
+| **Harnais** | Écosystème d'agent de code supporté dont le produit lit les sessions. Les harnais supportés sont : **OpenCode**, **Claude Code**, **Copilot VS Code**, **Codex**. Leurs noms sont du vocabulaire métier : le produit opère sur eux. Les **providers de télémétrie** (sources de sessions lues) sont OpenCode, Claude Code et Copilot VS Code ; **Codex n'est jamais un provider de télémétrie** — cible de drafting seule (`.agents/`), le produit ne lit jamais ses sessions. |
 | **Identifiant canonique** | Identifiant unique d'une session sur toutes les sources, de la forme `<harnais>:<identifiant local>`. Un identifiant brut (sans préfixe de harnais) reste accepté et est résolu par la première source qui le possède. |
 | **Run** | Exécution d'une revue ; chaque run est associé à une **ancre** temporelle et à une fenêtre glissante. |
 | **Fenêtre glissante** | Intervalle temporel analysé : `[instant de référence − (nombre de jours × 24 h), instant de référence]`. Par défaut 7 jours. |
@@ -88,7 +91,8 @@ rapport).
 | **Snooze (ignored_findings)** | Liste manuelle d'identifiants de constats à ne plus proposer ; éditée dans la configuration, jamais maintenue automatiquement. |
 | **Digest** | Extraction bornée d'une sortie volumineuse, destinée à alimenter une étape suivante sans excès de volume. |
 | **Observation d'architecture** | Projection **en lecture seule** de faits d'environnement (compteurs d'états déclaré/observé/absent/inconnu, disponibilité et validité de la configuration, compteurs d'inventaire, périmètre de harnais). Elle n'infère aucune intention, ne propose ni n'applique aucun changement ; utilisée pour détecter une dérive d'architecture/configuration. |
-| **Résumé d'architecture (graphe)** | Projection déterministe compacte d'un graphe de code out-of-band (nœuds/fichiers/relations filtrés, triés). Jamais consommée par la revue ; le graphe source n'est jamais modifié. |
+| **Résumé d'architecture (graphe)** | Projection déterministe **filtrée** d'un **graphe brut** de code out-of-band (nœuds/fichiers/relations). Filtrage : nœuds sans fichier source, nœuds génériques et sources disparues exclus ; liens restreints aux nœuds retenus ; auto-liens omis ; collections triées (sortie reproductible). Jamais consommée par la revue ; le graphe brut n'est jamais modifié. |
+| **Vue de configuration** | Regroupement thématique **en lecture seule** de la configuration (sources, stockage, coûts, curation), dérivé de la configuration persistée. Une vue ne modifie jamais la configuration ; la forme persistée (plate) reste inchangée, rétro-compatible, aucune migration imposée. |
 
 ---
 
@@ -717,7 +721,7 @@ validation humaine éventuelle.
 protégées, les candidats TTL, les compteurs de statut et le mode (`dry-run` ou `apply`).
 
 **Règles**
-1. L'étape intervient après la jointure de WAVE 2 et avant la préparation du rapport (WAVE 2.5).
+1. L'étape intervient après la jointure de WAVE 2 et avant la préparation du rapport (WAVE 2.5). Elle est **requise à l'assemblage** : si les findings de cohérence portent des actions de curation mais que le manifeste est absent, le rapport est signalé **priorité haute** et le run est **partiel** (code 1).
 2. Le mode par défaut est **dry-run** : aucune archive, fusion, suppression, déplacement ou
    modification n'est effectuée ; le manifeste est néanmoins écrit.
 3. Le mode `apply` n'est recevable qu'après validation humaine explicite et reste borné aux racines
@@ -904,7 +908,7 @@ généralisé, avec paramètres pour les valeurs variables.
 | Code | Sens | Conditions exactes |
 |---|---|---|
 | **0** | Succès complet | Toutes les étapes ont tourné complètement, aucune étape partielle ni fatale. |
-| **1** | Succès partiel (dégradé) | Au moins une étape partielle : avertissements de la collecte, source de veille en panne (toutes échouées), audit sans findings produits, drafting avec un commit en échec (fichier écrit non historisé), contexte de veille absent, digest déclaratif absent (deltas à `null`), coût propre non mesurable. L'orchestrateur remonte le **pire** des codes rencontrés parmi ses étapes. |
+| **1** | Succès partiel (dégradé) | Au moins une étape partielle : avertissements de la collecte, source de veille en panne (toutes échouées), audit sans findings produits, drafting avec un commit en échec (fichier écrit non historisé), contexte de veille absent, digest déclaratif absent (deltas à `null`), coût propre non mesurable, **manifeste de curation absent alors que les findings de cohérence portent des actions de curation** (WAVE 2.5 requise). L'orchestrateur remonte le **pire** des codes rencontrés parmi ses étapes. |
 | **2** | Échec bloquant | Échec fatale d'une étape : collecte défaillante (source bloquante), diagnostic d'installation bloquant, échec d'exécution du contrôle déclaratif. L'orchestrateur **s'arrête sans écrire de rapport**. |
 
 **Étapes qualitatives — codes dérivés de leurs livrables** : ces étapes n'ont pas de code de
@@ -922,12 +926,15 @@ Exécuter C9 (deltas, alertes, maintenance) puis la passe de cohérence de l'env
 
 ## 5.10.1 Étape 6.6 — Curation WAVE 2.5
 
-Après la jointure de l'étape 6, exécuter C18. Écrire le manifeste, par défaut en `dry-run`, puis
+Après la jointure de l'étape 6, exécuter C18. Écrire le manifeste, par défaut en `dry-run`
+(**gate no-apply** : aucun fichier n'est déplacé, fusionné, supprimé ou modifié), puis
 transmettre son statut au rapport. Une application éventuelle avec `apply=true` est une action
 séparée, explicitement validée par l'humain ; elle ne fait pas partie du chemin automatique.
 **Gate politique de l'application** : même avec `apply=true`, seules les actions `archive` sont
 exécutées (déplacement idempotent, jamais de suppression) ; les autres actions restent des
-propositions sans opération fichiers.
+propositions sans opération fichiers. L'étape est **requise à l'assemblage** : si les findings
+de cohérence portent des actions de curation mais que le manifeste est absent, le rapport est
+signalé **priorité haute** et le run est **partiel** (code 1).
 
 ## 5.11 Étape 7 — Rapport final
 
@@ -1100,7 +1107,8 @@ Champs de tête (schéma, période, date du run précédent, instant) + :
     Les findings **observation-only** (R6, `architecture-drift`) sont présentés comme des
     observations, distincts des mutations proposées.
     Le statut C18 est affiché séparément : mode, actions proposées, actions protégées et actions
-    appliquées ; un manifeste dry-run ne doit pas être présenté comme une mutation.
+    appliquées ; un manifeste dry-run ne doit pas être présenté comme une mutation. Un manifeste
+    requis absent (WAVE 2.5 requise) signale le rapport en priorité haute (run partiel).
 7. **Écosystème** : évolutions du cœur (haute → paragraphe, moyenne → ligne) ; nouveautés notables
    (≥ 2 sources **ou** nouveau dépôt) ; le reste en « à surveiller ».
 8. **Annexe technique** : artefacts produits, avertissements (plafond 50), statut par étape
@@ -1199,6 +1207,13 @@ manuel.
 La liste `ignored_findings` (identifiants « catégorie:cible ») supprime de la proposition les
 constats correspondants. Elle est **éditée dans la configuration, jamais maintenue par un état
 auto-géré** ; les ignorés sont listés en annexe du rapport.
+
+## 8.11 Configuration en vues groupées (lecture seule)
+- La configuration est persistée sous une forme **plate** et exposée aux étapes par **vues
+  groupées thématiques** (sources, stockage, coûts, curation), **en lecture seule**.
+- Une vue est une projection dérivée, jamais une réécriture : la forme persistée reste
+  **inchangée**, rétro-compatible, aucune migration de format, aucune clé renommée.
+- Lire une vue n'a aucun effet de bord sur la configuration.
 
 ---
 

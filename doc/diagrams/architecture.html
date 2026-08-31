@@ -64,13 +64,13 @@
   <header>
     <p class="eyebrow">WEEKLY-ADVISOR-KIT · v6.2 · MULTI-HARNESS TELEMETRY</p>
     <h1>Architecture du kit — moteur déterministe, enveloppe plugin, six couches</h1>
-    <p class="subtitle">Flux de bout en bout : marqueurs de harnais → résolution des cibles de draft → providers de sessions (SQLite · JSONL · chatSessions) → pipeline <em>main.run()</em> → veille écosystème distillée avec mémoire inter-run (étapes 2 → 3.6) → projection harness &amp; gates → artefacts JSON et rapport. L'agent OpenCode ne pilote que l'enveloppe ; le moteur reste 100&nbsp;% déterministe. <strong>architecture-summary boundary</strong> : complete (rc=0), partial (rc=1), fatal (rc=2) restent séparés ; le provider de télémétrie n'est jamais Codex.</p>
+    <p class="subtitle">Flux de bout en bout : marqueurs de harnais → résolution des cibles de draft → providers de sessions (SQLite · JSONL · chatSessions) → pipeline <em>main.run()</em> → veille écosystème distillée avec mémoire inter-run (étapes 2 → 3.6) → projection harness &amp; gates → artefacts JSON et rapport. L'agent OpenCode ne pilote que l'enveloppe ; le moteur reste 100&nbsp;% déterministe. <strong>architecture-summary boundary</strong> : graphe brut <em>graphify-out/graph.json</em> (2766 nœuds · 7032 liens) → résumé filtré <em>graphify_summary.py</em> (2744 nœuds · 6937 arêtes · 99 fichiers ; 19 génériques exclus) — lecture seule, hors pipeline, jamais consommé par la revue. Paths : complete (rc=0), partial (rc=1), fatal (rc=2) restent séparés ; le provider de télémétrie n'est jamais Codex.</p>
   </header>
 
   <figure>
   <svg viewBox="0 0 1560 2512" width="1560" role="img" aria-labelledby="wa-arch-title wa-arch-desc" xmlns="http://www.w3.org/2000/svg">
     <title id="wa-arch-title">Architecture weekly-advisor-kit v6.2 — veille incluse</title>
-    <desc id="wa-arch-desc">Diagramme d'architecture en couches : les marqueurs de harnais alimentent la résolution des cibles de draft (Codex n'est qu'une cible, sans provider) ; trois providers lisent les sessions OpenCode (SQLite), Claude Code (JSONL) et Copilot VS Code (chatSessions + state.vscdb) derrière un protocole commun et un registre fail-soft ; le pipeline main.run() agrège usages, coûts estimés et candidats avant écriture des artefacts ; la veille écosystème enchaîne releases, distill déterministe avec mémoire inter-run watch-memory.jsonl, crosswalk local puis validation des findings ; la projection harness et ses gates encadrent lint et remédiation ; l'enveloppe plugin TypeScript expose 18 tools avec gate de portabilité, gate de commit sécurisé et curation WAVE 2.5 (manifeste dry-run / apply sur validation) ; les sorties regroupent artefacts JSON, rapport HTML/Markdown (tail prep → blocks-draft → prose → assemble → self-cost) et diagnostic doctor.</desc>
+    <desc id="wa-arch-desc">Diagramme d'architecture en couches : les marqueurs de harnais alimentent la résolution des cibles de draft (Codex n'est qu'une cible, sans provider) ; trois providers lisent les sessions OpenCode (SQLite), Claude Code (JSONL) et Copilot VS Code (chatSessions + state.vscdb) derrière un protocole commun et un registre fail-soft ; le pipeline main.run() agrège usages, coûts estimés et candidats avant écriture des artefacts ; la veille écosystème enchaîne releases, distill déterministe avec mémoire inter-run watch-memory.jsonl, crosswalk local puis validation des findings ; la projection harness et ses gates encadrent lint et remédiation ; l'enveloppe plugin TypeScript expose 18 tools avec gate de portabilité, gate de commit sécurisé et curation WAVE 2.5 (manifeste dry-run / apply sur validation) ; la projection Graphify est hors pipeline et hors revue (graphe brut graph.json projeté en résumé filtré lecture seule, jamais consommé par le kit) ; les sorties regroupent artefacts JSON, rapport HTML/Markdown (tail prep → blocks-draft → prose → assemble → self-cost) et diagnostic doctor.</desc>
 
     <defs>
       <marker id="wa-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
@@ -261,6 +261,18 @@
        <text x="964" y="196" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">architecture-summary boundary : providers ≠ draft targets (Codex sans sessions)</text>
     </g>
 
+    <!-- Bande 1 : nœud Graphify (out-of-band, gauche) -->
+    <g>
+      <rect x="48" y="96" width="288" height="104" rx="6" fill="#f5f5f5"/>
+      <rect x="48" y="96" width="288" height="104" rx="6" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.30)" stroke-width="1" stroke-dasharray="4,3"/>
+      <rect x="56" y="102" width="72" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.5)" stroke-width="0.8"/>
+      <text x="92" y="111" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">OUT-OF-BAND</text>
+      <text x="192" y="132" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Graphify — exploration</text>
+      <text x="192" y="148" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">graphe brut graph.json → résumé</text>
+      <text x="192" y="164" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">arch. filtré (graphify_summary.py)</text>
+      <text x="192" y="182" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">hors pipeline · jamais consommé par la revue</text>
+    </g>
+
     <!-- Bande 2 : providers (rangée 1) + protocole (barre pleine largeur) -->
     <g>
       <rect x="384" y="304" width="192" height="128" rx="6" fill="#f5f5f5"/>
@@ -372,7 +384,7 @@
       <text x="1340" y="858" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">activate_run() uuid</text>
       <text x="1340" y="874" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">EXIT 0 · 1 partiel · 2 fatal</text>
     </g>
-    <text x="904" y="948" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">cfg : weekly-telemetry-config.json (TelemetryConfig, relue à chaque appel) · déterministe — zéro LLM sur les étapes chiffrées</text>
+    <text x="904" y="948" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">cfg : weekly-telemetry-config.json (TelemetryConfig) · clés plates + vues lecture seule sources · storage · cost · curation · relue à chaque appel · déterministe — zéro LLM</text>
 
 
     <!-- Bande 3·B : nœuds veille -->
@@ -503,11 +515,12 @@
     </g>
     <g>
       <rect x="1072" y="2056" width="352" height="56" rx="6" fill="#f5f5f5"/>
-      <rect x="1072" y="2056" width="352" height="56" rx="6" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.5)" stroke-width="1" stroke-dasharray="4,3"/>
+      <rect x="1072" y="2056" width="352" height="64" rx="6" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.5)" stroke-width="1" stroke-dasharray="4,3"/>
       <rect x="1080" y="2062" width="40" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.5)" stroke-width="0.8"/>
       <text x="1100" y="2071" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">GATE</text>
       <text x="1248" y="2080" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Curation WAVE 2.5 — weekly_skill_curate</text>
-      <text x="1248" y="2098" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">après WAVE 2 · avant le tail — dry-run, apply après validation</text>
+      <text x="1248" y="2098" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">après la jointure WAVE 2 · avant le tail · REQUIRED</text>
+      <text x="1248" y="2112" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">no-apply par défaut · apply sur validation humaine</text>
     </g>
 
     <!-- Bande 6 -->
@@ -569,8 +582,8 @@
   </figure>
 
   <footer>
-    Sources : ARCHITECTURE.md · .opencode/agents/weekly-advisor/weekly-advisor.md · weekly_telemetry_aggregator/{main,draft_targets,harness_scope,providers/*,releases,watch_distill,watch_memory,watch_context,watch_validation}.py — génération 2026-08-30 (post merge PR #1 technology-scanning-optimisation).
-    Écarts vs consigne : ordre réel 2 → 2.2 → 2.5 → (3.5 LLM) → 3.6 (le distill précède watch-context, cf. cli.py et agent doc) · modes réels = override·detected·default·legacy ; Copilot = chatSessions JSON + state.vscdb optionnel.
+    Sources : ARCHITECTURE.md · .opencode/agents/weekly-advisor/weekly-advisor.md · weekly_telemetry_aggregator/{main,draft_targets,harness_scope,providers/*,releases,watch_distill,watch_memory,watch_context,watch_validation,graphify_summary,curation}.py · scripts/graphify-architecture-summary.py — génération 2026-08-31 (post graphify update 6b1117d).
+    Écarts vs consigne : ordre réel 2 → 2.2 → 2.5 → (3.5 LLM) → 3.6 (le distill précède watch-context, cf. cli.py et agent doc) · modes réels = override·detected·default·legacy ; Copilot = chatSessions JSON + state.vscdb optionnel ; graphify : brut 2766/7032 → filtré 2744/6937/99 (schema v1).
   </footer>
 </div>
 </body>
