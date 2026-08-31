@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from helpers import tzutc
@@ -41,10 +42,7 @@ RUN = tzutc(2026, 8, 12)
 
 
 def _cfg(**over):
-    cfg = InsightsConfig()
-    for k, v in over.items():
-        setattr(cfg, k, v)
-    return cfg
+    return replace(InsightsConfig(), **over)
 
 
 def test_weekly_budget_alert_and_cost_delta():
