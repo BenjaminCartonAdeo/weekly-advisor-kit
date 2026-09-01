@@ -213,6 +213,21 @@ def test_render_html_reports_curation_manifest_and_required_signal(tmp_path: Pat
     assert "weekly_skill_curate --apply" in required
 
 
+def test_render_html_reports_graphify_as_out_of_band(tmp_path: Path):
+    ctx = _ctx()
+    ctx["graphify_state"] = {"status": "ok", "stale": True}
+    ctx["coherence_items"] = [{"tag": "drift", "description": "x"}]
+    ctx["curation_detail"] = {
+        "decisions": [{"action": "archive", "skill_id": "x", "reason": "stale"}],
+        "skipped_details": [{"skill_id": "u", "reason": "protected"}],
+    }
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx, quality_block=None)
+    html = dated.read_text(encoding="utf-8")
+    assert "out-of-band" in html
+    assert "hors revue" in html
+    assert "archive" in html and "protected" in html
+
+
 def test_render_explicit_dir_expands_tilde(tmp_path: Path, monkeypatch):
     # expanduser lit HOME (POSIX) mais USERPROFILE d'abord (Windows).
     monkeypatch.setenv("HOME", str(tmp_path))

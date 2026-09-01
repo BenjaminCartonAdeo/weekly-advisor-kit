@@ -34,6 +34,16 @@ maintenance non vides). Sinon, NE PAS créer le fichier (le brouillon auto suffi
 3. **Taille ≤ 60 lignes** (cible ~40) et ≥ 40 mots
 4. Tout finding `severity: high` doit être cité au moins une fois (sinon warning annexe)
 
+## Parité déterministe des rapports
+
+Les findings de cohérence et le manifeste `skill-curate-<date>.json` sont des sources
+de vérité JSON communes aux sorties Markdown et HTML. Ne pas reformuler, compter ou
+déduire leurs décisions dans la prose : le code rend les mêmes entrées dans les deux
+formats, y compris les détails `skipped_details` et le statut de chaque décision.
+Graphify (`graphify-out/`) reste **out-of-band** : toute mention doit le présenter
+comme état informatif optionnel, hors revue, sans effet sur les décisions et sans
+preuve de cohérence. Il ne faut jamais le présenter comme une entrée du pipeline.
+
 ## Règles d'écriture
 
 - **Sources closes** : la prose s'écrit uniquement depuis le brouillon auto + findings +

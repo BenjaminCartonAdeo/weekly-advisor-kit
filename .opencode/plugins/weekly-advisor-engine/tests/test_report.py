@@ -120,6 +120,32 @@ def test_coherence_curation_signal_accepts_r4_mapping_and_ignores_bad_findings()
     assert not _coherence_has_curation_signal({"findings": ["not-a-finding", None]})
 
 
+def test_report_context_normalizes_coherence_and_curation_details(tmp_path: Path):
+    """Markdown and HTML consume the same filtered JSON projections."""
+    _write_summary(tmp_path)
+    (tmp_path / f"weekly-coherence-findings-{DATE}.json").write_text(
+        json.dumps({"findings": [{"tag": "drift", "description": "x"}, "bad"]}),
+        encoding="utf-8",
+    )
+    (tmp_path / f"skill-curate-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "summary": {"by_action": {"archive": 1}},
+                "decisions": [{"action": "archive", "skill_id": "x", "reason": "stale"}],
+                "skipped_details": [{"skill_id": "u", "reason": "protected"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    from weekly_telemetry_aggregator.report import build_report_context
+
+    ctx = build_report_context(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert ctx is not None
+    assert ctx["coherence_items"] == [{"tag": "drift", "description": "x"}]
+    assert [d["skill_id"] for d in ctx["curation_detail"]["decisions"]] == ["x"]
+    assert [d["skill_id"] for d in ctx["curation_detail"]["skipped_details"]] == ["u"]
+
+
 def test_report_assemble_injects_blocks(tmp_path: Path):
     _write_summary(tmp_path)
     cfg = _cfg(tmp_path)
