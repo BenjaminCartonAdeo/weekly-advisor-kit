@@ -904,3 +904,26 @@ def test_retire_candidate_default_threshold_frozen():
     at = compute(recent_summaries=recents8, **_retire_kwargs(cur))
     cats_at = [f["category"] for f in at["maintenance"]["findings"]]
     assert "retire-candidate" in cats_at
+
+
+def test_agent_loop_finding_uses_tool_fingerprint_thresholds():
+    cur = _summary(("A", "B"))
+    cur["tool_argument_fingerprints"] = {"task": {"fp": 3}, "read": {"fp": 2}}
+    cur["tool_result_fingerprints"] = {"task": {"empty": 3}}
+    out = compute(
+        run_time=RUN,
+        current_summary=cur,
+        previous_summary=None,
+        current_digest=None,
+        previous_digest=None,
+        recent_summaries=[cur],
+        insights_cfg=_cfg(),
+        ignored_findings=[],
+        loop_min_repeats=2,
+        loop_task_min_repeats=3,
+    )
+    loops = [f for f in out["maintenance"]["findings"] if f["category"] == "agent-loop"]
+    assert [f["evidence_summary"] for f in loops] == [
+        "tool=read; repeats=2; threshold=2",
+        "tool=task; repeats=3; threshold=3",
+    ]
