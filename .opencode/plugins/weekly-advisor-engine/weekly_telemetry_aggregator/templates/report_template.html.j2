@@ -566,15 +566,19 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     {% endfor %}
     {% endif %}
 
-    {% if skill_curate %}
-    {% set manifest_decisions = skill_curate.get("decisions", []) %}
-    {% set manifest_skips = skill_curate.get("skipped_details", []) %}
-    <h3>Curation (WAVE 2.5 — appliquée)</h3>
+{% if skill_curate %}
+    {% set manifest_decisions = curation_detail.get("decisions", []) %}
+    {% set manifest_skips = curation_detail.get("skipped_details", []) %}
+    {% set curation_mode = curation_detail.get("mode") or skill_curate.get("mode") or ("dry-run" if skill_curate.get("dry_run") else "apply") %}
+    {% set curation_dry_run = curation_detail.get("dry_run") if curation_detail.get("dry_run") is not none else skill_curate.get("dry_run", curation_mode == "dry-run") %}
+    {% set curation_summary = curation_detail.get("by_action") or skill_curate.get("summary", {}).get("by_action", {}) %}
+    <h3>Curation (WAVE 2.5 — {{ "dry-run — propositions" if curation_dry_run else "apply — appliquées" }})</h3>
     <div class="kpi-grid">
-      <div class="kpi ok"><div class="k-label">Appliquées</div><div class="k-value">{{ skill_curate.get("applied", 0) }}</div><div class="k-sub">archives déplacées vers <code>_archive/{{ date }}/</code></div></div>
-      <div class="kpi"><div class="k-label">Proposées</div><div class="k-value">{{ skill_curate.get("proposed", 0) }}</div><div class="k-sub">aucune opération fs</div></div>
+      <div class="kpi ok"><div class="k-label">Déplacées</div><div class="k-value">{{ skill_curate.get("applied", 0) }}</div><div class="k-sub">archives réellement déplacées vers <code>_archive/{{ date }}/</code></div></div>
+      <div class="kpi"><div class="k-label">Proposées</div><div class="k-value">{{ skill_curate.get("proposed", 0) }}</div><div class="k-sub">aucune opération fs{% if curation_dry_run %}, dry-run{% endif %}</div></div>
       <div class="kpi"><div class="k-label">Ignorées</div><div class="k-value">{{ skill_curate.get("skipped", 0) }}</div><div class="k-sub">origin=user ou introuvables</div></div>
     </div>
+    {% if curation_summary %}<p class="muted">Actions : {% for action, count in curation_summary.items() %}<code>{{ action }}</code>=<b>{{ count }}</b>{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
     {% for d in manifest_decisions + manifest_skips %}
     <div class="card info">
       <h4><span class="badge badge-info">{{ d.get("action", "?")|upper }}</span> <code>{{ d.get("skill_id", "?") }}</code></h4>

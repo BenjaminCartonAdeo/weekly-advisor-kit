@@ -428,9 +428,10 @@ def test_report_template_renders_curation_section():
         "coherence_curation_signal": False,
     }
     rendered = env.from_string(block).render(**ctx)
-    assert "Curation (WAVE 2.5 — appliquée" in rendered
+    assert "Curation (WAVE 2.5 — apply — appliquées" in rendered
     assert "appliquées" in rendered.lower()
     assert "old/skill" in rendered and "moved" in rendered
+    assert "Proposées" in rendered and "Actions:" in rendered
 
     # manifest absent + signal -> avertissement P0
     ctx2 = {"date": "2026-08-28", "skill_curate": None, "coherence_curation_signal": True}

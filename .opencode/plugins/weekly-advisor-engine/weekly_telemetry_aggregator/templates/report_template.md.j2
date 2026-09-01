@@ -141,16 +141,21 @@
 
 {% endif %}
 {% if skill_curate %}
-#### Curation (WAVE 2.5 — appliquée)
+{% set curation_detail_local = curation_detail if curation_detail is defined and curation_detail else skill_curate %}
+{% set curation_mode = curation_detail_local.mode|default(skill_curate.mode|default("apply"), true) %}
+{% set curation_dry_run = curation_detail_local.dry_run|default(skill_curate.dry_run|default(curation_mode == "dry-run"), true) %}
+#### Curation (WAVE 2.5 — {% if curation_dry_run %}dry-run — propositions{% else %}apply — appliquées{% endif %})
 
-- Appliquées (archives déplacées vers `_archive/<date>/`, jamais supprimées) : **{{ skill_curate.applied }}**
-- Proposées (merge / reference / pin / delete — aucune opération fs) : **{{ skill_curate.proposed }}**
+- Déplacées (archives réellement déplacées vers `_archive/<date>/`, jamais supprimées) : **{{ skill_curate.applied }}**
+- Proposées (aucune opération fs{% if curation_dry_run %}, dry-run{% endif %}) : **{{ skill_curate.proposed }}**
 - Ignorées (origin=user ou introuvables) : **{{ skill_curate.skipped }}**
 
-{% for d in ((curation_detail|default(skill_curate)).decisions|default([])) %}
+Actions: {% if curation_detail_local.by_action is defined and curation_detail_local.by_action %}{% for action, count in curation_detail_local.by_action.items() %}`{{ action }}`={{ count }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}voir décisions ci-dessous{% endif %}
+
+{% for d in curation_detail_local.decisions|default([]) %}
 - `{{ d.action }}` `{{ d.skill_id }}` ({{ d.source }}) — {{ d.reason }}{% if d.status %} [{{ d.status }}]{% endif %}
 {% endfor %}
-{% for d in (curation_detail|default({})).skipped_details|default([]) %}
+{% for d in curation_detail_local.skipped_details|default([]) %}
 - `skip` `{{ d.skill_id }}` ({{ d.source|default("curation") }}) — {{ d.reason }} [{{ d.status|default("skipped") }}]
 {% endfor %}
 {% elif coherence_curation_signal %}

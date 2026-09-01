@@ -224,19 +224,36 @@ def _coherence_findings(coherence: object) -> list[dict]:
 def _curation_manifest_detail(manifest: object) -> dict:
     """Normalize curation v1/v2 manifests without changing their contracts."""
     if not isinstance(manifest, dict):
-        return {"decisions": [], "skipped_details": [], "by_action": {}}
+        return {"decisions": [], "skipped_details": [], "by_action": {}, "mode": None}
     decisions = manifest.get("decisions")
     skipped = manifest.get("skipped_details")
     summary = manifest.get("summary")
     normalized_decisions = (
         [item for item in decisions if isinstance(item, dict)] if isinstance(decisions, list) else []
     )
+    decision_skips = [item for item in normalized_decisions if item.get("status") == "skipped"]
+    raw_skips = (
+        [item for item in skipped if isinstance(item, dict)]
+        if isinstance(skipped, list)
+        else decision_skips
+    )
+    # v2 carries skipped decisions in both arrays. Keep one rendered row.
+    seen_skips: set[tuple[object, ...]] = set()
+    skipped_details = []
+    for item in raw_skips:
+        key = tuple(item.get(field) for field in ("skill_id", "action", "source", "reason", "status"))
+        if key not in seen_skips:
+            seen_skips.add(key)
+            skipped_details.append(item)
+    by_action = summary.get("by_action") if isinstance(summary, dict) else None
+    if not isinstance(by_action, dict):
+        by_action = dict(sorted(Counter(str(item.get("action") or "") for item in normalized_decisions).items()))
     return {
         "decisions": normalized_decisions,
-        "skipped_details": [item for item in skipped if isinstance(item, dict)]
-        if isinstance(skipped, list)
-        else [item for item in normalized_decisions if item.get("status") == "skipped"],
-        "by_action": summary.get("by_action", {}) if isinstance(summary, dict) else {},
+        "skipped_details": skipped_details,
+        "by_action": by_action,
+        "mode": manifest.get("mode"),
+        "dry_run": manifest.get("dry_run"),
     }
 
 
