@@ -73,13 +73,33 @@ def test_cli_writes_summary_when_invoked_from_repository_root(tmp_path: Path):
     source.parent.mkdir()
     source.write_text("x", encoding="utf-8")
     graph_path = tmp_path / "graph.json"
-    graph_path.write_text(json.dumps({"built_at_commit": "abc", "nodes": [{"id": "main", "label": "main", "source_file": "src/main.py"}], "links": []}), encoding="utf-8")
+    graph_path.write_text(
+        json.dumps(
+            {
+                "built_at_commit": "abc",
+                "nodes": [{"id": "main", "label": "main", "source_file": "src/main.py"}],
+                "links": [],
+            }
+        ),
+        encoding="utf-8",
+    )
     raw_graph = graph_path.read_bytes()
     output_path = tmp_path / "summary.json"
     script = Path(__file__).parents[4] / "scripts" / "graphify-architecture-summary.py"
     result = subprocess.run(
-        [sys.executable, str(script), str(graph_path), "--output", str(output_path), "--project-root", str(tmp_path)],
-        cwd=script.parents[1], capture_output=True, text=True, check=False,
+        [
+            sys.executable,
+            str(script),
+            str(graph_path),
+            "--output",
+            str(output_path),
+            "--project-root",
+            str(tmp_path),
+        ],
+        cwd=script.parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(output_path.read_text(encoding="utf-8"))["node_count"] == 1

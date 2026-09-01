@@ -8,9 +8,15 @@ import json
 import sys
 from pathlib import Path
 
-ENGINE_ROOT = Path(__file__).resolve().parent.parent / ".opencode" / "plugins" / "weekly-advisor-engine"
+ENGINE_ROOT = (
+    Path(__file__).resolve().parent.parent
+    / ".opencode"
+    / "plugins"
+    / "weekly-advisor-engine"
+)
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
+
 
 def main() -> int:
     from weekly_telemetry_aggregator.graphify_summary import load_and_summarize
