@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
@@ -540,8 +541,10 @@ def test_doctor_shows_config_override_draft_target(tmp_path: Path, capsys, fake_
     db = _seed_n(tmp_path / "opencode.db", 3)
     cfg = _cfg(tmp_path, db)
     cfg.project_root = tmp_path
-    cfg.draft_targets.mode = "override"
-    cfg.draft_targets.targets = ["codex"]
+    cfg = replace(
+        cfg,
+        draft_targets=replace(cfg.draft_targets, mode="override", targets=["codex"]),
+    )
     assert doctor(cfg) in (EXIT_OK, EXIT_PARTIAL)
     assert "doctor: cibles de drafting: codex (config)" in capsys.readouterr().out
 
@@ -552,7 +555,7 @@ def test_doctor_shows_legacy_draft_target(tmp_path: Path, capsys, fake_opencode)
     db = _seed_n(tmp_path / "opencode.db", 3)
     cfg = _cfg(tmp_path, db)
     cfg.project_root = tmp_path
-    cfg.draft_targets.mode = "legacy"
+    cfg = replace(cfg, draft_targets=replace(cfg.draft_targets, mode="legacy"))
     assert doctor(cfg) in (EXIT_OK, EXIT_PARTIAL)
     assert "doctor: cibles de drafting: toutes cibles (legacy)" in capsys.readouterr().out
 

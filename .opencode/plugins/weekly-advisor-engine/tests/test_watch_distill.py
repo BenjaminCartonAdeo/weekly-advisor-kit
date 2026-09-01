@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -306,9 +307,7 @@ def _cfg(tmp_path: Path, **wd_overrides):
     from weekly_telemetry_aggregator.config import TelemetryConfig
 
     cfg = TelemetryConfig(output_dir=tmp_path, project_root=tmp_path)
-    for key, value in wd_overrides.items():
-        setattr(cfg.watch_distill, key, value)
-    return cfg
+    return replace(cfg, watch_distill=replace(cfg.watch_distill, **wd_overrides))
 
 
 def _golden_inputs() -> tuple[list[dict], list[dict]]:
