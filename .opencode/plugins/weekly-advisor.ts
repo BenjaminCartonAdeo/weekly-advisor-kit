@@ -18,6 +18,7 @@ import { type Plugin, tool } from "@opencode-ai/plugin"
 import path from "node:path"
 import os from "node:os"
 import fs from "node:fs"
+import { fileURLToPath } from "node:url"
 import { execFile } from "node:child_process"
 
 const ENGINE_REL = [".opencode", "plugins", "weekly-advisor-engine"]
@@ -28,6 +29,64 @@ const ANCHOR_FILE = "anchor-last.txt"
 // déclaration locale au factory `WeeklyAdvisorPlugin` provoquait
 // `ReferenceError: worktree is not defined` au premier appel de tool (layout v6.0).
 let worktree = ""
+
+/** Resolve kit root without depending on the directory from which opencode ran. */
+function resolveWorktree(directory: string | undefined, contextWorktree: string | undefined): string {
+  const configured = process.env.WEEKLY_KIT_ROOT?.trim()
+  if (configured) return path.resolve(configured)
+  const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..")
+  if (fs.existsSync(path.join(pluginRoot, ".opencode", "plugins", "weekly-advisor-engine"))) return pluginRoot
+  return contextWorktree ?? directory ?? process.cwd()
+}
+
+interface PreflightResult {
+  rc: 0 | 3
+  worktree: string
+  engine_ok: boolean
+  python_ok: boolean
+  config_ok: boolean
+  py_count: number
+  message?: string
+}
+
+function preflight(root: string): PreflightResult {
+  const engine = path.join(root, ...ENGINE_REL)
+  const engineOk = fs.existsSync(engine) && fs.statSync(engine).isDirectory()
+  let pythonOk = false
+  let configOk = false
+  let pyCount = 0
+  if (engineOk) {
+    const venvPython = process.platform === "win32"
+      ? path.join(engine, ".venv", "Scripts", "python.exe")
+      : path.join(engine, ".venv", "bin", "python")
+    pythonOk = Boolean(process.env.WEEKLY_PYTHON && fs.existsSync(process.env.WEEKLY_PYTHON)) || fs.existsSync(venvPython)
+    const configPath = path.join(engine, "weekly-telemetry-config.json")
+    try {
+      JSON.parse(fs.readFileSync(configPath, "utf8"))
+      configOk = true
+    } catch {
+      configOk = false
+    }
+    const visit = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const child = path.join(dir, entry.name)
+        if (entry.isDirectory()) visit(child)
+        else if (entry.isFile() && entry.name.endsWith(".py")) pyCount += 1
+      }
+    }
+    visit(engine)
+  }
+  const ok = engineOk && pythonOk && configOk && pyCount > 0
+  return {
+    rc: ok ? 0 : 3,
+    worktree: root,
+    engine_ok: engineOk,
+    python_ok: pythonOk,
+    config_ok: configOk,
+    py_count: pyCount,
+    ...(ok ? {} : { message: "worktree Adeo requis — relancer avec `--dir /home/benjamin/Dev/Adeo` (ou via le cron)" }),
+  }
+}
 
 interface EngineLoc {
   engine: string
@@ -339,9 +398,21 @@ function withLookback(cliArgs: string[], lookbackDays: number | undefined): stri
 }
 
 const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
-  worktree = ctx.worktree ?? ctx.directory
+  worktree = resolveWorktree(ctx.directory, ctx.worktree)
   return {
+    "command.execute.before": async (input) => {
+      if (input.command !== "weekly-review") return
+      const result = preflight(worktree)
+      if (result.rc !== 0) throw new Error(`weekly_preflight rc=3 — ${result.message}`)
+    },
     tool: {
+      weekly_preflight: tool({
+        description: "Pré-flight déterministe du kit avant boot agent. Échec: rc=3, aucun run.",
+        args: {},
+        async execute() {
+          return JSON.stringify(preflight(worktree))
+        },
+      }),
       weekly_run: anchorTool(
         "Étape 1 du weekly-advisor : collecte télémétrique complète (run). " +
           "Écrit weekly-summary-<date>.json. L'ancre est lue/créée/rafraîchie dans <output_dir>/anchor-last.txt.",
