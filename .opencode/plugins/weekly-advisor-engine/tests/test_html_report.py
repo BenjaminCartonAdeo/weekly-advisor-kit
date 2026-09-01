@@ -213,6 +213,43 @@ def test_render_html_reports_curation_manifest_and_required_signal(tmp_path: Pat
     assert "weekly_skill_curate --apply" in required
 
 
+def test_render_html_reports_skipped_decision_once_and_preserves_metadata():
+    from jinja2 import Environment
+
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "weekly_telemetry_aggregator"
+        / "templates"
+        / "report_template.html.j2"
+    ).read_text(encoding="utf-8")
+    start = template.index("{% if skill_curate %}")
+    end = template.index("{% set inspection", start)
+    block = template[start:end]
+    env = Environment(autoescape=False, trim_blocks=True, lstrip_blocks=True)
+    skipped = {
+        "action": "archive",
+        "skill_id": "protected-skill",
+        "source": "user",
+        "reason": "protected",
+        "status": "skipped",
+    }
+    rendered = env.from_string(block).render(
+        date=DATE,
+        curation_detail={
+            "decisions": [skipped],
+            "skipped_details": [skipped],
+            "by_action": {"archive": 1},
+            "mode": "dry-run",
+            "dry_run": True,
+        },
+        skill_curate={"applied": 0, "proposed": 0, "skipped": 1},
+        coherence_curation_signal=False,
+    )
+    assert rendered.count("protected-skill") == 1
+    assert "Curation (WAVE 2.5 — dry-run — propositions)" in rendered
+    assert "archive" in rendered
+
+
 def test_render_html_reports_graphify_as_out_of_band(tmp_path: Path):
     ctx = _ctx()
     ctx["graphify_state"] = {"status": "ok", "stale": True}

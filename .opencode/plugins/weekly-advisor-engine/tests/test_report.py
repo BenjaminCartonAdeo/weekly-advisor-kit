@@ -106,11 +106,15 @@ def test_report_assemble_curation_manifest_clears_gate(tmp_path: Path):
         encoding="utf-8",
     )
     report_prep(cfg, anchor=RUN.isoformat())
+    blocks_path, block_warnings, block_rc = report_blocks_draft(cfg, anchor=RUN.isoformat())
+    assert blocks_path is not None
+    assert block_rc == 0
+    assert any("brouillon de blocs généré" in warning for warning in block_warnings)
     final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
     assert final_path is not None
     assert rc == 0
     assert not any("WAVE 2.5" in warning for warning in warnings)
-    assert "Curation (WAVE 2.5 — appliquée)" in final_path.read_text(encoding="utf-8")
+    assert "Curation (WAVE 2.5 — apply — appliquées)" in final_path.read_text(encoding="utf-8")
 
 
 def test_coherence_curation_signal_accepts_r4_mapping_and_ignores_bad_findings():
