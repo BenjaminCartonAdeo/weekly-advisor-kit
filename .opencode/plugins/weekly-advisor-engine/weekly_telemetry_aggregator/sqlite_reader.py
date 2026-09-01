@@ -555,7 +555,9 @@ class OpenCodeAdapter(SchemaAdapter):
             args.setdefault(name, {})[arg_fp] = args.setdefault(name, {}).get(arg_fp, 0) + 1
             if raw_output is not None:
                 result_fp = _fingerprint(raw_output)
-                results.setdefault(name, {})[result_fp] = results.setdefault(name, {}).get(result_fp, 0) + 1
+                results.setdefault(name, {})[result_fp] = (
+                    results.setdefault(name, {}).get(result_fp, 0) + 1
+                )
         return args, results
 
     def session_user_turns(self, session_id: str, start_ms: int, end_ms: int) -> list[str]:

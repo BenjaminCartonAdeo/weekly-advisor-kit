@@ -1200,7 +1200,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_self.set_defaults(func=_cmd_self_cost)
 
     p_graphify = sub.add_parser(
-        "graphify-state", parents=[global_parent],
+        "graphify-state",
+        parents=[global_parent],
         help="Read existing Graphify artifacts without invoking Graphify",
     )
     p_graphify.add_argument("--head-commit", help=argparse.SUPPRESS)

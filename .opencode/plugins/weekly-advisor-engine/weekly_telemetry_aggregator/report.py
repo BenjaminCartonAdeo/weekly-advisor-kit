@@ -229,7 +229,9 @@ def _curation_manifest_detail(manifest: object) -> dict:
     skipped = manifest.get("skipped_details")
     summary = manifest.get("summary")
     normalized_decisions = (
-        [item for item in decisions if isinstance(item, dict)] if isinstance(decisions, list) else []
+        [item for item in decisions if isinstance(item, dict)]
+        if isinstance(decisions, list)
+        else []
     )
     decision_skips = [item for item in normalized_decisions if item.get("status") == "skipped"]
     raw_skips = (
@@ -241,13 +243,17 @@ def _curation_manifest_detail(manifest: object) -> dict:
     seen_skips: set[tuple[object, ...]] = set()
     skipped_details = []
     for item in raw_skips:
-        key = tuple(item.get(field) for field in ("skill_id", "action", "source", "reason", "status"))
+        key = tuple(
+            item.get(field) for field in ("skill_id", "action", "source", "reason", "status")
+        )
         if key not in seen_skips:
             seen_skips.add(key)
             skipped_details.append(item)
     by_action = summary.get("by_action") if isinstance(summary, dict) else None
     if not isinstance(by_action, dict):
-        by_action = dict(sorted(Counter(str(item.get("action") or "") for item in normalized_decisions).items()))
+        by_action = dict(
+            sorted(Counter(str(item.get("action") or "") for item in normalized_decisions).items())
+        )
     return {
         "decisions": normalized_decisions,
         "skipped_details": skipped_details,
@@ -323,9 +329,7 @@ def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> 
         "coherence_items": _coherence_findings(coherence_findings),
         "skill_curate": skill_curate,
         "curation_detail": _curation_manifest_detail(skill_curate),
-        "coherence_curation_signal": _coherence_has_curation_signal(
-            coherence_findings
-        ),
+        "coherence_curation_signal": _coherence_has_curation_signal(coherence_findings),
         "graphify_state": _load_json(out / f"weekly-graphify-state-{date}.json"),
         "harness_budget": (digest or {}).get("budget"),
         "harness_triggers": (digest or {}).get("triggers"),

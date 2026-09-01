@@ -146,9 +146,9 @@ def graphify_state(
     state.update(
         {
             "status": "ok",
-            "report_md_mtime": datetime.fromtimestamp(
-                report_mtime, tz=UTC
-            ).isoformat().replace("+00:00", "Z"),
+            "report_md_mtime": datetime.fromtimestamp(report_mtime, tz=UTC)
+            .isoformat()
+            .replace("+00:00", "Z"),
             "built_at_commit": built_commit,
             "head_commit": resolved_head,
             "stale": stale,
