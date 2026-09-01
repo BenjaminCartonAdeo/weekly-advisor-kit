@@ -146,6 +146,46 @@ def test_report_context_normalizes_coherence_and_curation_details(tmp_path: Path
     assert [d["skill_id"] for d in ctx["curation_detail"]["skipped_details"]] == ["u"]
 
 
+def test_report_markdown_renders_skipped_decision_once(tmp_path: Path):
+    """A skipped v2 decision is rendered only by the skipped-details section."""
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"skill-curate-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "applied": 0,
+                "proposed": 0,
+                "skipped": 1,
+                "decisions": [
+                    {
+                        "action": "archive",
+                        "skill_id": "protected-skill",
+                        "source": "user",
+                        "reason": "user-origin protected",
+                        "status": "skipped",
+                    }
+                ],
+                "skipped_details": [
+                    {
+                        "action": "archive",
+                        "skill_id": "protected-skill",
+                        "source": "user",
+                        "reason": "user-origin protected",
+                        "status": "skipped",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    draft, context = report_prep(cfg, anchor=RUN.isoformat())
+    assert draft is not None and context is not None
+    text = draft.read_text(encoding="utf-8")
+    assert text.count("`protected-skill`") == 1
+    assert "`skip` `protected-skill`" in text
+
+
 def test_report_assemble_injects_blocks(tmp_path: Path):
     _write_summary(tmp_path)
     cfg = _cfg(tmp_path)

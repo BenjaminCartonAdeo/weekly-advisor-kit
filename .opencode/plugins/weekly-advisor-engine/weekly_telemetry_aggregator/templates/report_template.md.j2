@@ -152,7 +152,7 @@
 
 Actions: {% if curation_detail_local.by_action is defined and curation_detail_local.by_action %}{% for action, count in curation_detail_local.by_action.items() %}`{{ action }}`={{ count }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}voir décisions ci-dessous{% endif %}
 
-{% for d in curation_detail_local.decisions|default([]) %}
+{% for d in curation_detail_local.decisions|default([]) if d.status|default("") != "skipped" %}
 - `{{ d.action }}` `{{ d.skill_id }}` ({{ d.source }}) — {{ d.reason }}{% if d.status %} [{{ d.status }}]{% endif %}
 {% endfor %}
 {% for d in curation_detail_local.skipped_details|default([]) %}
