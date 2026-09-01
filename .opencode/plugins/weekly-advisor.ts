@@ -405,6 +405,11 @@ const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
       const result = preflight(worktree)
       if (result.rc !== 0) throw new Error(`weekly_preflight rc=3 — ${result.message}`)
     },
+    "chat.message": async (input) => {
+      if (input.agent !== "weekly-advisor") return
+      const result = preflight(worktree)
+      if (result.rc !== 0) throw new Error(`weekly_preflight rc=3 — ${result.message}`)
+    },
     tool: {
       weekly_preflight: tool({
         description: "Pré-flight déterministe du kit avant boot agent. Échec: rc=3, aucun run.",

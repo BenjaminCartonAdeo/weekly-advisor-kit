@@ -44,3 +44,23 @@ test("weekly-review preflight fails with rc 3 before command execution", async (
     else process.env.WEEKLY_KIT_ROOT = previous
   }
 })
+
+test("weekly-advisor agent preflight fails before direct run boot", async () => {
+  const previous = process.env.WEEKLY_KIT_ROOT
+  process.env.WEEKLY_KIT_ROOT = "/tmp/not-a-weekly-kit"
+  const plugin = await WeeklyAdvisorPlugin({ worktree: "/tmp/not-a-weekly-kit", directory: "/tmp/not-a-weekly-kit" })
+  const output = { message: {}, parts: [] }
+  try {
+    await assert.rejects(
+      plugin["chat.message"](
+        { agent: "weekly-advisor", sessionID: "s", messageID: "m" },
+        output,
+      ),
+      /rc=3.*worktree Adeo requis/,
+    )
+    await plugin["chat.message"]({ agent: "other-agent", sessionID: "s", messageID: "m" }, output)
+  } finally {
+    if (previous === undefined) delete process.env.WEEKLY_KIT_ROOT
+    else process.env.WEEKLY_KIT_ROOT = previous
+  }
+})
