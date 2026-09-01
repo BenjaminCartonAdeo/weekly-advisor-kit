@@ -18,7 +18,7 @@ L'ancre est gérée par le plugin via `<output_dir>/anchor-last.txt` — aucun c
 ## Déroulement
 
 Orchestration par waves (design doc §2). La session principale agit comme coordinateur léger :
-gate (étape 0), dispatch WAVE 1 en parallèle (3 subagents de l'agent `weekly-advisor-worker`), JOIN (synthèse), WAVE 2 optionnelle, **WAVE 2.5 curation [REQUIRED] (dry-run par défaut, après la jointure de WAVE 2 car consomme les findings de cohérence)**, TAIL.
+gate (étape 0), **vérif dispatch F6** (agent worker + skills primaires avant spawn), dispatch WAVE 1 en parallèle (3 subagents de l'agent `weekly-advisor-worker`), JOIN (synthèse), WAVE 2 optionnelle, **WAVE 2.5 curation [REQUIRED] (dry-run par défaut, après la jointure de WAVE 2 car consomme les findings de cohérence)**, TAIL.
 Ordre figé des étapes (tokens d'outils) : `weekly_doctor`, `weekly_run`, `weekly_releases`, `weekly_watch_distill`,
 `weekly_watch_context`, `weekly_watch_validate`, `weekly_audit_candidates`, `weekly_show_session`, `weekly_harness`,
 `weekly_harness_remediate`, `weekly_draft_candidates`, `weekly_commit_draft`, `weekly_insights`, `weekly_skill_curate`,
@@ -28,6 +28,13 @@ Ordre figé des étapes (tokens d'outils) : `weekly_doctor`, `weekly_run`, `week
 
 - Exit 2 (fatal) à une étape → stopper sans rapport ; un échec de tool n'arrête pas
   le run (constater, signaler au rapport, continuer — exit 1 partiel)
+- **Vérif dispatch F6** : avant tout spawn de worker, vérifier l'agent
+  `weekly-advisor-worker` (absent → STOP rc=2) et les skills primaires de branche
+  (`weekly-drafting` D, `weekly-coherence-review` C, `weekly-quality-audit` A — absente
+  → STOP rc=2, pas de rapport) ; skills secondaires (`weekly-watch-review` V,
+  `harness-remediation` H) absentes → warning `skill-missing:<name>`, branche en dégradé
+  (rc=1, run continue). Le worker retourne `skills_loaded` dans son contrat ; l'orchestrateur
+  agrège au JOIN. Aucune écriture ni déplacement dans `.opencode/skills/`.
 - Ne jamais réécrire les JSON produits par le CLI ; ne jamais modifier la config
   moteur (`weekly-telemetry-config.json`) — overrides en paramètres des tools
 - Ne pas auditer au-delà de `audit_max_sessions` ; ne pas écrire plus de

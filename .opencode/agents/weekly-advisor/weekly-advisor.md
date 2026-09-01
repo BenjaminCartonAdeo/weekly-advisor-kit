@@ -83,6 +83,22 @@ coûteuse d'un run déjà produit :
 **agent-guided** : le résumé porte `exit` ; l'ancre est la ligne unique de
 `anchor-last.txt`. Aucune ré-écriture de JSON existant.
 
+## Vérif dispatch (F6) — avant tout spawn de worker
+
+Avant WAVE 1, l'orchestrateur vérifie que **l'agent worker est disponible** :
+`glob .opencode/agents/weekly-advisor/weekly-advisor-worker.md` depuis le worktree.
+Absent → **STOP avant WAVE 1**, message clair, `rc=2` (pas de rapport).
+
+Avant chaque WAVE 2 dispatch (D/I/C), vérifier les **skills primaires de branche** :
+`weekly-drafting` (D), `weekly-coherence-review` (C) — glob `skills/<name>/SKILL.md`.
+Primaire absente → **ne pas dispatcher la branche**, STOP orchestrateur, `rc=2`
+(pas de rapport). Skills secondaires (`weekly-watch-review` V, `harness-remediation` H) :
+non bloquantes au dispatch — warning `skill-missing:<name>` en annexe, branche en dégradé.
+
+Au JOIN, **agréger les `skills_loaded` des contrats** dans la synthèse : statut par
+branche (`ok` / `missing`), à reporter dans l'annexe du rapport. Aucune écriture dans
+`.opencode/skills/`, aucun chargement implicite, aucun déplacement de skill.
+
 ## Déroulement — orchestration par waves (DAG parallèle)
 
 Chaque run écrit **tous ses artefacts** dans `<output_dir>/runs/<date>-<uuid8>/` (annoncé
@@ -110,6 +126,7 @@ par `weekly_run`) ; `runs/current/` est l'alias stable du run actif. L'orchestra
 ├─ JOIN — synthèse contrats T/V/H/A + codes sortie          [PRINCIPAL]
 │
 ├─ WAVE 2 — 3 subagents parallèles (optionnel, activé par défaut)
+│   │   dispatch conditionné par la vérif skill F6 (primaires D/C)
 │   ├─ D (Drafting) : weekly-drafting skill (seul commiteur) [worker D]
 │   ├─ I (Insights) : weekly_insights                        [worker I]
 │   └─ C (Coherence) : coherence-review skill (read-only)    [worker C]
@@ -144,6 +161,7 @@ Chaque worker est l'agent `weekly-advisor-worker` (subagent_type=`weekly-advisor
 Fusion des trois contrats JSON en un **état du run narratif court** (< 500 tokens) :
 - Statut par branche (0/1/2)
 - Warnings agrégés, fatalités éventuelles
+- **`skills_loaded` agrégés par branche** (F6 : `ok`/`missing`, skills primaires/secondaires)
 - Pointeurs vers les findings sur disque (jamais le contenu brut)
 
 Cette synthèse seule alimente **wave 2 et le tail** — pas d'accès direct aux sorties worker.
@@ -176,14 +194,14 @@ note une violation et **continue en fail-soft** (exit 1).
 | **1.V** | **Skill `weekly-watch-review`** : veille critique croisée (fiches enrichies × existant × findings), écrit le brut ; fallback legacy si absent | `weekly-watch-findings-raw-<date>.json` |
 | **1.V** | `weekly_watch_validate` — validation déterministe des findings contre le contexte ; écrit la mémoire post-validation | `weekly-watch-findings-<date>.json` |
 | **1.T** | `weekly_audit_candidates` (déterministe) → liste JSON de K session ids candidates | `weekly-audit-candidates-<date>.json` |
-| **1.5.A_k** | **worker A** (`weekly-advisor-worker`, branch `A`) : `weekly_show_session(<id>)` + audit qualitatif → `audit-findings-<id>.json` (K spawn en parallèle via `task`) | `audit-findings-<id>.json` (×K) |
+| **1.5.A_k** | **worker A** (`weekly-advisor-worker`, branch `A`) : pre-flight skill F6 (`weekly-quality-audit`, primaire) → `weekly_show_session(<id>)` + audit qualitatif → `audit-findings-<id>.json` (K spawn en parallèle via `task`) | `audit-findings-<id>.json` (×K) |
 | **1.5.JOIN** | **Consolidation PRINCIPAL** : merge des K `audit-findings-*.json` → `weekly-quality-findings-<date>.json` (aucun re-LLM par session au merge) | `weekly-quality-findings-<date>.json` |
 | **1.H** | `weekly_harness` (pin 7.9.0 ; rc 0/1 = OK) | `weekly-harness-digest-<date>.json` |
 | **1.H** | **Skill `harness-remediation`** : analyse les findings, écrit les propositions puis appelle `weekly_harness_remediate` | `weekly-harness-remediation-<date>.json` |
 | **JOIN** | Orchestrateur : synthèse contrats T/V/H, merge rc, attente run-dir | `weekly-timings-<date>.json` |
-| **2.D** | **Skill `weekly-drafting`** : `weekly_draft_candidates` → rédaction skills/commands + `weekly_commit_draft` (≤ plafond) | commits `skill:`/`command:` |
+| **2.D** | **Skill `weekly-drafting`** (primaire F6, vérifiée avant dispatch) : `weekly_draft_candidates` → rédaction skills/commands + `weekly_commit_draft` (≤ plafond) | commits `skill:`/`command:` |
 | **2.I** | `weekly_insights` | `weekly-insights-<date>.json` |
-| **2.C** | **Skill `weekly-coherence-review`** : état déclaratif vs usage réel | `weekly-coherence-findings-<date>.json` |
+| **2.C** | **Skill `weekly-coherence-review`** (primaire F6, vérifiée avant dispatch) : état déclaratif vs usage réel | `weekly-coherence-findings-<date>.json` |
 | **2.6** | **Étape 6.6 `weekly_skill_curate`** [REQUIRED, séquentiel APRÈS WAVE 2 — branche WAVE 2.5] (dry-run par défaut ; `apply=true` après validation) : curation/GC (R4) + décroissance TTL (R8). Consomme `weekly-coherence-findings-<date>.json` de 2.C (décisions archive\|merge\|pin\|reference) ; protège `origin=user` | `skill-curate-<date>.json` (manifest apply) |
 | **7a** | `weekly_report_prep` puis `weekly_report_blocks_draft` (brouillon auto) | `weekly-report-draft-<date>.md` |
 | **7b** | **Skill `weekly-report-prose`** : prose optionnelle (contrat anti-hallucination) | `weekly-report-blocks-<date>.md` |
@@ -191,10 +209,13 @@ note une violation et **continue en fail-soft** (exit 1).
 | **8** | `weekly_self_cost` (annexe) | texte |
 
 **Contrat de retour worker (obligatoire, dernière sortie)** : structure `{branch, rc, steps_done,
-warnings, artifacts, elapsed_s}` définie dans `.opencode/agents/weekly-advisor/weekly-advisor-worker.md`.
+warnings, artifacts, elapsed_s, skills_loaded}` définie dans `.opencode/agents/weekly-advisor/weekly-advisor-worker.md`
+— `skills_loaded` (F6) porte le résultat du pre-flight skills de la branche.
 
 **Gating merge rc (JOIN)** :
 - Un seul rc=2 parmi les workers (ou crash) → STOP sans rapport.
+- `rc=2` motivé par **skill primaire absente** (`skills_loaded.ok=false`, branche A/D/C) →
+  STOP sans rapport (fatalité F6, pas de rapport).
 - Sinon : warnings agrégés passés au tail → rapport comme aujourd'hui (exit 1 partiel si warnings).
 - Worker silencieux ou timeout → rc=1 + warning, run continue (fail-soft).
 
@@ -213,7 +234,9 @@ l'obligation de sérialiser T avant le fan-out.
 Seulement après que T a produit `weekly-audit-candidates-<date>.json` (K ids connus),
 l'orchestrateur spawn **K workers A en parallèle** via `task`
 (`subagent_type=weekly-advisor-worker`, `branch=A`, briefing = `session_id` + `run_dir`
-+ invariants d'audit). Chaque worker A écrit `audit-findings-<id>.json` dans `runs/current/`.
++ invariants d'audit). Chaque worker A exécute d'abord son **pre-flight skill F6**
+(`weekly-quality-audit`, primaire : absente → contrat `rc=2`, pas de rapport) puis écrit
+`audit-findings-<id>.json` dans `runs/current/`.
 L'orchestrateur **barrière** sur l'existence des K fichiers (poll glob
 `runs/current/audit-findings-*.json`, plafond 10 min ; dépassement → warning fail-soft)
 puis **consolide** en `weekly-quality-findings-<date>.json` — **aucun re-LLM par session**
