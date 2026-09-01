@@ -132,10 +132,10 @@
 
 ## 5. Santé de l'environnement (harness + cohérence)
 
-{% if coherence_findings and coherence_findings.findings %}
+{% if coherence_items %}
 ### Cohérence de l'environnement (passe critique — agents/skills/commands)
 
-{% for f in coherence_findings.findings %}
+{% for f in coherence_items %}
 - **{{ f.tag|default(f.category) }}** {{ f.description }}{% if f.evidence_summary %} (preuve : {{ f.evidence_summary[:110] }}){% endif %} → {{ f.recommendation }}
 {% endfor %}
 
@@ -147,8 +147,11 @@
 - Proposées (merge / reference / pin / delete — aucune opération fs) : **{{ skill_curate.proposed }}**
 - Ignorées (origin=user ou introuvables) : **{{ skill_curate.skipped }}**
 
-{% for d in skill_curate.decisions %}
+{% for d in ((curation_detail|default(skill_curate)).decisions|default([])) %}
 - `{{ d.action }}` `{{ d.skill_id }}` ({{ d.source }}) — {{ d.reason }}{% if d.status %} [{{ d.status }}]{% endif %}
+{% endfor %}
+{% for d in (curation_detail|default({})).skipped_details|default([]) %}
+- `skip` `{{ d.skill_id }}` ({{ d.source|default("curation") }}) — {{ d.reason }} [{{ d.status|default("skipped") }}]
 {% endfor %}
 {% elif coherence_curation_signal %}
 #### ⚠ Curation (WAVE 2.5 — REQUIRED, non exécutée)
@@ -158,6 +161,12 @@ Aucun manifeste `skill-curate-{{ date }}.json` trouvé bien que les findings de 
 #### Curation (WAVE 2.5)
 
 Rien à curate (aucun signal de curation dans les findings de cohérence).
+{% endif %}
+
+{% if graphify_state %}
+#### État Graphify (hors pipeline)
+
+Graphify est une exploration d'architecture **out-of-band**, optionnelle et hors revue : cet état est informatif, n'alimente aucune décision et ne constitue pas une preuve de cohérence.{% if graphify_state.status == "unavailable" %} Artefacts indisponibles ou illisibles : {{ graphify_state.reason|default("raison non fournie") }}.{% elif graphify_state.stale %} Résumé obsolète par rapport au HEAD : relancer Graphify hors run.{% else %} Résumé disponible en lecture seule ; le graphe n'est jamais modifié par le pipeline.{% endif %}
 {% endif %}
 
 {% if digest %}

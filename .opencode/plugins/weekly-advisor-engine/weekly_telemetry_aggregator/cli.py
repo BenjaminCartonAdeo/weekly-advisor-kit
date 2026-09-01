@@ -23,6 +23,7 @@ from .curation import (
     build_catalog_from_skills,
     catalog_entry_is_complete,
     decide_actions,
+    manifest_metadata,
     normalize_curation_findings,
     read_carry,
     select_catalog_entry,
@@ -933,6 +934,13 @@ def _cmd_skill_curate(args, cfg) -> int:
         "archive_candidates": archive_ids,
         "skipped_user": skipped_user,
     }
+    manifest.update(
+        manifest_metadata(
+            manifest_decisions,
+            generated_at=run_time.isoformat().replace("+00:00", "Z"),
+            anchor=date,
+        )
+    )
     out_path = out / f"skill-curate-{date}.json"
     try:
         from .writer import write_json_atomic

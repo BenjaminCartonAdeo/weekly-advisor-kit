@@ -242,7 +242,7 @@ def test_skill_curate_autoload_and_decisions(tmp_path):
     assert rc == 0
     # Le dry-run publie un rapport d'exécution, sans déplacer de skill.
     manifest = json.loads((run / f"skill-curate-{date}.json").read_text(encoding="utf-8"))
-    assert manifest["schema_version"] == 1
+    assert manifest["schema_version"] == 2
     assert manifest["mode"] == "dry-run"
     assert manifest["dry_run"] is True
     assert manifest["decisions"]

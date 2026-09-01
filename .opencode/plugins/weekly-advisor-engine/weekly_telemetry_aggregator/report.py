@@ -210,6 +210,36 @@ def _coherence_has_curation_signal(coherence: object) -> bool:
     )
 
 
+def _coherence_findings(coherence: object) -> list[dict]:
+    """Return coherence findings in one deterministic shape for all reports."""
+    if isinstance(coherence, list):
+        return [finding for finding in coherence if isinstance(finding, dict)]
+    if isinstance(coherence, dict):
+        findings = coherence.get("findings")
+        if isinstance(findings, list):
+            return [finding for finding in findings if isinstance(finding, dict)]
+    return []
+
+
+def _curation_manifest_detail(manifest: object) -> dict:
+    """Normalize curation v1/v2 manifests without changing their contracts."""
+    if not isinstance(manifest, dict):
+        return {"decisions": [], "skipped_details": [], "by_action": {}}
+    decisions = manifest.get("decisions")
+    skipped = manifest.get("skipped_details")
+    summary = manifest.get("summary")
+    normalized_decisions = (
+        [item for item in decisions if isinstance(item, dict)] if isinstance(decisions, list) else []
+    )
+    return {
+        "decisions": normalized_decisions,
+        "skipped_details": [item for item in skipped if isinstance(item, dict)]
+        if isinstance(skipped, list)
+        else [item for item in normalized_decisions if item.get("status") == "skipped"],
+        "by_action": summary.get("by_action", {}) if isinstance(summary, dict) else {},
+    }
+
+
 def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> dict | None:
     """Construit le ctx Jinja du rapport (v6.1) — partagé par prep et assemble.
 
@@ -233,6 +263,8 @@ def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> 
         digest = None
     ecosystem = _load_json(out / f"weekly-ecosystem-{date}.json")
     findings = _load_json(out / f"weekly-quality-findings-{date}.json")
+    coherence_findings = _load_json(out / f"weekly-coherence-findings-{date}.json")
+    skill_curate = _load_json(out / f"skill-curate-{date}.json")
 
     git_commits = _git_log(
         cfg.project_root,
@@ -270,11 +302,14 @@ def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> 
         "outliers": {o["session_id"] for o in summary.get("cost_outliers", [])},
         "audit_candidates": _load_json(out / f"weekly-audit-candidates-{date}.json"),
         "watch_findings": _load_json(out / f"weekly-watch-findings-{date}.json"),
-        "coherence_findings": _load_json(out / f"weekly-coherence-findings-{date}.json"),
-        "skill_curate": _load_json(out / f"skill-curate-{date}.json"),
+        "coherence_findings": coherence_findings,
+        "coherence_items": _coherence_findings(coherence_findings),
+        "skill_curate": skill_curate,
+        "curation_detail": _curation_manifest_detail(skill_curate),
         "coherence_curation_signal": _coherence_has_curation_signal(
-            _load_json(out / f"weekly-coherence-findings-{date}.json")
+            coherence_findings
         ),
+        "graphify_state": _load_json(out / f"weekly-graphify-state-{date}.json"),
         "harness_budget": (digest or {}).get("budget"),
         "harness_triggers": (digest or {}).get("triggers"),
         "harness_dependencies": (digest or {}).get("dependencies"),

@@ -18,6 +18,7 @@ en réutilisant ``watch_memory`` si pertinent, sinon le fallback
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,6 +48,22 @@ _ACTION_PRIORITY = {
 _SOURCE_PRIORITY = {"coherence": 0, "r4": 1, "ttl": 2}
 _VALID_ORIGINS = frozenset({"user", "bundled", "weekly-foreground", "weekly-background"})
 _NULL_TTLS = frozenset({"", "none", "null"})
+
+
+def manifest_metadata(
+    decisions: Iterable[Mapping[str, Any]], *, generated_at: str, anchor: str
+) -> dict[str, Any]:
+    """Build additive v2 manifest metadata from serialized curation decisions."""
+    serialized = [dict(decision) for decision in decisions]
+    by_action = dict(sorted(Counter(str(d.get("action") or "") for d in serialized).items()))
+    skipped_details = [decision for decision in serialized if decision.get("status") == "skipped"]
+    return {
+        "schema_version": 2,
+        "generated_at": generated_at,
+        "anchor": anchor,
+        "summary": {"by_action": by_action},
+        "skipped_details": skipped_details,
+    }
 
 
 def _parse_iso(value: str | None) -> datetime | None:

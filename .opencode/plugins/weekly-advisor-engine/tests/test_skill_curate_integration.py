@@ -124,7 +124,7 @@ def test_skill_curate_dry_run_manifest_schema_and_no_move(tmp_path: Path):
         "archive_candidates",
         "skipped_user",
     } <= manifest.keys()
-    assert manifest["schema_version"] == 1
+    assert manifest["schema_version"] == 2
     assert manifest["mode"] == "dry-run"
     assert manifest["dry_run"] is True
     assert manifest["applied"] == 0
@@ -132,6 +132,61 @@ def test_skill_curate_dry_run_manifest_schema_and_no_move(tmp_path: Path):
     assert manifest["move_status_counts"]["not_attempted"] == 2
     assert skill.is_dir()
     assert not (project / ".opencode" / "skills" / "_archive").exists()
+
+
+def test_skill_curate_manifest_v2_adds_metadata_summary_and_skip_details(tmp_path: Path):
+    """Manifest v2 is additive and explains every skipped decision."""
+    from weekly_telemetry_aggregator.cli import _cmd_skill_curate
+
+    project = tmp_path / "adeo"
+    skill = project / ".opencode" / "skills" / "kit-stale"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: kit-stale\n---\nbody\n", encoding="utf-8")
+    run = tmp_path / "reports"
+    run.mkdir()
+    _inputs(run)
+
+    assert _cmd_skill_curate(_args(), _cfg(run, project)) == 0
+
+    manifest = json.loads((run / f"skill-curate-{DATE}.json").read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == 2
+    assert manifest["anchor"] == DATE
+    assert manifest["generated_at"].startswith(f"{DATE}T")
+    assert manifest["summary"]["by_action"] == {"archive": 1, "merge": 1}
+    assert manifest["skipped_details"] == []
+    # v1 flat fields remain available.
+    assert manifest["archive_pending"] == 1
+    assert manifest["decisions"]
+
+
+def test_skill_curate_manifest_v2_lists_skip_details(tmp_path: Path):
+    """Protected decisions appear in explicit skipped details."""
+    from weekly_telemetry_aggregator.cli import _cmd_skill_curate
+
+    run = tmp_path / "reports"
+    run.mkdir()
+    (run / f"weekly-coherence-findings-{DATE}.json").write_text(
+        json.dumps([{"tag_action": "delete", "target_skill_id": "user-skill"}]),
+        encoding="utf-8",
+    )
+    (run / f"weekly-summary-{DATE}.json").write_text(
+        json.dumps({"skill_catalog": [{"skill_id": "user-skill", "metadata": {"origin": "user"}}]}),
+        encoding="utf-8",
+    )
+
+    assert _cmd_skill_curate(_args(), _cfg(run, tmp_path)) == 0
+    manifest = json.loads((run / f"skill-curate-{DATE}.json").read_text(encoding="utf-8"))
+    assert manifest["skipped_details"] == [
+        {
+            "skill_id": "user-skill",
+            "target_skill_id": "user-skill",
+            "action": "skip",
+            "reason": "user-origin protected",
+            "source": "coherence",
+            "status": "skipped",
+            "move_status": "not_attempted",
+        }
+    ]
 
 
 def test_report_prep_consumes_skill_curate_manifest(tmp_path: Path):
