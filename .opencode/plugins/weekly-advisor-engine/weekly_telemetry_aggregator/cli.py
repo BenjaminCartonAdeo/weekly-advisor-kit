@@ -2,7 +2,8 @@
 
 Subcommands: run (default), show-session, releases, watch-context, watch-distill,
 watch-validate, insights, report-prep, report-assemble, harness, harness-remediate,
-audit-candidates, draft-candidates, commit-draft, doctor, self-cost, skill-curate.
+audit-candidates, draft-candidates, commit-draft, doctor, self-cost, skill-curate,
+graphify-state.
 """
 
 from __future__ import annotations
@@ -957,6 +958,33 @@ def _cmd_self_cost(args, cfg) -> int:
     return self_cost(cfg, anchor=args.anchor)
 
 
+def _cmd_graphify_state(args, cfg) -> int:
+    """Project existing Graphify artifacts into the dated run directory."""
+    from .graphify_summary import graphify_state
+    from .main import EXIT_OK, EXIT_PARTIAL, _parse_anchor
+    from .writer import write_json_atomic
+
+    run_time = _parse_anchor(args.anchor)
+    date = run_time.strftime("%Y-%m-%d")
+    out = _out_dir(cfg, date)
+    project_root = cfg.project_root or Path.cwd()
+    configured = getattr(cfg, "graphify_out", None)
+    state = graphify_state(
+        project_root,
+        graphify_out=Path(configured).expanduser() if configured else None,
+        head_commit=getattr(args, "head_commit", None),
+    )
+    state["date"] = date
+    state["generated_at"] = run_time.isoformat().replace("+00:00", "Z")
+    out_path = out / f"weekly-graphify-state-{date}.json"
+    write_json_atomic(out_path, state)
+    if state["status"] != "ok" or state["stale"]:
+        print(f"graphify-state: WARNING: {state['reason']} file={out_path}", flush=True)
+        return EXIT_PARTIAL
+    print(f"graphify-state: ok file={out_path}", flush=True)
+    return EXIT_OK
+
+
 # ------------------------------------------------------------------ parser
 
 
@@ -1162,6 +1190,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Cost of the pipeline's own run session (Partie 1 §12)",
     )
     p_self.set_defaults(func=_cmd_self_cost)
+
+    p_graphify = sub.add_parser(
+        "graphify-state", parents=[global_parent],
+        help="Read existing Graphify artifacts without invoking Graphify",
+    )
+    p_graphify.add_argument("--head-commit", help=argparse.SUPPRESS)
+    p_graphify.set_defaults(func=_cmd_graphify_state)
 
     p_sc = sub.add_parser(
         "skill-curate",
