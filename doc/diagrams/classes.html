@@ -32,14 +32,14 @@
     <p class="sub">Protocol <strong>SessionProvider</strong> réalisé par trois harnais, modèle de
     données <em>WeeklySummary</em>, configuration typée, résolution mono-cible et sous-système
     veille (distill + mémoire inter-run, PR <em>technology-scanning-optimisation</em>) —
-    extraction fidèle du code Python.</p>
+    extraction fidèle du code Python. <strong>Boundary</strong> : Codex est une cible de drafting, pas un provider ; les retours complete/partial/fatal sont portés par le pipeline, jamais par le modèle de session.</p>
   </header>
 
   <figure>
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1824 1936" role="img"
        aria-labelledby="uml-wak-title uml-wak-desc">
     <title id="uml-wak-title">UML classes — moteur weekly-advisor-kit</title>
-    <desc id="uml-wak-desc">Diagramme de classes UML du moteur : le protocol SessionProvider est réalisé par les providers OpenCode, Claude Code et Copilot VS Code ; WeeklySummary compose Totals, TopSession et WarningEntry ; TelemetryConfig compose cinq blocs de configuration dont WatchDistillConfig ; les constantes de draft_targets alimentent ResolvedDraftTarget puis RemediationSurface ; le sous-système veille regroupe les utilitaires watch_distill et watch_memory autour du contrat JSON fiche candidate.</desc>
+    <desc id="uml-wak-desc">Diagramme de classes UML du moteur : le protocol SessionProvider est réalisé par les providers OpenCode, Claude Code et Copilot VS Code ; WeeklySummary compose Totals, TopSession et WarningEntry ; TelemetryConfig compose cinq blocs de configuration dont WatchDistillConfig (vues lecture seule sources, storage, cost, curation) ; les constantes de draft_targets alimentent ResolvedDraftTarget puis RemediationSurface ; le sous-système veille regroupe les utilitaires watch_distill et watch_memory autour du contrat JSON fiche candidate, la curation WAVE 2.5 (decide_actions, ttl_archive_candidates) et la projection Graphify out-of-band graphify_summary (graphe brut → résumé filtré, jamais consommée par la revue).</desc>
 
     <defs>
       <marker id="tri-a" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto">
@@ -346,7 +346,7 @@
     <text x="68" y="914" font-family="var(--mono)" font-size="9" fill="#444a59">+ opencode_db_path: str = "auto"</text>
     <text x="68" y="930" font-family="var(--mono)" font-size="9" fill="#444a59">+ session_sources: list[dict]</text>
     <text x="68" y="946" font-family="var(--mono)" font-size="9" fill="#444a59">+ lookback_days: int = 7</text>
-    <text x="68" y="962" font-family="var(--mono)" font-size="9" fill="#7a8399">… draft_targets, harness_include…</text>
+    <text x="68" y="962" font-family="var(--mono)" font-size="9" fill="#7a8399">+ vues lecture seule : sources · storage · cost · curation</text>
     <line x1="56" y1="980" x2="320" y2="980" stroke="rgba(45,49,66,0.25)" stroke-width="0.8"/>
     <text x="68" y="994" font-family="var(--mono)" font-size="9" fill="#444a59">+ window_hours(): float</text>
 
@@ -415,17 +415,20 @@
     <text x="732" y="1296" font-family="var(--mono)" font-size="9" fill="#444a59">+ to_dict(): dict</text>
 
     <!-- aside 2 : règles mono-cible / surface 5.5 -->
-    <line x1="1152" y1="872" x2="1152" y2="1010" stroke="rgba(45,49,66,0.25)" stroke-width="2"/>
+    <line x1="1152" y1="872" x2="1152" y2="1068" stroke="rgba(45,49,66,0.25)" stroke-width="2"/>
     <text x="1164" y="888" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">Mono-cible : un seul harnais cible par projet — override config › détection</text>
     <text x="1164" y="912" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">marqueurs (.claude/, .opencode/, .github/prompts, .agents/) › défaut opencode ;</text>
     <text x="1164" y="936" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">targets=[] ⇒ legacy : toutes les cibles, priorité claude › opencode › copilot › codex.</text>
     <text x="1164" y="976" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">Surface 5.5 : projection (.opencode natif) · portability (mapping portability.yaml)</text>
     <text x="1164" y="1000" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">· combined — décision pure, aucune lecture disque.</text>
+     <text x="1164" y="1024" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">Codex : cible de drafting seule — aucun provider de sessions (télémétrie : OpenCode · Claude Code · Copilot).</text>
+     <text x="1164" y="1042" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">Config : clés plates JSON + vues lecture seule sources · storage · cost · curation (aucune migration).</text>
+     <text x="1164" y="1060" font-family="var(--mono)" font-size="9" fill="#7a8399">architecture-summary : brut graph.json 2766/7032 → filtré 2744/6937/99 (schema v1) · hors revue · paths rc 0 · 1 · 2</text>
 
 
-    <!-- ======== package watch (PR technology-scanning-optimisation) ======== -->
+    <!-- ======== package watch (PR technology-scanning-optimisation) + out-of-band ======== -->
     <rect x="24" y="1408" width="1768" height="420" rx="8" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.10)"/>
-    <text x="40" y="1432" font-family="var(--mono)" font-size="8" letter-spacing=".18em" fill="#4f5d75">PACKAGE · WATCH — WATCH_DISTILL.PY · WATCH_MEMORY.PY · CONTRAT FICHE CANDIDATE</text>
+    <text x="40" y="1432" font-family="var(--mono)" font-size="8" letter-spacing=".18em" fill="#4f5d75">PACKAGE · WATCH + OUT-OF-BAND — WATCH_DISTILL.PY · WATCH_MEMORY.PY · CURATION.PY (WAVE 2.5) · GRAPHIFY_SUMMARY.PY · CONTRAT FICHE CANDIDATE</text>
 
     <!-- composition TelemetryConfig ◆-> WatchDistillConfig -->
     <path d="M 188 1012 V 1464" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-start="url(#dia-f)"/>
@@ -519,6 +522,31 @@
     <text x="64" y="1726" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">Mémoire : seuls les gardés sont ré-enregistrés « seen » ; un ignored à signature inchangée est droppé,</text>
     <text x="64" y="1746" font-family="var(--serif)" font-style="italic" font-size="14" fill="#4f5d75">et toute nouvelle version ou publication le fait ressusciter en catégorie « resurfaced ».</text>
 
+    <!-- utilitaire curation (WAVE 2.5) -->
+    <rect x="1504" y="1456" width="264" height="168" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75"/>
+    <text x="1636" y="1471" text-anchor="middle" font-family="var(--mono)" font-size="8" letter-spacing=".08em" fill="#7a8399">«UTILITY · WAVE 2.5 · CURATION.PY»</text>
+    <text x="1636" y="1487" text-anchor="middle" font-family="var(--sans)" font-size="12" font-weight="600" fill="#2d3142">curation — R4 curation/GC · R8 TTL</text>
+    <line x1="1504" y1="1496" x2="1768" y2="1496" stroke="rgba(45,49,66,0.25)" stroke-width="0.8"/>
+    <text x="1516" y="1510" font-family="var(--mono)" font-size="9" fill="#444a59">+ decide_actions(findings, catalog)</text>
+    <text x="1516" y="1526" font-family="var(--mono)" font-size="9" fill="#444a59">+ ttl_archive_candidates(usage, runs)</text>
+    <text x="1516" y="1542" font-family="var(--mono)" font-size="9" fill="#444a59">+ read_carry(prev, mem)</text>
+    <text x="1516" y="1558" font-family="var(--mono)" font-size="9" fill="#7a8399">actions : archive | merge | delete | pin |</text>
+    <text x="1516" y="1574" font-family="var(--mono)" font-size="9" fill="#7a8399">reference | recalibrate | fix</text>
+    <text x="1516" y="1590" font-family="var(--mono)" font-size="9" fill="#7a8399">protection origin=user · ttl_policy=pin jamais archivé</text>
+    <text x="1516" y="1606" font-family="var(--mono)" font-size="9" fill="#7a8399">no-apply par défaut · gate politique : archive seule</text>
+
+    <!-- utilitaire graphify_summary (out-of-band) -->
+    <rect x="1504" y="1656" width="264" height="160" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-dasharray="4 3"/>
+    <text x="1636" y="1671" text-anchor="middle" font-family="var(--mono)" font-size="8" letter-spacing=".08em" fill="#7a8399">«UTILITY · OUT-OF-BAND · GRAPHIFY_SUMMARY.PY»</text>
+    <text x="1636" y="1687" text-anchor="middle" font-family="var(--sans)" font-size="12" font-weight="600" fill="#2d3142">graphify_summary</text>
+    <line x1="1504" y1="1696" x2="1768" y2="1696" stroke="rgba(45,49,66,0.25)" stroke-width="0.8"/>
+    <text x="1516" y="1710" font-family="var(--mono)" font-size="9" fill="#444a59">+ summarize_graph(graph, root) → dict</text>
+    <text x="1516" y="1726" font-family="var(--mono)" font-size="9" fill="#444a59">+ load_and_summarize(path)</text>
+    <text x="1516" y="1742" font-family="var(--mono)" font-size="9" fill="#7a8399">filtre : génériques · stale · self-loops</text>
+    <text x="1516" y="1758" font-family="var(--mono)" font-size="9" fill="#7a8399">liens restreints aux nœuds retenus</text>
+    <text x="1516" y="1774" font-family="var(--mono)" font-size="9" fill="#7a8399">lecture seule · ne touche jamais graph.json</text>
+    <text x="1516" y="1790" font-family="var(--mono)" font-size="9" fill="#7a8399">CLI : scripts/graphify-architecture-summary.py</text>
+
     <!-- légende -->
     <line x1="24" y1="1852" x2="1800" y2="1852" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
     <text x="24" y="1872" font-family="var(--mono)" font-size="8" letter-spacing=".14em" fill="#4f5d75">LEGEND</text>
@@ -537,9 +565,9 @@
   </svg>
   </figure>
 
-  <footer>
-    Sources : models.py · providers/base.py · providers/registry.py · implementations/{opencode,claude_code,copilot_vscode}.py · config.py · draft_targets.py · harness_scope.py · watch_distill.py · watch_memory.py — weekly-advisor-kit · 2026-08-24<br>
-    Diagramme unique zonné demandé (fidèle &gt; budget 7 classes) · skin par défaut · polices système hors-ligne (Geist/Instrument Serif si installées).
+<footer>
+    Sources : models.py · providers/base.py · providers/registry.py · implementations/{opencode,claude_code,copilot_vscode}.py · config.py (vues sources/storage/cost/curation) · draft_targets.py · harness_scope.py · watch_distill.py · watch_memory.py · curation.py (WAVE 2.5) · graphify_summary.py (out-of-band) — weekly-advisor-kit · 2026-08-31<br>
+    Diagramme unique zoné demandé (fidèle &gt; budget 7 classes) · skin par défaut · polices système hors-ligne (Geist/Instrument Serif si installées).
   </footer>
 </div>
 </body>

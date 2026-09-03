@@ -9,10 +9,119 @@ findings archive (skill-candidate / command-candidate), capped by
 
 from __future__ import annotations
 
+import hashlib
+
 #: types transmis à la Partie 4 pour drafting — création OU amélioration d'une
 #: commande existante (v5.30, E : pattern coûteux lancé par une commande).
 _DRAFT_TYPES = {"skill-candidate", "command-candidate", "command-improvement"}
 _SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+
+# Mots-clés heuristiques d'exclusion (R2 anti-learning) — DROP si présents.
+_ANTI_LEARNING_SECRET = ("secret", "password", "token", "api key", "credential")
+_ANTI_LEARNING_REF = ("pr #", "ticket", "jira", "gh-")
+_ANTI_LEARNING_TRANSIENT = (
+    "transient",
+    "transitory",
+    "flaky",
+    "intermittent",
+    "sporadic",
+    "temporary failure",
+)
+_ANTI_LEARNING_ENV = (
+    "environment-specific",
+    "env-specific",
+    "environment specific",
+    "only in staging",
+    "only in dev",
+    "dev-only",
+    "staging-only",
+)
+_ANTI_LEARNING_ONEOFF = (
+    "one-off",
+    "one off",
+    "one-time",
+    "one time",
+    "single occurrence",
+    "rare occurrence",
+)
+
+
+def generate_skill_id(name: str) -> str:
+    """ID déterministe d'un skill : ``skill_`` + 8 hex de sha256(nom normalisé).
+
+    Normalisation = ``strip().lower()`` (stable, idempotent, multi-plateforme).
+    """
+    digest = hashlib.sha256(name.strip().lower().encode("utf-8")).hexdigest()
+    return f"skill_{digest[:8]}"
+
+
+def is_anti_learning(finding: dict) -> bool:
+    """Retourne True si le finding décrit un pattern à NE PAS capturer (DROP).
+
+    Patterns exclus :
+      - secret (secret, password, token, api key, credential)
+      - référence PR/ticket (``PR #``, ``ticket``, ``JIRA``, ``GH-``)
+      - échec transitoire / flaky / intermittent
+      - prohibition spécifique à l'environnement
+      - récit one-off (occurence unique, anecdotique)
+
+    Inspecte ``description``, ``evidence`` et ``recommendation_type``.
+    Heuristique simple et déterministe.
+    """
+    text = " ".join(
+        str(finding.get(k, "")) for k in ("description", "evidence", "recommendation_type")
+    ).lower()
+
+    groups = (
+        _ANTI_LEARNING_SECRET,
+        _ANTI_LEARNING_REF,
+        _ANTI_LEARNING_TRANSIENT,
+        _ANTI_LEARNING_ENV,
+        _ANTI_LEARNING_ONEOFF,
+    )
+    return any(any(w in text for w in group) for group in groups)
+
+
+def _candidate_name(cand: dict) -> str:
+    """Nom normalisé pour génération d'ID (fallback par pertinence)."""
+    return str(
+        cand.get("name")
+        or cand.get("skill_name")
+        or cand.get("recommendation")
+        or cand.get("category")
+        or cand.get("recommendation_type")
+        or ""
+    ).strip()
+
+
+def consolidate_candidates(candidates: list[dict]) -> list[dict]:
+    """Enrichit chaque candidat : create vs patch, attache skill_id/origin.
+
+    - ``overlaps_with`` non vide OU ``skill_id`` existant → ``action='patch'``,
+      ``target_skill_id`` = ``overlaps_with[0]`` (sinon l'id existant).
+    - Sinon ``action='create'``.
+    Toujours : ``skill_id=generate_skill_id(name)`` et ``origin='weekly-background'``.
+
+    Fonction pure : retourne de nouveaux dicts (copie superficielle), ne mute
+    pas l'entrée. Le tri/sévérité hérité des appelants est préservé.
+    """
+    result: list[dict] = []
+    for cand in candidates:
+        enriched = dict(cand)
+        name = _candidate_name(enriched)
+        existing_skill_id = enriched.get("skill_id")
+        overlaps = enriched.get("overlaps_with") or []
+
+        if overlaps or existing_skill_id:
+            enriched["action"] = "patch"
+            enriched["target_skill_id"] = overlaps[0] if overlaps else existing_skill_id
+        else:
+            enriched["action"] = "create"
+
+        enriched["skill_id"] = generate_skill_id(name) if name else (existing_skill_id or "")
+        enriched["origin"] = "weekly-background"
+        result.append(enriched)
+    return result
 
 
 def select_audit_candidates(
@@ -66,9 +175,13 @@ def select_draft_candidates(findings: dict | None, *, max_candidates: int = 3) -
     if not findings:
         return []
     candidates = [
-        f for f in findings.get("findings", []) if f.get("recommendation_type") in _DRAFT_TYPES
+        f
+        for f in findings.get("findings", [])
+        if not is_anti_learning(f)
+        and f.get("recommendation_type") in _DRAFT_TYPES  # R2: drop anti-learning
     ]
     candidates.sort(
         key=lambda f: (_SEVERITY_ORDER.get(f.get("severity", "low"), 3), f.get("session_id") or "")
     )
-    return candidates[: max(0, max_candidates)]
+    selected = candidates[: max(0, max_candidates)]
+    return consolidate_candidates(selected)  # R1 provenance + R3 consolidation umbrella

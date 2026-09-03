@@ -9,8 +9,16 @@ from helpers import make_step, make_usage, tzutc
 
 from weekly_telemetry_aggregator.aggregator import aggregate
 from weekly_telemetry_aggregator.config import TelemetryConfig
+from weekly_telemetry_aggregator.main import RunProvenance
 from weekly_telemetry_aggregator.models import Period
-from weekly_telemetry_aggregator.report import report_assemble, report_blocks_draft, report_prep
+from weekly_telemetry_aggregator.report import (
+    _coherence_has_curation_signal,
+    _critical_security_findings,
+    report_assemble,
+    report_blocks_draft,
+    report_prep,
+    validate_required_artifacts,
+)
 from weekly_telemetry_aggregator.writer import summary_to_dict
 
 RUN = tzutc(2026, 8, 12)
@@ -53,6 +61,73 @@ def test_report_prep_renders_draft(tmp_path: Path):
     assert f"weekly-summary-{DATE}.json" in text
 
 
+def test_report_context_exposes_deterministic_provenance(tmp_path: Path):
+    _write_summary(tmp_path)
+    from weekly_telemetry_aggregator.report import build_report_context
+
+    context = build_report_context(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert context is not None
+    assert context["provenance"]["anchor"] == RUN.isoformat()
+    assert context["provenance"]["artifact_inputs"][f"weekly-summary-{DATE}.json"]["present"]
+
+
+def test_report_context_exposes_run_provenance_from_summary(tmp_path: Path):
+    _write_summary(tmp_path)
+    p = tmp_path / f"weekly-summary-{DATE}.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    expected = {"repository_path": "/repo", "branch": "main", "commit_sha": "abc"}
+    data["run_provenance"] = expected
+    p.write_text(json.dumps(data), encoding="utf-8")
+    context = __import__("weekly_telemetry_aggregator.report", fromlist=["build_report_context"]).build_report_context(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert context["provenance"]["run_provenance"] == expected
+
+
+def test_run_provenance_serializes_canonical_start_time():
+    provenance = RunProvenance("/repo", "main", "abc", False, RUN.isoformat(), "test")
+    payload = provenance.as_dict()
+    assert payload["start_time"] == RUN.isoformat()
+    assert payload["run_started_at"] == RUN.isoformat()
+
+
+def test_validate_required_artifacts_separates_required_optional_and_statuses(tmp_path: Path):
+    (tmp_path / f"weekly-summary-{DATE}.json").write_text("{}", encoding="utf-8")
+    (tmp_path / f"weekly-insights-{DATE}.json").write_text("not-json", encoding="utf-8")
+    gate = validate_required_artifacts(tmp_path, DATE)
+    assert gate["status"] == "pass"
+    assert gate["required"][f"weekly-summary-{DATE}.json"]["status"] == "present"
+    assert gate["optional"][f"weekly-insights-{DATE}.json"]["status"] == "ill_readable"
+    assert gate["optional"][f"weekly-harness-digest-{DATE}.json"]["status"] == "absent"
+
+
+def test_validate_required_artifacts_enabled_html_absence_is_nonzero_gate(tmp_path: Path):
+    (tmp_path / f"weekly-summary-{DATE}.json").write_text("{}", encoding="utf-8")
+    gate = validate_required_artifacts(
+        tmp_path, DATE, html_enabled=True, html_path=tmp_path / "missing.html"
+    )
+    assert gate["html"]["status"] == "absent"
+    assert gate["status"] == "pass"  # HTML failure is handled as assemble rc=1.
+
+
+def test_critical_security_findings_are_detected():
+    digest = {"findings": [{"rule": "security/tool-poisoning", "severity": "critical"}]}
+    assert _critical_security_findings(digest) == digest["findings"]
+    assert _critical_security_findings({"findings": [{"rule": "security/x", "severity": "high"}]}) == []
+
+
+def test_report_assemble_critical_security_forces_nonzero_rc(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps({"findings": [{"rule": "security/tool-poisoning", "severity": "critical"}]}),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc != 0
+    assert any("security/critical" in warning for warning in warnings)
+
+
 def test_report_assemble_requires_draft(tmp_path: Path):
     path, warnings, rc = report_assemble(_cfg(tmp_path), anchor=RUN.isoformat())
     assert path is None
@@ -71,6 +146,146 @@ def test_report_assemble_placeholder_without_blocks(tmp_path: Path):
     assert "<!-- QUALITY_BLOCK -->" not in final_path.read_text(encoding="utf-8")
     assert "non disponible" in final_path.read_text(encoding="utf-8")
     assert any("placeholder" in w for w in warnings)
+
+
+def test_report_assemble_propagates_skill_curate_rc(tmp_path: Path):
+    """An upstream curation failure remains visible in assemble's exit code."""
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (tmp_path / f"skill-curate-{DATE}.json").write_text(
+        json.dumps({"schema_version": 1, "rc": 1}), encoding="utf-8"
+    )
+
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+
+    assert final_path is not None
+    assert rc == 1
+
+
+def test_report_assemble_preserves_upstream_summary_rc(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    p = tmp_path / f"weekly-summary-{DATE}.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data["rc"] = 2
+    p.write_text(json.dumps(data), encoding="utf-8")
+    report_prep(cfg, anchor=RUN.isoformat())
+    final_path, _warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 2
+
+
+def test_report_assemble_requires_curation_manifest_when_signaled(tmp_path: Path):
+    """Curation signal raises partial gate, without applying or moving anything."""
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"weekly-coherence-findings-{DATE}.json").write_text(
+        json.dumps({"curation_signal": {"R4_archive_candidates": {"strong_8of8": ["x"]}}}),
+        encoding="utf-8",
+    )
+    report_prep(cfg, anchor=RUN.isoformat())
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 1
+    assert any("WAVE 2.5" in warning and "skill-curate" in warning for warning in warnings)
+    assert "REQUIRED, non exécutée" in final_path.read_text(encoding="utf-8")
+
+
+def test_report_assemble_curation_manifest_clears_gate(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"weekly-coherence-findings-{DATE}.json").write_text(
+        json.dumps({"findings": [{"tag_action": "archive", "target_skill_id": "x"}]}),
+        encoding="utf-8",
+    )
+    (tmp_path / f"skill-curate-{DATE}.json").write_text(
+        json.dumps({"applied": 0, "proposed": 1, "skipped": 0, "decisions": []}),
+        encoding="utf-8",
+    )
+    report_prep(cfg, anchor=RUN.isoformat())
+    blocks_path, block_warnings, block_rc = report_blocks_draft(cfg, anchor=RUN.isoformat())
+    assert blocks_path is not None
+    assert block_rc == 0
+    assert any("brouillon de blocs généré" in warning for warning in block_warnings)
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 0
+    assert not any("WAVE 2.5" in warning for warning in warnings)
+    assert "Curation (WAVE 2.5 — apply — appliquées)" in final_path.read_text(encoding="utf-8")
+
+
+def test_coherence_curation_signal_accepts_r4_mapping_and_ignores_bad_findings():
+    assert _coherence_has_curation_signal(
+        {"curation_signal": {"R4_archive_candidates": {"strong_8of8": ["x"]}}}
+    )
+    assert not _coherence_has_curation_signal({"findings": ["not-a-finding", None]})
+
+
+def test_report_context_normalizes_coherence_and_curation_details(tmp_path: Path):
+    """Markdown and HTML consume the same filtered JSON projections."""
+    _write_summary(tmp_path)
+    (tmp_path / f"weekly-coherence-findings-{DATE}.json").write_text(
+        json.dumps({"findings": [{"tag": "drift", "description": "x"}, "bad"]}),
+        encoding="utf-8",
+    )
+    (tmp_path / f"skill-curate-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "summary": {"by_action": {"archive": 1}},
+                "decisions": [{"action": "archive", "skill_id": "x", "reason": "stale"}],
+                "skipped_details": [{"skill_id": "u", "reason": "protected"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    from weekly_telemetry_aggregator.report import build_report_context
+
+    ctx = build_report_context(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert ctx is not None
+    assert ctx["coherence_items"] == [{"tag": "drift", "description": "x"}]
+    assert [d["skill_id"] for d in ctx["curation_detail"]["decisions"]] == ["x"]
+    assert [d["skill_id"] for d in ctx["curation_detail"]["skipped_details"]] == ["u"]
+
+
+def test_report_markdown_renders_skipped_decision_once(tmp_path: Path):
+    """A skipped v2 decision is rendered only by the skipped-details section."""
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"skill-curate-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "applied": 0,
+                "proposed": 0,
+                "skipped": 1,
+                "decisions": [
+                    {
+                        "action": "archive",
+                        "skill_id": "protected-skill",
+                        "source": "user",
+                        "reason": "user-origin protected",
+                        "status": "skipped",
+                    }
+                ],
+                "skipped_details": [
+                    {
+                        "action": "archive",
+                        "skill_id": "protected-skill",
+                        "source": "user",
+                        "reason": "user-origin protected",
+                        "status": "skipped",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    draft, context = report_prep(cfg, anchor=RUN.isoformat())
+    assert draft is not None and context is not None
+    text = draft.read_text(encoding="utf-8")
+    assert text.count("`protected-skill`") == 1
+    assert "`skip` `protected-skill`" in text
 
 
 def test_report_assemble_injects_blocks(tmp_path: Path):
@@ -115,9 +330,12 @@ def test_report_assemble_rejects_too_short_blocks(tmp_path: Path):
     (tmp_path / f"weekly-report-blocks-{DATE}.md").write_text("*court*", encoding="utf-8")
     report_prep(cfg, anchor=RUN.isoformat())
     path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
-    assert rc == 2
-    assert path is None
-    assert any("trop court" in w for w in warnings)
+    assert rc == 0
+    assert path is not None
+    text = path.read_text(encoding="utf-8")
+    assert "brouillon automatique" in text
+    assert "bloc LLM trop court" in text
+    assert any("trop court" in w and "fallback" in w for w in warnings)
 
 
 def test_report_prep_renders_top_harness_rules(tmp_path: Path):
@@ -533,6 +751,31 @@ def test_validate_llm_blocks_rejects_digits_and_unknown():
     assert coverage == []
 
 
+def test_validate_llm_blocks_reports_source_violation_line():
+    from weekly_telemetry_aggregator.report import validate_llm_blocks
+
+    violations, _ = validate_llm_blocks(
+        "Constat étayé [F:s1#loop].\nRéférence inventée [F:ses_fake#loop].\n",
+        {"findings": [{"session_id": "s1", "category": "loop", "severity": "medium"}]},
+        None,
+    )
+
+    assert any(
+        "ligne 2" in violation and "[F:ses_fake#loop]" in violation for violation in violations
+    )
+
+
+def test_validate_llm_blocks_rejects_malformed_source_tag():
+    from weekly_telemetry_aggregator.report import validate_llm_blocks
+
+    violations, _ = validate_llm_blocks("Constat [F:] non traçable.\n", None, None)
+
+    assert any(
+        "balise de source mal formée" in violation and "ligne 1" in violation
+        for violation in violations
+    )
+
+
 def test_validate_llm_blocks_allows_dates_percent_versions():
     from weekly_telemetry_aggregator.report import validate_llm_blocks
 
@@ -888,3 +1131,44 @@ def test_assemble_html_disabled_is_silent_noop(tmp_path: Path):
     final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
     assert rc == 0 and final_path is not None
     assert not (tmp_path / "reports").exists()
+
+
+def test_assemble_html_enabled_missing_artifact_is_nonzero(tmp_path: Path, monkeypatch):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    cfg.html_report_dir = str(tmp_path / "html")
+    report_prep(cfg, anchor=RUN.isoformat())
+    monkeypatch.setattr(
+        "weekly_telemetry_aggregator.report.render_html_report",
+        lambda *args, **kwargs: tmp_path / "html" / f"weekly-report-{DATE}.html",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None and rc != 0
+    assert any("HTML enabled" in warning and "absent" in warning for warning in warnings)
+
+
+def test_assemble_prose_rejection_is_explicit_fallback_and_gate_manifest(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    _write_auto_blocks(tmp_path)
+    (tmp_path / f"weekly-report-blocks-{DATE}.md").write_text("too short", encoding="utf-8")
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None and rc == 0
+    text = final_path.read_text(encoding="utf-8")
+    assert "auto_draft_fallback" in text
+    assert "never validated" in text
+    gates = json.loads((tmp_path / f"weekly-report-gates-{DATE}.json").read_text(encoding="utf-8"))
+    assert gates["prose"]["validated"] is False
+
+
+def test_blocking_security_rules_are_nonzero_even_without_critical_severity(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps({"findings": [{"rule": "security/mcp-tool-poisoning", "severity": "high"}]}),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None and rc != 0

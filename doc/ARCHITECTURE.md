@@ -14,12 +14,37 @@ l'architecture telle qu'implémentée et les invariants à préserver.
 | `ARCHITECTURE.md` | Structure technique et invariants (ce document) |
 | `spec-opencode-weekly-advisor` | Spécification fonctionnelle, source de vérité contractuelle |
 
+## Graphify — exploration out-of-band (hors périmètre)
+
+L'analyse de graphe du code via Graphify (`graphify-out/`) est une **exploration
+d'architecture optionnelle, hors pipeline** : elle ne fait pas partie de la revue
+hebdomadaire, ne nourrit ni les étapes ni le rapport, et ses sorties sont **ignorées**
+par le kit. Une mise à jour de graphe seule (code-only, `graphify update .`) peut
+s'exécuter **sans LLM**, indépendamment de tout run. `graphify-out/` relève du
+développement, jamais de la revue.
+
+**Résumé d'architecture déterministe (out-of-band)** : le module
+`weekly_telemetry_aggregator/graphify_summary.py` projette un **résumé compact en
+lecture seule** depuis un artefact de graphe — il ne met jamais à jour `graph.json`,
+n'invoque jamais Graphify, et n'est consommé par aucune étape de la revue. Le CLI
+`scripts/graphify-architecture-summary.py` lit `graphify-out/graph.json` (défaut) et
+écrit le résumé sur stdout ou via `--output` (le graphe brut n'est jamais touché).
+Projection stable : exclusion des nœuds sans fichier source, des nœuds génériques et
+des sources disparues (`stale`), liens restreints aux nœuds retenus, self-loops omis,
+collections triées (reproductibilité). Sortie : `schema_version`, `built_at_commit`,
+`node_count`, `edge_count`, `source_file_count`, `filtered` (génériques / stale /
+self-loops), `files` (par fichier source), `relations` (triées).
+
 ## Moteur et orchestration
 
 - Moteur Python déterministe `weekly-telemetry-aggregator` dans
   `.opencode/plugins/weekly-advisor-engine/`, zéro LLM sur les étapes chiffrées.
-- Plugin enveloppe OpenCode : 17 tools `weekly_*` (`weekly_run`, `weekly_harness`,
-  `weekly_doctor`, `weekly_commit_draft`, etc.) qui pilotent le moteur.
+- Plugin enveloppe OpenCode : 18 tools `weekly_*` (`weekly_run`, `weekly_harness`,
+  `weekly_doctor`, `weekly_commit_draft`, `weekly_skill_curate`, etc.) qui pilotent le moteur.
+- **Configuration en vues groupées** : `TelemetryConfig` expose des vues **en lecture
+  seule** — `sources`, `storage`, `cost`, `curation` — construites sur les champs
+  plats historiques. Le fichier JSON garde sa forme (clés plates, aucune migration) ;
+  les vues sont un confort de code rétro-compatible, pas un nouveau format.
 - Sorties JSON reproductibles dans `<output_dir>/runs/<date>-<uuid8>/`, alias
   stable `runs/current/`. Codes de sortie : `0` complet, `1` partiel, `2` fatal.
 - L'exécution du run est **orchestrée en waves parallèles de subagents** (spec v6.1,
@@ -52,6 +77,9 @@ elle-même les étapes longues — chaque branche indépendante est confiée à 
 │   ├─ I : weekly_insights
 │   └─ C : skill weekly-coherence-review
 │
+├─ WAVE 2.5 — curation séquentielle (REQUIRED, après la jointure de WAVE 2)
+│   └─ weekly_skill_curate → skill-curate-<date>.json (dry-run/no-apply par défaut)
+│
 └─ TAIL — report_prep → blocks_draft → prose → assemble → self_cost
                                                              [session principale]
 ```
@@ -79,6 +107,32 @@ elle-même les étapes longues — chaque branche indépendante est confiée à 
   (`{branch: {step: ms}}` + durées wave/tail). Nouvel artefact écrit par l'agent, la
   liste des fichiers agent-writable est étendue en conséquence.
 
+**Provenance et transport** : chaque worker renseigne `start_time` (début wall-clock),
+`elapsed_s`, `branch`, `run_dir` et ses `artifacts`; les artefacts déterministes
+renseignent `anchor`, `generated_at` et `source`/`sources`. Les synthèses exposent
+`artifact_inputs` comme pointeurs de fichiers et leur présence. Le JSON sur disque
+est la source de vérité unique : les payloads volumineux sont passés par fichier
+temporaire, jamais dans `argv` ni dans le contexte du join.
+
+**Bornes et blocages** : le coordinateur seul peut déléguer (3 T/V/H, puis
+`K ≤ audit_max_sessions` A, puis 3 D/I/C ; aucun fan-out). Chaque worker est limité
+à 10 min, un passage par étape et 3 tours de diagnostic ; sortie vide → une retry
+unique puis `rc=1`. Le run s'arrête sans rapport pour tout `rc=2`/crash critique,
+pour `skills_loaded.ok=false` d'une skill primaire A/D/C, ou pour une gate non
+exécutable (timeout, crash ou sortie illisible). Silence/timeout worker et warnings
+ordinaires restent fail-soft (`rc=1`). Le join expose `missing`, `truncated` et
+`timeout`, ainsi que `worker_status` (statut original), dans le timing JSON.
+
+**WAVE 2.5 — manifeste et gate** : `weekly_skill_curate` consomme les findings de cohérence
+après la jointure de WAVE 2 et écrit `skill-curate-<date>.json` avant le tail. **No-apply est
+explicite et par défaut** : sans `apply=true`, le manifeste liste les actions (`archive | merge |
+pin | reference`) et statuts, mais aucun fichier n'est déplacé, fusionné, supprimé ou édité.
+Validation humaine explicite requise avant un appel séparé avec `apply=true`; `origin=user` reste
+protégé. Manifeste absent/illisible = anomalie reportée, jamais application implicite.
+**Gate politique** : même en `apply`, seule l'action `archive` est exécutée (déplacement
+idempotent vers `_archive/<date>/`, jamais de suppression) ; `merge`, `reference`, `pin`,
+`delete` et `recalibrate` restent des propositions, sans opération fichiers.
+
 ## Veille écosystème (étapes 2 → 3.6)
 
 Chaîne déterministe de la **branche V (wave 1)**, encadrant l'unique passe LLM de la
@@ -98,6 +152,11 @@ branche (3.5) — exécutée par le worker V, qui gère seul l'ordre séquentiel
 - **Étape 2.5 — `watch-context`** : crosswalk marché/existant ; consomme les
   candidats s'ils existent et produit alors
   `watch-candidates-enriched-<date>.json` (fiches × état local + bande résiduelle).
+  La sortie embarque une **projection d'observation d'architecture** en lecture seule
+  (`architecture_observations`) : compteurs d'états (`declared`/`observed`/`absent`/
+  `unknown`), configuration (fichiers, disponible, valide), compteurs d'inventaire
+  (plugins/skills/commands/agents) et périmètre de harnais. Cette projection n'infère
+  aucune intention et ne propose ni n'applique aucun changement.
 - **Étape 3.5 — skill `weekly-watch-review`** (LLM) : lit les fiches enrichies +
   digest mémoire + findings coûteux ; filet B phase 0 conditionnelle (fiches <
   `min_candidates` ET résiduel non vide) ; écrit le brut
@@ -130,6 +189,10 @@ VS Code) via une couche d'abstraction :
   - `claude_code.py` — transcripts JSONL `~/.claude/projects/<cwd-mungé>/<sessionId>.jsonl`
     (un fichier = une session ; munging du répertoire projet : séparateurs/points → tirets).
   - `copilot_vscode.py` — source Copilot VS Code.
+- **Distinction provider / cible de drafting** : les **providers de télémétrie** (sources
+  de sessions lues) sont OpenCode, Claude Code et Copilot VS Code. **Codex n'est jamais
+  un provider** : il est supporté uniquement comme cible de drafting (`draft_targets`,
+  marqueur `.agents/`), jamais lu comme source de sessions.
 - **`build_providers(cfg)`** construit les providers des sources actives de
   `cfg.session_sources` et les fusionne. Si aucune source n'est active, repli
   rétrocompatible sur la base OpenCode locale via `detect_db` (contrat
@@ -183,6 +246,18 @@ Le drafting (étape 4) cible un harnais unique, pas seulement `.opencode/` :
 
 ## Qualité et portabilité
 
+### Contrat de validation des tests
+
+- L'exécution `pytest` depuis le dossier moteur est la **source de vérité** de la
+  validation : les tests exécutés doivent passer.
+- La collecte (`pytest --collect-only -q`) est un diagnostic explicite destiné à
+  expliquer les écarts de décompte ; elle ne constitue pas une validation et ne
+  remplace jamais l'exécution.
+- Un **count mismatch** (décompte documenté différent du nombre collecté ou
+  exécuté) est **warning-only** : il ne bloque ni le run ni le CI à lui seul.
+- Les contrats de gate restent bloquants : un contrat docs ↔ code, lint/format,
+  doctor ou portabilité en échec conserve son comportement d'arrêt/refus.
+
 - **`portability.yaml` kit-shipped** : règles de mapping custom, placées sous
   `custom/portability/*` (préfixe `custom/` obligatoire). Couverture
   skills-only de `harness-eval` ≥ 7.10.1.
@@ -190,6 +265,21 @@ Le drafting (étape 4) cible un harnais unique, pas seulement `.opencode/` :
   worktree ; findings lus depuis le JSON (`findings[].details[]`) ;
   `error` → refus du commit (fix manuel), `warning` → note, binaire
   `harness-eval` absent → gate ignorée avec note ⚠.
+
+## Gouvernance observation-only (dérive d'architecture)
+
+La dérive d'architecture/configuration est **observée, jamais appliquée** :
+
+- `watch-context` (étape 2.5) projette `architecture_observations` (voir § Veille
+  écosystème) — lecture seule, aucun effet de bord.
+- `insights` (étape 6) compare la projection courante à la précédente sur les champs
+  stables (`state_counts`, `config`, `inventory_counts`, `harness_scope`) ; si elle
+  change sur ≥ **2** runs consécutifs (seuil `architecture_drift_runs`, défaut 2), un
+  finding `architecture-drift` est émis : sévérité **basse**, `observation_only: true`,
+  action `recalibrate`, recommandation de revue manuelle.
+- **Contrat** : ce finding est un **constat de rapport**, jamais une alerte bloquante
+  (pas d'impact CI) et il ne déclenche **ni curation ni application** (`apply`). Il
+  alimente la passe de cohérence qualitative comme signal d'observation.
 
 ## Invariants
 

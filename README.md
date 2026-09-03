@@ -3,7 +3,7 @@
 Revue hebdomadaire automatisée de vos agents de code : analyse de la télémétrie locale, veille écosystème, audit des sessions coûteuses et rapport HTML interactif, avec un moteur 100 % déterministe, zéro LLM pour les chiffres.
 
 [![CI](https://github.com/BenjaminCartonAdeo/weekly-advisor-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/BenjaminCartonAdeo/weekly-advisor-kit/actions/workflows/ci.yml)
-[![tests 543](https://img.shields.io/badge/tests-543-brightgreen)](.opencode/plugins/weekly-advisor-engine)
+[![tests 605](https://img.shields.io/badge/tests-605-brightgreen)](.opencode/plugins/weekly-advisor-engine)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ![Architecture du kit](doc/diagrams/architecture.svg)
@@ -18,12 +18,14 @@ Le cœur est 100 % déterministe : le moteur Python lit directement la télémé
 
 | Fonctionnalité | Ce que vous obtenez |
 |---|---|
-| Multi-harnais | Télémétrie OpenCode, Claude Code et Copilot VS Code via `session_sources`, extensible par source |
+| Multi-harnais | Télémétrie OpenCode, Claude Code et Copilot VS Code via `session_sources`, extensible par source ; **Codex n'est jamais un provider de télémétrie** — cible de drafting seule (`.agents/`) |
 | Chiffres déterministes | Moteur Python pur, zéro LLM sur les données : coûts, tokens, cache, outliers, prompts répétés |
 | Coûts estimés | Estimation par session avec surcharge `cost_rate_usd_per_mtok` par source, alertes budget semaine/mois |
 | Audit qualité | Sessions candidates auditées par skill dédié, constats archivés avec baseline pour mesurer la dérive |
 | Veille marché | Distillation hebdomadaire (~30 fiches scorées) confrontée à votre environnement, avec mémoire inter-run |
 | Auto-drafting mono-cible | Drafts skills/commands ciblés vers le harnais du projet, gate de portabilité avant commit (erreur → refus) |
+| Curation WAVE 2.5 | Manifeste déterministe des actions de curation/TTL en **dry-run** ; gate politique : `apply=true` n'exécute que les **archives** (déplacement idempotent, jamais de suppression), les autres actions restent des propositions |
+| Gouvernance observation-only | Dérive d'architecture/configuration **observée** (projection watch-context + finding insights `architecture-drift`) : jamais bloquante, ne déclenche ni curation ni application |
 | Rapport web final | HTML autonome (dashboard KPI, filtres, dark mode) ouvert automatiquement en fin de run, plus archive MD |
 
 ## Installation
@@ -69,7 +71,28 @@ Les clés principales vivent dans [`weekly-telemetry-config.json`](.opencode/plu
 | `cost_rate_usd_per_mtok` | Taux de coût par source (surcharge) | par modèle |
 | `lookback_days` | Fenêtre analysée par run | 7 |
 
-Le détail des clés, des seuils et des invariants est dans la [spécification](doc/spec-opencode-weekly-advisor) et [`INSTALL.md`](INSTALL.md) §2.3.
+Le détail des clés, des seuils et des invariants est dans la [spécification](doc/spec-opencode-weekly-advisor) et [`INSTALL.md`](INSTALL.md) §2.3. En interne, la configuration est exposée en **vues groupées** (sources, stockage, coûts, curation) — vues en lecture seule **rétro-compatibles** : le fichier JSON garde ses clés plates historiques, aucune migration requise.
+
+### Contrat d'exécution et provenance
+
+Chaque artefact JSON est transporté par fichier dans `runs/current/` (jamais par
+`argv` ou par duplication du payload dans le contexte agent). Les artefacts portent
+les champs de provenance applicables : `anchor`, `generated_at`, `source`/`sources`,
+`run_dir` et, pour les synthèses, `artifact_inputs` (présence et pointeur de chaque
+entrée). Le fichier daté est la source de vérité ; le résumé ne conserve que des
+pointeurs et statuts.
+
+Le dispatch est borné : le coordinateur seul délègue, au plus 3 workers T/V/H,
+`K ≤ audit_max_sessions` workers d'audit, puis 3 workers D/I/C ; aucun fan-out de
+worker. Chaque worker dispose de 10 minutes, d'un passage par étape et de 3 tours
+de diagnostic maximum. Une sortie vide n'autorise qu'une retry, puis `rc=1`.
+
+Règles bloquantes exactes : `rc=2` d'un worker (ou crash critique), absence de la
+skill primaire F6 (`skills_loaded.ok=false` sur A/D/C), ou gate non exécutable
+(timeout/crash/sortie illisible) stoppe le run sans rapport. Timeout/silence de
+worker et warnings ordinaires restent `rc=1` fail-soft. Les statuts observables
+sont `missing`, `truncated`, `timeout` et le statut original `worker_status` ; ils
+restent dans `weekly-timings-<date>.json`.
 
 ## Contributing
 
@@ -78,10 +101,18 @@ Contributions bienvenues, en particulier : nouveaux providers de harnais, règle
 Validation locale (depuis le dossier moteur `.opencode/plugins/weekly-advisor-engine`) :
 
 ```sh
-uv run python -m pytest -q    # 543 tests
+uv run python -m pytest -q    # 605 tests
 uv run ruff check .           # lint
 uv run ruff format --check .  # format
 ```
+
+**Source de vérité des tests :** le résultat de l'exécution `pytest` ci-dessus
+(toutes les tests passent) fait foi. Une collecte séparée (`uv run python -m
+pytest --collect-only -q`) est un **diagnostic explicite** uniquement : elle aide à
+expliquer une différence de décompte, mais ne remplace pas l'exécution des tests.
+Un écart entre le nombre affiché ici et le nombre collecté est **warning-only** ;
+il ne bloque pas le run. Les contrats de gate (contrats de flux, lint/format et
+gates de portabilité) restent bloquants lorsqu'ils échouent.
 
 Gate docs ↔ code (depuis la racine du repo, node requis) :
 
@@ -89,7 +120,23 @@ Gate docs ↔ code (depuis la racine du repo, node requis) :
 node scripts/check-flow-docs.mjs   # G1 : comptes de tests cohérents + contrats de flux
 ```
 
-Le CI (`.github/workflows/ci.yml`) répète lint, format, 543 tests, packaging et smoke test du plugin sur Ubuntu et Windows, puis la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec-opencode-weekly-advisor`](doc/spec-opencode-weekly-advisor), l'architecture dans [`doc/ARCHITECTURE.md`](doc/ARCHITECTURE.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
+Le CI (`.github/workflows/ci.yml`) répète lint, format, 605 tests, packaging et smoke test du plugin sur Ubuntu et Windows, puis la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec-opencode-weekly-advisor`](doc/spec-opencode-weekly-advisor), l'architecture dans [`doc/ARCHITECTURE.md`](doc/ARCHITECTURE.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
+
+### WAVE 2.5 — manifeste de curation (dry-run)
+
+Après la jointure de WAVE 2 (donc après `weekly-coherence-review`), le pipeline exécute
+`weekly_skill_curate` et écrit `skill-curate-<date>.json` dans `runs/current/`. Ce manifeste
+déterministe liste les actions proposées (`archive`, `merge`, `pin`, `reference`), leurs
+cibles et leur statut. **Par défaut, c'est un dry-run (gate no-apply) : aucun fichier n'est déplacé,
+fusionné, supprimé ou modifié.** Une application nécessite une validation humaine explicite
+et un appel avec `apply=true`. **Gate politique** : même en `apply`, seule l'action
+`archive` est exécutée (déplacement idempotent vers `_archive/<date>/`, jamais de
+suppression) ; `merge`, `reference`, `pin`, `delete` et `recalibrate` restent des
+propositions, sans aucune opération fichiers. Les éléments `origin=user` restent protégés.
+WAVE 2.5 est séquentielle et précède le tail de génération du rapport ; elle est
+**REQUIRED** à l'assemble : si les findings de cohérence portent des actions de curation
+mais que le manifeste `skill-curate-<date>.json` est absent, le rapport passe en P0 avec
+rc=1 (partiel).
 
 ## Documentation
 
@@ -105,6 +152,7 @@ Le CI (`.github/workflows/ci.yml`) répète lint, format, 543 tests, packaging e
 
 - Le moteur lit les tables internes de la base SQLite d'opencode : ce n'est pas une API publique, une mise à jour majeure peut rompre la collecte jusqu'à la mise à jour du kit. `weekly_doctor` diagnostique.
 - La veille dépend d'APIs publiques (npm, GitHub, registre MCP) : rate-limits possibles, warnings tolérés, le run continue.
+- L'exploration d'architecture via Graphify (`graphify-out/`) est **hors pipeline** : out-of-band et optionnelle, elle ne nourrit ni la revue ni le rapport, et ses sorties sont ignorées par le kit. Une mise à jour de graphe seule (code-only) peut s'exécuter sans LLM. État courant : graphe brut `graph.json` — 2766 nœuds · 7032 liens, construit au commit `6b1117d`. Un **résumé d'architecture filtré** peut être projeté en lecture seule (`scripts/graphify-architecture-summary.py`) : 2744 nœuds · 6937 arêtes · 99 fichiers (19 nœuds génériques exclus). Le filtrage exclut les nœuds sans fichier source, les nœuds génériques et les sources disparues (`stale`) ; liens restreints aux nœuds retenus, self-loops omis, collections triées (sortie reproductible). Le graphe n'est jamais modifié et la projection n'entre ni dans la revue ni dans le rapport.
 
 ## Licence
 

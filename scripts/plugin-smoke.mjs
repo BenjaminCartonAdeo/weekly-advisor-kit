@@ -26,11 +26,14 @@ const { default: WeeklyAdvisorPlugin } = await import("../.opencode/plugins/week
 // ---------------------------------------------------------------- faux moteur
 
 const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "wa-smoke-"))
+// Explicit override keeps smoke isolated while production resolves from plugin location.
+process.env.WEEKLY_KIT_ROOT = fakeRoot
 const engine = path.join(fakeRoot, ".opencode", "plugins", "weekly-advisor-engine")
 const venvBin = path.join(engine, ".venv", "bin")
 const outputDir = path.join(fakeRoot, "reports")
 fs.mkdirSync(venvBin, { recursive: true })
 fs.mkdirSync(outputDir, { recursive: true })
+fs.mkdirSync(path.join(engine, "weekly_telemetry_aggregator"), { recursive: true })
 
 const argvLog = path.join(fakeRoot, "argv.log")
 // Faux python : journalise ses argv, répond OK, sort 0 (jamais d'appel réseau).
@@ -69,6 +72,7 @@ fs.writeFileSync(
   JSON.stringify({ project_root: fakeRoot, output_dir: outputDir, lookback_days: 7 }, null, 2),
   "utf8",
 )
+fs.writeFileSync(path.join(engine, "weekly_telemetry_aggregator", "main.py"), "# smoke fixture\n", "utf8")
 
 const failures = []
 function check(label, cond, detail = "") {
@@ -80,6 +84,9 @@ function check(label, cond, detail = "") {
 
 const plugin = await WeeklyAdvisorPlugin({ worktree: fakeRoot, directory: fakeRoot })
 const tools = plugin.tool
+
+const preflight = JSON.parse(await tools.weekly_preflight.execute({}))
+check("weekly_preflight accepte le faux kit", preflight.rc === 0, JSON.stringify(preflight))
 
 // 1. noArgTool : closure résolue (le bug v6.0 plantait ici en ReferenceError)
 try {

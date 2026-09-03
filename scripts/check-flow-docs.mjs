@@ -28,6 +28,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
+import { checkArchitectureDocs } from "./check-architecture-docs.mjs"
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const TS_FILE = path.join(ROOT, ".opencode", "plugins", "weekly-advisor.ts")
@@ -275,6 +276,15 @@ ok(
   "commande référence agent: weekly-advisor dans son frontmatter",
   /agent:\s*weekly-advisor\b/.test(frontmatter(commandSrc7)),
 )
+
+// ---------------------------------------------------------------- surface 8 (advisory)
+
+// Architecture documentation is observed alongside the flow contract. Keep this
+// non-blocking until the repository baseline is explicitly ratified.
+console.log("— Surface 8 : contrats documentation architecture (advisory)")
+for (const check of checkArchitectureDocs().checks) {
+  console.log(`${check.passed ? "ok" : "WARN"} ${check.name}`)
+}
 
 console.log(
   failures === 0

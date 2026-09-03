@@ -31,8 +31,21 @@ maintenance non vides). Sinon, NE PAS créer le fichier (le brouillon auto suffi
    - `[M:categorie]` — maintenance (R1-R4)
    - `[A:regle]` — alerte insights
    - chaque balise doit exister dans les JSON d'entrée
-3. **Taille ≤ 60 lignes** (cible ~40) et ≥ 40 mots
-4. Tout finding `severity: high` doit être cité au moins une fois (sinon warning annexe)
+3. **Traçabilité des rejets** : chaque balise inconnue ou mal formée est rejetée
+   avec son numéro de ligne ; corriger la balise signalée, sans réécrire les données
+   d'entrée. Une balise vide (`[F:]`, `[M:]`, `[A:]`) ne constitue jamais une source.
+4. **Taille ≤ 60 lignes** (cible ~40) et ≥ 40 mots
+5. Tout finding `severity: high` doit être cité au moins une fois (sinon warning annexe)
+
+## Parité déterministe des rapports
+
+Les findings de cohérence et le manifeste `skill-curate-<date>.json` sont des sources
+de vérité JSON communes aux sorties Markdown et HTML. Ne pas reformuler, compter ou
+déduire leurs décisions dans la prose : le code rend les mêmes entrées dans les deux
+formats, y compris les détails `skipped_details` et le statut de chaque décision.
+Graphify (`graphify-out/`) reste **out-of-band** : toute mention doit le présenter
+comme état informatif optionnel, hors revue, sans effet sur les décisions et sans
+preuve de cohérence. Il ne faut jamais le présenter comme une entrée du pipeline.
 
 ## Règles d'écriture
 
@@ -50,7 +63,5 @@ maintenance non vides). Sinon, NE PAS créer le fichier (le brouillon auto suffi
 ## Après écriture
 
 `report-assemble` injecte le bloc dans le draft → `weekly-report-<date>.md` (le signal
-du cron) **et rend le rapport HTML interactif** (`reports/html/weekly-report-latest.html`,
-v6.1 — ton bloc y apparaît section « Constats qualitatifs » avec légende F/M/A et
-distribution par catégorie). ⚠ Un assemble réussi **supprime le draft (consommé)** : pour un nouvel assemble
+du cron). ⚠ Un assemble réussi **supprime le draft (consommé)** : pour un nouvel assemble
 (ex. après édition du bloc), relancer `report-prep` d'abord — sinon erreur « draft inexistant ».

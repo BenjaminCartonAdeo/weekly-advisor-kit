@@ -54,7 +54,7 @@ Fichier : `.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`
 | `open_browser` | Ouverture automatique du rapport HTML dans le navigateur après l'assemble — mettre `false`, ou poser la variable d'environnement `WEEKLY_NO_BROWSER=1` pour un cron headless | `true` |
 | `kit_root` | (optionnel) Worktree du kit pour la synchro best-effort des drafts auto-rédigés (`commit-draft`, v6.0.l) | absent → désactivé |
 | `harness_include` | Profil et globs allowlistés pour l'étape `harness` (projection étendue au harnais détecté) | `advisory` (policy + documentation) |
-| `session_sources` | Sources de sessions actives (liste d'objets `{type, ...}` : `opencode`, `claude-code`, `copilot-vscode`) ; clé extra `cost_rate_usd_per_mtok` = surcharge du taux d'estimation | `[{"type": "opencode"}]` |
+| `session_sources` | Sources de sessions actives (liste d'objets `{type, ...}` : `opencode`, `claude-code`, `copilot-vscode`) ; clé extra `cost_rate_usd_per_mtok` = surcharge du taux d'estimation. **Codex n'est jamais une source de sessions** : cible de drafting seule (`.agents/`) | `[{"type": "opencode"}]` |
 | `draft_targets` | Cible de drafting mono-cible : liste de harnais (override), `[]` (legacy toutes cibles), absent/invalide (détection auto par marqueurs) | détection auto |
 | `harness_auto_fix_rules` | Règles explicitement autorisées pour l'application automatique | `[]` (aucune) |
 | `harness_auto_fix_max_files` | Nombre maximum de fichiers modifiés par remédiation | `1` |
@@ -79,6 +79,33 @@ Toutes les autres clés ont des défauts raisonnables (fenêtre 7 j, budgets, se
 veille `watch`). `~` est supporté des deux côtés — le moteur Python (`expanduser()`)
 et le plugin TS (`os.homedir()`) l'expandent avec la même sémantique ; un chemin
 absolu reste recommandé. Personnalisez `watch` (sources de veille) et les budgets selon votre usage.
+
+**Vues groupées (compatibilité)** : en interne, `TelemetryConfig` expose des **vues en
+lecture seule** regroupées — `sources`, `storage`, `cost`, `curation` — construites sur
+les mêmes champs plats historiques. Le fichier JSON **ne change pas** : mêmes clés,
+même forme, aucune migration. Les vues sont un confort de code, pas un nouveau format.
+
+#### Contrat JSON, provenance et statuts
+
+Le transport inter-étapes est exclusivement le fichier JSON daté dans
+`<output_dir>/runs/current/` : les gros payloads passent par un chemin de fichier
+temporaire, jamais dans `argv`, et ne sont jamais recopiés dans le prompt de join.
+La provenance minimale à conserver est `anchor`, `generated_at`, `source` (ou
+`sources`), `run_dir` et `artifact_inputs`; les rapports doivent aussi conserver les
+pointeurs vers les entrées absentes ou présentes. `start_time` est l'horodatage de
+début de chaque worker et `elapsed_s` sa durée wall-clock jusqu'au contrat retour.
+
+Le budget de délégation est dur : coordinateur seul, 3 workers T/V/H maximum,
+`K ≤ audit_max_sessions` audits, puis 3 workers D/I/C, sans fan-out. Un worker a
+10 min maximum, un passage par étape et 3 tours de diagnostic. Briefing vide ou
+incomplet interdit le spawn ; sortie vide = une seule retry, puis `rc=1`.
+
+Blocage exact : tout `rc=2`, crash critique, skill primaire absente (`skills_loaded.ok=false`
+sur A/D/C), ou gate non exécutable (timeout, crash scanner, sortie illisible) arrête
+le run sans rapport. Un worker silencieux ou timeout est `rc=1` fail-soft ; les
+warnings seuls produisent un run partiel (`rc=1`). Les statuts `missing`, `truncated`
+et `timeout` sont explicites, avec `worker_status` pour le statut original, et sont
+écrits dans `weekly-timings-<date>.json`.
 
 #### Veille : `watch_distill` (étape 2.2) et sources radar
 
@@ -139,8 +166,25 @@ règles custom `.harness-eval/rules/portability.yaml`, ids `custom/portability/*
 **Comportement par artefact (honnête)** : `harness-eval skill-verify` n'inspecte que
 les dossiers **skills** (`SKILL.md` + fichiers frères). Pour une **command**, la gate
 est **skippée explicitement** — non applicable en harness-eval 7.10.1 — et le résultat
-du tool affiche une note de skip visible (« Gate portabilité non applicable aux
+  du tool affiche une note de skip visible (« Gate portabilité non applicable aux
 commands… ») : le commit part sans gate, jamais de silence ni de faux vert.
+
+#### WAVE 2.5 — curation gated et manifeste dry-run
+
+La curation intervient **après la jointure de WAVE 2** (drafting, insights et cohérence)
+et **avant le tail** (`report_prep` → assemble). Elle consomme le findings
+`weekly-coherence-findings-<date>.json`, le catalogue des skills et les données TTL, puis
+écrit le manifeste déterministe `skill-curate-<date>.json` dans `runs/current/`.
+
+**No-apply par défaut :** sans `apply=true`, l'étape est strictement dry-run. Elle ne
+déplace, ne supprime, ne fusionne et n'édite aucun skill ou command ; elle produit seulement
+le manifeste à vérifier. Une application est hors du chemin automatique et requiert une
+validation humaine explicite, puis un appel séparé avec `apply=true`. **Gate politique :
+même en `apply`, seule l'action `archive` est exécutée** (déplacement idempotent vers
+`_archive/<date>/`, jamais de suppression) ; `merge`, `reference`, `pin`, `delete` et
+`recalibrate` restent des propositions, sans opération fichiers. La protection
+`origin=user` demeure active. Manifeste absent, illisible ou incohérent : signaler, jamais
+appliquer implicitement.
 
 ### 2.4 Permissions user + auth (une fois par poste)
 
@@ -158,11 +202,21 @@ run cron (mesuré v5.32).
 
 ```sh
 cd .opencode/plugins/weekly-advisor-engine
-uv run python -m pytest -q     # 543 tests — tout doit passer
+uv run python -m pytest -q     # 605 tests — tout doit passer
 cd ../../..
 opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"
 ```
+
+Le résultat de l'exécution `pytest` est la **source de vérité** : la validation
+est réussie si les tests exécutés passent. Pour diagnostiquer une variation du
+décompte, lancer explicitement `uv run python -m pytest --collect-only -q`
+depuis le dossier moteur ; cette collecte est informative et ne remplace pas
+l'exécution. Un **count mismatch** entre documentation, collecte et exécution
+est un avertissement seulement, jamais un motif de blocage. En revanche, les
+contrats de gate restent bloquants : échec du doctor bloquant, d'une gate docs ↔
+code, du lint/format requis ou de la gate de portabilité arrête la validation ou
+refuse le commit selon l'étape.
 
 Attendu : **« Kit OK ... Prêt pour un run »** (exit 0). Sinon, les causes sont listées
 (exit 1 = avertissements, exit 2 = blocant — voir §6 Dépannage).
@@ -257,6 +311,10 @@ Rien d'autre à nettoyer : aucun service, aucun fichier hors du repo et de `outp
 
 - **Tests** : uniquement depuis le dossier moteur — depuis la racine, l'import `tests`
   échoue (sensibilité au cwd, documentée)
+- **Décompte des tests** : le décompte n'est pas une gate. Utiliser `pytest
+  --collect-only -q` comme diagnostic explicite ; seul le résultat de l'exécution
+  `pytest` fait foi. Un écart de décompte produit un warning, tandis que les
+  contrats de gate restent bloquants.
 - **Assemble consomme le draft** : un `weekly_report_assemble` réussi supprime
   `weekly-report-draft` — pour un nouvel assemble, relancer `weekly_report_prep` d'abord
   (sinon erreur RC=2 « draft inexistant »)

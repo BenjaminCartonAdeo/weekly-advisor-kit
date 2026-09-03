@@ -19,6 +19,7 @@ All queries are windowed per session (indexed), never full scans.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -244,12 +245,18 @@ def _tokens_of(data: dict) -> dict:
     }
 
 
+def _fingerprint(value) -> str:
+    """Hash a canonical JSON representation without exposing tool payloads."""
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _tally_tools(records) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
     """Accumulate tool-call counts, arg chars and loaded-skill counts from (name, input) pairs."""
     tool_calls: dict[str, int] = {}
     tool_arg_chars: dict[str, int] = {}
     skills: dict[str, int] = {}
-    for name, raw_input in records:
+    for name, raw_input, _raw_output in records:
         arg_chars = (
             len(json.dumps(raw_input, ensure_ascii=False, default=str))
             if raw_input is not None
@@ -533,8 +540,25 @@ class OpenCodeAdapter(SchemaAdapter):
         records = []
         for _ts, data in self._tool_parts(session_id, start_ms, end_ms):
             name, raw_input, _output = _tool_name_and_io(data)
-            records.append((name, raw_input))
+            records.append((name, raw_input, _output))
         return _tally_tools(records)
+
+    def session_tool_fingerprints(
+        self, session_id: str, start_ms: int, end_ms: int
+    ) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, int]]]:
+        """Return deterministic argument/result fingerprints, grouped by tool."""
+        args: dict[str, dict[str, int]] = {}
+        results: dict[str, dict[str, int]] = {}
+        for _ts, data in self._tool_parts(session_id, start_ms, end_ms):
+            name, raw_input, raw_output = _tool_name_and_io(data)
+            arg_fp = _fingerprint(raw_input)
+            args.setdefault(name, {})[arg_fp] = args.setdefault(name, {}).get(arg_fp, 0) + 1
+            if raw_output is not None:
+                result_fp = _fingerprint(raw_output)
+                results.setdefault(name, {})[result_fp] = (
+                    results.setdefault(name, {}).get(result_fp, 0) + 1
+                )
+        return args, results
 
     def session_user_turns(self, session_id: str, start_ms: int, end_ms: int) -> list[str]:
         turns: list[str] = []

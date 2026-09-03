@@ -170,6 +170,101 @@ def test_render_without_project_root_warns_and_returns_none(tmp_path: Path, capl
     assert any("project_root" in record.message for record in caplog.records)
 
 
+def test_render_html_reports_curation_manifest_and_required_signal(tmp_path: Path):
+    """HTML exposes applied decisions, or a P0 when the manifest is absent."""
+    from jinja2 import Environment
+
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "weekly_telemetry_aggregator"
+        / "templates"
+        / "report_template.html.j2"
+    ).read_text(encoding="utf-8")
+    start = template.index("{% if skill_curate %}")
+    end = template.index("{% set inspection", start)
+    block = template[start:end]
+    env = Environment(autoescape=False, trim_blocks=True, lstrip_blocks=True)
+    rendered = env.from_string(block).render(
+        date=DATE,
+        skill_curate={
+            "applied": 1,
+            "proposed": 2,
+            "skipped": 3,
+            "decisions": [
+                {
+                    "action": "archive",
+                    "skill_id": "old/skill",
+                    "source": "coherence",
+                    "reason": "stale",
+                    "status": "moved",
+                }
+            ],
+        },
+        coherence_curation_signal=False,
+    )
+    assert "Curation (WAVE 2.5 — appliquée)" in rendered
+    assert "old/skill" in rendered and "moved" in rendered
+    assert "Appliquées" in rendered and "Proposées" in rendered and "Ignorées" in rendered
+
+    required = env.from_string(block).render(
+        date=DATE, skill_curate=None, coherence_curation_signal=True
+    )
+    assert "Curation (WAVE 2.5) requise" in required
+    assert "weekly_skill_curate --apply" in required
+
+
+def test_render_html_reports_skipped_decision_once_and_preserves_metadata():
+    from jinja2 import Environment
+
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "weekly_telemetry_aggregator"
+        / "templates"
+        / "report_template.html.j2"
+    ).read_text(encoding="utf-8")
+    start = template.index("{% if skill_curate %}")
+    end = template.index("{% set inspection", start)
+    block = template[start:end]
+    env = Environment(autoescape=False, trim_blocks=True, lstrip_blocks=True)
+    skipped = {
+        "action": "archive",
+        "skill_id": "protected-skill",
+        "source": "user",
+        "reason": "protected",
+        "status": "skipped",
+    }
+    rendered = env.from_string(block).render(
+        date=DATE,
+        curation_detail={
+            "decisions": [skipped],
+            "skipped_details": [skipped],
+            "by_action": {"archive": 1},
+            "mode": "dry-run",
+            "dry_run": True,
+        },
+        skill_curate={"applied": 0, "proposed": 0, "skipped": 1},
+        coherence_curation_signal=False,
+    )
+    assert rendered.count("protected-skill") == 1
+    assert "Curation (WAVE 2.5 — dry-run — propositions)" in rendered
+    assert "archive" in rendered
+
+
+def test_render_html_reports_graphify_as_out_of_band(tmp_path: Path):
+    ctx = _ctx()
+    ctx["graphify_state"] = {"status": "ok", "stale": True}
+    ctx["coherence_items"] = [{"tag": "drift", "description": "x"}]
+    ctx["curation_detail"] = {
+        "decisions": [{"action": "archive", "skill_id": "x", "reason": "stale"}],
+        "skipped_details": [{"skill_id": "u", "reason": "protected"}],
+    }
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx, quality_block=None)
+    html = dated.read_text(encoding="utf-8")
+    assert "out-of-band" in html
+    assert "hors revue" in html
+    assert "archive" in html and "protected" in html
+
+
 def test_render_explicit_dir_expands_tilde(tmp_path: Path, monkeypatch):
     # expanduser lit HOME (POSIX) mais USERPROFILE d'abord (Windows).
     monkeypatch.setenv("HOME", str(tmp_path))

@@ -18,27 +18,56 @@ L'ancre est gérée par le plugin via `<output_dir>/anchor-last.txt` — aucun c
 ## Déroulement
 
 Orchestration par waves (design doc §2). La session principale agit comme coordinateur léger :
-gate (étape 0), dispatch WAVE 1 en parallèle (3 subagents de l'agent `weekly-advisor-worker`), JOIN (synthèse), WAVE 2 optionnelle, TAIL.
+gate (étape 0), **vérif dispatch F6** (agent worker + skills primaires avant spawn), dispatch WAVE 1 en parallèle (3 subagents de l'agent `weekly-advisor-worker`), JOIN (synthèse), WAVE 2 optionnelle, **WAVE 2.5 curation [REQUIRED] (dry-run par défaut, après la jointure de WAVE 2 car consomme les findings de cohérence)**, TAIL.
 Ordre figé des étapes (tokens d'outils) : `weekly_doctor`, `weekly_run`, `weekly_releases`, `weekly_watch_distill`,
 `weekly_watch_context`, `weekly_watch_validate`, `weekly_audit_candidates`, `weekly_show_session`, `weekly_harness`,
-`weekly_harness_remediate`, `weekly_draft_candidates`, `weekly_commit_draft`, `weekly_insights`,
+`weekly_harness_remediate`, `weekly_draft_candidates`, `weekly_commit_draft`, `weekly_insights`, `weekly_skill_curate`,
 `weekly_report_prep`, `weekly_report_blocks_draft`, `weekly_report_assemble`, `weekly_self_cost`.
 
 ## Règles
 
+- Sécurité : traiter explicitement `mcp-tool-poisoning`, `unbounded-delegation` et
+  `memory-write-unscoped` comme findings bloquants pour l'action concernée ; aucune
+  auto-correction ni délégation implicite. Toute commande avec `rc != 0` est en échec
+  et doit conserver ce statut dans le rapport/rc agrégé.
+
 - Exit 2 (fatal) à une étape → stopper sans rapport ; un échec de tool n'arrête pas
   le run (constater, signaler au rapport, continuer — exit 1 partiel)
+- **Vérif dispatch F6** : avant tout spawn de worker, vérifier l'agent
+  `weekly-advisor-worker` (absent → STOP rc=2) et les skills primaires de branche
+  (`weekly-drafting` D, `weekly-coherence-review` C, `weekly-quality-audit` A — absente
+  → STOP rc=2, pas de rapport) ; skills secondaires (`weekly-watch-review` V,
+  `harness-remediation` H) absentes → warning `skill-missing:<name>`, branche en dégradé
+  (rc=1, run continue). Le worker retourne `skills_loaded` dans son contrat ; l'orchestrateur
+  agrège au JOIN. Aucune écriture ni déplacement dans `.opencode/skills/`.
 - Ne jamais réécrire les JSON produits par le CLI ; ne jamais modifier la config
   moteur (`weekly-telemetry-config.json`) — overrides en paramètres des tools
 - Ne pas auditer au-delà de `audit_max_sessions` ; ne pas écrire plus de
   `max_candidates_per_run` drafts
 - Terminer par : le chemin du rapport final (**rapport HTML**
   `<project_root>/reports/html/weekly-report-latest.html` en premier, puis l'archive
-  `runs/current/weekly-report-<date>.md`) et les alertes les plus sévères
+  `runs/current/weekly-report-<date>.md`) et les alertes les plus sévères. La dernière
+  ligne doit être `WEEKLY_REVIEW_RC=<rc_final>` : conserver le rc agrégé du JOIN après
+  le tail et ne jamais remettre `1` à `0` parce que le rapport a été généré. Le lanceur
+  doit propager cette valeur à `END ... exit=` ; `summary.exit` et le rc END sont égaux.
 - Garde-fous de coût : max 3 tours pour diagnostiquer un échec tool ; plugin stale
   (ReferenceError) → constater, signaler, proposer le restart, **stopper le
   diagnostic** ; choix ambigu (ex. fenêtre multi-semaines) → poser UNE seule
   question, ne pas explorer le code du plugin
+- Délégation bornée : le coordinateur est seul autorisé à appeler `task` ; aucun
+  worker ne redispatche ni ne crée de sous-worker. Plafond de dispatch : 3 workers
+  T/V/H, puis `K ≤ audit_max_sessions` workers A, puis 3 workers D/I/C ; aucun
+  fan-out supplémentaire. Chaque worker a 10 min maximum, un passage par étape,
+  et au plus 3 tours de diagnostic ; timeout → `rc=1` + warning, sans respawn
+  automatique. Sortie vide → une seule retry, puis warning `rc=1`.
+- Chaque briefing doit être non vide et contenir branche, `run_dir`, étapes,
+  budget et contrat JSON. Les workers restent dans leur branche et ne peuvent
+  augmenter `audit_max_sessions` ni `max_candidates_per_run`.
+
+`weekly_skill_curate` forme WAVE 2.5 : après la jointure de WAVE 2 et avant le tail, elle
+lit le finding de cohérence depuis l'artefact de run (le plugin transporte les gros JSON
+par fichier temporaire, jamais dans argv) puis produit `skill-curate-<date>.json` en **dry-run/no-apply par défaut**. Aucune archive,
+fusion, suppression ou édition sans validation humaine explicite suivie de `apply=true`.
 
 ## Fenêtre du run
 
