@@ -29,7 +29,7 @@ from .curation import (
     select_catalog_entry,
     ttl_archive_candidates,
 )
-from .main import doctor, run
+from .main import _run_provenance, doctor, run
 
 
 def _load_cfg(args) -> object:
@@ -47,6 +47,46 @@ def _out_dir(cfg, date: str) -> Path:
     from .run_state import resolve_active_run_dir
 
     return resolve_active_run_dir(cfg.output_dir, date)
+
+
+def _deduplicate_worker_statuses(records: list[object]) -> list[dict]:
+    """Return one compact worker outcome record per session."""
+    by_session: dict[str, dict] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        session_id = record.get("session_id")
+        if not session_id or not any(
+            key in record for key in ("rc", "truncated", "worker_status")
+        ):
+            continue
+        key = str(session_id)
+        compact = {
+            field: record[field]
+            for field in ("session_id", "rc", "truncated", "worker_status", "status")
+            if field in record
+        }
+        merged = by_session.setdefault(key, {})
+        # Status sources can arrive in different order (summary, selection,
+        # candidates). Never let a later healthy record erase a failure.
+        if "session_id" in compact:
+            merged["session_id"] = compact["session_id"]
+        if "rc" in compact:
+            try:
+                rc = int(compact["rc"])
+            except (TypeError, ValueError):
+                rc = 1
+            merged["rc"] = max(int(merged.get("rc", 0) or 0), rc)
+        if "truncated" in compact:
+            merged["truncated"] = bool(merged.get("truncated", False) or compact["truncated"])
+        for field in ("worker_status", "status"):
+            if field in compact and compact[field]:
+                # Truncation provenance is monotonic: a later healthy record
+                # must not erase a previously observed truncation.
+                if field == "worker_status" and merged.get(field) == "truncated":
+                    continue
+                merged[field] = compact[field]
+    return list(by_session.values())
 
 
 def _positive_int(value: str) -> int:
@@ -146,6 +186,15 @@ def _cmd_audit_candidates(args, cfg) -> int:
         "audited": audited,
         "unaudited": unaudited,
         "limit": cfg.audit_max_sessions,
+        # Preserve worker outcomes even when candidates are bounded or output
+        # was compacted by the orchestrator.
+        "worker_statuses": _deduplicate_worker_statuses(
+            [
+                *(summary.get("worker_statuses") or []),
+                *((summary.get("selection") or {}).get("worker_statuses") or []),
+                *candidates,
+            ]
+        ),
     }
     out_path = out / f"weekly-audit-candidates-{date}.json"
     write_json_atomic(out_path, data)
@@ -916,6 +965,7 @@ def _cmd_skill_curate(args, cfg) -> int:
 
     manifest = {
         "schema_version": 1,
+        "rc": 0,
         "mode": "apply" if apply else "dry-run",
         "dry_run": not apply,
         "date": date,
@@ -933,7 +983,15 @@ def _cmd_skill_curate(args, cfg) -> int:
         "archive_candidates_ttl": archive_ids,
         "archive_candidates": archive_ids,
         "skipped_user": skipped_user,
+        "run_provenance": _run_provenance(cfg.project_root, run_time),
     }
+    # Missing targets are stale proposals and remain non-fatal; real apply
+    # refusals must reach the orchestrator.
+    curation_rc = 1 if apply and any(
+        move_status_counts.get(status, 0) > 0
+        for status in ("error", "rejected", "ambiguous", "unverified")
+    ) else 0
+    manifest["rc"] = curation_rc
     manifest.update(
         manifest_metadata(
             manifest_decisions,
@@ -955,7 +1013,7 @@ def _cmd_skill_curate(args, cfg) -> int:
     except OSError as exc:
         print(f"  manifest write FAILED: {exc}", flush=True)
         return 1
-    return 0
+    return curation_rc
 
 
 def _cmd_doctor(args, cfg) -> int:

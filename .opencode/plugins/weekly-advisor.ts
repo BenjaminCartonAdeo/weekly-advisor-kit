@@ -158,12 +158,34 @@ function resolveEngine(worktree: string): EngineLoc {
  */
 function readOrCreateAnchor(outputDir: string): string {
   const file = path.join(outputDir, ANCHOR_FILE)
-  if (fs.existsSync(file)) {
-    const existing = fs.readFileSync(file, "utf8").trim()
-    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(existing)) {
-      const today = new Date().toISOString().slice(0, 10)
-      if (existing.slice(0, 10) === today) return existing
+  let existing: string
+  try {
+    existing = fs.readFileSync(file, "utf8").trim()
+  } catch (err) {
+    // Only a genuinely absent initial anchor is recoverable; preserve evidence
+    // of permission, directory, and other filesystem failures.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw new Error(`lecture de ${file} impossible: ${String(err)}`)
     }
+    existing = ""
+  }
+  if (existing) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z$/.exec(existing)
+    const validDate = match !== null && (() => {
+      const [, year, month, day, hour, minute, second] = match
+      const date = new Date(Date.UTC(+year, +month - 1, +day, +hour, +minute, +second))
+      return date.getUTCFullYear() === +year
+        && date.getUTCMonth() === +month - 1
+        && date.getUTCDate() === +day
+        && date.getUTCHours() === +hour
+        && date.getUTCMinutes() === +minute
+        && date.getUTCSeconds() === +second
+    })()
+    if (!validDate) {
+      throw new Error(`ancre invalide dans ${file}: ${existing}`)
+    }
+    const today = new Date().toISOString().slice(0, 10)
+    if (existing.slice(0, 10) === today) return existing
   }
   const anchor = new Date().toISOString().replace(/\.\d{3}Z$/, "Z")
   fs.mkdirSync(outputDir, { recursive: true })
@@ -207,6 +229,18 @@ function runCli(worktree: string, args: string[], timeoutMs: number): Promise<st
       },
     )
   })
+}
+
+/** Keep large JSON inputs out of argv, whose size limit varies by platform. */
+function stageJsonPayload(payload: string, label: string): { file: string; cleanup: () => void } {
+  // ponytail: file transport is the minimum reliable fix for oversized tool arguments.
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), `weekly-${label}-`))
+  const file = path.join(directory, "input.json")
+  fs.writeFileSync(file, payload, "utf8")
+  return {
+    file,
+    cleanup: () => fs.rmSync(directory, { recursive: true, force: true }),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -347,8 +381,11 @@ function collectPortability(stdout: string): { errors: string[]; warnings: strin
       const entry =
         `[${detail.rule}] ${detail.message ?? ""}` +
         (detail.suggestion ? ` — suggestion : ${detail.suggestion}` : "")
-      // Toute sévérité != error passe en note non bloquante (error seul bloque).
-      ;(detail.severity === "error" ? errors : warnings).push(entry)
+      // Critical findings are safety blockers too; harness-eval normally emits
+      // `error`, but preserving this level avoids a fail-open gate when custom
+      // rules use the stronger severity name.
+      const severity = detail.severity?.toLowerCase()
+      ;(severity === "error" || severity === "critical" ? errors : warnings).push(entry)
     }
   }
   return { errors, warnings }
@@ -673,13 +710,21 @@ const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
           const { outputDir } = resolveEngine(worktree)
           const anchor = anchorArg(args.anchor, outputDir)
           const cliArgs = ["skill-curate", "--anchor", anchor]
-          if (args.coherence) cliArgs.push("--coherence", args.coherence)
+          let coherenceInput: ReturnType<typeof stageJsonPayload> | undefined
+          if (args.coherence) {
+            coherenceInput = stageJsonPayload(args.coherence, "coherence")
+            cliArgs.push("--coherence", coherenceInput.file)
+          }
           if (args.catalog) cliArgs.push("--catalog", args.catalog)
           if (args.usage) cliArgs.push("--usage", args.usage)
           if (args.runs_seen != null) cliArgs.push("--runs-seen", String(args.runs_seen))
           if (args.stale_days != null) cliArgs.push("--stale-days", String(args.stale_days))
           if (args.apply === "true") cliArgs.push("--apply")
-          return runCli(worktree, cliArgs, 900_000)
+          try {
+            return await runCli(worktree, cliArgs, 900_000)
+          } finally {
+            coherenceInput?.cleanup()
+          }
         },
       }),
     },

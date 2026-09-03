@@ -146,6 +146,34 @@ les findings de cohérence (C) ; tail synthétise croix branches et produit le l
 
 ### Gestion du contexte (orchestrateur, inspiré du pattern context-manager)
 
+#### Garde-fous de sécurité
+
+Les findings `mcp-tool-poisoning`, `unbounded-delegation` et `memory-write-unscoped`
+sont toujours traités comme des alertes de sécurité : aucune écriture, délégation ou
+outil MCP concerné ne doit être autorisé implicitement. Tout résultat de commande avec
+`rc != 0` est un échec à signaler et ne peut pas être présenté comme succès.
+
+#### Budget et périmètre de délégation (bornes dures)
+
+- Le coordinateur est **le seul agent autorisé à dispatcher**. Un worker ne peut
+  jamais appeler `task`, créer un sous-worker ou redispatcher une étape ; il exécute
+  uniquement les étapes explicitement présentes dans son briefing.
+- Une exécution crée au maximum **3 workers en WAVE 1** (T, V, H), puis **K workers
+  A** où `K ≤ audit_max_sessions`, puis **3 workers en WAVE 2** (D, I, C). Aucun
+  fan-out supplémentaire n'est autorisé ; `K=0` ne crée aucun worker A.
+- Chaque worker reçoit un budget borné : **10 min maximum**, un seul passage par
+  étape, et **3 tours maximum** pour diagnostiquer un échec de tool. Dépassement
+  de délai → worker marqué `timeout`, `rc=1`, warning, sans respawn automatique.
+- Les workers ne voient que leur branche et ses fichiers autorisés. Le briefing
+  doit contenir `branch`, `run_dir`, étapes ordonnées, budget et contrat JSON ; un
+  briefing absent ou vide interdit le spawn (jamais de délégation implicite).
+- Le coordinateur ne relance pas un worker pour une sortie vide plus d'une fois :
+  une retry unique, puis `rc=1` et warning. Une sortie non vide mais hors contrat
+  est tronquée au JOIN, sans nouveau spawn.
+- Les plafonds moteur restent la source de vérité : `audit_max_sessions` limite
+  les audits et `max_candidates_per_run` limite les drafts. Aucun worker ne peut
+  les augmenter via son prompt ou un override local.
+
 #### 1. Briefing packages
 
 Chaque worker est l'agent `weekly-advisor-worker` (subagent_type=`weekly-advisor-worker`, défini dans `.opencode/agents/weekly-advisor/weekly-advisor-worker.md`). Il reçoit un paquet **minimal-complet** via Task(prompt) :
@@ -162,7 +190,8 @@ Fusion des trois contrats JSON en un **état du run narratif court** (< 500 toke
 - Statut par branche (0/1/2)
 - Warnings agrégés, fatalités éventuelles
 - **`skills_loaded` agrégés par branche** (F6 : `ok`/`missing`, skills primaires/secondaires)
-- Pointeurs vers les findings sur disque (jamais le contenu brut)
+ - Pointeurs vers les findings sur disque (jamais le contenu brut). Pour la curation, le plugin
+   transporte les payloads JSON volumineux par fichier temporaire, jamais dans argv.
 
 Cette synthèse seule alimente **wave 2 et le tail** — pas d'accès direct aux sorties worker.
 
@@ -179,8 +208,14 @@ branche sont gérées par le worker lui-même (ex. worker V : 2.2 → 2.5 séque
 
 #### 5. Alerte compaction
 
-Si un worker renvoie au-delà du contrat (sortie verbeuse), l'orchestrateur tronque au contrat,
-note une violation et **continue en fail-soft** (exit 1).
+ Si un worker renvoie au-delà du contrat (sortie verbeuse), l'orchestrateur tronque au contrat,
+ note une violation et **continue en fail-soft** (exit 1). La troncature ne doit jamais
+ supprimer l'état observable du worker : la synthèse de JOIN conserve, pour chaque worker,
+ `branch`, `rc`, `steps_done`, `warnings`, `artifacts`, `elapsed_s` et `skills_loaded`.
+ Un worker tronqué est exposé avec `status: "truncated"` (et son statut original dans
+ `worker_status`) ; absence de contrat = `status: "missing"`, jamais silence. Les statuts
+ restent consultables dans l'artefact `weekly-timings-<date>.json`, même si le texte de sortie
+ a été borné. Une sortie tronquée reste un warning (exit 1), sauf fatalité `rc=2` déjà établie.
 
 ### Étapes par wave
 
@@ -256,6 +291,14 @@ jamais le fichier `weekly-watch-findings-raw-<date>.json`.
 (`<project_root>/reports/html/weekly-report-latest.html` par défaut, config
 `html_report_dir`) en premier, puis l'archive (`runs/current/weekly-report-<date>.md`),
 puis les alertes les plus sévères.
+
+Le **code retour final** est calculé une seule fois au JOIN (`2` si fatalité, sinon `1`
+si au moins un warning, sinon `0`) et reste inchangé pendant le tail. La génération du
+rapport est obligatoire pour les codes `0` et `1` : un assemble réussi ne doit jamais
+réinitialiser un run partiel à `0`. Dernière ligne de réponse, après les chemins du
+rapport : `WEEKLY_REVIEW_RC=<rc_final>` — reprendre exactement ce code dans le lanceur
+(`summary.exit` et `END ... exit=` doivent être identiques). Code `2` stoppe avant le
+rapport.
 
 Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sans rapport**.
 

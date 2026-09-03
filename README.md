@@ -73,6 +73,27 @@ Les clés principales vivent dans [`weekly-telemetry-config.json`](.opencode/plu
 
 Le détail des clés, des seuils et des invariants est dans la [spécification](doc/spec-opencode-weekly-advisor) et [`INSTALL.md`](INSTALL.md) §2.3. En interne, la configuration est exposée en **vues groupées** (sources, stockage, coûts, curation) — vues en lecture seule **rétro-compatibles** : le fichier JSON garde ses clés plates historiques, aucune migration requise.
 
+### Contrat d'exécution et provenance
+
+Chaque artefact JSON est transporté par fichier dans `runs/current/` (jamais par
+`argv` ou par duplication du payload dans le contexte agent). Les artefacts portent
+les champs de provenance applicables : `anchor`, `generated_at`, `source`/`sources`,
+`run_dir` et, pour les synthèses, `artifact_inputs` (présence et pointeur de chaque
+entrée). Le fichier daté est la source de vérité ; le résumé ne conserve que des
+pointeurs et statuts.
+
+Le dispatch est borné : le coordinateur seul délègue, au plus 3 workers T/V/H,
+`K ≤ audit_max_sessions` workers d'audit, puis 3 workers D/I/C ; aucun fan-out de
+worker. Chaque worker dispose de 10 minutes, d'un passage par étape et de 3 tours
+de diagnostic maximum. Une sortie vide n'autorise qu'une retry, puis `rc=1`.
+
+Règles bloquantes exactes : `rc=2` d'un worker (ou crash critique), absence de la
+skill primaire F6 (`skills_loaded.ok=false` sur A/D/C), ou gate non exécutable
+(timeout/crash/sortie illisible) stoppe le run sans rapport. Timeout/silence de
+worker et warnings ordinaires restent `rc=1` fail-soft. Les statuts observables
+sont `missing`, `truncated`, `timeout` et le statut original `worker_status` ; ils
+restent dans `weekly-timings-<date>.json`.
+
 ## Contributing
 
 Contributions bienvenues, en particulier : nouveaux providers de harnais, règles de portabilité, diagrammes et corrections de documentation.
@@ -84,6 +105,14 @@ uv run python -m pytest -q    # 605 tests
 uv run ruff check .           # lint
 uv run ruff format --check .  # format
 ```
+
+**Source de vérité des tests :** le résultat de l'exécution `pytest` ci-dessus
+(toutes les tests passent) fait foi. Une collecte séparée (`uv run python -m
+pytest --collect-only -q`) est un **diagnostic explicite** uniquement : elle aide à
+expliquer une différence de décompte, mais ne remplace pas l'exécution des tests.
+Un écart entre le nombre affiché ici et le nombre collecté est **warning-only** ;
+il ne bloque pas le run. Les contrats de gate (contrats de flux, lint/format et
+gates de portabilité) restent bloquants lorsqu'ils échouent.
 
 Gate docs ↔ code (depuis la racine du repo, node requis) :
 

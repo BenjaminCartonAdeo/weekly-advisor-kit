@@ -20,6 +20,17 @@ function makeKit() {
   return root
 }
 
+function makeCapturingKit() {
+  const root = makeKit()
+  const python = path.join(root, "fake-python.sh")
+  fs.writeFileSync(
+    python,
+    '#!/bin/sh\nwhile [ "$#" -gt 0 ]; do\n  if [ "$1" = "--coherence" ]; then cat "$2" > "$CAPTURE"; printf "\\nARG=%s\\n" "$2" >> "$CAPTURE"; fi\n  shift\ndone\nprintf "ok\\n"\n',
+  )
+  fs.chmodSync(python, 0o755)
+  return { root, python }
+}
+
 test("preflight resolves kit root from plugin location before cwd", async () => {
   const root = makeKit()
   const plugin = await WeeklyAdvisorPlugin({ worktree: path.dirname(root), directory: "/tmp" })
@@ -62,5 +73,35 @@ test("weekly-advisor agent preflight fails before direct run boot", async () => 
   } finally {
     if (previous === undefined) delete process.env.WEEKLY_KIT_ROOT
     else process.env.WEEKLY_KIT_ROOT = previous
+  }
+})
+
+test("skill-curate transports oversized coherence through a temporary file", async () => {
+  const { root, python } = makeCapturingKit()
+  const capture = path.join(root, "capture.json")
+  const previousRoot = process.env.WEEKLY_KIT_ROOT
+  const previousPython = process.env.WEEKLY_PYTHON
+  const previousCapture = process.env.CAPTURE
+  process.env.WEEKLY_KIT_ROOT = root
+  process.env.WEEKLY_PYTHON = python
+  process.env.CAPTURE = capture
+  try {
+    const plugin = await WeeklyAdvisorPlugin({ worktree: root, directory: root })
+    const coherence = JSON.stringify({ findings: [{ tag_action: "archive", description: "x".repeat(200_000) }] })
+    await plugin.tool.weekly_skill_curate.execute({ anchor: "2026-09-01", coherence })
+    const transported = fs.readFileSync(capture, "utf8")
+    assert.match(transported, /"findings"/)
+    assert.match(transported, /x{200000}/)
+    assert.match(transported, /ARG=\/tmp\/weekly-coherence-/)
+    const stagedPath = transported.match(/ARG=(\/tmp\/weekly-coherence-[^\n]+)/)?.[1]
+    assert.ok(stagedPath, "staged path captured")
+    assert.equal(fs.existsSync(stagedPath), false, "staged JSON is cleaned after consumer exits")
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEEKLY_KIT_ROOT
+    else process.env.WEEKLY_KIT_ROOT = previousRoot
+    if (previousPython === undefined) delete process.env.WEEKLY_PYTHON
+    else process.env.WEEKLY_PYTHON = previousPython
+    if (previousCapture === undefined) delete process.env.CAPTURE
+    else process.env.CAPTURE = previousCapture
   }
 })

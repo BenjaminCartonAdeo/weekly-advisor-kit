@@ -85,6 +85,28 @@ lecture seule** regroupées — `sources`, `storage`, `cost`, `curation` — con
 les mêmes champs plats historiques. Le fichier JSON **ne change pas** : mêmes clés,
 même forme, aucune migration. Les vues sont un confort de code, pas un nouveau format.
 
+#### Contrat JSON, provenance et statuts
+
+Le transport inter-étapes est exclusivement le fichier JSON daté dans
+`<output_dir>/runs/current/` : les gros payloads passent par un chemin de fichier
+temporaire, jamais dans `argv`, et ne sont jamais recopiés dans le prompt de join.
+La provenance minimale à conserver est `anchor`, `generated_at`, `source` (ou
+`sources`), `run_dir` et `artifact_inputs`; les rapports doivent aussi conserver les
+pointeurs vers les entrées absentes ou présentes. `start_time` est l'horodatage de
+début de chaque worker et `elapsed_s` sa durée wall-clock jusqu'au contrat retour.
+
+Le budget de délégation est dur : coordinateur seul, 3 workers T/V/H maximum,
+`K ≤ audit_max_sessions` audits, puis 3 workers D/I/C, sans fan-out. Un worker a
+10 min maximum, un passage par étape et 3 tours de diagnostic. Briefing vide ou
+incomplet interdit le spawn ; sortie vide = une seule retry, puis `rc=1`.
+
+Blocage exact : tout `rc=2`, crash critique, skill primaire absente (`skills_loaded.ok=false`
+sur A/D/C), ou gate non exécutable (timeout, crash scanner, sortie illisible) arrête
+le run sans rapport. Un worker silencieux ou timeout est `rc=1` fail-soft ; les
+warnings seuls produisent un run partiel (`rc=1`). Les statuts `missing`, `truncated`
+et `timeout` sont explicites, avec `worker_status` pour le statut original, et sont
+écrits dans `weekly-timings-<date>.json`.
+
 #### Veille : `watch_distill` (étape 2.2) et sources radar
 
 La clé `watch_distill` pilote la **distillation déterministe** de l'écosystème
@@ -186,6 +208,16 @@ opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"
 ```
 
+Le résultat de l'exécution `pytest` est la **source de vérité** : la validation
+est réussie si les tests exécutés passent. Pour diagnostiquer une variation du
+décompte, lancer explicitement `uv run python -m pytest --collect-only -q`
+depuis le dossier moteur ; cette collecte est informative et ne remplace pas
+l'exécution. Un **count mismatch** entre documentation, collecte et exécution
+est un avertissement seulement, jamais un motif de blocage. En revanche, les
+contrats de gate restent bloquants : échec du doctor bloquant, d'une gate docs ↔
+code, du lint/format requis ou de la gate de portabilité arrête la validation ou
+refuse le commit selon l'étape.
+
 Attendu : **« Kit OK ... Prêt pour un run »** (exit 0). Sinon, les causes sont listées
 (exit 1 = avertissements, exit 2 = blocant — voir §6 Dépannage).
 
@@ -279,6 +311,10 @@ Rien d'autre à nettoyer : aucun service, aucun fichier hors du repo et de `outp
 
 - **Tests** : uniquement depuis le dossier moteur — depuis la racine, l'import `tests`
   échoue (sensibilité au cwd, documentée)
+- **Décompte des tests** : le décompte n'est pas une gate. Utiliser `pytest
+  --collect-only -q` comme diagnostic explicite ; seul le résultat de l'exécution
+  `pytest` fait foi. Un écart de décompte produit un warning, tandis que les
+  contrats de gate restent bloquants.
 - **Assemble consomme le draft** : un `weekly_report_assemble` réussi supprime
   `weekly-report-draft` — pour un nouvel assemble, relancer `weekly_report_prep` d'abord
   (sinon erreur RC=2 « draft inexistant »)

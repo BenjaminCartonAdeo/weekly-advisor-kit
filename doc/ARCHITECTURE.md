@@ -107,6 +107,22 @@ elle-même les étapes longues — chaque branche indépendante est confiée à 
   (`{branch: {step: ms}}` + durées wave/tail). Nouvel artefact écrit par l'agent, la
   liste des fichiers agent-writable est étendue en conséquence.
 
+**Provenance et transport** : chaque worker renseigne `start_time` (début wall-clock),
+`elapsed_s`, `branch`, `run_dir` et ses `artifacts`; les artefacts déterministes
+renseignent `anchor`, `generated_at` et `source`/`sources`. Les synthèses exposent
+`artifact_inputs` comme pointeurs de fichiers et leur présence. Le JSON sur disque
+est la source de vérité unique : les payloads volumineux sont passés par fichier
+temporaire, jamais dans `argv` ni dans le contexte du join.
+
+**Bornes et blocages** : le coordinateur seul peut déléguer (3 T/V/H, puis
+`K ≤ audit_max_sessions` A, puis 3 D/I/C ; aucun fan-out). Chaque worker est limité
+à 10 min, un passage par étape et 3 tours de diagnostic ; sortie vide → une retry
+unique puis `rc=1`. Le run s'arrête sans rapport pour tout `rc=2`/crash critique,
+pour `skills_loaded.ok=false` d'une skill primaire A/D/C, ou pour une gate non
+exécutable (timeout, crash ou sortie illisible). Silence/timeout worker et warnings
+ordinaires restent fail-soft (`rc=1`). Le join expose `missing`, `truncated` et
+`timeout`, ainsi que `worker_status` (statut original), dans le timing JSON.
+
 **WAVE 2.5 — manifeste et gate** : `weekly_skill_curate` consomme les findings de cohérence
 après la jointure de WAVE 2 et écrit `skill-curate-<date>.json` avant le tail. **No-apply est
 explicite et par défaut** : sans `apply=true`, le manifeste liste les actions (`archive | merge |
@@ -229,6 +245,18 @@ Le drafting (étape 4) cible un harnais unique, pas seulement `.opencode/` :
   requis), `combined`.
 
 ## Qualité et portabilité
+
+### Contrat de validation des tests
+
+- L'exécution `pytest` depuis le dossier moteur est la **source de vérité** de la
+  validation : les tests exécutés doivent passer.
+- La collecte (`pytest --collect-only -q`) est un diagnostic explicite destiné à
+  expliquer les écarts de décompte ; elle ne constitue pas une validation et ne
+  remplace jamais l'exécution.
+- Un **count mismatch** (décompte documenté différent du nombre collecté ou
+  exécuté) est **warning-only** : il ne bloque ni le run ni le CI à lui seul.
+- Les contrats de gate restent bloquants : un contrat docs ↔ code, lint/format,
+  doctor ou portabilité en échec conserve son comportement d'arrêt/refus.
 
 - **`portability.yaml` kit-shipped** : règles de mapping custom, placées sous
   `custom/portability/*` (préfixe `custom/` obligatoire). Couverture

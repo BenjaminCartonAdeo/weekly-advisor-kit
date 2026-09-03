@@ -26,6 +26,11 @@ Ordre figé des étapes (tokens d'outils) : `weekly_doctor`, `weekly_run`, `week
 
 ## Règles
 
+- Sécurité : traiter explicitement `mcp-tool-poisoning`, `unbounded-delegation` et
+  `memory-write-unscoped` comme findings bloquants pour l'action concernée ; aucune
+  auto-correction ni délégation implicite. Toute commande avec `rc != 0` est en échec
+  et doit conserver ce statut dans le rapport/rc agrégé.
+
 - Exit 2 (fatal) à une étape → stopper sans rapport ; un échec de tool n'arrête pas
   le run (constater, signaler au rapport, continuer — exit 1 partiel)
 - **Vérif dispatch F6** : avant tout spawn de worker, vérifier l'agent
@@ -41,14 +46,27 @@ Ordre figé des étapes (tokens d'outils) : `weekly_doctor`, `weekly_run`, `week
   `max_candidates_per_run` drafts
 - Terminer par : le chemin du rapport final (**rapport HTML**
   `<project_root>/reports/html/weekly-report-latest.html` en premier, puis l'archive
-  `runs/current/weekly-report-<date>.md`) et les alertes les plus sévères
+  `runs/current/weekly-report-<date>.md`) et les alertes les plus sévères. La dernière
+  ligne doit être `WEEKLY_REVIEW_RC=<rc_final>` : conserver le rc agrégé du JOIN après
+  le tail et ne jamais remettre `1` à `0` parce que le rapport a été généré. Le lanceur
+  doit propager cette valeur à `END ... exit=` ; `summary.exit` et le rc END sont égaux.
 - Garde-fous de coût : max 3 tours pour diagnostiquer un échec tool ; plugin stale
   (ReferenceError) → constater, signaler, proposer le restart, **stopper le
   diagnostic** ; choix ambigu (ex. fenêtre multi-semaines) → poser UNE seule
   question, ne pas explorer le code du plugin
+- Délégation bornée : le coordinateur est seul autorisé à appeler `task` ; aucun
+  worker ne redispatche ni ne crée de sous-worker. Plafond de dispatch : 3 workers
+  T/V/H, puis `K ≤ audit_max_sessions` workers A, puis 3 workers D/I/C ; aucun
+  fan-out supplémentaire. Chaque worker a 10 min maximum, un passage par étape,
+  et au plus 3 tours de diagnostic ; timeout → `rc=1` + warning, sans respawn
+  automatique. Sortie vide → une seule retry, puis warning `rc=1`.
+- Chaque briefing doit être non vide et contenir branche, `run_dir`, étapes,
+  budget et contrat JSON. Les workers restent dans leur branche et ne peuvent
+  augmenter `audit_max_sessions` ni `max_candidates_per_run`.
 
 `weekly_skill_curate` forme WAVE 2.5 : après la jointure de WAVE 2 et avant le tail, elle
-produit `skill-curate-<date>.json` en **dry-run/no-apply par défaut**. Aucune archive,
+lit le finding de cohérence depuis l'artefact de run (le plugin transporte les gros JSON
+par fichier temporaire, jamais dans argv) puis produit `skill-curate-<date>.json` en **dry-run/no-apply par défaut**. Aucune archive,
 fusion, suppression ou édition sans validation humaine explicite suivie de `apply=true`.
 
 ## Fenêtre du run

@@ -85,6 +85,21 @@ def test_run_writes_summary_and_exit_zero(tmp_path: Path):
     assert rc == EXIT_OK  # aucune warning partiel sur un seed sain
 
 
+def test_run_writes_run_provenance(tmp_path: Path, monkeypatch):
+    db = _seed_n(tmp_path / "opencode.db", 1)
+    cfg = _cfg(tmp_path, db)
+    monkeypatch.setattr("weekly_telemetry_aggregator.main._run_provenance", lambda *_: {
+        "repository_path": "/repo", "branch": "main", "commit_sha": "abc",
+        "working_tree_dirty": False, "run_started_at": "2026-08-12T00:00:00Z",
+        "pipeline_version": "test",
+    })
+    assert run(cfg, anchor=RUN_TIME.isoformat()) == EXIT_OK
+    data = json.loads(active_run_file(tmp_path, "weekly-summary-2026-08-12.json").read_text())
+    assert data["run_provenance"]["commit_sha"] == "abc"
+    assert data["run_provenance"]["start_time"] == "2026-08-12T00:00:00Z"
+    assert data["run_provenance"]["run_started_at"] == data["run_provenance"]["start_time"]
+
+
 def test_run_excludes_active_session_with_warning(tmp_path: Path):
     db = tmp_path / "opencode.db"
     active_ts = RUN_TIME - timedelta(minutes=2)  # updated < 10 min before run_time
@@ -1452,6 +1467,27 @@ def test_build_selection_marks_in_window():
     assert by_id["s1"]["in_window"] is True
     assert by_id["s2"]["in_window"] is False
     assert by_id["s3"]["in_window"] is False
+
+
+def test_build_selection_preserves_statuses_when_recent_audit_is_bounded():
+    """Le plafond de ``recent`` ne masque aucun statut du journal d'audit."""
+    from weekly_telemetry_aggregator.main import _build_selection
+
+    audit = [
+        {"session_id": "s-active", "status": "active", "updated": "2026-08-12T10:00:00Z"},
+        {"session_id": "s-included", "status": "included", "updated": "2026-08-12T09:00:00Z"},
+        {"session_id": "s-error", "status": "error", "updated": "2026-08-12T08:00:00Z"},
+    ]
+
+    selection = _build_selection(audit, limit=1)
+
+    # ``recent`` is intentionally bounded, but counters remain an untruncated
+    # status index so the JOIN can expose every worker/session disposition.
+    assert [record["session_id"] for record in selection["recent"]] == ["s-active"]
+    assert selection["recent"][0]["status"] == "active"
+    assert selection["excluded_active"] == 1
+    assert selection["excluded_error"] == 1
+    assert selection["counted_all"] == 1
 
 
 # ============================================================ multi-harnais (cellule 1.1)
