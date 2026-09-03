@@ -9,16 +9,16 @@ from helpers import make_step, make_usage, tzutc
 
 from weekly_telemetry_aggregator.aggregator import aggregate
 from weekly_telemetry_aggregator.config import TelemetryConfig
+from weekly_telemetry_aggregator.main import RunProvenance
 from weekly_telemetry_aggregator.models import Period
 from weekly_telemetry_aggregator.report import (
-    _critical_security_findings,
     _coherence_has_curation_signal,
+    _critical_security_findings,
     report_assemble,
     report_blocks_draft,
     report_prep,
     validate_required_artifacts,
 )
-from weekly_telemetry_aggregator.main import RunProvenance
 from weekly_telemetry_aggregator.writer import summary_to_dict
 
 RUN = tzutc(2026, 8, 12)
