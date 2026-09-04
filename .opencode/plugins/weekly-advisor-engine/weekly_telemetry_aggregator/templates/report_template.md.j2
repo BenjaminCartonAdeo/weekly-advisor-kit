@@ -293,6 +293,9 @@ Constats de maintenance (R1-R4) :
 {% if audit_candidates and audit_candidates.unaudited %}
 - **Candidates d'audit non traitées** (plafond {{ audit_candidates.limit }}) : {{ audit_candidates.unaudited|map(attribute='session_id')|join(", ") }}
 {% endif %}
+{% if audit_worker_statuses %}
+- **Statuts workers** : {% for worker in audit_worker_statuses %}{{ worker.session_id }}={{ worker.worker_status or worker.status }}{% if worker.rc is defined and worker.rc != 0 %} (rc={{ worker.rc }}){% endif %}{% if worker.truncated %} (tronqué){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
 {% if warnings_grouped %}
 - Warnings pipeline ({{ summary.warnings|length }}) :
 {% for g in warnings_grouped %}

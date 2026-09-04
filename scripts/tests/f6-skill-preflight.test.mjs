@@ -77,6 +77,16 @@ test("commande documente la vérif dispatch F6 sans mutation de skills", () => {
   assert.match(src, /Aucune écriture ni déplacement dans `?\.opencode\/skills\/`?/)
 })
 
+test("commande exige la propagation du rc final après génération du rapport", () => {
+  const orch = read(ORCH)
+  const cmd = read(CMD)
+  const all = `${orch}\n${cmd}`
+  assert.match(all, /rapport.*génér|génér.*rapport/i)
+  assert.match(all, /rc final|code retour final/i)
+  assert.match(all, /exit 1.*warnings|warnings.*exit 1/i)
+  assert.match(all, /rapport.*même.*rc|rc.*rapport/i)
+})
+
 test("aucun apply automatique ni déplacement de skill (F6 signal only)", () => {
   const worker = read(WORKER)
   const orch = read(ORCH)

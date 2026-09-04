@@ -783,6 +783,10 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
         <p><b>Candidates d'audit non traitées (plafond {{ audit_candidates.get("limit", "n/a") }}) :</b>
           {{ audit_candidates.unaudited|map(attribute="session_id")|join(", ") }}.</p>
         {% endif %}
+        {% if audit_worker_statuses %}
+        <p><b>Statuts workers :</b>
+          {% for worker in audit_worker_statuses %}{{ worker.session_id }}={{ worker.worker_status or worker.status }}{% if worker.rc is defined and worker.rc != 0 %} (rc={{ worker.rc }}){% endif %}{% if worker.truncated %} (tronqué){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}.</p>
+        {% endif %}
         {% if run_dir %}<p>Répertoire du run : <code>{{ run_dir }}/</code> (alias <code>runs/current/</code>).</p>{% endif %}
       </div>
     </details>

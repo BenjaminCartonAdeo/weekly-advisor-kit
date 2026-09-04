@@ -8,9 +8,52 @@ from pathlib import Path
 import pytest
 from helpers import active_run_file, seed_v1_file, tzutc
 
-from weekly_telemetry_aggregator.cli import build_parser, main
+from weekly_telemetry_aggregator.cli import (
+    _cmd_run,
+    _deduplicate_worker_statuses,
+    build_parser,
+    main,
+)
+from weekly_telemetry_aggregator.config import TelemetryConfig
 
 RUN_TIME = tzutc(2026, 8, 12)
+
+
+def test_deduplicate_worker_statuses_merges_session_records():
+    records = _deduplicate_worker_statuses(
+        [
+            {"session_id": "s1", "rc": 1},
+            {"session_id": "s1", "truncated": True},
+            {"session_id": "s2", "status": "included"},
+        ]
+    )
+
+    assert records == [
+        {"session_id": "s1", "rc": 1, "truncated": True},
+    ]
+
+
+def test_deduplicate_worker_statuses_keeps_worst_rc_regardless_of_order():
+    records = _deduplicate_worker_statuses(
+        [
+            {"session_id": "s1", "rc": 2, "status": "error"},
+            {"session_id": "s1", "rc": 0, "status": "included"},
+        ]
+    )
+
+    assert records == [{"session_id": "s1", "rc": 2, "status": "included"}]
+
+
+def test_deduplicate_worker_statuses_does_not_erase_degraded_status():
+    records = _deduplicate_worker_statuses(
+        [
+            {"session_id": "s1", "rc": 2, "status": "error", "worker_status": "truncated"},
+            {"session_id": "s1", "rc": 0, "status": "included", "worker_status": "included"},
+        ]
+    )
+    assert records == [
+        {"session_id": "s1", "rc": 2, "worker_status": "truncated", "status": "included"}
+    ]
 
 
 def _write_config(tmp_path: Path, db_path: Path) -> Path:
@@ -58,6 +101,57 @@ def test_run_is_default(tmp_path: Path):
     rc = main(["--config", str(conf), "--anchor", RUN_TIME.isoformat()])
     assert rc in (0, 1)
     assert active_run_file(tmp_path, "weekly-summary-2026-08-12.json").exists()
+
+
+def test_cmd_run_downgrades_report_only_partial_to_success(tmp_path: Path, monkeypatch):
+    cfg = TelemetryConfig()
+    cfg.output_dir = tmp_path
+    cfg.project_root = tmp_path
+    summary_path = tmp_path / "weekly-summary-2026-08-12.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "period": {
+                    "start": "2026-08-05T00:00:00Z",
+                    "end": "2026-08-12T00:00:00Z",
+                },
+                "generated_at": "2026-08-12T00:00:00Z",
+                "totals": {},
+                "rc": 1,
+                "warnings": [
+                    {
+                        "status": "report-only",
+                            "report_only": True,
+                            "category": "external-permission-refusal",
+                            "permission_refused": True,
+                            "target": str(tmp_path.parent / "external-reports"),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = build_parser().parse_args(["run", "--anchor", RUN_TIME.isoformat()])
+    monkeypatch.setattr("weekly_telemetry_aggregator.cli.run", lambda *args, **kwargs: 1)
+    assert _cmd_run(args, cfg) == 0
+
+
+def test_cmd_run_keeps_missing_summary_nonzero(tmp_path: Path, monkeypatch):
+    cfg = TelemetryConfig()
+    cfg.output_dir = tmp_path
+    args = build_parser().parse_args(["run", "--anchor", RUN_TIME.isoformat()])
+    monkeypatch.setattr("weekly_telemetry_aggregator.cli.run", lambda *args, **kwargs: 1)
+    assert _cmd_run(args, cfg) == 2
+
+
+def test_cmd_run_rejects_empty_summary_artifact(tmp_path: Path, monkeypatch):
+    cfg = TelemetryConfig()
+    cfg.output_dir = tmp_path
+    (tmp_path / "weekly-summary-2026-08-12.json").write_text("{}", encoding="utf-8")
+    args = build_parser().parse_args(["run", "--anchor", RUN_TIME.isoformat()])
+    monkeypatch.setattr("weekly_telemetry_aggregator.cli.run", lambda *args, **kwargs: 0)
+    assert _cmd_run(args, cfg) == 2
 
 
 def test_run_subcommand_explicit(tmp_path: Path):

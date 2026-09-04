@@ -56,14 +56,21 @@ v6.0.n) — aucun calcul calendaire LLM.
 
 Le moteur python est résolu depuis le **worktree** du lancement (`--dir` du cron, ou cwd du
 lancement manuel). Un lancement hors du worktree Adeo (ex. `cwd=$HOME`) fait échouer la
-résolution du moteur (`Glob .opencode/plugins/weekly-advisor-engine/**/*.py` → 0 match) et
+résolution du moteur (`Glob /home/benjamin/Dev/Adeo/.opencode/plugins/weekly-advisor-engine/**/*.py` → 0 match) et
 l'orchestrateur démarre à vide (incident 15:47, exit=2).
 
-**Pre-check Étape 0 (avant `weekly_doctor`)** : `glob` `.opencode/plugins/weekly-advisor-engine/**/*.py`
-depuis le worktree. Si **0 match** → STOP immédiat avec message clair :
+> **Pourquoi des chemins absolus (fix P1)** : en run cron, le tool Glob résout `.`
+> depuis le cwd du serveur persistant (`/home/benjamin`, process :4522) et non depuis
+> le `--dir /home/benjamin/Dev/Adeo` — tout pattern relatif part d'une base fausse
+> (split-brain). D'où : toujours des Globs absolus dérivés du worktree.
+
+**Pre-check Étape 0 (avant `weekly_doctor`)** : `glob` `/home/benjamin/Dev/Adeo/.opencode/plugins/weekly-advisor-engine/**/*.py`
+depuis le worktree (le wrapper cron `cd` déjà vers le worktree ; en manuel, lancer avec `--dir <worktree>` ET cwd=<worktree>).
+Si **0 match** → appeler `weekly_doctor` AVANT tout STOP : le doctor résout le moteur depuis le worktree réel et fait foi.
+STOP immédiat avec message clair UNIQUEMENT si `weekly_doctor` échoue aussi (rc=2) :
 « worktree Adeo requis — relancer avec `--dir /home/benjamin/Dev/Adeo` (ou via le cron) ».
 Les crons (`#45 18 * * 1`, `#35 15 * * 4`) passent déjà `--dir /home/benjamin/Dev/Adeo` ; ce
-gard est pour les lancements manuels/interactifs.
+gard est pour les lancements manuels/interactifs. Ne jamais STOP sur un simple Glob à vide quand le doctor passe (incident 16:10 : Glob relatif à $HOME, moteur présent).
 
 ## Étape 0 — Garde anti-re-run (TRÈS PREMIÈRE action, avant tout tool)
 
@@ -71,9 +78,9 @@ Avant même le pre-check worktree et `weekly_doctor`, vérifier qu'un run **déj
 terminé** pour l'ancre courante n'existe pas — pour éviter la ré-agrégation
 coûteuse d'un run déjà produit :
 
-1. Lire `<output_dir>/anchor-last.txt` (ancre active, ligne unique).
-2. Chercher `<output_dir>/runs/current/summary-*.json`.
-3. Si un `summary-*.json` existe **ET** `exit == 0` (run terminé sans fatale)
+1. Lire `/home/benjamin/Dev/Adeo/reports/anchor-last.txt` (ancre active, ligne unique). `<output_dir>` vaut `<worktree>/reports` par défaut : ne jamais lire `output/anchor-last.txt` (chemin obsolète, incident 16:10) ni de chemin relatif (Glob résolu depuis le cwd serveur, pas `--dir`).
+2. Chercher `/home/benjamin/Dev/Adeo/reports/runs/current/weekly-summary-*.json` (pattern corrigé P1 : l'ancien `reports/runs/current/summary-*.json` ne matchait jamais `weekly-summary-<date>.json`, le préfixe `weekly-` manquait).
+3. Si un `weekly-summary-*.json` existe **ET** `exit == 0` (run terminé sans fatale)
    **ET** que `anchor-last.txt` est **non modifié** (même ancre que celle ayant
    produit le summary) → **STOP immédiat (short-circuit)** avec le message exact :
    `SKIP: completed run for anchor exists (use --force to re-run)`.
@@ -86,11 +93,14 @@ coûteuse d'un run déjà produit :
 ## Vérif dispatch (F6) — avant tout spawn de worker
 
 Avant WAVE 1, l'orchestrateur vérifie que **l'agent worker est disponible** :
-`glob .opencode/agents/weekly-advisor/weekly-advisor-worker.md` depuis le worktree.
+`glob /home/benjamin/Dev/Adeo/.opencode/agents/weekly-advisor/weekly-advisor-worker.md` (absolu : relatif résolu depuis le cwd serveur).
 Absent → **STOP avant WAVE 1**, message clair, `rc=2` (pas de rapport).
 
-Avant chaque WAVE 2 dispatch (D/I/C), vérifier les **skills primaires de branche** :
-`weekly-drafting` (D), `weekly-coherence-review` (C) — glob `skills/<name>/SKILL.md`.
+Avant chaque WAVE 2 dispatch (D/I/C), vérifier les **skills primaires de branche** ; absence = `rc=2` :
+`weekly-drafting` (D), `weekly-coherence-review` (C) — tenter `glob` sur
+`/home/benjamin/Dev/Adeo/.opencode/skills/<name>/SKILL.md` (absolu), puis `Read` le chemin
+absolu exact si Glob retourne zéro (le serveur persistant peut avoir une base Glob périmée).
+Un `Read` réussi fait foi pour l'existence du skill et évite un faux STOP.
 Primaire absente → **ne pas dispatcher la branche**, STOP orchestrateur, `rc=2`
 (pas de rapport). Skills secondaires (`weekly-watch-review` V, `harness-remediation` H) :
 non bloquantes au dispatch — warning `skill-missing:<name>` en annexe, branche en dégradé.
@@ -162,14 +172,17 @@ outil MCP concerné ne doit être autorisé implicitement. Tout résultat de com
   A** où `K ≤ audit_max_sessions`, puis **3 workers en WAVE 2** (D, I, C). Aucun
   fan-out supplémentaire n'est autorisé ; `K=0` ne crée aucun worker A.
 - Chaque worker reçoit un budget borné : **10 min maximum**, un seul passage par
-  étape, et **3 tours maximum** pour diagnostiquer un échec de tool. Dépassement
-  de délai → worker marqué `timeout`, `rc=1`, warning, sans respawn automatique.
+  étape, et **3 tours maximum** pour diagnostiquer un échec de tool. Un worker A qui
+  dépasse le délai sans **schema-valid audit envelope with a nonempty summary** produit
+  un artefact requis manquant/invalid au JOIN (**blocking**, rc=2), sans respawn
+  automatique ; les autres timeouts restent `rc=1` + warning.
 - Les workers ne voient que leur branche et ses fichiers autorisés. Le briefing
   doit contenir `branch`, `run_dir`, étapes ordonnées, budget et contrat JSON ; un
   briefing absent ou vide interdit le spawn (jamais de délégation implicite).
 - Le coordinateur ne relance pas un worker pour une sortie vide plus d'une fois :
-  une retry unique, puis `rc=1` et warning. Une sortie non vide mais hors contrat
-  est tronquée au JOIN, sans nouveau spawn.
+  pour un retour non requis, une retry unique puis `rc=1` et warning ; pour un worker A,
+  l'absence d'un audit envelope valide reste un artefact requis **blocking**. Une sortie
+  non vide mais hors contrat est tronquée au JOIN, sans nouveau spawn.
 - Les plafonds moteur restent la source de vérité : `audit_max_sessions` limite
   les audits et `max_candidates_per_run` limite les drafts. Aucun worker ne peut
   les augmenter via son prompt ou un override local.
@@ -226,13 +239,13 @@ branche sont gérées par le worker lui-même (ex. worker V : 2.2 → 2.5 séque
 | **1.V** | `weekly_releases` (réseau ; warnings sources tolérés) | `weekly-ecosystem-<date>.json` |
 | **1.V** | `weekly_watch_distill` — séquentiel après releases (lit l'écosystème) ; exit 2 si écosystème absent ; exit 1 → continuer | `watch-candidates-<date>.json` |
 | **1.V** | `weekly_watch_context` (worktree uniquement) — ⚠ **séquentiel après distill** : il lit les fiches distillées ; consomme `watch-candidates-<date>.json` s'il existe | `weekly-watch-context-<date>.json` |
-| **1.V** | **Skill `weekly-watch-review`** : veille critique croisée (fiches enrichies × existant × findings), écrit le brut ; fallback legacy si absent | `weekly-watch-findings-raw-<date>.json` |
+| **1.V** | **Skill `weekly-watch-review`** : veille critique croisée (fiches enrichies × existant × findings), écrit le findings brut requis ; absence = artefact requis bloquant | `weekly-watch-findings-raw-<date>.json` |
 | **1.V** | `weekly_watch_validate` — validation déterministe des findings contre le contexte ; écrit la mémoire post-validation | `weekly-watch-findings-<date>.json` |
 | **1.T** | `weekly_audit_candidates` (déterministe) → liste JSON de K session ids candidates | `weekly-audit-candidates-<date>.json` |
 | **1.5.A_k** | **worker A** (`weekly-advisor-worker`, branch `A`) : pre-flight skill F6 (`weekly-quality-audit`, primaire) → `weekly_show_session(<id>)` + audit qualitatif → `audit-findings-<id>.json` (K spawn en parallèle via `task`) | `audit-findings-<id>.json` (×K) |
 | **1.5.JOIN** | **Consolidation PRINCIPAL** : merge des K `audit-findings-*.json` → `weekly-quality-findings-<date>.json` (aucun re-LLM par session au merge) | `weekly-quality-findings-<date>.json` |
 | **1.H** | `weekly_harness` (pin 7.9.0 ; rc 0/1 = OK) | `weekly-harness-digest-<date>.json` |
-| **1.H** | **Skill `harness-remediation`** : analyse les findings, écrit les propositions puis appelle `weekly_harness_remediate` | `weekly-harness-remediation-<date>.json` |
+| **1.H** | **Skill `harness-remediation`** : analyse les findings, écrit la proposition requise puis appelle `weekly_harness_remediate` | proposal `weekly-harness-remediation-proposals-<date>.json` ; final `weekly-harness-remediation-<date>.json` |
 | **JOIN** | Orchestrateur : synthèse contrats T/V/H, merge rc, attente run-dir | `weekly-timings-<date>.json` |
 | **2.D** | **Skill `weekly-drafting`** (primaire F6, vérifiée avant dispatch) : `weekly_draft_candidates` → rédaction skills/commands + `weekly_commit_draft` (≤ plafond) | commits `skill:`/`command:` |
 | **2.I** | `weekly_insights` | `weekly-insights-<date>.json` |
@@ -252,7 +265,9 @@ warnings, artifacts, elapsed_s, skills_loaded}` définie dans `.opencode/agents/
 - `rc=2` motivé par **skill primaire absente** (`skills_loaded.ok=false`, branche A/D/C) →
   STOP sans rapport (fatalité F6, pas de rapport).
 - Sinon : warnings agrégés passés au tail → rapport comme aujourd'hui (exit 1 partiel si warnings).
-- Worker silencieux ou timeout → rc=1 + warning, run continue (fail-soft).
+- Worker silencieux ou timeout **sans schema-valid audit envelope with a nonempty summary**
+  → artefact requis `missing/invalid`, JOIN bloquant (rc=2) ; aucune dégradation en
+  résumé vide/non conforme ni continuation comme simple warning.
 
 **Attente run-dir (wave 1.V/1.H)** :
 L'orchestrateur lance T (`weekly_run`) en **premier et seul** ; il attend que `runs/current/`
@@ -272,10 +287,22 @@ l'orchestrateur spawn **K workers A en parallèle** via `task`
 + invariants d'audit). Chaque worker A exécute d'abord son **pre-flight skill F6**
 (`weekly-quality-audit`, primaire : absente → contrat `rc=2`, pas de rapport) puis écrit
 `audit-findings-<id>.json` dans `runs/current/`.
-L'orchestrateur **barrière** sur l'existence des K fichiers (poll glob
-`runs/current/audit-findings-*.json`, plafond 10 min ; dépassement → warning fail-soft)
+L'orchestrateur **barrière uniquement sur les FICHIERS, jamais sur les retours
+workers** (incident 2026-09-06 : worker A8 pendu >40 min, run mort sans rapport) :
+poll glob `/home/benjamin/Dev/Adeo/reports/runs/current/audit-findings-*.json`
+— absolu, toutes les 30s, **plafond 10 min strict depuis le spawn**. Au plafond :
+consolider les fichiers présents, émettre pour chaque session sans fichier
+`audit-missing:<session_id>` comme artefact requis manquant (**blocking**, rc=2), **ne pas attendre
+les retours workers tardifs** (ignorés, pas de re-consolidation). Briefing de
+chaque worker A : **plafond 10 min** — à l'échéance, écrire un
+**schema-valid audit envelope with a nonempty summary** ; si ce fichier requis ne
+peut pas être produit, le JOIN le marque `missing/invalid` et bloquant au lieu
+d'accepter un résumé invalide. Le worker retourne ensuite le contrat pour diagnostic.
 puis **consolide** en `weekly-quality-findings-<date>.json` — **aucun re-LLM par session**
-au merge (consolidation déterministe des `findings` déjà produits par les workers).
+ au merge (consolidation déterministe des `findings` déjà produits par les workers).
+ La consolidation vérifie le `session_id` contre le nom canonique du fichier et recopie
+ cet identifiant dans chaque finding. Elle n'invente ni ne réattribue un finding sans
+ identifiant ; elle conserve alors un warning `audit-invalid-finding:<session_id>`.
 Les workers A sont disjoints (un fichier par session) ; la consolidation ne relit pas
 les sessions.
 
@@ -292,13 +319,66 @@ jamais le fichier `weekly-watch-findings-raw-<date>.json`.
 `html_report_dir`) en premier, puis l'archive (`runs/current/weekly-report-<date>.md`),
 puis les alertes les plus sévères.
 
-Le **code retour final** est calculé une seule fois au JOIN (`2` si fatalité, sinon `1`
-si au moins un warning, sinon `0`) et reste inchangé pendant le tail. La génération du
-rapport est obligatoire pour les codes `0` et `1` : un assemble réussi ne doit jamais
-réinitialiser un run partiel à `0`. Dernière ligne de réponse, après les chemins du
-rapport : `WEEKLY_REVIEW_RC=<rc_final>` — reprendre exactement ce code dans le lanceur
-(`summary.exit` et `END ... exit=` doivent être identiques). Code `2` stoppe avant le
-rapport.
+### Contrat final JOIN / RC (v6.1)
+
+Le JOIN valide d'abord les contrats et les artefacts requis, puis calcule le code une
+seule fois. Il ne déduit jamais un succès d'un fichier absent, vide ou illisible :
+
+- **Blocking** : `missing/invalid required artifacts` are **blocking** ;
+  `malformed contracts` are **blocking** (objet JSON absent, vide, non parseable ou
+  champs obligatoires incohérents), et fatal rc=2 is also **blocking**. Cela inclut le summary, les artefacts d'audit attendus et le findings
+  final de chaque branche activée ; une liste d'audit vide n'est valide que si la
+  télémétrie a explicitement sélectionné zéro session.
+- Chaque artefact `audit-findings-<id>.json` est un **schema-valid audit envelope with a nonempty summary**
+  (chaîne non vide après trim, JSON objet parseable, identifiants et
+  champs requis cohérents) lu au chemin exact du run actif. Un fichier absent, vide,
+  malformed, mal routé ou à summary absent, vide ou non-string est un artefact requis invalide et donc
+  **blocking** ; un timeout ne permet pas de dégrader ce contrat.
+- Un artefact d'audit `transcript-truncated` est accepté **sans RC, nonblocking** uniquement
+  lorsqu'il est nonempty et respecte exactement le même schema-valid audit envelope with a nonempty summary.
+  Son statut reste visible dans le rapport ; un fichier
+  `transcript-truncated` vide, mal routé ou malformed reste un artefact
+  manquant/invalide et est donc **blocking**.
+- **Raw/proposal gate** : le **raw watch findings** à `<run_dir>/weekly-watch-findings-raw-<date>.json`
+  **is required**, nonempty et schema-valid **before downstream validation** (`weekly_watch_validate`).
+  Le **harness remediation proposal** à
+  `<run_dir>/weekly-harness-remediation-proposals-<date>.json` **is required**, nonempty et
+  schema-valid **before downstream remediation** (`weekly_harness_remediate`). Un chemin
+  absent, vide, malformed ou legacy bloque le JOIN ; aucune validation/remédiation ne
+  peut traiter une entrée manquante.
+- Une **recovered input** n'est acceptée qu'après lecture du **exact canonical path** dans
+  le run actif et validation du **exact schema** (objet JSON attendu, champs requis,
+  contenu nonempty). Un autre chemin, un nom legacy, une forme différente ou une
+  récupération non validée reste `missing/invalid required artifact` et **blocking**.
+  Une recovered input finalement validée est conservée comme fait observable et
+  report-only et nonblocking (statuts `watch-input-recovered` / `harness-input-recovered`) :
+  elle ne crée ni warning comptable ni RC `1`.
+- Une **external permission refusal** (`external-permission-refusal`) limitée à une cible hors worktree est
+  **report-only** (informatif, jamais RC) : ne pas lire, écrire, escalader ou
+  retenter hors périmètre. Une permission refusée dans le worktree, ou tout autre
+ échec de tool, suit les règles de warning normales.
+- Une branche optionnelle qui reçoit ce refus doit retourner un contrat JSON valide avec
+  `rc: 0`, `status: "report-only"`, `report_only: true`, `category:
+  "external-permission-refusal"` et la cible refusée.
+- La **curation dry-run** (`weekly_skill_curate`, `apply` absent ou `false`) est
+  **nonblocking** et report-only ; aucune archive, fusion ou suppression n'est
+  appliquée sans validation humaine explicite et `apply=true`.
+- Les IDs critiques exacts **`mcp-tool-poisoning`**, **`unbounded-delegation`**
+  et **`memory-write-unscoped`** restent **toujours blocking**, sans fuzzy matching et
+  même si le reste de la branche est récupérable. Aucun outil MCP, write ou dispatch
+  concerné n'est autorisé implicitement.
+
+Hors ces cas non bloquants, un warning comptable (rc worker non nul non couvert par un
+statut report-only, gate
+artefact/prose/HTML non `pass`/`present`/`validated`, ou violation de contrat) donne
+`1`. La formule est : `2` si un blocage existe ; sinon `1` si un warning comptable
+existe ; sinon `0`. Le tail ne peut pas modifier ce résultat et un assemble réussi ne
+peut jamais réinitialiser un run partiel.
+
+Le même `rc_final` est recopié sans conversion : `summary.exit ==
+WEEKLY_REVIEW_RC=<rc_final> == END ... exit=<rc_final>` ; ces trois valeurs doivent
+être **identiques (identical)**. La dernière ligne de réponse est `WEEKLY_REVIEW_RC=<rc_final>` (code retour final).
+Le code `2` stoppe avant le rapport ; les codes `0` et `1` doivent produire le rapport.
 
 Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sans rapport**.
 
@@ -309,18 +389,25 @@ Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sa
   worktree (ex. commande globale `~/.config/opencode/commands/`) est **hors périmètre** →
   constat report-only, jamais de lecture ni de draft ; les doublons globaux d'une commande
   projet ne sont jamais lus
-- **Un échec de tool n'arrête pas le run** (permission rejetée, source indisponible) :
-  constater, signaler au rapport, continuer l'ordre figé (exit 1 partiel — exit 2 réservé
-  aux fatalités moteur). **Une donnée illisible ou tronquée** (ex. JSON volumineux coupé
-  par le budget de lecture) suit la même règle : exploiter uniquement la partie lisible,
-  borner les conclusions au vérifiable — ne JAMAIS inventer ce qui n'a pas été lu, et
-  continuer (exit 1). Chercher un autre chemin de lecture légal au plus une fois ; en
-  aucun cas tenter des accès hors worktree ni escalader en exit 2.
+- **Un échec de tool n'arrête pas le run** (source indisponible, permission dans le
+  worktree) : constater, signaler au rapport, continuer l'ordre figé (exit 1 partiel —
+  exit 2 réservé aux fatalités moteur). Exception définie au JOIN : une **external
+  permission refusal** hors worktree est report-only et nonblocking. Cette règle ne
+  dispense jamais de produire les artefacts requis : un audit envelope, raw watch
+  findings ou harness remediation proposal absent/invalid est le blocage JOIN défini
+  ci-dessus. **Une donnée illisible ou tronquée** (ex. JSON volumineux coupé par le
+  budget de lecture) suit la règle de warning, sauf artefact `transcript-truncated`
+  valide et nonempty. Exploiter uniquement la partie lisible, borner les conclusions au
+  vérifiable — ne JAMAIS inventer ce qui n'a pas été lu. Chercher un autre chemin de
+  lecture légal au plus une fois ; en aucun cas tenter des accès hors worktree ni
+  escalader en exit 2.
 - **Décision tranchée une fois** : chaque choix (sessions à auditer, candidats retenus,
   recommandations) est décidé, **écrit dans le findings, jamais re-dérivé** — pas de
   boucle de re-délibération sur un constat déjà archivé
-- Les findings (3/3.5/3.6/6.5) sont une **archive** : échec d'écriture → continuer (le run suivant
-  re-détecte) ; un findings mal formé ne casse rien
+- Les findings optionnels sont une **archive** : échec d'écriture → continuer (le run
+  suivant re-détecte). En revanche, le raw watch findings, la harness remediation
+  proposal et chaque audit envelope sont des artefacts requis : échec d'écriture,
+  chemin inattendu ou forme invalide est invalid au JOIN et **blocking**.
 - Veille : les fiches **blocked-security ne sont jamais soumises au LLM** — exclues amont
   par le distill (2.2), elles ne réapparaissent que dans l'annexe du findings final (3.6)
 - Ne jamais modifier : bases SQLite, config du projet, CI/CD, contrats API

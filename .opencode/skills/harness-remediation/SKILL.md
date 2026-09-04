@@ -50,6 +50,23 @@ Le tool écrit ensuite :
 Le résultat explique chaque décision (`applied`, `proposed`, `manual`, `blocked`,
 `rolled_back`) et contient le post-check lorsqu'une correction a été appliquée.
 
+### Gate proposal → validate/remediate
+
+<!-- ponytail: un seul proposal file rend l'apply traçable et borné. -->
+
+Le fichier de propositions est obligatoire **avant** toute validation ou appel
+`harness-remediate` : le proposal JSON doit exister dans `runs/current/`, être lisible,
+porter `schema_version: 1`, une date valide et un tableau `proposals`. Ne jamais passer
+une proposition inline, absente ou reconstruite depuis un message de scanner au tool.
+
+Si le digest ou le proposal manque, est tronqué ou invalide, effectuer **one bounded
+retry** (`max_retry=1`, une seule recovery bornée, relecture ciblée des seules entrées
+disponibles), puis signaler `blocked`/`manual` sans apply. Après cette recovery, un
+proposal absent ou invalide est bloquant pour `harness-remediate`. Aucun respawn loop,
+hang, nouveau finding ou patch inventé pour faire passer la gate. La remédiation ne
+démarre pas tant que le proposal n'est pas présent et schema-valid. Une recovery réussie
+peut être tracée par `{status: "recovered", source: "harness", artifact: "proposal"}`.
+
 ## Surface de remédiation (matrice 5.5, cellule 2.2)
 
 Le résultat porte un bloc `draft_target` : `{mode, harnesses, decision, reason}` —
@@ -120,14 +137,23 @@ occurrence et une limite de taille (v6.0.k F2).
   mais ne doit jamais être modifié, jamais le moteur `weekly-advisor-engine/`, jamais la base SQLite,
   jamais la CI, jamais hors worktree).
 - Ne jamais inventer une correction à partir du seul message du scanner.
+- Ne jamais inventer un finding ou un proposal : chaque proposition doit être traçable au
+  digest et au texte exact effectivement lu.
 - Une correction sémantique devient `propose` ou `manual`, avec une explication claire.
 - Le mode `dry-run` ne modifie jamais le worktree et sert pour une exécution manuelle.
 - Aucun commit automatique : les modifications appliquées sont listées dans le résultat
   pour revue humaine.
+- Toute demande de permission **external-directory** ou toute cible out-of-tree est un
+record `{status: "report-only", report_only: true, category:
+  "external-permission-refusal"}` (`environment-change`) : aucune lecture, écriture,
+  déplacement ou escalade de permission ; ne pas lire, écrire ; la gate continue sans cette cible. Une
+  permission refusée dans le worktree reste comptable.
 
 ## Traitement des findings actuels
 
-Les règles suivantes restent `manual` ou `propose` :
+Les identifiants suivants restent **bloquants pour l'apply**. Ils peuvent seulement être
+rapportés en `manual`/`propose` avec preuve du digest ; jamais auto-corrigés, ignorés ou
+transformés en autorisation :
 
 ```text
 security/memory-write-unscoped

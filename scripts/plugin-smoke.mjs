@@ -128,6 +128,29 @@ const anchor3 = fs.readFileSync(path.join(outputDir, "anchor-last.txt"), "utf8")
 check("ancre périmée rafraîchie (cadence non figée)", anchor3 !== old, `${old} → ${anchor3}`)
 check("nouvelle ancre ~maintenant", Date.now() - Date.parse(anchor3) < 60_000, anchor3)
 
+// 4c. Ancre existante illisible/invalide ne doit jamais être remplacée : seuls
+// les ENOENT initiaux sont récupérables.
+const anchorFile = path.join(outputDir, "anchor-last.txt")
+const invalidAnchor = "2026-02-30T12:00:00Z"
+fs.writeFileSync(anchorFile, invalidAnchor)
+try {
+  await tools.weekly_run.execute({})
+  check("ancre invalide : appel refusé", false, "appel accepté")
+} catch (err) {
+  check("ancre invalide : appel refusé", String(err).includes("ancre invalide"), String(err))
+}
+check("ancre invalide conservée", fs.readFileSync(anchorFile, "utf8").trim() === invalidAnchor)
+
+fs.unlinkSync(anchorFile)
+fs.mkdirSync(anchorFile)
+try {
+  await tools.weekly_run.execute({})
+  check("ancre illisible : appel refusé", false, "appel accepté")
+} catch (err) {
+  check("ancre illisible : appel refusé", String(err).includes("lecture de"), String(err))
+}
+fs.rmdirSync(anchorFile)
+
 // 5. sans lookback_days : aucun flag ajouté
 fs.writeFileSync(argvLog, "RESET")
 await tools.weekly_run.execute({})

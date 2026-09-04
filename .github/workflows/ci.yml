@@ -34,8 +34,9 @@ jobs:
         run: uv run ruff check .
       - name: Format
         run: uv run ruff format --check .
-      - name: Tests (594, aucun réseau)
-        run: uv run pytest -q
+      - name: Tests (aucun réseau)
+        # Keep test and check-flow-docs collection in the same uv/Python environment.
+        run: uv run python -m pytest -q
       - name: Packaging
         run: uv build
       - name: Wheel content (template inclus)
@@ -59,6 +60,6 @@ jobs:
 
       - name: Contrat de flux docs ↔ code (G1, 5 surfaces)
         # Mediation TS→CLI, handlers, artefacts par étape, chaînage d'ordre,
-        # comptes de tests README/INSTALL/ci == collect réel.
+        # collecte pytest exécutable (documentation counts are advisory).
         run: node scripts/check-flow-docs.mjs
         working-directory: .

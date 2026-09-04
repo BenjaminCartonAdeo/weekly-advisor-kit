@@ -138,34 +138,124 @@ def select_audit_candidates(
     """
     ordered: list[dict] = []
     index: dict[str, int] = {}
+    # Orchestrators may copy the same outcomes into both top-level and
+    # selection payloads. Merge by session id so provenance stays one-to-one.
+    worker_statuses_by_id: dict[str, dict] = {}
 
-    def _add(session_id: str, reason: str) -> None:
+    def _merge_worker_status(target: dict, source: dict) -> None:
+        """Merge outcome metadata without allowing healthy duplicates to hide failures."""
+        for key in ("session_id", "worker_status", "status"):
+            if key in source and source[key] and key not in target:
+                target[key] = source[key]
+        if "rc" in source:
+            try:
+                rc = int(source["rc"])
+            except (TypeError, ValueError):
+                rc = 1
+            try:
+                target["rc"] = max(int(target.get("rc", 0) or 0), rc)
+            except (TypeError, ValueError):
+                target["rc"] = rc
+        if "truncated" in source:
+            target["truncated"] = bool(target.get("truncated", False) or source["truncated"])
+    for status in [
+        *(summary.get("worker_statuses") or []),
+        *((summary.get("selection") or {}).get("worker_statuses") or []),
+    ]:
+        if isinstance(status, dict) and status.get("session_id"):
+            session_id = str(status["session_id"])
+            _merge_worker_status(worker_statuses_by_id.setdefault(session_id, {}), status)
+    worker_statuses = list(worker_statuses_by_id.values())
+    worker_status_by_id = {
+        str(status.get("session_id")): status
+        for status in worker_statuses
+        if isinstance(status, dict) and status.get("session_id")
+    }
+
+    def _add(session_id: str, reason: str, source: dict | None = None) -> None:
         if not session_id:
             return
         if session_id in index:
             entry = ordered[index[session_id]]
             if reason not in entry["reasons"]:
                 entry["reasons"].append(reason)
+            status = dict(worker_status_by_id.get(session_id) or {})
+            status.update(source or {})
+            _copy_worker_status(entry, status)
             return
         index[session_id] = len(ordered)
-        ordered.append({"session_id": session_id, "reasons": [reason]})
+        entry = {"session_id": session_id, "reasons": [reason]}
+        status = dict(worker_status_by_id.get(session_id) or {})
+        status.update(source or {})
+        _copy_worker_status(entry, status)
+        ordered.append(entry)
+
+    def _copy_worker_status(target: dict, source: dict | None) -> None:
+        """Keep worker outcome fields visible in candidate/report artifacts."""
+        if not source:
+            return
+        merged: dict = dict(target)
+        _merge_worker_status(merged, source)
+        for key in ("rc", "truncated", "worker_status", "status"):
+            if key in merged:
+                target[key] = merged[key]
 
     top = summary.get("top_sessions_by_cost", [])
     for s in top[: max(0, top_sessions_limit)]:
-        _add(str(s.get("session_id") or ""), "top-cost")
+        _add(str(s.get("session_id") or ""), "top-cost", s)
     for o in summary.get("cost_outliers", []):
-        _add(str(o.get("session_id") or ""), "cost-outlier")
+        _add(str(o.get("session_id") or ""), "cost-outlier", o)
     weekly_cache = (summary.get("totals") or {}).get("cache_hit_rate")
     for s in top:
         cpm = s.get("cost_per_active_minute")
         if cpm is not None and cpm >= cost_per_active_minute_min:
-            _add(str(s.get("session_id") or ""), "loop")
+            _add(str(s.get("session_id") or ""), "loop", s)
         ce = s.get("cache_efficiency")
         if weekly_cache is not None and ce is not None and ce < weekly_cache - cache_efficiency_gap:
-            _add(str(s.get("session_id") or ""), "cache-gap")
+            _add(str(s.get("session_id") or ""), "cache-gap", s)
     for r in summary.get("user_prompt_repeats", []):
-        _add(str(r.get("session_id") or ""), "repeated-prompts")
+        _add(str(r.get("session_id") or ""), "repeated-prompts", r)
     return ordered
+
+
+def split_audit_candidates(
+    candidates: list[dict], limit: int
+) -> tuple[list[dict], list[dict]]:
+    """Découpe (audités, reportés) selon `audit_max_sessions` — pur.
+
+    Le second élément (`carried_over`) reprend les candidats non retenus par
+    la limite pour reprise en tête de file au run suivant (P2 : fin du
+    silently-ignored quand 9 candidats pour limite 8).
+    """
+    n = max(0, int(limit))
+    return list(candidates[:n]), list(candidates[n:])
+
+
+def prepend_carried_over(
+    candidates: list[dict], previous_carried: list[dict] | None
+) -> list[dict]:
+    """Remet en tête de file le `carried_over` du run précédent — pur.
+
+    Déduplique par ``session_id`` (le candidat courant garde sa version
+    fraîche) ; les entrées reportées réinjectées portent la raison
+    ``carried-over`` pour traçabilité.
+    """
+    if not previous_carried:
+        return list(candidates)
+    seen = {str(c.get("session_id")) for c in candidates if c.get("session_id")}
+    front: list[dict] = []
+    for entry in previous_carried:
+        sid = str(entry.get("session_id") or "")
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+        reinjected = dict(entry)
+        reasons = list(reinjected.get("reasons") or [])
+        if "carried-over" not in reasons:
+            reasons.append("carried-over")
+        reinjected["reasons"] = reasons
+        front.append(reinjected)
+    return front + list(candidates)
 
 
 def select_draft_candidates(findings: dict | None, *, max_candidates: int = 3) -> list[dict]:

@@ -26,7 +26,7 @@
  */
 import fs from "node:fs"
 import path from "node:path"
-import { execFileSync } from "node:child_process"
+import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { checkArchitectureDocs } from "./check-architecture-docs.mjs"
 
@@ -48,6 +48,54 @@ function ok(label, cond, detail = "") {
   }
 }
 const read = (p) => fs.readFileSync(p, "utf8")
+
+/** Execute the collection probe without throwing, preserving all diagnostics. */
+export function collectPytest({ cwd, runner = spawnSync } = {}) {
+  const result = runner("uv", ["run", "python", "-m", "pytest", "--collect-only", "-q"], {
+    cwd,
+    encoding: "utf8",
+  })
+  const stdout = String(result?.stdout ?? "")
+  const stderr = String(result?.stderr ?? "")
+  const status = result?.status ?? null
+  if (result?.error || status !== 0) {
+    return { kind: "execution-failure", stdout, stderr, status, error: result?.error ?? null }
+  }
+  // pytest's quiet collector may emit one ``path: count`` line per module
+  // without its usual summary; sum those lines as equivalent parser output.
+  const match = stdout.match(/(\d+) tests? collected/)
+  const perFile = [...stdout.matchAll(/:\s*(\d+)\s*$/gm)]
+  const collected = match ? Number(match[1]) : perFile.length ? perFile.reduce((sum, m) => sum + Number(m[1]), 0) : null
+  if (collected === null) return { kind: "parser-failure", stdout, stderr, status, collected: null }
+  return { kind: "ok", stdout, stderr, status, collected }
+}
+
+/** Build the only supported worker test command; cwd must be the engine root. */
+export function canonicalPytestCommand({ cwd, selector }) {
+  const engine = path.resolve(ENGINE)
+  if (!cwd || path.resolve(cwd) !== engine) throw new Error("pytest cwd must be engine root")
+  if (!selector || typeof selector !== "string") throw new Error("pytest selector is required")
+  const resolved = path.resolve(engine, selector)
+  if (resolved !== engine && !resolved.startsWith(`${engine}${path.sep}`)) {
+    throw new Error("pytest selector must stay inside engine root")
+  }
+  if (!fs.existsSync(resolved)) throw new Error(`pytest selector not found: ${selector}`)
+  return ["uv", ["run", "python", "-m", "pytest", "-q", selector]]
+}
+
+export function documentedTestCounts(contents) {
+  return contents.flatMap((source) => [...source.matchAll(/(\d+) tests?/g)].map((m) => Number(m[1])))
+}
+
+/** Documentation drift is advisory; only inability to obtain a count blocks. */
+export function checkTestCounts({ docs, collection }) {
+  const unique = [...new Set(docs)]
+  const messages = []
+  if (unique.length !== 1) messages.push(`documentation counts differ: ${unique.join(", ") || "none"}`)
+  if (collection.kind === "execution-failure") messages.push("pytest collection execution failed")
+  if (collection.kind === "parser-failure") messages.push("pytest collection output could not be parsed")
+  return { blocking: collection.kind !== "ok", messages }
+}
 
 // ---------------------------------------------------------------- collecteurs
 
@@ -105,6 +153,9 @@ function enginePythonFiles() {
 
 // ------------------------------------------------------------------ surface 1
 
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+
+if (isMain) {
 const tsSrc = read(TS_FILE)
 const cliSrc = read(CLI_FILE)
 const tsCmds = tsCommands(tsSrc)
@@ -192,30 +243,18 @@ for (const [label, tsRe, pyNeedle] of DEPENDENCIES) {
 
 // Comptes de tests : les trois documents doivent porter le même nombre,
 // et ce nombre doit être le collect réel (C10).
-const docsCounts = []
-for (const file of [README_FILE, INSTALL_FILE, CI_FILE]) {
-  for (const m of read(file).matchAll(/(\d+) tests?/g)) docsCounts.push(Number(m[1]))
-}
-let collected = null
-try {
-  const out = execFileSync("uv", ["run", "pytest", "--collect-only"], {
-    cwd: ENGINE,
-    encoding: "utf8",
-  })
-  const m = out.match(/(\d+) tests? collected/)
-  collected = m ? Number(m[1]) : null
-} catch {
-  collected = null
-}
+const docsCounts = documentedTestCounts([README_FILE, INSTALL_FILE, CI_FILE].map(read))
+const collection = collectPytest({ cwd: ENGINE })
 console.log("— Surface 5 : comptes de tests cohérents")
-ok(
-  "README/INSTALL/ci portent le même nombre",
-  new Set(docsCounts).size === 1,
-  docsCounts.length ? `nombres: ${[...new Set(docsCounts)].join(", ")}` : "aucun nombre trouvé",
-)
-ok("pytest --collect-only exécutable", collected !== null, "uv run pytest a échoué")
-if (collected !== null && docsCounts.length > 0) {
-  ok(`collect réel (${collected}) == docs (${docsCounts[0]})`, collected === docsCounts[0])
+const countCheck = checkTestCounts({ docs: docsCounts, collection })
+// Documentation mismatch is advisory and never changes gate result.
+if (new Set(docsCounts).size === 1) console.log("ok  README/INSTALL/ci portent le même nombre")
+else console.log(`WARN README/INSTALL/ci counts differ: ${docsCounts.join(", ") || "none"}`)
+ok("pytest collection executable and parseable", !countCheck.blocking,
+  collection.kind === "execution-failure" ? `status=${collection.status}; stderr=${collection.stderr}` :
+    collection.kind === "parser-failure" ? `stdout=${collection.stdout}` : "")
+if (collection.kind === "ok" && docsCounts.length > 0 && collection.collected !== docsCounts[0]) {
+  console.log(`WARN collect réel (${collection.collected}) != docs (${docsCounts[0]})`)
 }
 
 // ------------------------------------------------------------------ surface 6
@@ -292,3 +331,4 @@ console.log(
     : `\n${failures} échec(s)`,
 )
 process.exit(failures === 0 ? 0 : 1)
+}

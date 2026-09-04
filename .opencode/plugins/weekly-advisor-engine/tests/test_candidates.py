@@ -6,17 +6,20 @@ from weekly_telemetry_aggregator.candidates import (
     consolidate_candidates,
     generate_skill_id,
     is_anti_learning,
+    prepend_carried_over,
     select_audit_candidates,
     select_draft_candidates,
+    split_audit_candidates,
 )
 
 
-def _summary(*, tops=None, outliers=None, repeats=None, weekly_cache=0.8):
+def _summary(*, tops=None, outliers=None, repeats=None, worker_statuses=None, weekly_cache=0.8):
     return {
         "totals": {"cache_hit_rate": weekly_cache},
         "top_sessions_by_cost": tops or [],
         "cost_outliers": outliers or [],
         "user_prompt_repeats": repeats or [],
+        "worker_statuses": worker_statuses or [],
     }
 
 
@@ -151,6 +154,73 @@ def test_audit_candidates_keep_canonical_multi_harness_ids():
     ids = [c["session_id"] for c in cands]
     assert ids == ["opencode:a", "copilot:b"]  # outlier dup → raisons fusionnées, pas de doublon
     assert cands[0]["reasons"] == ["top-cost", "cost-outlier"]
+
+
+def test_audit_candidates_preserve_worker_status_metadata():
+    """Worker rc/truncation metadata survives candidate consolidation."""
+    summary = _summary(
+        tops=[
+            {
+                "session_id": "opencode:a",
+                "cost_per_active_minute": 1.0,
+                "worker_status": "truncated",
+                "rc": 1,
+                "truncated": True,
+            }
+        ]
+    )
+    candidate = select_audit_candidates(summary)[0]
+    assert candidate["worker_status"] == "truncated"
+    assert candidate["rc"] == 1
+    assert candidate["truncated"] is True
+
+
+def test_audit_candidates_merge_duplicate_worker_status_sources():
+    summary = _summary(
+        tops=[{"session_id": "opencode:a", "cost_per_active_minute": 1.0}],
+        worker_statuses=[{"session_id": "opencode:a", "rc": 1}],
+    )
+    summary["selection"] = {
+        "worker_statuses": [{"session_id": "opencode:a", "truncated": True}]
+    }
+
+    candidate = select_audit_candidates(summary)[0]
+
+    assert candidate["rc"] == 1
+    assert candidate["truncated"] is True
+
+
+def test_audit_candidates_status_merge_keeps_failure_rc_and_truncation():
+    summary = _summary(
+        tops=[{"session_id": "opencode:a"}],
+        worker_statuses=[
+            {"session_id": "opencode:a", "rc": 2, "worker_status": "truncated"},
+            {"session_id": "opencode:a", "rc": 0, "worker_status": "included"},
+        ],
+    )
+    candidate = select_audit_candidates(summary)[0]
+    assert candidate["rc"] == 2
+    assert candidate["worker_status"] == "truncated"
+
+
+def test_audit_limit_carried_over_and_reprise():
+    """P2 : 9 candidats, limite 8 → 8 audités + 1 carried_over, repris en tête."""
+    tops = [
+        {"session_id": f"s{i}", "cost_per_active_minute": 0.1, "cache_efficiency": 0.9}
+        for i in range(9)
+    ]
+    cands = select_audit_candidates(_summary(tops=tops), top_sessions_limit=9)
+    assert len(cands) == 9
+    audited, carried_over = split_audit_candidates(cands, 8)
+    assert [c["session_id"] for c in audited] == [f"s{i}" for i in range(8)]
+    assert [c["session_id"] for c in carried_over] == ["s8"]
+    # run suivant : le reporté passe en tête, sans doublon
+    nxt = prepend_carried_over(
+        select_audit_candidates(_summary(tops=tops[:3]), top_sessions_limit=9), carried_over
+    )
+    assert nxt[0]["session_id"] == "s8"
+    assert "carried-over" in nxt[0]["reasons"]
+    assert len({c["session_id"] for c in nxt}) == len(nxt)
 
 
 def test_provenance_skill_id_stable():

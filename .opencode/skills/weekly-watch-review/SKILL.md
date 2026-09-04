@@ -146,6 +146,24 @@ Il n'écrit jamais directement `weekly-watch-findings-<date>.json` : ce fichier 
 produit ensuite par la sous-commande `watch-validate` du plugin weekly-advisor, qui
 applique les garde-fous déterministes (coercitions, writer mémoire, annexe sécurité).
 
+### Gate raw → validate
+
+<!-- ponytail: une gate fichier suffit ; aucun payload parallèle à maintenir. -->
+
+Le raw est une entrée obligatoire, pas une suggestion : `watch-validate` ne peut être
+appelé **qu'après** l'écriture et la validation locale de
+`weekly-watch-findings-raw-<date>.json`. Vérifier au minimum `schema_version: 1` et un
+tableau `findings`; ne jamais valider un payload inline, absent ou partiellement lu.
+
+Si le raw manque, est illisible ou ne respecte pas cette forme, effectuer **one bounded
+retry** (`max_retry=1`, une seule recovery bornée, relecture ciblée du contexte
+disponible), puis arrêter la branche avec un warning bloquant pour cette étape. Ne pas
+boucler, respawn, attendre indéfiniment ou inventer un finding pour permettre la
+validation. Le fichier final n'est pas écrit par ce skill : seul `watch-validate` peut
+le produire après cette gate. Une recovery réussie peut être signalée comme
+`{status: "recovered", source: "watch", artifact: "weekly-watch-findings"}` ; elle
+reste nonblocking seulement si le raw/final observé est valide.
+
 ## 7. Sécurité (non négociable)
 
 - **Jamais d'installation automatique d'outils externes** — les candidats sont remontés,
@@ -160,3 +178,11 @@ applique les garde-fous déterministes (coercitions, writer mémoire, annexe sé
   chercher à les réintroduire ; une fiche `suspicious` garde sa mention de risque
 - Les `install-new`/`improve-existing` restent des candidats à revoir — l'écriture
   d'outils externes n'est pas automatisée
+- Toute demande de permission **external-directory** ou toute écriture out-of-tree est
+  un record `{status: "report-only", report_only: true, category:
+  "external-permission-refusal"}` (`environment-change`) : ne pas lire, écrire,
+  déplacer ni escalader. Une permission refusée dans le worktree reste comptable.
+- Aucun finding ne peut être inventé à partir d'un résumé, d'un nom de package ou d'une
+  fiche absente de l'entrée effectivement lue ; les identifiants de sécurité critiques
+  (`mcp-tool-poisoning`, `unbounded-delegation`, `memory-write-unscoped`) restent
+  bloquants et ne sont jamais réintroduits par le review.

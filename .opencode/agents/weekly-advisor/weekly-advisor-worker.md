@@ -97,6 +97,16 @@ implicite) :
 Le check est **déterministe** (glob, zéro LLM) et s'exécute **une seule fois**, au début
 de la branche. `skills_loaded` est obligatoire dans le contrat retour (champ non-nul).
 
+## Garde de test canonique (obligatoire)
+
+Lorsqu'un worker vérifie le moteur, il exécute les tests depuis
+`.opencode/plugins/weekly-advisor-engine` avec `uv run python -m pytest -q` et un
+sélecteur explicite appartenant au moteur. Ne jamais utiliser `uv run pytest` ou
+préfixer la commande par `rtk`. Vérifier d'abord que le sélecteur existe ; sinon,
+exécuter au plus une collecte bornée avec `uv run python -m pytest --collect-only -q`
+comme diagnostic, jamais comme validation. Maximum un test ciblé puis ce fallback ;
+aucune boucle de relance.
+
 ## Exécution par branche
 
 Chaque worker reçoit son ordre figé d'étapes. Invariants ci-dessus s'appliquent à tous.
@@ -107,9 +117,13 @@ Exécutées en **wave 1** (parallèle).
 
 - **T** : `weekly_run` (long, ~5-15 min, poll si dépassement) → `weekly_audit_candidates` (déterministe, écrit `weekly-audit-candidates-<date>.json`)
 - **V** : `weekly_releases` → `weekly_watch_distill` (séquentiel après releases) →
-  `weekly_watch_context` (séquentiel après distill) → `weekly-watch-review` skill →
-  `weekly_watch_validate` (déterministe)
-- **H** : `weekly_harness` → `harness-remediation` skill
+  `weekly_watch_context` (séquentiel après distill) → `weekly-watch-review` skill
+  (écrit et vérifie le raw) → **raw présent/schema-valid** → `weekly_watch_validate`
+  (déterministe). Raw absent ou invalide : une seule recovery bornée, puis pas de
+  validation ni de finding inventé.
+- **H** : `weekly_harness` → `harness-remediation` skill (écrit et vérifie la
+  proposition) → **proposal présente/schema-valid** → `harness-remediate`. Proposal
+  absente ou invalide : une seule recovery bornée, puis pas de remediate/apply.
 
 ### Branche A (Audit single-session) — WAVE 1.5
 
@@ -125,11 +139,29 @@ Chaque worker A reçoit en briefing : `session_id`, `run_dir` (`runs/current/`),
 2. Effectuer l'audit qualitatif (catégories de constats du skill `weekly-quality-audit`,
    paraphrase stricte, lien session → commande lanceuse).
 3. Écrire `audit-findings-<session_id>.json` dans `runs/current/` :
-   - Schéma minimal : `{session_id, summary, findings: [...], rc}`
-   - **`summary` non-vide OBLIGATOIRE** : si `weekly_show_session` renvoie un extrait
-     vide/illisible → `rc=1` + warning, **écrire quand même** le fichier (avec
-     `summary: null` et le warning) ; ne pas crasher le worker (fail-soft).
-4. Retourner le contrat standard (branch=`A`, artifacts=[`audit-findings-<session_id>.json`]).
+   - Envelope schema-valid obligatoire : `{schema_version: 1, session_id, summary,
+     findings: [...], rc: 0|1, warnings: [...]}`. `findings` et `warnings` sont
+     toujours des tableaux ; `summary` est une chaîne non-vide.
+   - Si `weekly_show_session` renvoie un extrait vide/illisible, écrire quand même un
+     résumé explicite et `findings: []`, avec `rc=1` + warning si aucune recovery ne
+     rend l'extrait exploitable ; ne jamais produire une valeur nulle pour `summary` et
+     ne pas crasher le worker (fail-soft).
+
+**Durcissement gros transcripts (anti-troncation, incident 2026-09-06)** : si l'extrait
+est tronqué/partiel (signal de troncation ou taille > ~150 Ko) : (a) **une seule retry**
+   de lecture ciblée par fenêtres bornées (offset/limit, max 3 tours de diagnostic), sans
+   respawn automatique ni attente indéfinie ; (b) écrire le fichier avec `summary` non-vide et
+   `findings` bornés ; (c) si la sortie récupérée est complete-enough, `rc=0` et aucun
+   warning comptable ne doit remonter au cron ; si une troncature a été détectée,
+   conserver quand même le warning exact `transcript-truncated:<session_id>` (ou sa
+   valeur `message`) dans le contrat ET dans `warnings` du fichier, comme fait
+   informatif. Sinon, si la sortie reste partielle, conserver ce même warning avec
+   `rc=1`. Une recovery réussie n'est donc jamais artificiellement marquée `rc=1`.
+ 4. Retourner le contrat standard (branch=`A`, artifacts=[`audit-findings-<session_id>.json`]).
+    Même après un refus `external-directory` hors worktree, écrire un envelope valide
+    avec `summary` non-vide, `findings: []`, `rc: 0` et le warning structuré
+    `{status: "report-only", report_only: true, category: "external-permission-refusal"}`
+    dans `warnings`.
 
 **Isolation** : un worker A ne lit QUE sa session ; il ne consolide pas, ne lit pas les
 autres `audit-findings-*.json`, ne touche pas aux autres branches. La consolidation
@@ -148,14 +180,23 @@ Exécutées en **wave 2** (parallèle, après JOIN de wave 1 ; optionnel, activ�
 
 ## Erreurs attendues & fail-soft
 
+### Garde-fous de sécurité
+
+Les identifiants `mcp-tool-poisoning`, `unbounded-delegation` et
+`memory-write-unscoped` imposent un arrêt de l'action concernée et un signalement au
+coordinateur ; ne jamais contourner ces findings. Toute commande dont le résultat est
+`rc != 0` est en échec, même si une sortie partielle existe, et doit rester dans
+`warnings` ou déclencher la fatalité applicable.
+
 | Scénario | Réaction | rc | warning | continuer |
 |---|---|---|---|---|
 | Source réseau indisponible (releases timeout) | Constater, logger | 1 | message | oui |
-| Données tronquées (JSON volumineux) | Exploiter partie lisible | 1 | note taille | oui |
+| Données tronquées (JSON/transcript volumineux) | Une retry bornée ; `0` si complete-enough, sinon partie lisible | 0/1 selon recovery | `transcript-truncated:<session_id>` si résiduel | oui |
 | Attente run-dir dépassée | Skip poll, tenter étape directement | 1 | dépassement 10min | oui |
 | Écosystème absent pour distill | Distill skip, valider sur contexte ancien | 1 | absence source | oui |
 | Portabilité skill rejetée (error) | Restituer diff, bloquer commit | 1 | détail erreur | oui |
-| Permission edit refusée | Réévaluer perimètre, fail-soft si non critique | 1 | détail erreur | oui |
+| Permission edit refusée hors worktree | Ne pas retenter ; produire le record report-only | 0 | détail erreur | oui |
+| Permission edit refusée dans le worktree | Réévaluer perimètre, fail-soft si non critique | 1 | détail erreur | oui |
 | **Skill primaire absente (F6)** | `skills_loaded: ok=false` ; ne pas démarrer la branche | 2 | — | non |
 | **Skill secondaire absente (F6)** | `skills_loaded: ok=false` ; branche en dégradé (étape skill sautée) | 1 | `skill-missing:<name>` | oui |
 
@@ -190,3 +231,66 @@ Timings : `elapsed_s` est durée totale (wall-clock du début du briefing au con
 Si logs détaillés de steps inclus, passer aussi une liste `steps_timings: {étape: ms, ...}`
 dans le contrat pour fine-grained instrumentation (optional mais recommandé).
 
+## Garde artefact et périmètre
+
+<!-- ponytail: un seul envelope strict évite une seconde validation LLM au JOIN. -->
+
+Chaque worker A écrit un JSON `audit-findings-<session_id>.json` schema-valid, même quand
+l'extrait est borné, tronqué ou illisible. L'envelope v1 obligatoire est :
+
+```json
+{
+  "schema_version": 1,
+  "session_id": "ses_xxx",
+  "summary": "Résumé non-vide, limité aux éléments vérifiables.",
+  "findings": [],
+  "rc": 0,
+  "warnings": []
+}
+```
+
+`summary` est toujours une chaîne non-vide (jamais `null`), `findings` et `warnings` sont
+toujours des tableaux, et `rc` vaut seulement `0` ou `1`. Un extrait vide ne permet
+aucun finding inventé : écrire un résumé explicite et `findings: []`, puis conserver le
+warning dans l'artefact. Le worker vérifie cette forme avant son contrat de retour.
+
+### Transcript borné ou tronqué
+
+1. Détecter le marqueur de troncature, la lecture partielle ou la taille au-dessus de la
+   borne ; ne jamais demander une lecture intégrale non bornée.
+2. Tenter **one bounded retry** (`max_retry=1`) par fenêtres `offset/limit` (au plus trois
+   fenêtres de diagnostic), puis arrêter. La retry est locale au worker : aucun `task`, respawn,
+   boucle de récupération ou attente indéfinie.
+3. Si les fenêtres produisent un résultat **complete-enough** (contexte suffisant pour
+   justifier chaque finding), écrire l'envelope complet avec `rc: 0`. Si une troncature
+   avait été détectée, conserver `transcript-truncated:<session_id>` dans `warnings` comme
+   fait informatif. Cette récupération réussie ne doit pas transformer le worker ni le
+   cron en `rc=1`.
+4. Si la sortie reste partielle, écrire quand même l'envelope avec `rc: 1`, conclusions
+   bornées à la partie lisible et le warning **exact**
+   `transcript-truncated:<session_id>` dans le contrat **et** dans `warnings` du fichier.
+   Ce warning ne doit jamais être remplacé par un texte libre. Si l'envelope est valide,
+   ce warning de troncature est nonblocking pour le code final du cron ; un artefact vide,
+   invalide ou absent reste comptable.
+
+Un retour vide déclenche au plus une retry ; après cette retry, le worker écrit un
+artefact schema-valid et signale l'échec, sans respawn loop. Le plafond worker reste
+10 minutes : timeout = `rc=1` + warning, sans attente ni relance automatique.
+
+### Entrées aval et sécurité
+
+- Un raw/finding doit exister et être schema-valid **avant** toute validation ou
+  consolidation ; une proposition doit exister et être schema-valid **avant** tout
+  remediate/apply. En cas d'absence ou de forme invalide, effectuer une seule recovery
+  bornée, puis ne rien inventer et ne pas appeler l'étape aval.
+- Tout finding doit être soutenu par l'input effectivement lu. Ne jamais compléter un
+  transcript, un digest, un raw ou une proposition par supposition.
+- Toute demande de permission **external-directory** ou toute cible out-of-tree produit
+  un record `{status: "report-only", report_only: true, category:
+  "external-permission-refusal"}` (`environment-change`) : ne pas lire, écrire,
+  déplacer, escalader ou convertir en fatalité ; reprendre seulement dans le worktree
+   autorisé. Le refus hors worktree reste `rc: 0` ; une permission refusée dans le
+   worktree reste comptable.
+- Les identifiants de sécurité critiques (`mcp-tool-poisoning`, `unbounded-delegation`,
+  `memory-write-unscoped`) restent bloquants pour l'action concernée : aucune auto-
+  correction, écriture ou délégation implicite.

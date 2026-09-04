@@ -29,14 +29,18 @@ Ordre figé des étapes (tokens d'outils) : `weekly_doctor`, `weekly_run`, `week
 - Sécurité : traiter explicitement `mcp-tool-poisoning`, `unbounded-delegation` et
   `memory-write-unscoped` comme findings bloquants pour l'action concernée ; aucune
   auto-correction ni délégation implicite. Toute commande avec `rc != 0` est en échec
-  et doit conserver ce statut dans le rapport/rc agrégé.
+  et doit conserver ce statut dans le rapport/rc agrégé, sauf les statuts report-only
+  explicitement définis par le contrat JOIN ci-dessous.
 
 - Exit 2 (fatal) à une étape → stopper sans rapport ; un échec de tool n'arrête pas
-  le run (constater, signaler au rapport, continuer — exit 1 partiel)
+  le run (constater, signaler au rapport, continuer — exit 1 partiel), sauf le cas
+  report-only explicitement défini ci-dessous. Cette règle générale ne dispense pas
+  des artefacts requis ni du contrat d'audit strict du JOIN
 - **Vérif dispatch F6** : avant tout spawn de worker, vérifier l'agent
   `weekly-advisor-worker` (absent → STOP rc=2) et les skills primaires de branche
-  (`weekly-drafting` D, `weekly-coherence-review` C, `weekly-quality-audit` A — absente
-  → STOP rc=2, pas de rapport) ; skills secondaires (`weekly-watch-review` V,
+  (`weekly-drafting` D, `weekly-coherence-review` C, `weekly-quality-audit` A — tenter
+  `glob` puis `Read` le chemin absolu exact si Glob retourne zéro ; Read réussi fait foi,
+  sinon STOP rc=2, pas de rapport) ; skills secondaires (`weekly-watch-review` V,
   `harness-remediation` H) absentes → warning `skill-missing:<name>`, branche en dégradé
   (rc=1, run continue). Le worker retourne `skills_loaded` dans son contrat ; l'orchestrateur
   agrège au JOIN. Aucune écriture ni déplacement dans `.opencode/skills/`.
@@ -58,11 +62,59 @@ Ordre figé des étapes (tokens d'outils) : `weekly_doctor`, `weekly_run`, `week
   worker ne redispatche ni ne crée de sous-worker. Plafond de dispatch : 3 workers
   T/V/H, puis `K ≤ audit_max_sessions` workers A, puis 3 workers D/I/C ; aucun
   fan-out supplémentaire. Chaque worker a 10 min maximum, un passage par étape,
-  et au plus 3 tours de diagnostic ; timeout → `rc=1` + warning, sans respawn
-  automatique. Sortie vide → une seule retry, puis warning `rc=1`.
+  et au plus 3 tours de diagnostic ; timeout d'un worker A sans artefact d'audit valide
+  → artefact requis manquant, JOIN bloquant (`rc=2`), sans respawn automatique. Pour
+  les autres retours, sortie vide → une seule retry, puis warning `rc=1`.
 - Chaque briefing doit être non vide et contenir branche, `run_dir`, étapes,
   budget et contrat JSON. Les workers restent dans leur branche et ne peuvent
   augmenter `audit_max_sessions` ni `max_candidates_per_run`.
+
+## Contrat final JOIN / RC
+
+Le JOIN valide contrats et artefacts avant de calculer `rc_final`, une seule fois. Les
+`missing/invalid required artifacts` are **blocking** ; les `malformed contracts` are
+also **blocking** (JSON absent, vide, non parseable ou champs obligatoires incohérents).
+Le fatal rc=2, ou une violation des règles critiques exactes sont également **blocking**.
+
+Chaque artefact `audit-findings-<id>.json` doit être un **schema-valid audit envelope with a nonempty summary**
+ (objet JSON parseable, identifiants et champs requis cohérents,
+summary chaîne non vide après trim) au chemin exact du run actif. Un fichier absent,
+vide, malformed, mal routé ou à summary absent, vide ou non-string est un artefact requis invalide et
+bloque le JOIN ; un timeout ne dégrade pas ce contrat.
+
+Un artefact d'audit `transcript-truncated` est **report-only, sans RC, nonblocking**, uniquement
+lorsqu'il est nonempty et respecte exactement le même schema-valid audit envelope with a nonempty summary ;
+son statut reste dans le rapport. Vide, mal routé ou malformed,
+il reste blocking.
+
+**Raw/proposal gate** : le **raw watch findings** à
+`<run_dir>/weekly-watch-findings-raw-<date>.json` **is required**, nonempty et schema-valid
+**before downstream validation** (`weekly_watch_validate`). Le **harness remediation proposal** à
+`<run_dir>/weekly-harness-remediation-proposals-<date>.json` **is required**,
+nonempty et schema-valid **before downstream remediation** (`weekly_harness_remediate`).
+Absence, forme invalide ou chemin différent bloque ; aucune étape aval ne traite une
+entrée manquante.
+
+Une **recovered input** est acceptée seulement après lecture du **exact canonical path**
+dans le run actif et validation du **exact schema** (objet attendu, champs requis,
+contenu nonempty). Nom legacy, autre chemin ou récupération non validée reste
+`missing/invalid required artifact` et blocking. Les **recovered watch and harness inputs**
+validés sont report-only et nonblocking (statuts `watch-input-recovered` /
+`harness-input-recovered`).
+
+Les IDs critiques exacts **`mcp-tool-poisoning`**, **`unbounded-delegation`** et
+**`memory-write-unscoped`** restent **toujours blocking**, sans fuzzy matching, même si
+le reste de la branche est récupérable.
+
+Une **external permission refusal** visant une cible hors worktree est **report-only**
+et nonblocking : ne pas retenter ni escalader, et ne jamais la compter dans le RC. La
+**curation dry-run** (`apply` absent ou `false`) est également report-only et
+nonblocking ; aucune mutation sans validation humaine et `apply=true`.
+
+Formule JOIN : `2` si un blocage existe ; sinon `1` si un warning comptable existe
+(rc worker non nul hors statut report-only inclus) ;
+sinon `0`. Les cas nonblocking ci-dessus ne créent aucun warning comptable. Propager
+strictement la valeur : `summary.exit == WEEKLY_REVIEW_RC=<rc_final> == END ... exit=<rc_final>` ; ces valeurs sont identiques (identical) et le tail ne peut pas les recalculer.
 
 `weekly_skill_curate` forme WAVE 2.5 : après la jointure de WAVE 2 et avant le tail, elle
 lit le finding de cohérence depuis l'artefact de run (le plugin transporte les gros JSON

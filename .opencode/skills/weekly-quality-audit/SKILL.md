@@ -32,6 +32,56 @@ Sélection déterministe en amont (aucun choix de session ici), examen LLM des t
 5. Écrire `weekly-quality-findings-<date>.json` (schéma ci-dessous)
 6. Ne PAS ré-émettre un candidat snoozé (`ignored_findings` de la config)
 
+## Contrat de sortie worker (strict)
+
+<!-- ponytail: le worker envelope est minimal ; le JOIN reste déterministe. -->
+
+Le worker A écrit un fichier par session (`audit-findings-<session_id>.json`) avant la
+consolidation déterministe. Chaque fichier doit respecter l'envelope JSON v1 suivante,
+y compris pour un transcript borné, tronqué ou illisible :
+
+```json
+{
+  "schema_version": 1,
+  "session_id": "ses_xxx",
+  "summary": "Résumé non-vide, borné à ce qui est vérifiable.",
+  "findings": [],
+  "rc": 0,
+  "warnings": []
+}
+```
+
+`schema_version` vaut `1`, `session_id` est celui du briefing, `summary` est une chaîne
+non-vide (jamais `null`), `findings` et `warnings` sont des tableaux, et `rc` vaut `0`
+ou `1`. Un extrait vide produit un résumé explicite et `findings: []`, pas un finding
+deviné : ne jamais inventer un finding. Le JOIN ne répare ni ne réécrit l'envelope ; il fusionne uniquement les findings
+ déjà validés. Il vérifie le `session_id` contre le nom canonique du fichier et
+ recopie cet identifiant dans chaque finding ; un finding sans identifiant devient
+ un warning structuré, jamais un finding attribué par supposition.
+
+### Transcript borné, retry et code retour
+
+- Détecter la troncature ou la lecture partielle ; lire seulement des fenêtres bornées
+  `offset/limit`, jamais un export intégral non borné.
+- Autoriser **une seule retry bornée** (`max_retry=1`, au plus trois fenêtres de
+  diagnostic). Aucun hang, respawn loop ou nouvelle sous-tâche après cette tentative.
+- Si la sortie récupérée est **complete-enough**, c'est-à-dire suffisante pour justifier
+  chaque finding, produire l'envelope avec `rc: 0` : une recovery réussie ne doit pas
+  faire passer le cron en `rc=1`. Si une troncature avait été détectée, conserver
+  `transcript-truncated:<session_id>` dans `warnings` comme fait informatif.
+- Si elle reste partielle, produire l'envelope avec `rc: 1`, conclusions limitées à la
+  partie lisible et warning exact `transcript-truncated:<session_id>` dans le contrat
+  **et** dans `warnings` de l'artefact. Ne jamais remplacer cet identifiant par une
+  paraphrase. Tant que l'envelope est valide et non vide, ce warning reste visible mais
+  nonblocking au JOIN ; un artefact absent, vide ou invalide reste comptable.
+
+Toute conclusion doit être soutenue par le transcript effectivement lu. En cas de
+permission **external-directory**, de cible out-of-tree ou de source non écrasable,
+émettre seulement le record `{status: "report-only", report_only: true,
+category: "external-permission-refusal"}` / `environment-change` : ne pas lire,
+   écrire, déplacer ni escalader en fatalité. L'envelope reste valide avec `rc: 0`
+   et `findings: []` ; une permission refusée dans le worktree reste comptable.
+
 ## Harnais d'origine
 
 Chaque session provient d'un harnais identifiable : ids canoniques

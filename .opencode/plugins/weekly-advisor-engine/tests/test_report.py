@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from helpers import make_step, make_usage, tzutc
 
 from weekly_telemetry_aggregator.aggregator import aggregate
@@ -14,6 +15,7 @@ from weekly_telemetry_aggregator.models import Period
 from weekly_telemetry_aggregator.report import (
     _coherence_has_curation_signal,
     _critical_security_findings,
+    applicable_summary_rc,
     report_assemble,
     report_blocks_draft,
     report_prep,
@@ -90,7 +92,7 @@ def test_run_provenance_serializes_canonical_start_time():
 
 
 def test_validate_required_artifacts_separates_required_optional_and_statuses(tmp_path: Path):
-    (tmp_path / f"weekly-summary-{DATE}.json").write_text("{}", encoding="utf-8")
+    _write_summary(tmp_path)
     (tmp_path / f"weekly-insights-{DATE}.json").write_text("not-json", encoding="utf-8")
     gate = validate_required_artifacts(tmp_path, DATE)
     assert gate["status"] == "pass"
@@ -100,12 +102,332 @@ def test_validate_required_artifacts_separates_required_optional_and_statuses(tm
 
 
 def test_validate_required_artifacts_enabled_html_absence_is_nonzero_gate(tmp_path: Path):
-    (tmp_path / f"weekly-summary-{DATE}.json").write_text("{}", encoding="utf-8")
+    _write_summary(tmp_path)
     gate = validate_required_artifacts(
         tmp_path, DATE, html_enabled=True, html_path=tmp_path / "missing.html"
     )
     assert gate["html"]["status"] == "absent"
     assert gate["status"] == "pass"  # HTML failure is handled as assemble rc=1.
+
+
+def test_validate_required_artifacts_html_present_when_file_exists_disabled_flag(tmp_path: Path):
+    """P0 : fichier HTML réellement produit → gate `present`, même si rendu configuré off."""
+    (tmp_path / f"weekly-summary-{DATE}.json").write_text("{}", encoding="utf-8")
+    html_file = tmp_path / f"weekly-report-{DATE}.html"
+    html_file.write_text("<html>ok</html>", encoding="utf-8")
+    gate = validate_required_artifacts(
+        tmp_path, DATE, html_enabled=False, html_path=html_file
+    )
+    assert gate["html"]["status"] == "present"
+    assert gate["html"]["path"] == str(html_file)
+
+
+def test_validate_required_artifacts_html_disabled_when_off_and_no_file(tmp_path: Path):
+    """P0 : rendu off ET aucun fichier produit → gate `disabled`."""
+    (tmp_path / f"weekly-summary-{DATE}.json").write_text("{}", encoding="utf-8")
+    gate = validate_required_artifacts(tmp_path, DATE, html_enabled=False, html_path=None)
+    assert gate["html"]["status"] == "disabled"
+    assert gate["html"]["path"] is None
+
+
+def test_artifact_applicability_marks_optional_inputs_without_blocking(tmp_path: Path):
+    _write_summary(tmp_path)
+    gate = validate_required_artifacts(
+        tmp_path,
+        DATE,
+        applicability={"weekly-insights": False},
+    )
+    insights = gate["optional"][f"weekly-insights-{DATE}.json"]
+    assert insights["status"] == "absent"
+    assert insights["applicable"] is False
+    assert gate["status"] == "pass"
+
+
+def test_validate_required_artifacts_branch_enabled_requires_exact_schema(tmp_path: Path):
+    _write_summary(tmp_path)
+    gate = validate_required_artifacts(tmp_path, DATE, applicability={"weekly-insights": True})
+    assert gate["status"] == "incomplete"
+    assert gate["required"][f"weekly-insights-{DATE}.json"]["schema_valid"] is False
+    (tmp_path / f"weekly-insights-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "period": {"start": "2026-08-05T00:00:00Z", "end": "2026-08-12T00:00:00Z"},
+                "generated_at": "2026-08-12T00:00:00Z",
+                "deltas": {},
+                "alerts": [],
+                "maintenance": {"findings": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    gate = validate_required_artifacts(tmp_path, DATE, applicability={"weekly-insights": True})
+    assert gate["status"] == "pass"
+
+
+def test_report_assemble_requires_declared_branch_artifact(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (tmp_path / f"weekly-timings-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "branches": {
+                    "I": {
+                        "artifacts": [f"weekly-insights-{DATE}.json"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is None
+    assert rc == 2
+    assert any("weekly-insights" in warning for warning in warnings)
+
+
+def test_applicable_summary_rc_accepts_valid_transcript_truncation(tmp_path: Path):
+    _write_summary(tmp_path)
+    summary_path = tmp_path / f"weekly-summary-{DATE}.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary.update(
+        {
+            "rc": 1,
+            "warnings": [
+                {
+                    "message": "transcript-truncated:s1",
+                    "partial": True,
+                    "artifacts": ["audit-findings-s1.json"],
+                }
+            ],
+            "worker_statuses": [
+                {
+                    "session_id": "s1",
+                    "status": "truncated",
+                    "rc": 1,
+                    "artifacts": ["audit-findings-s1.json"],
+                }
+            ],
+        }
+    )
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    (tmp_path / "audit-findings-s1.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session_id": "s1",
+                "summary": "partiel",
+                "findings": [],
+                "rc": 1,
+                "warnings": ["transcript-truncated:s1"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert applicable_summary_rc(summary, out=tmp_path, date=DATE) == 0
+
+
+def test_applicable_summary_rc_accepts_recovered_watch_and_report_only_permission(tmp_path: Path):
+    summary = {
+        "rc": 1,
+        "warnings": [
+            {"status": "recovered", "source": "watch", "artifact": "weekly-watch-findings"},
+            {
+                "status": "report-only",
+                "report_only": True,
+                "category": "external-permission-refusal",
+                "permission_refused": True,
+                "target": str(tmp_path.parent / "external-reports"),
+            },
+        ],
+    }
+    (tmp_path / f"weekly-watch-findings-{DATE}.json").write_text(
+        json.dumps({"schema_version": 2, "findings": [], "validation": {}}), encoding="utf-8"
+    )
+    assert applicable_summary_rc(summary, out=tmp_path, date=DATE, project_root=tmp_path) == 0
+
+
+def test_applicable_summary_rc_keeps_in_worktree_permission_failure(tmp_path: Path):
+    summary = {
+        "rc": 1,
+        "warnings": [{"partial": True, "message": "permission denied in worktree"}],
+    }
+    assert applicable_summary_rc(summary, out=tmp_path, date=DATE) == 1
+
+
+def test_applicable_summary_rc_missing_status_is_not_implicit_success():
+    assert applicable_summary_rc({"warnings": []}) == 1
+    assert applicable_summary_rc({"warnings": []}, fallback_rc=0) == 0
+
+
+def test_applicable_summary_rc_fallback_is_baseline_not_early_success():
+    assert (
+        applicable_summary_rc(
+            {"warnings": [{"message": "worker failed", "partial": True}]},
+            fallback_rc=0,
+        )
+        == 1
+    )
+    assert (
+        applicable_summary_rc(
+            {"warnings": []},
+            additional_records=[{"rc": 2, "status": "error"}],
+            fallback_rc=0,
+        )
+        == 2
+    )
+
+
+def test_applicable_summary_rc_requires_verified_external_permission_refusal(tmp_path: Path):
+    target = tmp_path.parent / "external-target"
+    inside = {
+        "rc": 1,
+        "warnings": [
+            {
+                "status": "report-only",
+                    "report_only": True,
+                    "category": "external-permission-refusal",
+                    "permission_refused": True,
+                    "target": str(tmp_path / "inside"),
+            }
+        ],
+    }
+    assert applicable_summary_rc(inside, out=tmp_path, date=DATE) == 1
+    external = {
+        "rc": 1,
+        "warnings": [
+            {
+                "status": "report-only",
+                "report_only": True,
+                "category": "external-permission-refusal",
+                "permission_refused": True,
+                "target": str(target),
+            }
+        ],
+    }
+    assert applicable_summary_rc(external, out=tmp_path, date=DATE, project_root=tmp_path) == 0
+
+
+def test_applicable_summary_rc_rejects_serialized_report_only_text(tmp_path: Path):
+    summary = {
+        "rc": 1,
+        "warnings": [
+            "status=report-only category=external-permission-refusal "
+            f"target={tmp_path.parent / 'outside'} project_root={tmp_path}"
+        ],
+    }
+    assert applicable_summary_rc(summary, out=tmp_path, date=DATE, project_root=tmp_path) == 1
+
+
+def test_recovered_input_requires_exact_valid_disk_artifact(tmp_path: Path):
+    summary = {
+        "rc": 1,
+        "warnings": [
+            {
+                "status": "recovered",
+                "source": "watch",
+                "artifact": "weekly-watch-findings",
+            }
+        ],
+    }
+    path = tmp_path / f"weekly-watch-findings-{DATE}.json"
+    path.write_text("{}", encoding="utf-8")
+    assert applicable_summary_rc(summary, out=tmp_path, date=DATE) == 1
+    path.write_text(
+        json.dumps({"schema_version": 2, "findings": [], "validation": {}}), encoding="utf-8"
+    )
+    assert applicable_summary_rc(summary, out=tmp_path, date=DATE) == 0
+
+
+def test_truncated_audit_requires_declared_exact_path_and_envelope(tmp_path: Path):
+    audit_path = tmp_path / "audit-findings-s1.json"
+    audit_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session_id": "s1",
+                "summary": "partiel",
+                "findings": [],
+                "rc": 1,
+                "warnings": ["transcript-truncated:s1"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    base = {"rc": 1, "warnings": [], "worker_statuses": [{"session_id": "s1", "status": "truncated", "rc": 1}]}
+    assert applicable_summary_rc(base, out=tmp_path, date=DATE) == 1
+    declared = {
+        **base,
+        "worker_statuses": [
+            {
+                "session_id": "s1",
+                "status": "truncated",
+                "rc": 1,
+                "artifacts": ["nested/audit-findings-s1.json"],
+            }
+        ],
+    }
+    assert applicable_summary_rc(declared, out=tmp_path, date=DATE) == 1
+    declared["worker_statuses"][0]["artifacts"] = ["audit-findings-s1.json"]
+    assert applicable_summary_rc(declared, out=tmp_path, date=DATE) == 0
+
+
+def test_validate_required_artifacts_requires_dynamic_audit_declaration(tmp_path: Path):
+    _write_summary(tmp_path)
+    audit = tmp_path / "audit-findings-s1.json"
+    audit.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session_id": "s1",
+                "summary": "audit",
+                "findings": [],
+                "rc": 0,
+                "warnings": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    gate = validate_required_artifacts(
+        tmp_path,
+        DATE,
+        dynamic_audit_artifacts=["nested/audit-findings-s1.json"],
+    )
+    assert gate["status"] == "incomplete"
+    gate = validate_required_artifacts(
+        tmp_path,
+        DATE,
+        dynamic_audit_artifacts=["audit-findings-s1.json"],
+    )
+    assert gate["status"] == "pass"
+
+
+def test_applicable_summary_rc_reads_recovered_join_records(tmp_path: Path):
+    (tmp_path / f"weekly-harness-remediation-proposals-{DATE}.json").write_text(
+        json.dumps({"schema_version": 2, "date": DATE, "proposals": []}), encoding="utf-8"
+    )
+    summary = {"rc": 1}
+    timings = {
+        "branches": {
+            "H": {
+                "rc": 1,
+                "warnings": ["recovered harness proposal input"],
+                "artifacts": [f"weekly-harness-remediation-proposals-{DATE}.json"],
+            }
+        }
+    }
+    from weekly_telemetry_aggregator.report import _join_status_records
+
+    assert (
+        applicable_summary_rc(
+            summary,
+            out=tmp_path,
+            date=DATE,
+            additional_records=_join_status_records(timings),
+        )
+        == 0
+    )
 
 
 def test_critical_security_findings_are_detected():
@@ -126,6 +448,34 @@ def test_report_assemble_critical_security_forces_nonzero_rc(tmp_path: Path):
     assert final_path is not None
     assert rc != 0
     assert any("security/critical" in warning for warning in warnings)
+
+
+@pytest.mark.parametrize(
+    "rule",
+    ["mcp-tool-poisoning", "unbounded-delegation", "memory-write-unscoped"],
+)
+def test_report_assemble_nested_blocking_security_rule_is_rc_two(tmp_path: Path, rule: str):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "findings": [],
+                "inspection": {
+                    "uncategorized": [
+                        {"path": ".opencode/a.md", "findings": [{"rule": rule, "severity": "critical"}]}
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is None
+    assert rc == 2
+    assert not (tmp_path / f"weekly-report-{DATE}.md").exists()
+    assert any("blocking security rule" in warning for warning in warnings)
 
 
 def test_report_assemble_requires_draft(tmp_path: Path):
@@ -154,7 +504,17 @@ def test_report_assemble_propagates_skill_curate_rc(tmp_path: Path):
     cfg = _cfg(tmp_path)
     report_prep(cfg, anchor=RUN.isoformat())
     (tmp_path / f"skill-curate-{DATE}.json").write_text(
-        json.dumps({"schema_version": 1, "rc": 1}), encoding="utf-8"
+        json.dumps(
+            {
+                "schema_version": 1,
+                "rc": 1,
+                "mode": "apply",
+                "dry_run": False,
+                "date": DATE,
+                "decisions": [],
+            }
+        ),
+        encoding="utf-8",
     )
 
     final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
@@ -200,7 +560,19 @@ def test_report_assemble_curation_manifest_clears_gate(tmp_path: Path):
         encoding="utf-8",
     )
     (tmp_path / f"skill-curate-{DATE}.json").write_text(
-        json.dumps({"applied": 0, "proposed": 1, "skipped": 0, "decisions": []}),
+        json.dumps(
+            {
+                "schema_version": 1,
+                "rc": 0,
+                "mode": "apply",
+                "dry_run": False,
+                "date": DATE,
+                "applied": 0,
+                "proposed": 1,
+                "skipped": 0,
+                "decisions": [],
+            }
+        ),
         encoding="utf-8",
     )
     report_prep(cfg, anchor=RUN.isoformat())
@@ -213,6 +585,65 @@ def test_report_assemble_curation_manifest_clears_gate(tmp_path: Path):
     assert rc == 0
     assert not any("WAVE 2.5" in warning for warning in warnings)
     assert "Curation (WAVE 2.5 — apply — appliquées)" in final_path.read_text(encoding="utf-8")
+
+
+def test_report_assemble_does_not_count_curation_dry_run(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"skill-curate-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "mode": "dry-run",
+                "dry_run": True,
+                "rc": 1,
+                "date": DATE,
+                "proposed": 2,
+                "decisions": [{"action": "archive", "status": "proposed"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_prep(cfg, anchor=RUN.isoformat())
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 0
+    assert not any("refus" in warning for warning in warnings)
+
+
+def test_report_assemble_rejects_malformed_curation_manifest(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"skill-curate-{DATE}.json").write_text("[]", encoding="utf-8")
+    report_prep(cfg, anchor=RUN.isoformat())
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is None
+    assert rc == 2
+    assert any("manifeste de curation" in warning for warning in warnings)
+
+
+def test_report_assemble_active_empty_curation_manifest_stops_final_report(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    manifest = tmp_path / f"skill-curate-{DATE}.json"
+    manifest.write_text("{}", encoding="utf-8")
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is None
+    assert rc == 2
+    assert not (tmp_path / f"weekly-report-{DATE}.md").exists()
+    assert any("manifeste de curation" in warning for warning in warnings)
+
+
+def test_report_assemble_missing_required_summary_is_fatal_even_with_draft(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"weekly-report-draft-{DATE}.md").write_text(
+        "# report\n\n<!-- QUALITY_BLOCK -->\n", encoding="utf-8"
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is None
+    assert rc == 2
+    assert any("artefact requis" in warning for warning in warnings)
 
 
 def test_coherence_curation_signal_accepts_r4_mapping_and_ignores_bad_findings():
@@ -1147,6 +1578,24 @@ def test_assemble_html_enabled_missing_artifact_is_nonzero(tmp_path: Path, monke
     assert any("HTML enabled" in warning and "absent" in warning for warning in warnings)
 
 
+def test_assemble_external_html_permission_is_report_only(tmp_path: Path, monkeypatch):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    cfg.html_report_dir = str(tmp_path.parent / "external-reports")
+    report_prep(cfg, anchor=RUN.isoformat())
+    monkeypatch.setattr(
+        "weekly_telemetry_aggregator.report.render_html_report",
+        lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("outside worktree")),
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 0
+    assert any("report-only" in warning for warning in warnings)
+    gates = json.loads((tmp_path / f"weekly-report-gates-{DATE}.json").read_text(encoding="utf-8"))
+    assert gates["html"]["category"] == "external-permission-refusal"
+    assert gates["html"]["report_only"] is True
+
+
 def test_assemble_prose_rejection_is_explicit_fallback_and_gate_manifest(tmp_path: Path):
     _write_summary(tmp_path)
     cfg = _cfg(tmp_path)
@@ -1167,8 +1616,9 @@ def test_blocking_security_rules_are_nonzero_even_without_critical_severity(tmp_
     cfg = _cfg(tmp_path)
     report_prep(cfg, anchor=RUN.isoformat())
     (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
-        json.dumps({"findings": [{"rule": "security/mcp-tool-poisoning", "severity": "high"}]}),
+        json.dumps({"findings": [{"rule": "mcp-tool-poisoning", "severity": "high"}]}),
         encoding="utf-8",
     )
     final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
-    assert final_path is not None and rc != 0
+    assert final_path is None and rc == 2
+    assert not (tmp_path / f"weekly-report-{DATE}.md").exists()

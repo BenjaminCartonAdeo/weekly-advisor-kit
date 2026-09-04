@@ -51,6 +51,7 @@ interface PreflightResult {
 
 function preflight(root: string): PreflightResult {
   const engine = path.join(root, ...ENGINE_REL)
+  console.log(`[weekly_preflight] diag=${JSON.stringify({ cwd: process.cwd(), worktree: root, engine, entry: import.meta.url })}`)
   const engineOk = fs.existsSync(engine) && fs.statSync(engine).isDirectory()
   let pythonOk = false
   let configOk = false
@@ -234,9 +235,25 @@ function runCli(worktree: string, args: string[], timeoutMs: number): Promise<st
 /** Keep large JSON inputs out of argv, whose size limit varies by platform. */
 function stageJsonPayload(payload: string, label: string): { file: string; cleanup: () => void } {
   // ponytail: file transport is the minimum reliable fix for oversized tool arguments.
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), `weekly-${label}-`))
-  const file = path.join(directory, "input.json")
-  fs.writeFileSync(file, payload, "utf8")
+  try {
+    JSON.parse(payload)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`weekly_skill_curate ${label} JSON invalide: ${detail}`)
+  }
+  const directory = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), `weekly-${label}-`))
+  const file = path.resolve(directory, "input.json")
+  try {
+    fs.writeFileSync(file, payload, "utf8")
+  } catch (error) {
+    try {
+      fs.rmSync(directory, { recursive: true, force: true })
+    } catch {
+      // Preserve the write failure; cleanup remains best-effort on filesystem errors.
+    }
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`weekly_skill_curate ${label} JSON temporaire impossible: ${detail}`)
+  }
   return {
     file,
     cleanup: () => fs.rmSync(directory, { recursive: true, force: true }),
@@ -710,20 +727,29 @@ const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
           const { outputDir } = resolveEngine(worktree)
           const anchor = anchorArg(args.anchor, outputDir)
           const cliArgs = ["skill-curate", "--anchor", anchor]
-          let coherenceInput: ReturnType<typeof stageJsonPayload> | undefined
-          if (args.coherence) {
-            coherenceInput = stageJsonPayload(args.coherence, "coherence")
-            cliArgs.push("--coherence", coherenceInput.file)
-          }
-          if (args.catalog) cliArgs.push("--catalog", args.catalog)
-          if (args.usage) cliArgs.push("--usage", args.usage)
-          if (args.runs_seen != null) cliArgs.push("--runs-seen", String(args.runs_seen))
-          if (args.stale_days != null) cliArgs.push("--stale-days", String(args.stale_days))
-          if (args.apply === "true") cliArgs.push("--apply")
+          const stagedInputs: Array<ReturnType<typeof stageJsonPayload>> = []
           try {
+            if (args.coherence !== undefined) {
+              const input = stageJsonPayload(args.coherence, "coherence")
+              stagedInputs.push(input)
+              cliArgs.push("--coherence", input.file)
+            }
+            if (args.catalog !== undefined) {
+              const input = stageJsonPayload(args.catalog, "catalog")
+              stagedInputs.push(input)
+              cliArgs.push("--catalog", input.file)
+            }
+            if (args.usage !== undefined) {
+              const input = stageJsonPayload(args.usage, "usage")
+              stagedInputs.push(input)
+              cliArgs.push("--usage", input.file)
+            }
+            if (args.runs_seen != null) cliArgs.push("--runs-seen", String(args.runs_seen))
+            if (args.stale_days != null) cliArgs.push("--stale-days", String(args.stale_days))
+            if (args.apply === "true") cliArgs.push("--apply")
             return await runCli(worktree, cliArgs, 900_000)
           } finally {
-            coherenceInput?.cleanup()
+            for (const input of stagedInputs) input.cleanup()
           }
         },
       }),

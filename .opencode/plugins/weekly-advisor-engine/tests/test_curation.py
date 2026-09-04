@@ -664,6 +664,8 @@ def test_skill_curate_apply_is_project_local_and_reports_move_statuses(tmp_path)
     assert report["decisions"]
 
 
+
+
 def test_skill_curate_rejects_path_traversal_archive_target(tmp_path):
     """An archive target cannot escape the configured project skill roots."""
     from weekly_telemetry_aggregator.cli import _cmd_skill_curate

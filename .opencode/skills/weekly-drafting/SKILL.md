@@ -28,6 +28,17 @@ portables, avec commit direct traçable. Jamais de correction du code applicatif
    pré-checks git, add scopé, message construit depuis le frontmatter ; **1 commit par écriture** ;
    échec → exit 1, fichier conservé, signaler au rapport.
 
+### Entrées, recovery et absence d'invention
+
+<!-- ponytail: une recovery bornée évite une boucle de draft coûteuse. -->
+
+Le candidat, l'extrait et le résultat de la gate sont des entrées vérifiables. Si une
+entrée attendue manque, est tronquée ou invalide, effectuer **one bounded retry**
+(`max_retry=1`, une seule recovery bornée), puis signaler l'échec sans respawn loop ni
+attente indéfinie.
+Ne jamais inventer un candidat, une session, une preuve ou un contenu pour produire un
+draft ; sans source lisible, aucun artefact n'est écrit.
+
 ## Cible unique — résolution du harnais
 
 Le drafting écrit dans LE harnais cible du projet (décision mono-cible), jamais au jugé :
@@ -175,6 +186,11 @@ sont pas inspectés par ces règles ; ne pas compenser par un lint maison.
   (report-only), pas de draft, pas de lecture.
 - Toute lecture/écriture hors worktree est impossible (permissions de l'agent) — ne jamais
   tenter ; un échec de permission n'est jamais fatal : constater, signaler au rapport,
-  continuer l'ordre figé (exit 1 partiel, pas 2).
+ signaler au rapport et continuer l'ordre figé avec `rc: 0`. Une permission refusée
+ dans le worktree reste un warning comptable (`rc: 1`).
 - Session dont project_path est hors project_root ⇒ constat environment-change
   (report-only) — rien n'est écrit dans le projet courant.
+- Toute demande de permission **external-directory** ou toute cible out-of-tree est un
+  record `{status: "report-only", report_only: true, category:
+  "external-permission-refusal"}` (`environment-change`) : ne pas lire, écrire,
+  déplacer, symlinker ou escalader ; conserver seulement le signal dans le rapport.

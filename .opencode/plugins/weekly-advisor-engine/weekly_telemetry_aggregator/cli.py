@@ -97,13 +97,66 @@ def _positive_int(value: str) -> int:
 
 
 def _cmd_run(args, cfg) -> int:
-    return run(
+    rc = run(
         cfg,
         anchor=args.anchor,
         top_sessions_limit=args.top_sessions_limit,
         include_subagents=args.include_subagents,
         fail_on_missing_telemetry=args.fail_on_missing_telemetry,
         lookback_days=args.lookback_days,
+    )
+    # `run()` predates the final JOIN contract and reports every partial worker
+    # warning as rc=1.  Re-read the source-of-truth summary once it exists so
+    # valid transcript-truncated/recovered/report-only inputs remain observable
+    # without becoming a counted failure.  Fatal rc=2 is never downgraded.
+    if rc >= 2 or rc < 0:
+        return rc
+    if rc not in (0, 1):
+        return rc
+    from .main import _parse_anchor
+    from .report import (
+        _audit_artifact_declarations,
+        _branch_applicability,
+        _join_status_records,
+        applicable_summary_rc,
+        validate_required_artifacts,
+    )
+
+    run_time = _parse_anchor(args.anchor)
+    date = run_time.strftime("%Y-%m-%d")
+    out = _out_dir(cfg, date)
+    timings_path = out / f"weekly-timings-{date}.json"
+    timings: object = None
+    if timings_path.is_file():
+        try:
+            timings = json.loads(timings_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            timings = None
+    gate = validate_required_artifacts(
+        out,
+        date,
+        applicability=_branch_applicability(timings, date, out=out),
+        dynamic_audit_artifacts=_audit_artifact_declarations(timings),
+    )
+    if gate["status"] != "pass":
+        return 2
+    summary_path = out / f"weekly-summary-{date}.json"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return 2
+    if not isinstance(summary, dict):
+        return 2
+    additional_records: list[object] = []
+    if timings is not None:
+        additional_records = _join_status_records(timings)
+    return applicable_summary_rc(
+        summary,
+        out=out,
+        date=date,
+        additional_records=additional_records,
+        project_root=cfg.project_root,
+        fallback_rc=rc,
     )
 
 
@@ -152,9 +205,54 @@ def _cmd_show_session(args, cfg) -> int:
     return 0
 
 
+def _load_previous_carried_over(output_dir: Path, exclude_dir: Path, current_date: str) -> list[dict]:
+    """`carried_over` du run précédent (reprise P2) — best-effort, [] sinon.
+
+    Cherche le `weekly-audit-candidates-<date>.json` le plus récent strictement
+    antérieur (racine, `runs/*/`, `runs/*/legacy/`), avec fallback même-date
+    hors run courant (reruns/tests). Lit `carried_over` puis `unaudited`.
+    """
+    import re as _re
+
+    root = Path(output_dir)
+    patterns = [
+        *root.glob("weekly-audit-candidates-*.json"),
+        *root.glob("runs/*/weekly-audit-candidates-*.json"),
+        *root.glob("runs/*/legacy/weekly-audit-candidates-*.json"),
+    ]
+    dated: list[tuple[str, Path]] = []
+    for path in patterns:
+        m = _re.search(r"(\d{4}-\d{2}-\d{2})\.json$", path.name)
+        if m and m.group(1) < current_date:
+            dated.append((m.group(1), path))
+    target: Path | None = sorted(dated)[-1][1] if dated else None
+    if target is None:
+        same_day = []
+        for path in patterns:
+            if path.parent == exclude_dir:
+                continue
+            m = _re.search(r"(\d{4}-\d{2}-\d{2})\.json$", path.name)
+            if m:
+                same_day.append((m.group(1), path))
+        if same_day:
+            target = sorted(same_day)[-1][1]
+    if target is None:
+        return []
+    try:
+        previous = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    carried = (previous or {}).get("carried_over") or (previous or {}).get("unaudited") or []
+    return [c for c in carried if isinstance(c, dict) and c.get("session_id")]
+
+
 def _cmd_audit_candidates(args, cfg) -> int:
     """Partie 3 §2 — sélection déterministe des sessions à auditer (archive JSON)."""
-    from .candidates import select_audit_candidates
+    from .candidates import (
+        prepend_carried_over,
+        select_audit_candidates,
+        split_audit_candidates,
+    )
     from .main import EXIT_TOTAL_FAILURE, _parse_anchor
     from .writer import write_json_atomic
 
@@ -178,13 +276,17 @@ def _cmd_audit_candidates(args, cfg) -> int:
         cost_per_active_minute_min=cfg.audit.cost_per_active_minute_min,
         cache_efficiency_gap=cfg.audit.cache_efficiency_gap,
     )
-    audited = candidates[: max(0, cfg.audit_max_sessions)]
-    unaudited = candidates[max(0, cfg.audit_max_sessions) :]
+    candidates = prepend_carried_over(
+        candidates, _load_previous_carried_over(cfg.output_dir, out, date)
+    )
+    audited, carried_over = split_audit_candidates(candidates, cfg.audit_max_sessions)
+    unaudited = carried_over  # alias legacy : mêmes sessions, intention reprise explicite
     data = {
         "schema_version": 1,
         "date": date,
         "audited": audited,
         "unaudited": unaudited,
+        "carried_over": carried_over,
         "limit": cfg.audit_max_sessions,
         # Preserve worker outcomes even when candidates are bounded or output
         # was compacted by the orchestrator.
@@ -448,8 +550,14 @@ def _cmd_insights(args, cfg) -> int:
 
 
 def _cmd_report_prep(args, cfg) -> int:
-    from .main import EXIT_OK, EXIT_TOTAL_FAILURE
-    from .report import report_prep
+    from .main import EXIT_TOTAL_FAILURE, _parse_anchor
+    from .report import (
+        _audit_artifact_declarations,
+        _branch_applicability,
+        applicable_summary_rc,
+        report_prep,
+        validate_required_artifacts,
+    )
 
     path, ctx = report_prep(cfg, anchor=args.anchor)
     if ctx is None:
@@ -460,7 +568,38 @@ def _cmd_report_prep(args, cfg) -> int:
         )
         return EXIT_TOTAL_FAILURE
     print(f"report-prep: draft {path}", flush=True)
-    return EXIT_OK
+    run_time = _parse_anchor(args.anchor)
+    date = run_time.strftime("%Y-%m-%d")
+    out = _out_dir(cfg, date)
+    timings: object = None
+    timings_path = out / f"weekly-timings-{date}.json"
+    if timings_path.is_file():
+        try:
+            timings = json.loads(timings_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            timings = None
+    if (
+        validate_required_artifacts(
+            out,
+            date,
+            applicability=_branch_applicability(timings, date, out=out),
+            dynamic_audit_artifacts=_audit_artifact_declarations(timings),
+        )["status"]
+        != "pass"
+    ):
+        return EXIT_TOTAL_FAILURE
+    summary_path = out / f"weekly-summary-{date}.json"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return EXIT_TOTAL_FAILURE
+    return applicable_summary_rc(
+        summary,
+        out=out,
+        date=date,
+        project_root=cfg.project_root,
+        fallback_rc=0,
+    )
 
 
 def _cmd_report_assemble(args, cfg) -> int:
@@ -468,6 +607,8 @@ def _cmd_report_assemble(args, cfg) -> int:
 
     path, warnings, rc = report_assemble(cfg, anchor=args.anchor)
     if path is None:
+        for warning in warnings:
+            print(f"report-assemble: FATAL: {warning}", file=sys.stderr, flush=True)
         return rc
     for w in warnings:
         print(f"report-assemble: WARNING: {w}", flush=True)
