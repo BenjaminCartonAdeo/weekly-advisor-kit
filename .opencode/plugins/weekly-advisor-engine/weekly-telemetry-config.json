@@ -1,5 +1,5 @@
 {
-  "project_root": "/path/to/weekly-advisor-kit",
+  "project_root": "/path/to/repository-to-scan",
   "opencode_db_path": "auto",
   "output_dir": "/path/to/weekly-advisor-kit/reports",
   "lookback_days": 7,
