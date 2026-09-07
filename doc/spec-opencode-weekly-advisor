@@ -64,7 +64,7 @@ rapport).
 |---|---|
 | **Revue (hebdomadaire)** | Le cycle complet de collecte, analyse, veille, drafting et rapport, exécuté à cadence régulière sur une fenêtre glissante. |
 | **Session** | Unité d'activité d'un agent de code : une conversation avec ses métadonnées (titre, modèle, agent, coûts, tokens) et son transcript (tours de dialogue, appels d'outils, étapes). |
-| **Harnais** | Écosystème d'agent de code supporté dont le produit lit les sessions. Les harnais supportés sont : **OpenCode**, **Claude Code**, **Copilot VS Code**, **Codex**. Leurs noms sont du vocabulaire métier : le produit opère sur eux. |
+| **Harnais** | Écosystème d'agent de code supporté dont le produit lit les sessions. Les harnais supportés sont : **OpenCode**, **Claude Code**, **Copilot CLI**, **Copilot VS Code**, **Codex**. Leurs noms sont du vocabulaire métier : le produit opère sur eux. |
 | **Identifiant canonique** | Identifiant unique d'une session sur toutes les sources, de la forme `<harnais>:<identifiant local>`. Un identifiant brut (sans préfixe de harnais) reste accepté et est résolu par la première source qui le possède. |
 | **Run** | Exécution d'une revue ; chaque run est associé à une **ancre** temporelle et à une fenêtre glissante. |
 | **Fenêtre glissante** | Intervalle temporel analysé : `[instant de référence − (nombre de jours × 24 h), instant de référence]`. Par défaut 7 jours. |
@@ -177,7 +177,7 @@ configuration.
 9. **Coût estimé** : toute session **sans aucun coût enregistré** se voit attribuer un coût
    estimé = `tokens totaux × taux du harnais`. Taux par défaut : **5,0** (harnais générique),
    **9,0** (OpenCode), **2,5** (Copilot VS Code) USD par million de tokens, surchargeables par
-   source. Le coût estimé est **distinct** du coût facturé : les deux ne se somment jamais ; une
+   source (Copilot CLI : taux générique 5,0 sauf `cost_rate_usd_per_mtok` explicite). Le coût estimé est **distinct** du coût facturé : les deux ne se somment jamais ; une
    session sans coût enregistré reste dans les totaux de tokens, son coût estimé ne figure que
    dans le champ « coûts estimés ».
 10. **Prompts utilisateur répétés** : les tours utilisateur sont normalisés (minuscules, espaces
@@ -884,7 +884,8 @@ suffisant pour reconstruire l'ingestion sans prescrire un stockage.
 |---|---|
 | **OpenCode** | Les sessions (métadonnées : identifiant, parent, titre, modèle, agent, coûts, tokens, timestamps de création/mise à jour), les messages et les événements par étape (coût, tokens de cache, appels d'outils, tours texte, raisonnement, compactage). Lecture **en lecture seule**, y compris pendant que le harnais écrit (lecture concurrente sûre), avec gestion des verrous et des bases sans verrou accessible (jamais d'écriture, jamais de mode immuable incompatible avec un écrivain vivant). Requêtes ciblées par session, jamais de balayage complet ; parsing sélectif des données. |
 | **Claude Code** | Les transcripts de sessions (un fichier = une session), localisés par le répertoire projet encodé. **Aucun coût n'y est enregistré** → coûts toujours **estimés** (C1 règle 9). |
-| **Copilot VS Code** | Les sessions de chat, via le stockage de l'espace de travail (état optionnel). Les sessions vides fréquentes sont lues en métadonnées seules. |
+| **Copilot CLI** | Les sessions (`session-store.db` sous `copilot_home`, lecture seule) et leurs événements d'usage (`assistant_usage_events` : vrais tokens, aucun coût persisté → coûts toujours **estimés** au taux générique 5,0 sauf surcharge par source, C1 règle 9). Recherche plein-texte optionnelle (`search_index` FTS5). |
+| **Copilot VS Code** | Les sessions de chat, via le stockage de l'espace de travail (état optionnel). Les sessions vides fréquentes sont lues en métadonnées seules. Ni tokens ni coûts persistés (`tokens=0`) → `missing-pricing` sans coût estimé (jamais de coût inventé). |
 | **Cœur du harnais principal** | Les versions publiées dans la fenêtre, leurs dates, descriptions, et mots-clés. |
 | **Écosystème du marché** | Catalogue de paquets, dépôts par sujet, serveurs d'outils officiels, listes de curation, pages web, flux RSS/Atom (voir C2). |
 | **Historique git du projet** | Les créations de documents auto-rédigés (message et corps), pour la traçabilité et l'annexe. |

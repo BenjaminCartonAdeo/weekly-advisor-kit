@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -312,3 +313,382 @@ def test_check_schema_raises_without_workspace_storage(tmp_path: Path):
 def test_close_is_idempotent_noop(provider):
     provider.close()
     provider.close()  # aucune ressource persistante → aucun effet, aucune erreur
+
+
+# --- JSONL (prioritaire sur legacy) ---------------------------------------------
+
+UUID_JSONL = "55555555-eeee-4fff-9000-000000000005"
+UUID_DUP = "66666666-ffff-4000-9111-000000000006"
+
+
+def _write_jsonl(chat_dir: Path, session_id: str, lines: list[dict]) -> Path:
+    path = chat_dir / f"{session_id}.jsonl"
+    path.write_text("\n".join(json.dumps(line) for line in lines), encoding="utf-8")
+    return path
+
+
+def test_jsonl_snapshot_push_ops_and_custom_title(tmp_path: Path):
+    ws_dir = tmp_path / "workspaceStorage" / ("e" * 32)
+    chat_dir = ws_dir / "chatSessions"
+    chat_dir.mkdir(parents=True)
+    (ws_dir / "workspace.json").write_text(
+        json.dumps({"folder": "file:///home/user/proj-jsonl"}), encoding="utf-8"
+    )
+    req1 = {
+        "requestId": "req-1",
+        "timestamp": REQ_IN_WINDOW_MS,
+        "message": {"role": "user", "text": "Question JSONL"},
+        "modelId": "gpt-4o",
+        "responseText": "Réponse JSONL.",
+    }
+    req2 = {
+        "requestId": "req-2",
+        "timestamp": REQ_IN_WINDOW_MS + 1_000,
+        "message": "Suite ?",
+        "modelId": "gpt-4o",
+        "responseText": "Suite.",
+    }
+    _write_jsonl(
+        chat_dir,
+        UUID_JSONL,
+        [
+            {
+                "version": 1,
+                "sessionId": UUID_JSONL,
+                "creationDate": MS0,
+                "customTitle": "Titre JSONL",
+                "requests": [req1],
+            },
+            {"key": f"chatSessions/{UUID_JSONL}"},  # kind1 : référence ignorée
+            {"op": "push", "path": ["requests"], "value": req2},
+        ],
+    )
+    provider = CopilotVSCodeSessionProvider(tmp_path)
+    cid = canonical_session_id(HARNESS_COPILOT_VSCODE, UUID_JSONL)
+    assert provider.has_telemetry_rows(cid) is True
+    session = next(s for s in provider.list_sessions(0) if s.session_id == cid)
+    assert session.title == "Titre JSONL"  # customTitle prioritaire
+    assert session.directory == "/home/user/proj-jsonl"
+    assert provider.session_user_turns(cid, 0, MS0 * 2) == [
+        "Question JSONL",
+        "Suite ?",
+    ]
+
+
+def test_jsonl_splice_op_and_priority_over_legacy(tmp_path: Path):
+    ws_dir = tmp_path / "workspaceStorage" / ("f" * 32)
+    chat_dir = ws_dir / "chatSessions"
+    chat_dir.mkdir(parents=True)
+    (ws_dir / "workspace.json").write_text(
+        json.dumps({"folder": "file:///home/user/proj-dup"}), encoding="utf-8"
+    )
+    req = {
+        "requestId": "req-1",
+        "timestamp": REQ_IN_WINDOW_MS,
+        "message": "Depuis JSONL",
+        "modelId": "gpt-4o",
+        "responseText": "ok",
+    }
+    _write_jsonl(
+        chat_dir,
+        UUID_DUP,
+        [
+            {"sessionId": UUID_DUP, "creationDate": MS0, "customTitle": "Depuis JSONL"},
+            {"op": "splice", "path": ["requests"], "start": 0, "deleteCount": 0, "items": [req]},
+        ],
+    )
+    (chat_dir / f"{UUID_DUP}.json").write_text(
+        json.dumps(_session(UUID_DUP, MS0, MS0, POPULATED_REQUESTS)), encoding="utf-8"
+    )
+    provider = CopilotVSCodeSessionProvider(tmp_path)
+    cid = canonical_session_id(HARNESS_COPILOT_VSCODE, UUID_DUP)
+    assert provider.find_session_by_title("Depuis JSONL") is not None
+    assert provider.session_user_turns(cid, 0, MS0 * 2) == ["Depuis JSONL"]
+
+
+def test_corrupt_jsonl_skipped_with_warning(tmp_path: Path):
+    ws_dir = tmp_path / "workspaceStorage" / ("g" * 32)
+    chat_dir = ws_dir / "chatSessions"
+    chat_dir.mkdir(parents=True)
+    (chat_dir / "broken.jsonl").write_text("{not json\n{{{{", encoding="utf-8")
+    with pytest.warns(UserWarning, match="chatSessions illisible"):
+        CopilotVSCodeSessionProvider(tmp_path)
+
+
+# --- index state.vscdb ------------------------------------------------------------
+
+
+def _write_state_vscdb(user_dir: Path, index_payload: dict) -> Path:
+    db_path = user_dir / "globalStorage" / "state.vscdb"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute(
+        "INSERT INTO ItemTable (key, value) VALUES (?, ?)",
+        ("chat.ChatSessionStore.index", json.dumps(index_payload)),
+    )
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+UUID_INDEXED = "77777777-0000-4000-8222-000000000007"
+
+
+def test_index_merges_title_and_max_dates(tmp_path: Path):
+    ws_dir = tmp_path / "workspaceStorage" / ("h" * 32)
+    chat_dir = ws_dir / "chatSessions"
+    chat_dir.mkdir(parents=True)
+    (ws_dir / "workspace.json").write_text(
+        json.dumps({"folder": "file:///home/user/proj-idx"}), encoding="utf-8"
+    )
+    (chat_dir / f"{UUID_INDEXED}.json").write_text(
+        json.dumps(_session(UUID_INDEXED, MS0 - 3_600_000, MS0 - 3_600_000, [])),
+        encoding="utf-8",
+    )
+    _write_state_vscdb(
+        tmp_path,
+        {
+            "entries": {
+                UUID_INDEXED: {
+                    "title": "Titre index",
+                    "lastMessageDate": MS0,
+                    "timing": {"lastRequestStarted": MS0 + 5_000},
+                    "isEmpty": False,
+                    "isExternal": False,
+                    "workingDirectory": "/home/user/proj-idx",
+                }
+            }
+        },
+    )
+    provider = CopilotVSCodeSessionProvider(tmp_path)
+    assert provider.global_state_key_count == 1
+    session = next(s for s in provider.list_sessions(0))
+    assert session.title == "Titre index"  # index.title > repli (pas de texte ici)
+    assert session.time_updated == tzutc(2026, 7, 30, 10, 0, 5)  # max(index, timing)
+
+
+def test_index_only_stub_created_when_not_empty(tmp_path: Path):
+    _write_state_vscdb(
+        tmp_path,
+        {
+            "entries": {
+                "stub-only": {
+                    "title": "Stub index seul",
+                    "lastMessageDate": MS0,
+                    "isEmpty": False,
+                    "workingDirectory": "/home/user/proj-stub",
+                },
+                "stub-empty": {"title": "Vide", "lastMessageDate": MS0, "isEmpty": True},
+            }
+        },
+    )
+    (tmp_path / "workspaceStorage").mkdir(parents=True)
+    provider = CopilotVSCodeSessionProvider(tmp_path)
+    ids = [s.session_id for s in provider.list_sessions(0)]
+    assert canonical_session_id(HARNESS_COPILOT_VSCODE, "stub-only") in ids
+    assert canonical_session_id(HARNESS_COPILOT_VSCODE, "stub-empty") not in ids
+
+
+def test_index_empty_stub_with_transcript_conserved_and_warns(tmp_path: Path):
+    ws_dir = tmp_path / "workspaceStorage" / ("i" * 32)
+    chat_dir = ws_dir / "chatSessions"
+    chat_dir.mkdir(parents=True)
+    (ws_dir / "workspace.json").write_text(
+        json.dumps({"folder": "file:///home/user/proj-stub"}), encoding="utf-8"
+    )
+    sid = "88888888-1111-4000-8333-000000000008"
+    (chat_dir / f"{sid}.json").write_text(json.dumps(_session(sid, MS0, MS0, [])), encoding="utf-8")
+    transcript_dir = ws_dir / "GitHub.copilot-chat" / "transcripts"
+    transcript_dir.mkdir(parents=True)
+    (transcript_dir / f"{sid}.jsonl").write_text(
+        json.dumps({"type": "user.message", "text": "Question transcript", "timestamp": MS0 + 1_000}),
+        encoding="utf-8",
+    )
+    _write_state_vscdb(tmp_path, {"entries": {sid: {"isEmpty": True, "lastMessageDate": MS0}}})
+    with pytest.warns(UserWarning, match="vscode-empty-stub"):
+        provider = CopilotVSCodeSessionProvider(tmp_path)
+    cid = canonical_session_id(HARNESS_COPILOT_VSCODE, sid)
+    assert provider.has_telemetry_rows(cid) is True  # conservée, jamais exclue
+    assert provider.session_user_turns(cid, 0, MS0 * 2) == ["Question transcript"]
+
+
+def test_archived_session_conserved_and_tagged(tmp_path: Path):
+    ws_dir = tmp_path / "workspaceStorage" / ("j" * 32)
+    chat_dir = ws_dir / "chatSessions"
+    chat_dir.mkdir(parents=True)
+    (ws_dir / "workspace.json").write_text(
+        json.dumps({"folder": "file:///home/user/proj-arch"}), encoding="utf-8"
+    )
+    sid = "99999999-2222-4000-8444-000000000009"
+    (chat_dir / f"{sid}.json").write_text(
+        json.dumps(_session(sid, MS0, MS0, POPULATED_REQUESTS)), encoding="utf-8"
+    )
+    (ws_dir / "agentSessions.state.cache").write_text(
+        json.dumps({"archivedSessions": [sid]}), encoding="utf-8"
+    )
+    _write_state_vscdb(tmp_path, {"entries": {sid: {"isEmpty": False, "lastMessageDate": MS0}}})
+    provider = CopilotVSCodeSessionProvider(tmp_path)
+    session = next(s for s in provider.list_sessions(0))
+    assert "[archived]" in (session.title or "")
+    assert provider.has_telemetry_rows(canonical_session_id(HARNESS_COPILOT_VSCODE, sid)) is True
+
+
+# --- transcripts de repli -----------------------------------------------------------
+
+
+def test_transcript_fallback_tools_turns_parts_and_files(tmp_path: Path):
+    ws_dir = tmp_path / "workspaceStorage" / ("k" * 32)
+    chat_dir = ws_dir / "chatSessions"
+    chat_dir.mkdir(parents=True)
+    (ws_dir / "workspace.json").write_text(
+        json.dumps({"folder": "file:///home/user/proj-tr"}), encoding="utf-8"
+    )
+    sid = "aaaaaaaa-3333-4000-8555-000000000010"
+    (chat_dir / f"{sid}.json").write_text(json.dumps(_session(sid, MS0, MS0, [])), encoding="utf-8")
+    transcript_dir = ws_dir / "GitHub.copilot-chat" / "transcripts"
+    transcript_dir.mkdir(parents=True)
+    (transcript_dir / f"{sid}.jsonl").write_text(
+        "\n".join(
+            json.dumps(line)
+            for line in [
+                {"type": "user.message", "text": "Hello transcript", "timestamp": MS0 + 1_000},
+                {
+                    "type": "tool.execution_start",
+                    "toolName": "readFile",
+                    "input": {"path": "a.py"},
+                    "timestamp": MS0 + 2_000,
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "toolName": "readFile",
+                    "result": "contenu",
+                    "timestamp": MS0 + 3_000,
+                },
+                {"type": "assistant.message", "text": "Salut", "timestamp": MS0 + 4_000},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    editing_dir = ws_dir / "chatEditingSessions" / sid
+    editing_dir.mkdir(parents=True)
+    (editing_dir / "state.json").write_text(
+        json.dumps({"editors": [{"uri": "file:///home/user/proj-tr/a.py"}]}), encoding="utf-8"
+    )
+    provider = CopilotVSCodeSessionProvider(tmp_path)
+    cid = canonical_session_id(HARNESS_COPILOT_VSCODE, sid)
+    assert provider.has_telemetry_rows(cid) is True
+    assert provider.session_user_turns(cid, 0, MS0 * 2) == ["Hello transcript"]
+    calls, _arg_chars, skills = provider.session_tools(cid, 0, MS0 * 2)
+    assert calls == {"readFile": 1}
+    assert skills == {}
+    counts = provider.session_context_chars(cid, 0, MS0 * 2)
+    assert set(counts) == {"file", "tool_result", "text", "reasoning"}
+    assert counts["text"] == len("Salut")
+    assert counts["tool_result"] == len("contenu")
+    assert counts["file"] > 0
+    parts = provider.session_parts(cid)
+    assert [p.kind for p in parts] == ["user", "tool", "assistant", "file"]
+    assert parts[1].tool_name == "readFile"
+    assert parts[1].tool_output == "contenu"
+
+
+def test_empty_window_chat_sessions_included(tmp_path: Path):
+    empty_dir = tmp_path / "globalStorage" / "emptyWindowChatSessions"
+    empty_dir.mkdir(parents=True)
+    (empty_dir / "ew1.json").write_text(
+        json.dumps(_session("ew1", MS0, MS0, [])), encoding="utf-8"
+    )
+    (tmp_path / "workspaceStorage").mkdir(parents=True)
+    provider = CopilotVSCodeSessionProvider(tmp_path)
+    sessions = {s.session_id: s for s in provider.list_sessions(0)}
+    assert canonical_session_id(HARNESS_COPILOT_VSCODE, "ew1") in sessions
+    assert sessions[canonical_session_id(HARNESS_COPILOT_VSCODE, "ew1")].directory is None
+
+
+# --- orphelins ------------------------------------------------------------------------
+
+
+def test_orphan_sessions_warn_once_and_leave_directory_unset(tmp_path: Path):
+    import warnings as _warnings
+
+    for digest in ("m" * 32, "n" * 32):
+        chat_dir = tmp_path / "workspaceStorage" / digest / "chatSessions"
+        chat_dir.mkdir(parents=True)
+        (chat_dir / f"orphan-{digest[:4]}.json").write_text(
+            json.dumps(_session(f"orphan-{digest[:4]}", MS0, MS0, [])), encoding="utf-8"
+        )
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        provider = CopilotVSCodeSessionProvider(tmp_path)
+    orphan_warnings = [w for w in caught if "vscode-orphan" in str(w.message)]
+    assert len(orphan_warnings) == 1  # récap unique, pas par session
+    for session in provider.list_sessions(0):
+        assert session.directory is None
+
+
+def test_include_orphans_false_excludes_workspace_less_sessions(tmp_path: Path):
+    chat_dir = tmp_path / "workspaceStorage" / ("o" * 32) / "chatSessions"
+    chat_dir.mkdir(parents=True)
+    (chat_dir / "orphan.json").write_text(
+        json.dumps(_session("orphan", MS0, MS0, [])), encoding="utf-8"
+    )
+    built = build_provider(
+        {"type": PROVIDER_TYPE, "user_dir": str(tmp_path), "include_orphans": False},
+        TelemetryConfig(),
+    )
+    assert built is not None
+    assert built.list_sessions(0) == []
+
+
+# --- user_dirs multi-plateforme ----------------------------------------------------------
+
+
+def test_build_provider_accepts_user_dirs_list(tmp_path: Path):
+    roots = []
+    for digest, name in (("p" * 32, "r1"), ("q" * 32, "r2")):
+        root = tmp_path / name
+        ws_dir = root / "workspaceStorage" / digest
+        chat_dir = ws_dir / "chatSessions"
+        chat_dir.mkdir(parents=True)
+        (ws_dir / "workspace.json").write_text(
+            json.dumps({"folder": f"file:///home/user/{name}"}), encoding="utf-8"
+        )
+        sid = f"sid-{name}"
+        (chat_dir / f"{sid}.json").write_text(
+            json.dumps(_session(sid, MS0, MS0, [])), encoding="utf-8"
+        )
+        roots.append(root)
+    built = build_provider(
+        {"type": PROVIDER_TYPE, "user_dirs": [str(roots[0]), str(roots[1])]}, TelemetryConfig()
+    )
+    assert built is not None
+    assert built.user_dir == roots[0]
+    assert {s.directory for s in built.list_sessions(0)} == {"/home/user/r1", "/home/user/r2"}
+
+
+def test_build_provider_uses_vscode_user_dir_env(monkeypatch, tmp_path: Path):
+    ws_dir = tmp_path / "workspaceStorage" / ("r" * 32)
+    chat_dir = ws_dir / "chatSessions"
+    chat_dir.mkdir(parents=True)
+    (chat_dir / "env-sid.json").write_text(
+        json.dumps(_session("env-sid", MS0, MS0, [])), encoding="utf-8"
+    )
+    monkeypatch.setenv("VSCODE_USER_DIR", str(tmp_path))
+    built = build_provider({"type": PROVIDER_TYPE}, TelemetryConfig())
+    assert built is not None
+    assert canonical_session_id(HARNESS_COPILOT_VSCODE, "env-sid") in [
+        s.session_id for s in built.list_sessions(0)
+    ]
+
+
+def test_candidate_user_dirs_deduplicated():
+    import sys as _sys
+
+    import weekly_telemetry_aggregator.providers.implementations.copilot_vscode as mod
+
+    candidates = mod._candidate_user_dirs()
+    assert len(candidates) == len({str(p) for p in candidates})
+    if _sys.platform != "win32":
+        assert str(mod.Path(mod._DEFAULT_USER_DIR).expanduser()) in [str(p) for p in candidates]
+

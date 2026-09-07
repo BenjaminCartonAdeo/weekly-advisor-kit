@@ -63,13 +63,24 @@ Les clés principales vivent dans [`weekly-telemetry-config.json`](.opencode/plu
 
 | Clé | Rôle | Défaut |
 |---|---|---|
-| `session_sources` | Sources de télémétrie actives (opencode, claude-code, copilot-vscode…) | opencode |
+| `session_sources` | Sources de télémétrie actives (opencode, claude-code, copilot-cli, copilot-vscode…) | opencode |
 | `draft_targets` | Harnais cible du drafting (auto par marqueurs projet, ou liste) | auto |
 | `output_dir` | Répertoire des runs et archives | `~/opencode-weekly-reviews` |
 | `cost_rate_usd_per_mtok` | Taux de coût par source (surcharge) | par modèle |
 | `lookback_days` | Fenêtre analysée par run | 7 |
 
 Le détail des clés, des seuils et des invariants est dans la [spécification](doc/spec-opencode-weekly-advisor) et [`INSTALL.md`](INSTALL.md) §2.3.
+
+### Sources Copilot (CLI + VS Code)
+
+Désactivées par défaut (défaut opencode seul, rétrocompatible). Chemins
+auto-détectés : CLI `~/.copilot` (Linux) / `%USERPROFILE%\.copilot` (Windows,
+surcharge `COPILOT_CONFIG_DIR`), VS Code `~/.config/Code/User` /
+`%APPDATA%\Code\User` (surcharge `VSCODE_USER_DIR`, multi-répertoires via
+`user_dirs`, orphelins inclus par défaut). Exemple `session_sources` (opencode +
+CLI avec vrais tokens estimés à 2,5 $/Mtok + VS Code `tokens=0` ⇒
+`missing-pricing` sans coût inventé, recherche FTS) : [`INSTALL.md`](INSTALL.md)
+§2.3.1.
 
 ## Contributing
 

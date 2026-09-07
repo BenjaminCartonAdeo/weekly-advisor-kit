@@ -712,6 +712,42 @@ def _placeholder_message(fields: list[str]) -> str:
     )
 
 
+def _copilot_doctor_details(provider) -> list[str]:
+    """Détails doctor Copilot — best-effort, jamais de raise."""
+    try:
+        harness = getattr(provider, "harness", "")
+        sessions = getattr(provider, "_sessions", None)
+        n = len(sessions) if isinstance(sessions, dict) else None
+        if harness == "copilot-cli":
+            home = getattr(provider, "home", None)
+            version = getattr(provider, "schema_version", None)
+            tables = getattr(provider, "_tables", None)
+            out = [f"home={home}" if home is not None else "home=?"]
+            out.append(f"schema_version={version if version is not None else '?'}")
+            if n is not None:
+                out.append(f"sessions={n}")
+            if isinstance(tables, (set, frozenset)):
+                out.append(f"fts={'oui' if 'search_index' in tables else 'non'}")
+            return out
+        if harness == "copilot-vscode":
+            roots = getattr(provider, "user_dirs", None) or []
+            workspaces = 0
+            for root in roots:
+                try:
+                    ws = Path(root) / "workspaceStorage"
+                    if ws.is_dir():
+                        workspaces += sum(1 for c in ws.iterdir() if c.is_dir())
+                except OSError:
+                    continue
+            out = [f"user_dirs={len(roots)}", f"workspaces={workspaces}"]
+            if n is not None:
+                out.append(f"sessions={n}")
+            return out
+    except Exception:  # noqa: BLE001 — diagnostic best-effort uniquement
+        return []
+    return []
+
+
 def doctor(
     cfg: TelemetryConfig,
     *,
@@ -827,6 +863,9 @@ def doctor(
                         f"[{name}] compteur de migrations faible ({n}) — vérifier la version du harnais"
                     )
                 details.append(f"migrations={n}")
+            # Détails Copilot (home/schema_version/sessions/events/fts,
+            # user_dirs/workspaces/orphans/index) — best-effort, fail-soft.
+            details.extend(_copilot_doctor_details(provider))
             suffix = f" ({', '.join(details)})" if details else ""
             print(f"doctor: [{name}] OK{suffix}")
         finally:
