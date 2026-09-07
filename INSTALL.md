@@ -80,6 +80,20 @@ veille `watch`). `~` est supporté des deux côtés — le moteur Python (`expan
 et le plugin TS (`os.homedir()`) l'expandent avec la même sémantique ; un chemin
 absolu reste recommandé. Personnalisez `watch` (sources de veille) et les budgets selon votre usage.
 
+#### Lien de configuration vers la racine du kit
+
+Le moteur charge `weekly-telemetry-config.json` depuis le répertoire de travail
+(cwd). Quand `project_root` pointe vers un **autre dépôt** que `output_dir`
+(cas normal : auditer `service-invoicing-ai-commons`, stocker les rapports
+dans `weekly-advisor-kit/reports`), créez un lien depuis la racine du kit :
+
+```sh
+ln -s .opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json weekly-telemetry-config.json
+```
+
+Sans ce lien, le run depuis la racine du kit tombe sur les valeurs par défaut,
+et les drafts auto-rédigés atterrissent dans le kit au lieu du repo audité.
+
 #### Veille : `watch_distill` (étape 2.2) et sources radar
 
 La clé `watch_distill` pilote la **distillation déterministe** de l'écosystème
@@ -117,6 +131,15 @@ digest (`harness_include.unscoped_files`) au lieu d'être scanné silencieusemen
 résolu par détection de marqueurs au `project_root` (priorité `claude-code` >
 `opencode` > `copilot-vscode` > `codex`), surchargeable par `draft_targets` (`[]` =
 mode legacy). Aucun marqueur → défaut `opencode` + warning du doctor (exit 1).
+
+Choisissez explicitement votre harnais cible dans `draft_targets` si vous ne voulez
+pas dépendre de la détection automatique. Exemple pour forcer OpenCode :
+
+```json
+"draft_targets": ["opencode"]
+```
+
+Valeurs possibles : `claude-code`, `opencode`, `copilot-vscode`, `codex`.
 
 | Marqueur projet | Harnais | Cibles de projection des drafts |
 |---|---|---|
