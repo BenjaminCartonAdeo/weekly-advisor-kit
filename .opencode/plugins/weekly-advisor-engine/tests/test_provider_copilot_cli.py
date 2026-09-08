@@ -62,8 +62,15 @@ def _seed_db(db: Path, *, with_optionals: bool = True) -> None:
     )
     conn.execute(
         "INSERT INTO sessions VALUES (?,?,?,?,?,?,?)",
-        (SID_FULL, "/home/user/proj", "https://github.com/u/proj", "main",
-         SUMMARY_FULL, _fmt(T0), _fmt(T2)),
+        (
+            SID_FULL,
+            "/home/user/proj",
+            "https://github.com/u/proj",
+            "main",
+            SUMMARY_FULL,
+            _fmt(T0),
+            _fmt(T2),
+        ),
     )
     conn.execute(
         "INSERT INTO sessions VALUES (?,?,?,?,?,?,?)",
@@ -178,8 +185,7 @@ def test_harness_constants(provider):
 def test_list_sessions_namespaces_ids_and_fields(provider):
     sessions = {s.session_id: s for s in provider.list_sessions(0)}
     assert set(sessions) == {
-        canonical_session_id(HARNESS_COPILOT_CLI, sid)
-        for sid in (SID_FULL, SID_EMPTY, SID_OLD)
+        canonical_session_id(HARNESS_COPILOT_CLI, sid) for sid in (SID_FULL, SID_EMPTY, SID_OLD)
     }
     full = sessions[canonical_session_id(HARNESS_COPILOT_CLI, SID_FULL)]
     assert full.harness == HARNESS_COPILOT_CLI
@@ -295,9 +301,7 @@ def test_session_tools_fallback_session_files(tmp_path: Path):
     _seed_db(home / "session-store.db", with_optionals=False)
     conn = sqlite3.connect(str(home / "session-store.db"))
     conn.execute("CREATE TABLE session_files (session_id TEXT, file_path TEXT, tool_name TEXT)")
-    conn.execute(
-        "INSERT INTO session_files VALUES (?,?,?)", (SID_FULL, "/x/y.py", "read")
-    )
+    conn.execute("INSERT INTO session_files VALUES (?,?,?)", (SID_FULL, "/x/y.py", "read"))
     conn.commit()
     conn.close()
     import warnings
@@ -323,18 +327,14 @@ def test_session_context_chars_categories_and_reasoning_factor(provider):
     cid = canonical_session_id(HARNESS_COPILOT_CLI, SID_FULL)
     counts = provider.session_context_chars(cid, 0, 2**63 - 1)
     assert set(counts) == {"file", "tool_result", "text", "reasoning"}
-    assert counts["text"] == len(USER_MSG_1) + len(ASSISTANT_1) + len(USER_MSG_2) + len(
-        ASSISTANT_2
-    )
+    assert counts["text"] == len(USER_MSG_1) + len(ASSISTANT_1) + len(USER_MSG_2) + len(ASSISTANT_2)
     assert counts["tool_result"] == len("ok output") + len("zzz")
     assert counts["file"] == len("/home/user/proj/a.py")
     assert counts["reasoning"] == 60 * 4
 
 
 def test_session_aggregates_lifetime_sums(provider):
-    agg = provider.session_aggregates(
-        canonical_session_id(HARNESS_COPILOT_CLI, SID_FULL)
-    )
+    agg = provider.session_aggregates(canonical_session_id(HARNESS_COPILOT_CLI, SID_FULL))
     assert agg is not None
     assert agg["tokens_input"] == 1700 and agg["tokens_output"] == 440
     assert agg["tokens_reasoning"] == 60
@@ -350,9 +350,7 @@ def test_session_parts_ordering_and_truncation(provider):
     assert len(tools) == 2
     assert tools[0].tool_name == "runTests"
     assert all(p.ts is not None for p in parts)
-    assert all(
-        len(p.tool_output or "") <= 2000 for p in tools
-    )
+    assert all(len(p.tool_output or "") <= 2000 for p in tools)
 
 
 def test_find_session_by_title_summary_then_turn_prefix(provider):
@@ -371,15 +369,11 @@ def test_search_content_fts(tmp_path: Path):
     _seed_db(home / "session-store.db")
     conn = sqlite3.connect(str(home / "session-store.db"))
     try:
-        conn.execute(
-            "CREATE VIRTUAL TABLE search_index USING fts5(content, session_id UNINDEXED)"
-        )
+        conn.execute("CREATE VIRTUAL TABLE search_index USING fts5(content, session_id UNINDEXED)")
     except sqlite3.OperationalError:
         conn.close()
         pytest.skip("FTS5 indisponible")
-    conn.execute(
-        "INSERT INTO search_index VALUES (?,?)", ("flaky login failure", SID_FULL)
-    )
+    conn.execute("INSERT INTO search_index VALUES (?,?)", ("flaky login failure", SID_FULL))
     conn.commit()
     conn.close()
     built = build_provider({"type": PROVIDER_TYPE, "copilot_home": str(home)}, TelemetryConfig())
