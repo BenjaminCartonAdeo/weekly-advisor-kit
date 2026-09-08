@@ -8,8 +8,9 @@ fail-soft (avertissement + fallback). Tables explicitement ignorées :
 ``dynamic_context_items``, ``forge_skill_proposals``.
 
 Source secondaire : ``<copilot_home>/session-state/<uuid>/`` —
-``workspace.yaml`` et ``checkpoints/index.md`` servent uniquement à combler un
-``cwd``/``summary`` absent de la table ``sessions`` ; illisibles → ignorés.
+``workspace.yaml`` (``cwd``/``name|title|summary→title``) et
+``checkpoints/index.md`` servent uniquement à combler un ``cwd``/``summary``
+absent de la table ``sessions`` ; illisibles → ignorés.
 
 HORS PÉRIMÈTRE : ``config.json``, ``mcp-config.json`` et tout fichier
 d'authentification ne sont JAMAIS lus ni listés. Aucune écriture.
@@ -76,6 +77,7 @@ _LIST_LIMIT = 500
 _BATCH_SIZE = 50
 
 _WS_YAML_KEYS = re.compile(r"^\s*(?:cwd|workspace|directory|path)\s*:\s*(.+?)\s*$")
+_WS_YAML_TITLE_KEYS = re.compile(r"^\s*(?:name|title|summary)\s*:\s*(.+?)\s*$")
 _MD_HEADING = re.compile(r"^\s*#\s+(.+?)\s*$")
 
 
@@ -305,14 +307,20 @@ class CopilotCliSessionProvider:
         if ws_yaml.is_file():
             try:
                 for line in ws_yaml.read_text(encoding="utf-8").splitlines():
-                    match = _WS_YAML_KEYS.match(line)
-                    if match:
-                        out["directory"] = match.group(1).strip().strip("'\"")
+                    if "directory" not in out:
+                        m_dir = _WS_YAML_KEYS.match(line)
+                        if m_dir:
+                            out["directory"] = m_dir.group(1).strip().strip("'\"")
+                    if "title" not in out:
+                        m_title = _WS_YAML_TITLE_KEYS.match(line)
+                        if m_title:
+                            out["title"] = m_title.group(1).strip().strip("'\"")[:80]
+                    if "directory" in out and "title" in out:
                         break
             except (OSError, ValueError):
                 warnings.warn(f"session-state illisible, ignoré : {ws_yaml}", stacklevel=2)
         index_md = state_dir / "checkpoints" / "index.md"
-        if index_md.is_file():
+        if "title" not in out and index_md.is_file():
             try:
                 for line in index_md.read_text(encoding="utf-8").splitlines():
                     match = _MD_HEADING.match(line)
