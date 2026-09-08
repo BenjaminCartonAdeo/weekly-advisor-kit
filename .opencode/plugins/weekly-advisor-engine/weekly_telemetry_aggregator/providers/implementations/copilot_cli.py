@@ -19,6 +19,7 @@ d'authentification ne sont JAMAIS lus ni listés. Aucune écriture.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import sqlite3
@@ -149,6 +150,51 @@ def _num(value: object) -> float:
     return float(value) if isinstance(value, (int, float)) else 0.0
 
 
+def _parse_nano_cost(raw_json: object, multiplier: object | None) -> float:
+    """Parse `token_details_json.total_nano_aiu * request_multiplier / 1e9` → USD.
+
+    Fail-soft : JSON illisible ou champ manquant → warn + 0.0.
+    """
+    if raw_json is None:
+        return 0.0
+    text = raw_json if isinstance(raw_json, str) else str(raw_json)
+    text = text.strip()
+    if not text:
+        return 0.0
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        warnings.warn(
+            f"copilot-cli : token_details_json illisible ({text[:60]!r})",
+            stacklevel=4,
+        )
+        return 0.0
+    if not isinstance(data, dict):
+        return 0.0
+    raw_val = data.get("total_nano_aiu")
+    if raw_val is None:
+        return 0.0
+    try:
+        nano = float(raw_val)
+    except (TypeError, ValueError):
+        warnings.warn(
+            f"copilot-cli : total_nano_aiu non numérique ({raw_val!r})",
+            stacklevel=4,
+        )
+        return 0.0
+    mult = 1.0
+    if multiplier is not None:
+        try:
+            mult = float(multiplier)
+        except (TypeError, ValueError):
+            warnings.warn(
+                f"copilot-cli : request_multiplier illisible ({multiplier!r})",
+                stacklevel=4,
+            )
+            mult = 1.0
+    return nano * mult / 1e9
+
+
 @dataclass(slots=True)
 class _CliSession:
     """Vue plate d'une ligne ``sessions`` enrichie (tokens + modèle + télémétrie)."""
@@ -164,6 +210,7 @@ class _CliSession:
     tokens: dict[str, float] = field(default_factory=dict)
     turn_count: int = 0
     event_count: int = 0
+    cost_estimate: float | None = None
 
     @property
     def active_ms(self) -> int:
@@ -298,6 +345,41 @@ class CopilotCliSessionProvider:
                         session.turn_count += int(row[1] or 0)
             except sqlite3.Error as exc:
                 warnings.warn(f"copilot-cli : turns illisibles ({exc})", stacklevel=2)
+        # --- coût nano (token_details_json.total_nano_aiu * request_multiplier / 1e9) ---
+        try:
+            cols = {
+                r[1]
+                for r in self._conn.execute("PRAGMA table_info(assistant_usage_events)").fetchall()
+            }
+        except sqlite3.Error:
+            cols = set()
+        if "token_details_json" in cols:
+            has_multiplier = "request_multiplier" in cols
+            for i in range(0, len(ids), _BATCH_SIZE):
+                chunk = ids[i : i + _BATCH_SIZE]
+                placeholders = ",".join("?" for _ in chunk)
+                col_list = "token_details_json" + (", request_multiplier" if has_multiplier else "")
+                try:
+                    for row in self._conn.execute(
+                        f"SELECT session_id, {col_list} FROM assistant_usage_events "
+                        f"WHERE session_id IN ({placeholders})",
+                        chunk,
+                    ).fetchall():
+                        sid = str(row[0])
+                        session = self._sessions.get(sid)
+                        if session is None:
+                            continue
+                        raw_json = row[1]
+                        mult = row[2] if has_multiplier else None
+                        cost = _parse_nano_cost(raw_json, mult)
+                        if cost:
+                            session.tokens["nano_cost"] = (
+                                session.tokens.get("nano_cost", 0.0) + cost
+                            )
+                            session.cost_estimate = (session.cost_estimate or 0.0) + cost
+                except sqlite3.Error as exc:
+                    warnings.warn(f"copilot-cli : nano cost illisible ({exc})", stacklevel=2)
+                    break
 
     def _state_enrichment(self, session_id: str) -> dict[str, str]:
         """Enrichissement léger depuis ``session-state/<uuid>/`` ; fail-soft."""
@@ -349,7 +431,7 @@ class CopilotCliSessionProvider:
             model_key=entry.model_key,
             agent=None,
             directory=entry.directory,
-            cost=None,  # le CLI ne persiste pas de coût par session
+            cost=entry.cost_estimate,
             tokens_input=entry.tokens.get("input", 0.0),
             tokens_output=entry.tokens.get("output", 0.0),
             tokens_reasoning=entry.tokens.get("reasoning", 0.0),
@@ -593,10 +675,11 @@ class CopilotCliSessionProvider:
         if row is None:
             return None
         totals = [_num(v) for v in row]
-        if sum(totals) <= 0:
+        cost = entry.cost_estimate
+        if sum(totals) <= 0 and cost is None:
             return None
         return {
-            "cost": None,
+            "cost": cost,
             "tokens_input": totals[0],
             "tokens_output": totals[1],
             "tokens_reasoning": totals[2],
