@@ -675,9 +675,7 @@ class CopilotCliSessionProvider:
             self._conn.close()
 
 
-def build_provider(
-    source_cfg: dict, _cfg: TelemetryConfig
-) -> CopilotCliSessionProvider | None:
+def build_provider(source_cfg: dict, _cfg: TelemetryConfig) -> CopilotCliSessionProvider | None:
     """Factory registry : None si ``session-store.db`` absente (fail-soft)."""
     home = resolve_copilot_home(source_cfg)
     db_path = home / _DB_NAME

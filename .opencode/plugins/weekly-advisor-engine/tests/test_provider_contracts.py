@@ -242,9 +242,7 @@ def test_factory_none_si_source_absente(tmp_path: Path):
         is None
     )
     assert (
-        build_copilot_cli(
-            {"type": "copilot-cli", "copilot_home": str(missing)}, TelemetryConfig()
-        )
+        build_copilot_cli({"type": "copilot-cli", "copilot_home": str(missing)}, TelemetryConfig())
         is None
     )
     cfg = TelemetryConfig()
