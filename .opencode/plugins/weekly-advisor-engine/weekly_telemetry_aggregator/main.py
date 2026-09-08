@@ -79,7 +79,6 @@ CROSS_CHECK_ABS = 0.01
 DEFAULT_HARNESS_COST_RATE_USD_PER_MTOK = 5.0
 HARNESS_COST_RATES_USD_PER_MTOK: dict[str, float] = {
     HARNESS_OPENCODE: 9.0,  # blend modèles premium (claude/gpt class)
-    "copilot-vscode": 2.5,  # blend modèles Copilot (HARNESS_COPILOT_VSCODE)
 }
 
 
@@ -728,20 +727,6 @@ def _copilot_doctor_details(provider) -> list[str]:
                 out.append(f"sessions={n}")
             if isinstance(tables, (set, frozenset)):
                 out.append(f"fts={'oui' if 'search_index' in tables else 'non'}")
-            return out
-        if harness == "copilot-vscode":
-            roots = getattr(provider, "user_dirs", None) or []
-            workspaces = 0
-            for root in roots:
-                try:
-                    ws = Path(root) / "workspaceStorage"
-                    if ws.is_dir():
-                        workspaces += sum(1 for c in ws.iterdir() if c.is_dir())
-                except OSError:
-                    continue
-            out = [f"user_dirs={len(roots)}", f"workspaces={workspaces}"]
-            if n is not None:
-                out.append(f"sessions={n}")
             return out
     except Exception:  # noqa: BLE001 — diagnostic best-effort uniquement
         return []

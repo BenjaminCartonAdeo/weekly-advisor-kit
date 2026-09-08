@@ -156,10 +156,6 @@ class TelemetryConfig:
     #: Clés extra supportées (transmises telles quelles au provider) :
     #:   - copilot-cli : "copilot_home" (str, défaut ~/.copilot ou
     #:     %USERPROFILE%/.copilot — surcharge COPILOT_CONFIG_DIR),
-    #:     "cost_rate_usd_per_mtok" (float, surcharge du taux d'estimation) ;
-    #:   - copilot-vscode : "user_dirs" (list[str], défaut auto-détection),
-    #:     "user_dir" (str, compat mono-répertoire), "include_orphans" (bool,
-    #:     défaut True — orphelins sans workspace.json inclus),
     #:     "cost_rate_usd_per_mtok" (float, surcharge du taux d'estimation).
     session_sources: list[dict] = field(default_factory=lambda: [{"type": "opencode"}])
     lookback_days: int = 7

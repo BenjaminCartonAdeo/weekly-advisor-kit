@@ -33,7 +33,7 @@ Le drafting écrit dans LE harnais cible du projet (décision mono-cible), jamai
 |---|---|
 | claude-code | .claude/skills |
 | opencode | .opencode/skills |
-| copilot-vscode | .github/prompts · .github/skills |
+| copilot-cli | .github/prompts · .github/skills |
 | codex | .agents |
 
 - Résolution approuvée : `resolve_draft_targets(project_root, config)` renvoie le mode,

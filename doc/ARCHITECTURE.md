@@ -119,7 +119,7 @@ VS Code) via une couche d'abstraction :
 - **Protocol `SessionProvider`** (`providers/base.py`) : expose l'attribut
   `harness` et 11 méthodes (liste de sessions, agrégats, transcript, `close()`).
   Chaque session exposée porte un **id canonique namespacé** `<harness>:<id>`
-  (`opencode:`, `claude-code:`, `copilot-vscode:`) et le tag `harness`.
+  (`opencode:`, `claude-code:`, `copilot-cli:`) et le tag `harness`.
 - **Registry auto-discovery** (`providers/registry.py`) : scan `pkgutil` de
   `providers/implementations/` ; chaque module expose `PROVIDER_TYPE: str` et
   une factory `build_provider(source_cfg, cfg) -> SessionProvider | None`.
@@ -129,7 +129,7 @@ VS Code) via une couche d'abstraction :
   - `opencode.py` — base SQLite locale d'OpenCode.
   - `claude_code.py` — transcripts JSONL `~/.claude/projects/<cwd-mungé>/<sessionId>.jsonl`
     (un fichier = une session ; munging du répertoire projet : séparateurs/points → tirets).
-  - `copilot_vscode.py` — source Copilot VS Code.
+  - `copilot_cli.py` — source Copilot CLI.
 - **`build_providers(cfg)`** construit les providers des sources actives de
   `cfg.session_sources` et les fusionne. Si aucune source n'est active, repli
   rétrocompatible sur la base OpenCode locale via `detect_db` (contrat

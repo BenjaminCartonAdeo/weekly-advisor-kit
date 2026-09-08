@@ -13,7 +13,7 @@ from weekly_telemetry_aggregator.draft_targets import (
     DRAFT_TARGET_PRIORITY,
     HARNESS_CLAUDE_CODE,
     HARNESS_CODEX,
-    HARNESS_COPILOT_VSCODE,
+    HARNESS_COPILOT_CLI,
     HARNESS_OPENCODE,
     MODE_LEGACY,
     ResolvedDraftTarget,
@@ -230,7 +230,7 @@ def test_harness_extra_roots_mapping():
     assert harness_extra_roots(ResolvedDraftTarget("detected", (HARNESS_CLAUDE_CODE,))) == (
         ".claude/skills",
     )
-    assert harness_extra_roots(ResolvedDraftTarget("detected", (HARNESS_COPILOT_VSCODE,))) == (
+    assert harness_extra_roots(ResolvedDraftTarget("detected", (HARNESS_COPILOT_CLI,))) == (
         ".github/prompts",
         ".github/skills",
     )
@@ -344,7 +344,7 @@ def test_inject_engine_content_commands_target_mapping(tmp_path: Path):
 
 
 def test_resolve_remediation_surface_matrix_exhaustive():
-    known = (HARNESS_CLAUDE_CODE, HARNESS_OPENCODE, HARNESS_COPILOT_VSCODE, HARNESS_CODEX)
+    known = (HARNESS_CLAUDE_CODE, HARNESS_OPENCODE, HARNESS_COPILOT_CLI, HARNESS_CODEX)
     decisions: set[str] = set()
     for harness in known:
         surface = resolve_remediation_surface((harness,), "detected")

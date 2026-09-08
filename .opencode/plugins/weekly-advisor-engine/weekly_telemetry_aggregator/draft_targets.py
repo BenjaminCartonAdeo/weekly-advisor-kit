@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 # (`providers/base.py` + `PROVIDER_TYPE` des implementations).
 HARNESS_CLAUDE_CODE = "claude-code"
 HARNESS_OPENCODE = "opencode"
-HARNESS_COPILOT_VSCODE = "copilot-vscode"
+HARNESS_COPILOT_CLI = "copilot-cli"
 HARNESS_CODEX = "codex"
 
 #: Priorité documentée en cas de marqueurs multiples (décision §2.1) :
@@ -30,7 +30,7 @@ HARNESS_CODEX = "codex"
 DRAFT_TARGET_PRIORITY: tuple[str, ...] = (
     HARNESS_CLAUDE_CODE,
     HARNESS_OPENCODE,
-    HARNESS_COPILOT_VSCODE,
+    HARNESS_COPILOT_CLI,
     HARNESS_CODEX,
 )
 
@@ -39,7 +39,7 @@ DRAFT_TARGET_PRIORITY: tuple[str, ...] = (
 DRAFT_HARNESS_MARKERS: dict[str, tuple[str, ...]] = {
     HARNESS_CLAUDE_CODE: (".claude/",),
     HARNESS_OPENCODE: (".opencode/",),
-    HARNESS_COPILOT_VSCODE: (".github/prompts/", ".github/skills/"),
+    HARNESS_COPILOT_CLI: (".github/prompts/", ".github/skills/"),
     HARNESS_CODEX: (".agents/",),
 }
 
@@ -49,7 +49,7 @@ DRAFT_HARNESS_MARKERS: dict[str, tuple[str, ...]] = {
 DRAFT_HARNESS_TARGETS: dict[str, tuple[str, ...]] = {
     HARNESS_CLAUDE_CODE: (".claude/skills",),
     HARNESS_OPENCODE: (".opencode/skills",),
-    HARNESS_COPILOT_VSCODE: (".github/prompts", ".github/skills"),
+    HARNESS_COPILOT_CLI: (".github/prompts", ".github/skills"),
     HARNESS_CODEX: (".agents",),
 }
 

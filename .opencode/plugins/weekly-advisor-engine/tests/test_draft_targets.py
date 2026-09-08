@@ -19,7 +19,7 @@ from weekly_telemetry_aggregator.draft_targets import (
     DRAFT_TARGET_PRIORITY,
     HARNESS_CLAUDE_CODE,
     HARNESS_CODEX,
-    HARNESS_COPILOT_VSCODE,
+    HARNESS_COPILOT_CLI,
     HARNESS_OPENCODE,
     describe_draft_target,
     detect_draft_target,
@@ -34,7 +34,7 @@ def test_detect_each_marker_alone(tmp_path: Path):
     expected = {
         HARNESS_CLAUDE_CODE: (".claude/",),
         HARNESS_OPENCODE: (".opencode/",),
-        HARNESS_COPILOT_VSCODE: (".github/prompts/", ".github/skills/"),
+        HARNESS_COPILOT_CLI: (".github/prompts/", ".github/skills/"),
         HARNESS_CODEX: (".agents/",),
     }
     for harness, markers in expected.items():
@@ -50,7 +50,7 @@ def test_detect_priority_multi_markers(tmp_path: Path):
     assert DRAFT_TARGET_PRIORITY == (
         HARNESS_CLAUDE_CODE,
         HARNESS_OPENCODE,
-        HARNESS_COPILOT_VSCODE,
+        HARNESS_COPILOT_CLI,
         HARNESS_CODEX,
     )
     all_markers = tmp_path / "all"
@@ -72,7 +72,7 @@ def test_detect_priority_multi_markers(tmp_path: Path):
     copilot_codex = tmp_path / "copilot_codex"
     _ = (copilot_codex / ".github/skills").mkdir(parents=True)
     _ = (copilot_codex / ".agents").mkdir(parents=True)
-    assert detect_draft_target(copilot_codex) == HARNESS_COPILOT_VSCODE
+    assert detect_draft_target(copilot_codex) == HARNESS_COPILOT_CLI
 
     codex_only = tmp_path / "codex_only"
     _ = (codex_only / ".agents").mkdir(parents=True)
@@ -143,7 +143,7 @@ def test_mapping_covers_every_harness_with_relative_dirs():
     assert DRAFT_HARNESS_TARGETS == {
         HARNESS_CLAUDE_CODE: (".claude/skills",),
         HARNESS_OPENCODE: (".opencode/skills",),
-        HARNESS_COPILOT_VSCODE: (".github/prompts", ".github/skills"),
+        HARNESS_COPILOT_CLI: (".github/prompts", ".github/skills"),
         HARNESS_CODEX: (".agents",),
     }
     for dirs in DRAFT_HARNESS_TARGETS.values():

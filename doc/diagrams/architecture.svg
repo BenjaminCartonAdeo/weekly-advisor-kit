@@ -181,7 +181,7 @@
       <text x="832" y="111" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">MODULE</text>
       <text x="964" y="130" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Résolution cibles de draft</text>
       <text x="964" y="150" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">draft_targets.py</text>
-      <text x="964" y="166" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">claude-code &gt; opencode &gt; copilot-vscode &gt; codex</text>
+      <text x="964" y="166" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">claude-code &gt; opencode &gt; copilot-cli &gt; codex</text>
       <text x="964" y="182" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">override · detected · default · legacy ([])</text>
     </g>
 
@@ -237,7 +237,7 @@
       <text x="426" y="511" fill="rgba(45,49,66,0.8)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PROTOCOLE</text>
       <text x="904" y="530" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">SessionProvider — protocole commun multi-harnais (base.py)</text>
       <text x="904" y="550" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">attribut harness + 11 méthodes : listes de sessions, agrégats, transcript, close()</text>
-      <text x="904" y="568" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">id canonique namespacé &lt;harness&gt;:&lt;id&gt; — opencode: · claude-code: · copilot-vscode:</text>
+      <text x="904" y="568" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">id canonique namespacé &lt;harness&gt;:&lt;id&gt; — opencode: · claude-code: · copilot-cli:</text>
       <text x="904" y="586" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">dédup entre sources du même harnais : première entrée session_sources gagne (W2), UserWarning récap → summary.warnings</text>
     </g>
 
@@ -285,7 +285,7 @@
       <text x="1164" y="822" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">estimate_costs</text>
       <text x="1164" y="842" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">tokens × taux $/Mtok</text>
       <text x="1164" y="858" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">5.0 défaut · 9.0 opencode</text>
-      <text x="1164" y="872" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">2.5 copilot-vscode</text>
+      <text x="1164" y="872" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">2.5 copilot-cli</text>
     </g>
     <g>
       <rect x="1264" y="784" width="152" height="104" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>

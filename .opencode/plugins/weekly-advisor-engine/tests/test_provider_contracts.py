@@ -1,7 +1,7 @@
 """Suite de conformance transversale du contrat `SessionProvider` (#4/#15 audit).
 
 Chaque implémentation constructible en local (opencode, claude-code,
-copilot-vscode) et le double de test `FakeSessionProvider` subissent les MÊMES
+copilot-cli) et le double de test `FakeSessionProvider` subissent les MÊMES
 assertions sémantiques : jamais de None là où le protocol promet une liste,
 ids canoniques préfixés ``"<harness>:"``, close() idempotent, check_schema qui
 détecte une source absente, factory fail-soft → None, passage du validateur
@@ -29,11 +29,11 @@ from weekly_telemetry_aggregator.providers.implementations.claude_code import (
 from weekly_telemetry_aggregator.providers.implementations.claude_code import (
     build_provider as build_claude_code,
 )
-from weekly_telemetry_aggregator.providers.implementations.copilot_vscode import (
-    CopilotVSCodeSessionProvider,
+from weekly_telemetry_aggregator.providers.implementations.copilot_cli import (
+    CopilotCliSessionProvider,
 )
-from weekly_telemetry_aggregator.providers.implementations.copilot_vscode import (
-    build_provider as build_copilot_vscode,
+from weekly_telemetry_aggregator.providers.implementations.copilot_cli import (
+    build_provider as build_copilot_cli,
 )
 from weekly_telemetry_aggregator.providers.implementations.opencode import (
     OpenCodeSessionProvider,
@@ -94,30 +94,44 @@ def _claude_code_provider(tmp_path: Path) -> ClaudeCodeSessionProvider:
     return built
 
 
-def _copilot_vscode_provider(tmp_path: Path) -> CopilotVSCodeSessionProvider:
-    root = tmp_path / "User"
-    entry = {
-        "version": 3,
-        "sessionId": "s-cp",
-        "creationDate": MS0,
-        "lastMessageDate": MS0 + 1_000,
-        "requests": [
-            {
-                "requestId": "req-1",
-                "timestamp": MS0 + 500,
-                "message": {"role": "user", "text": TITLE},
-                "modelId": "gpt-4o",
-                "tokenCounts": {"inputTokens": 10, "outputTokens": 5},
-                "responseText": "ok",
-            }
-        ],
-    }
-    chat_dir = root / "workspaceStorage" / ("c" * 32) / "chatSessions"
-    chat_dir.mkdir(parents=True)
-    (chat_dir / "s-cp.json").write_text(json.dumps(entry), encoding="utf-8")
-    built = build_copilot_vscode(
-        {"type": "copilot-vscode", "user_dir": str(root)}, TelemetryConfig()
+def _copilot_cli_provider(tmp_path: Path) -> CopilotCliSessionProvider:
+    home = tmp_path / ".copilot"
+    home.mkdir()
+    db = home / "session-store.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(
+        """
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY, cwd TEXT, repository TEXT, branch TEXT,
+            summary TEXT, created_at TEXT, updated_at TEXT
+        );
+        CREATE TABLE turns (
+            session_id TEXT, turn_index INTEGER, user_message TEXT,
+            assistant_response TEXT, timestamp TEXT UNIQUE
+        );
+        CREATE TABLE assistant_usage_events (
+            session_id TEXT, model TEXT NOT NULL, input_tokens REAL,
+            output_tokens REAL, cache_read_tokens REAL, cache_write_tokens REAL,
+            reasoning_tokens REAL, created_at TEXT
+        );
+        """
     )
+    fmt = T0.strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?)",
+        ("s-cli", "/home/user/proj", None, "main", TITLE, fmt, fmt),
+    )
+    conn.execute(
+        "INSERT INTO turns VALUES (?,?,?,?,?)",
+        ("s-cli", 0, TITLE, "ok", fmt),
+    )
+    conn.execute(
+        "INSERT INTO assistant_usage_events VALUES (?,?,?,?,?,?,?,?)",
+        ("s-cli", "gpt-4o", 10, 5, 0, 0, 0, fmt),
+    )
+    conn.commit()
+    conn.close()
+    built = build_copilot_cli({"type": "copilot-cli", "copilot_home": str(home)}, TelemetryConfig())
     assert built is not None
     return built
 
@@ -130,7 +144,7 @@ def _fake_provider(tmp_path: Path) -> FakeSessionProvider:
 _BUILDERS = {
     "opencode": _opencode_provider,
     "claude-code": _claude_code_provider,
-    "copilot-vscode": _copilot_vscode_provider,
+    "copilot-cli": _copilot_cli_provider,
     "fake": _fake_provider,
 }
 
@@ -204,8 +218,14 @@ def test_check_schema_leve_schemaerror_source_absente(provider, tmp_path: Path):
         wreck.executescript("DROP TABLE IF EXISTS session_v2; DROP TABLE IF EXISTS session;")
         wreck.commit()
         wreck.close()
-    elif isinstance(provider, CopilotVSCodeSessionProvider):
-        shutil.rmtree(provider.user_dir)
+    elif isinstance(provider, CopilotCliSessionProvider):
+        wreck = sqlite3.connect(str(provider.db_path))
+        wreck.executescript(
+            "DROP TABLE IF EXISTS sessions; DROP TABLE IF EXISTS turns; "
+            "DROP TABLE IF EXISTS assistant_usage_events;"
+        )
+        wreck.commit()
+        wreck.close()
     else:
         shutil.rmtree(provider.db_path)
     with pytest.raises(SchemaError):
@@ -222,8 +242,8 @@ def test_factory_none_si_source_absente(tmp_path: Path):
         is None
     )
     assert (
-        build_copilot_vscode(
-            {"type": "copilot-vscode", "user_dir": str(missing)}, TelemetryConfig()
+        build_copilot_cli(
+            {"type": "copilot-cli", "copilot_home": str(missing)}, TelemetryConfig()
         )
         is None
     )
