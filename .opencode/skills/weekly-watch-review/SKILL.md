@@ -178,10 +178,7 @@ reste nonblocking seulement si le raw/final observé est valide.
   chercher à les réintroduire ; une fiche `suspicious` garde sa mention de risque
 - Les `install-new`/`improve-existing` restent des candidats à revoir — l'écriture
   d'outils externes n'est pas automatisée
-- Toute demande de permission **external-directory** ou toute écriture out-of-tree est
-  un record `{status: "report-only", report_only: true, category:
-  "external-permission-refusal"}` (`environment-change`) : ne pas lire, écrire,
-  déplacer ni escalader. Une permission refusée dans le worktree reste comptable.
+- Sécurité et hors-worktree : voir skill partagé `weekly-safety-guardrails` (external-permission-refusal, environment-change, IDs bloquants).
 - Aucun finding ne peut être inventé à partir d'un résumé, d'un nom de package ou d'une
   fiche absente de l'entrée effectivement lue ; les identifiants de sécurité critiques
   (`mcp-tool-poisoning`, `unbounded-delegation`, `memory-write-unscoped`) restent

@@ -400,3 +400,229 @@ def test_open_html_report_never_fatal(monkeypatch, tmp_path: Path, caplog):
     with caplog.at_level(logging.WARNING, logger="weekly_telemetry_aggregator.html_report"):
         assert open_html_report(_cfg(tmp_path), tmp_path / "x.html") is False
     assert any("navigateur" in record.getMessage() for record in caplog.records)
+
+
+# ------------------------------------------------------------------ v6.1 snapshots : exec fold open, annexes collapsed sessionStorage, next-steps Toi/Pipeline/Agent (tag tri), passthrough best-effort
+
+
+def test_html_exec_fold_open_snapshot(tmp_path: Path):
+    """Snapshot exec fold : exactement 1 wrapper ouvert, KPI + next-steps + SVG présents."""
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=_ctx(), quality_block=None)
+    html = dated.read_text(encoding="utf-8")
+    # template brut contient une seule occurrence avec open
+    tpl = (
+        Path(__file__).resolve().parents[1]
+        / "weekly_telemetry_aggregator"
+        / "templates"
+        / "report_template.html.j2"
+    ).read_text(encoding="utf-8")
+    assert tpl.count('<details class="exec-fold" open') == 1
+    assert '<details class="exec-fold" open id="exec">' in html
+    # une seule occurrence dans le rendu
+    assert html.count('class="exec-fold"') == 1
+    assert (
+        html.count('class="exec-fold" open') == 1
+        or html.count('<details class="exec-fold" open') == 1
+    )
+    # exec-body contenu : KPI + next-steps + daily + Top3/callback
+    assert '<div class="exec-body"' in html
+    assert "Prochaines actions — Top" in html
+    assert "Coût quotidien" in html or "Répartition journalière" in html
+    # CSS souple présent
+    assert "details.exec-fold" in html
+    assert "details.exec-fold[open]" in html
+
+
+def test_html_annexes_collapsed_sessionStorage_snapshot(tmp_path: Path):
+    """Snapshot annexes : 7 détails collapsed par défaut, JS sessionStorage wa-details-state-v2."""
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=_ctx(), quality_block=None)
+    html = dated.read_text(encoding="utf-8")
+    tpl = (
+        Path(__file__).resolve().parents[1]
+        / "weekly_telemetry_aggregator"
+        / "templates"
+        / "report_template.html.j2"
+    ).read_text(encoding="utf-8")
+    # 7 annexes A-G dans le template, toutes sans open
+    assert tpl.count('<details class="annex"') == 7
+    assert '<details class="annex" open' not in tpl
+    # rendu idem : 7 collapsed
+    assert html.count('<details class="annex"') == 7
+    assert html.count('<details class="annex" open') == 0
+    for annex_id in ("annex-a", "annex-b", "annex-c", "annex-d", "annex-e", "annex-f", "annex-g"):
+        assert f'id="{annex_id}"' in html
+    # sessionStorage : clé + restore + persist
+    assert "wa-details-state-v2" in html
+    assert "sessionStorage" in html
+    assert "details.exec-fold, details.annex" in html
+    assert "getItem" in html and "setItem" in html
+    assert 'd.addEventListener("toggle"' in html or "addEventListener" in html
+    # annexes-wrapper présent
+    assert "annexes-wrapper" in html
+    assert "Annexes — détails repliables" in html
+
+
+def test_html_next_steps_grouped_snapshot(tmp_path: Path):
+    """Snapshot next-steps : groupés Toi/Pipeline/Agent, ordre déterministe, fallback."""
+    # html_report passthrough best-effort : le template rend dans l'ordre fourni (le tri Toi/Pipeline/Agent est fait côté report.py)
+    # on fournit donc déjà trié Toi > Pipeline > Agent et le rendu doit préserver cet ordre
+    ctx = _ctx()
+    ctx["top_next_steps"] = [
+        {
+            "actor": "Toi",
+            "source": "harness",
+            "rule": "security/mcp-tool-poisoning",
+            "severity": "high",
+            "text": "Corriger `security/mcp-tool-poisoning` — 2 violation(s)",
+            "detail": "2 violation(s)",
+            "count": 2,
+        },
+        {
+            "actor": "Pipeline",
+            "source": "alert",
+            "rule": "lint_violations_max",
+            "severity": "medium",
+            "text": "Alerte `lint_violations_max` — observé 2734 vs seuil 10 (medium)",
+            "detail": "seuil 10",
+            "count": 3,
+        },
+        {
+            "actor": "Agent",
+            "source": "audit",
+            "category": "loop",
+            "severity": "medium",
+            "text": "Agent — loop → réduire bloat",
+            "detail": "bloat",
+            "count": 1,
+        },
+    ]
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx, quality_block=None)
+    html = dated.read_text(encoding="utf-8")
+    # ordre Toi avant Pipeline avant Agent dans le HTML (préservé)
+    toi_pos = html.index("<b>Toi</b>")
+    pipe_pos = html.index("<b>Pipeline</b>")
+    agent_pos = html.index("<b>Agent</b>")
+    assert toi_pos < pipe_pos < agent_pos
+    assert "security/mcp-tool-poisoning" in html
+    assert "lint_violations_max" in html
+    assert "loop" in html
+    # tag tri : severity badge + source + count× présent
+    assert "badge-crit" in html or "badge-warn" in html
+    assert "(harness" in html
+    assert "×" in html or "2×" in html
+
+    # fallback : tns vide → 3 defaults Toi/Pipeline/Agent
+    ctx2 = _ctx()
+    ctx2["top_next_steps"] = []
+    dated2 = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx2, quality_block=None)
+    html2 = PAYLOAD_RE.sub("", dated2.read_text(encoding="utf-8"))
+    assert "Prochaines actions — Top 3" in html2
+    assert html2.count("<b>Toi</b>") >= 1
+    assert html2.count("<b>Pipeline</b>") >= 1
+    assert html2.count("<b>Agent</b>") >= 1
+    # fallback contient les libellés par défaut
+    assert "Vérifier les alertes HIGH" in html2 or "secrets" in html2
+    assert "allowlist harness" in html2
+    assert "context-bloat" in html2
+
+
+def test_html_next_steps_tag_tri_order_snapshot(tmp_path: Path):
+    """Snapshot tag tri : sévérité > source > count > règle > acteur (déterministe) — passthrough HTML préserve l'ordre report.py."""
+    # html_report est best-effort : il préserve l'ordre fourni (tri déjà fait côté report.py). On vérifie le passthrough.
+    ctx = _ctx()
+    ctx["top_next_steps"] = [
+        {
+            "actor": "Toi",
+            "source": "harness",
+            "rule": "security/secret",
+            "severity": "high",
+            "text": "high Toi",
+            "detail": "x",
+            "count": 1,
+        },
+        {
+            "actor": "Pipeline",
+            "source": "harness",
+            "rule": "allowlist/scope",
+            "severity": "medium",
+            "text": "medium harness Pipeline",
+            "detail": "x",
+            "count": 10,
+        },
+        {
+            "actor": "Agent",
+            "source": "alert",
+            "rule": "cost_wow",
+            "severity": "medium",
+            "text": "medium alert Agent",
+            "detail": "x",
+            "count": 5,
+        },
+        {
+            "actor": "Agent",
+            "source": "audit",
+            "category": "context-bloat",
+            "severity": "low",
+            "text": "low audit",
+            "detail": "x",
+            "count": 1,
+        },
+    ]
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx, quality_block=None)
+    html = dated.read_text(encoding="utf-8")
+    # high Toi doit apparaître avant les medium (ordre fourni trié)
+    assert html.index("high Toi") < html.index("medium harness Pipeline")
+    assert html.index("high Toi") < html.index("medium alert Agent")
+    assert html.index("high Toi") < html.index("low audit")
+    # le payload garde l'ordre fourni (le tri est côté report.py, ici on snapshot le passthrough)
+    payload = _payload(html)
+    assert payload["top_next_steps"][0]["actor"] == "Toi"  # ordre d'entrée préservé côté payload
+
+
+def test_html_report_passthrough_best_effort_snapshot(tmp_path: Path):
+    """Passthrough html_report best-effort : top_next_steps manquant/None/non-dict → template stable, jamais fatal."""
+    # 1) ctx sans clé top_next_steps
+    ctx_missing = _ctx()
+    ctx_missing.pop("top_next_steps", None)
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx_missing, quality_block=None)
+    assert dated is not None and dated.exists()
+    html = dated.read_text(encoding="utf-8")
+    assert "Prochaines actions — Top" in html
+    # le template définit tns = [] quand top_next_steps absent → fallback 3 items
+    assert PAYLOAD_RE.sub("", html).count("<b>Toi</b>") >= 1
+
+    # 2) None → normalisé en []
+    ctx_none = _ctx()
+    ctx_none["top_next_steps"] = None
+    dated2 = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx_none, quality_block=None)
+    assert dated2 is not None
+    assert "Prochaines actions — Top" in dated2.read_text(encoding="utf-8")
+    payload2 = _payload(dated2.read_text(encoding="utf-8"))
+    assert payload2.get("top_next_steps") is None  # payload garde le ctx brut, le rendu a normalisé
+
+    # 3) [] explicite
+    ctx_empty = _ctx()
+    ctx_empty["top_next_steps"] = []
+    dated3 = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx_empty, quality_block=None)
+    assert dated3 is not None
+
+    # 4) ctx non-dict : best-effort, ne doit pas lever
+    dated4 = render_html_report(_cfg(tmp_path), anchor=DATE, ctx={}, quality_block=None)  # type: ignore
+    assert dated4 is not None
+
+    # 5) vérifie le template passthrough : tns = (top_next_steps if top_next_steps is defined ...) sinon []
+    tpl = (
+        Path(__file__).resolve().parents[1]
+        / "weekly_telemetry_aggregator"
+        / "templates"
+        / "report_template.html.j2"
+    ).read_text(encoding="utf-8")
+    assert "top_next_steps if top_next_steps is defined" in tpl
+    assert "top_next_steps" in tpl
+
+    # 6) html_report.py best-effort : forward if present else [] to keep template stable
+    src = (
+        Path(__file__).resolve().parents[1] / "weekly_telemetry_aggregator" / "html_report.py"
+    ).read_text(encoding="utf-8")
+    assert "top_next_steps = ctx.get" in src
+    assert "if top_next_steps is None" in src

@@ -119,12 +119,17 @@ def render_html_report(
             keep_trailing_newline=True,
         )
         template = env.get_template(_TEMPLATE_NAME)
+        # <!-- ponytail: best-effort top_next_steps — forward if present else [] to keep template stable -->
+        top_next_steps = ctx.get("top_next_steps", []) if isinstance(ctx, dict) else []
+        if top_next_steps is None:
+            top_next_steps = []
         rendered = template.render(
             **{
                 **ctx,
                 "date": date,
                 "payload_json": _payload_json(ctx),
                 "quality_html": _render_quality_block(quality_block),
+                "top_next_steps": top_next_steps,
             }
         )
 

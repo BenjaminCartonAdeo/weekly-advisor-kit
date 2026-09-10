@@ -113,26 +113,13 @@ Règles de génération NON NÉGOCIABLES :
    Ces patterns ne généralisent pas : émettre un constat `environment-change` (report-only)
    ou ignorer — jamais en faire un artefact.
 
-Format skill (agentskills.io) — gabarit conforme :
+Format skill (agentskills.io) — même gabarit que le bloc `metadata` canonique ci-dessus (§ Contenu universel, champs + mint `skill_id` identiques) :
 
 ```yaml
 ---
 name: string            # == nom du dossier (requis)
 description: string     # une ligne, déclenche le chargement à la demande (requis)
-metadata:
-  authored_by: opencode-weekly-advisor
-  authored_at: "ISO-8601"
-  origin: weekly-background            # user|bundled|weekly-foreground|weekly-background
-  write_context: "<court>"             # optionnel
-  confidence: medium                   # high|medium|low
-  skill_id: "skill_<8 hex>"            # = 'skill_' + sha256(nom.strip().lower())[:8]
-  source_sessions: ["ses_xxx"]        # traçabilité > 6 mois
-  overlaps_with: []                   # CIBLE de PATCH (merge), pas blocage
-  target_agents: ["<agent-cible>"]    # public du skill
-  last_verified_at: null              # ISO|null
-  verification: none                  # comment validé, ou 'none' (gate validate_draft / R6)
-  usage: { last_loaded: null, load_count: 0 }
-  ttl_policy: decay                  # decay|pin|null
+metadata: {voir bloc canonique ci-dessus — ne pas diverger}
 ---
 # <Nom>
 ## Quand utiliser
@@ -184,13 +171,6 @@ sont pas inspectés par ces règles ; ne pas compenser par un lint maison.
 - Commande ciblée par improvement : résolue DANS LE PROJET d'abord (la copie projet gagne
   toujours) ; absente du projet → hors périmètre : constat environment-change
   (report-only), pas de draft, pas de lecture.
-- Toute lecture/écriture hors worktree est impossible (permissions de l'agent) — ne jamais
-  tenter ; un échec de permission n'est jamais fatal : constater, signaler au rapport,
- signaler au rapport et continuer l'ordre figé avec `rc: 0`. Une permission refusée
- dans le worktree reste un warning comptable (`rc: 1`).
 - Session dont project_path est hors project_root ⇒ constat environment-change
   (report-only) — rien n'est écrit dans le projet courant.
-- Toute demande de permission **external-directory** ou toute cible out-of-tree est un
-  record `{status: "report-only", report_only: true, category:
-  "external-permission-refusal"}` (`environment-change`) : ne pas lire, écrire,
-  déplacer, symlinker ou escalader ; conserver seulement le signal dans le rapport.
+- Sécurité et hors-worktree : voir skill partagé `weekly-safety-guardrails` (external-permission-refusal, bounded-retry). Un échec de permission hors worktree n'est jamais fatal (`rc: 0`) ; dans le worktree = warning comptable (`rc: 1`).

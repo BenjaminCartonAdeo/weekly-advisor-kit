@@ -83,7 +83,9 @@ class RunProvenance:
         return payload
 
 
-def _run_provenance(project_root: Path | None, run_started_at: datetime | None = None) -> dict[str, object]:
+def _run_provenance(
+    project_root: Path | None, run_started_at: datetime | None = None
+) -> dict[str, object]:
     """Collect stable run identity without making git a pipeline dependency."""
     root = Path(project_root) if project_root else None
     provenance = RunProvenance(
@@ -98,14 +100,23 @@ def _run_provenance(project_root: Path | None, run_started_at: datetime | None =
     if root is None or not (root / ".git").exists():
         return result
     try:
+
         def git(*args: str) -> str:
-            return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+            return subprocess.run(
+                ["git", "-C", str(root), *args],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
+            ).stdout.strip()
+
         result["branch"] = git("branch", "--show-current") or None
         result["commit_sha"] = git("rev-parse", "HEAD") or None
         result["working_tree_dirty"] = bool(git("status", "--porcelain"))
     except (OSError, subprocess.SubprocessError):
         pass
     return result
+
 
 #: Sessions updated within this many minutes of run_time are still active (v5.18: < 10 min).
 ACTIVE_CUTOFF_MINUTES = 10

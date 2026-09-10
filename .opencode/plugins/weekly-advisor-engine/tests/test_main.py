@@ -88,11 +88,17 @@ def test_run_writes_summary_and_exit_zero(tmp_path: Path):
 def test_run_writes_run_provenance(tmp_path: Path, monkeypatch):
     db = _seed_n(tmp_path / "opencode.db", 1)
     cfg = _cfg(tmp_path, db)
-    monkeypatch.setattr("weekly_telemetry_aggregator.main._run_provenance", lambda *_: {
-        "repository_path": "/repo", "branch": "main", "commit_sha": "abc",
-        "working_tree_dirty": False, "run_started_at": "2026-08-12T00:00:00Z",
-        "pipeline_version": "test",
-    })
+    monkeypatch.setattr(
+        "weekly_telemetry_aggregator.main._run_provenance",
+        lambda *_: {
+            "repository_path": "/repo",
+            "branch": "main",
+            "commit_sha": "abc",
+            "working_tree_dirty": False,
+            "run_started_at": "2026-08-12T00:00:00Z",
+            "pipeline_version": "test",
+        },
+    )
     assert run(cfg, anchor=RUN_TIME.isoformat()) == EXIT_OK
     data = json.loads(active_run_file(tmp_path, "weekly-summary-2026-08-12.json").read_text())
     assert data["run_provenance"]["commit_sha"] == "abc"

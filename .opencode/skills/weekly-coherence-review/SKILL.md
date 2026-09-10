@@ -17,7 +17,10 @@ les findings alimentent la revue humaine (fusion, retrait, recalibrage).
 - **Inventaire déterministe (source de vérité, étape 2.5)** : `weekly-watch-context-<date>.json`
   du run — `skills`/`commands`/`agents`/`plugins` + `declared_plugins`/`local_plugins` +
   `plugin_config.files|available|valid` et `counts` — **lecture seule, zéro re-scan**
-  de `.opencode/` (G2, v6.0.p) ; le frontmatter des items vient du `skill_catalog` du summary
+  de `.opencode/` (G2, v6.0.p) ; le frontmatter des items vient du `skill_catalog` du summary.
+  Exclu de la revue : tout item `skill_class: shared-partial` (ex.
+  `weekly-safety-guardrails`, inclus technique) — jamais de finding
+  `unused-unreferenced`/`stale` dessus.
 - Usage réel : `summary.skill_usage` / `command_usage` / `skills_never_loaded`
 - `insights.maintenance` (R1 retire / R3 merge) et le digest harness (triggers/budget)
 - Findings de l'étape 3 (sessions coûteuses → cibles de forcing)
@@ -80,7 +83,7 @@ recommendation_type, impact_order_of_magnitude), ranked.
 d'édition, pas d'archivage. La review est **read-only** : les décisions
 (`archive | merge | pin | reference`) sont **ÉMISES** dans le findings JSON, jamais
 appliquées ici. Les décisions `archive` (et les autres) sont appliquées par
-**`weekly_skill_curate`** (step 6.6, **dry-run par défaut** ; `apply=true` après validation
-humaine) qui consomme ces décisions de façon déterministe — la boucle est fermée, ce n'est
-plus un point en suspens. Le pipeline détecte et recommande ; `weekly_skill_curate` applique
-(dry-run par défaut) ; l'humain valide.
+la **sous-commande de curation du plugin** (step 6.6, **dry-run par défaut** ; `apply=true`
+après validation humaine) qui consomme ces décisions de façon déterministe — la boucle
+est fermée, ce n'est plus un point en suspens. Le pipeline détecte et recommande ; la
+sous-commande de curation applique (dry-run par défaut) ; l'humain valide.

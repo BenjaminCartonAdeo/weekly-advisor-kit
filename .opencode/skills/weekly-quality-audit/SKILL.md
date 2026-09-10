@@ -75,12 +75,7 @@ deviné : ne jamais inventer un finding. Le JOIN ne répare ni ne réécrit l'en
   paraphrase. Tant que l'envelope est valide et non vide, ce warning reste visible mais
   nonblocking au JOIN ; un artefact absent, vide ou invalide reste comptable.
 
-Toute conclusion doit être soutenue par le transcript effectivement lu. En cas de
-permission **external-directory**, de cible out-of-tree ou de source non écrasable,
-émettre seulement le record `{status: "report-only", report_only: true,
-category: "external-permission-refusal"}` / `environment-change` : ne pas lire,
-   écrire, déplacer ni escalader en fatalité. L'envelope reste valide avec `rc: 0`
-   et `findings: []` ; une permission refusée dans le worktree reste comptable.
+Toute conclusion doit être soutenue par le transcript effectivement lu. Sécurité et hors-worktree : voir skill partagé `weekly-safety-guardrails` (external-permission-refusal, environment-change). L'envelope reste valide avec `rc: 0` et `findings: []` en refus hors worktree.
 
 ## Harnais d'origine
 

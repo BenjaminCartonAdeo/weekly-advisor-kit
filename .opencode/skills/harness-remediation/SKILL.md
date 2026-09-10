@@ -143,11 +143,7 @@ occurrence et une limite de taille (v6.0.k F2).
 - Le mode `dry-run` ne modifie jamais le worktree et sert pour une exécution manuelle.
 - Aucun commit automatique : les modifications appliquées sont listées dans le résultat
   pour revue humaine.
-- Toute demande de permission **external-directory** ou toute cible out-of-tree est un
-record `{status: "report-only", report_only: true, category:
-  "external-permission-refusal"}` (`environment-change`) : aucune lecture, écriture,
-  déplacement ou escalade de permission ; ne pas lire, écrire ; la gate continue sans cette cible. Une
-  permission refusée dans le worktree reste comptable.
+- Sécurité et hors-worktree : voir skill partagé `weekly-safety-guardrails` (external-permission-refusal, environment-change, jamais d'apply `security/*`).
 
 ## Traitement des findings actuels
 

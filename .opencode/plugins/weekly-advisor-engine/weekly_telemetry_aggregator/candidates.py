@@ -158,6 +158,7 @@ def select_audit_candidates(
                 target["rc"] = rc
         if "truncated" in source:
             target["truncated"] = bool(target.get("truncated", False) or source["truncated"])
+
     for status in [
         *(summary.get("worker_statuses") or []),
         *((summary.get("selection") or {}).get("worker_statuses") or []),
@@ -218,9 +219,7 @@ def select_audit_candidates(
     return ordered
 
 
-def split_audit_candidates(
-    candidates: list[dict], limit: int
-) -> tuple[list[dict], list[dict]]:
+def split_audit_candidates(candidates: list[dict], limit: int) -> tuple[list[dict], list[dict]]:
     """Découpe (audités, reportés) selon `audit_max_sessions` — pur.
 
     Le second élément (`carried_over`) reprend les candidats non retenus par
@@ -231,9 +230,7 @@ def split_audit_candidates(
     return list(candidates[:n]), list(candidates[n:])
 
 
-def prepend_carried_over(
-    candidates: list[dict], previous_carried: list[dict] | None
-) -> list[dict]:
+def prepend_carried_over(candidates: list[dict], previous_carried: list[dict] | None) -> list[dict]:
     """Remet en tête de file le `carried_over` du run précédent — pur.
 
     Déduplique par ``session_id`` (le candidat courant garde sa version

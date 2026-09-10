@@ -113,17 +113,11 @@ Chaque worker reçoit son ordre figé d'étapes. Invariants ci-dessus s'applique
 
 ### Branches T (Télémétrie), V (Veille), H (Harness)
 
-Exécutées en **wave 1** (parallèle).
+Exécutées en **wave 1** (parallèle). Détail des steps dans l'agent orchestrateur + skills de branche — le briefing du coordinateur fait foi :
 
-- **T** : `weekly_run` (long, ~5-15 min, poll si dépassement) → `weekly_audit_candidates` (déterministe, écrit `weekly-audit-candidates-<date>.json`)
-- **V** : `weekly_releases` → `weekly_watch_distill` (séquentiel après releases) →
-  `weekly_watch_context` (séquentiel après distill) → `weekly-watch-review` skill
-  (écrit et vérifie le raw) → **raw présent/schema-valid** → `weekly_watch_validate`
-  (déterministe). Raw absent ou invalide : une seule recovery bornée, puis pas de
-  validation ni de finding inventé.
-- **H** : `weekly_harness` → `harness-remediation` skill (écrit et vérifie la
-  proposition) → **proposal présente/schema-valid** → `harness-remediate`. Proposal
-  absente ou invalide : une seule recovery bornée, puis pas de remediate/apply.
+- **T** : `weekly_run` → `weekly_audit_candidates` (voir agent §Table étapes)
+- **V** : `weekly_releases` → `weekly_watch_distill` → `weekly_watch_context` → skill `weekly-watch-review` → `weekly_watch_validate` (voir skill pour raw-gate + recovery unique)
+- **H** : `weekly_harness` → skill `harness-remediation` → `harness-remediate` (voir skill pour proposal-gate + recovery unique)
 
 ### Branche A (Audit single-session) — WAVE 1.5
 
@@ -170,13 +164,11 @@ autres `audit-findings-*.json`, ne touche pas aux autres branches. La consolidat
 
 ### Branches D (Drafting), I (Insights), C (Cohérence)
 
-Exécutées en **wave 2** (parallèle, après JOIN de wave 1 ; optionnel, activé par défaut).
+Exécutées en **wave 2** (parallèle, après JOIN wave 1). Détail dans l'agent + skills :
 
-- **D** : `weekly_draft_candidates` → rédaction skills/commands → `weekly_commit_draft` (≤plafond)
-  - **Seul worker autorisé à committer** — via `weekly_commit_draft` unique
-  - Gate portabilité (skill-verify) avant chaque commit : error → refus, warning → note
-- **I** : `weekly_insights` — étape 6 déterministe
-- **C** : `weekly-coherence-review` skill — audit déclaratif vs usage réel
+- **D** : `weekly_draft_candidates` → rédaction → `weekly_commit_draft` (seul worker autorisé à committer ; gate portabilité, voir skill `weekly-drafting`)
+- **I** : `weekly_insights` (déterministe)
+- **C** : skill `weekly-coherence-review` (read-only, décisions émises, jamais appliquées)
 
 ## Erreurs attendues & fail-soft
 
@@ -256,26 +248,7 @@ warning dans l'artefact. Le worker vérifie cette forme avant son contrat de ret
 
 ### Transcript borné ou tronqué
 
-1. Détecter le marqueur de troncature, la lecture partielle ou la taille au-dessus de la
-   borne ; ne jamais demander une lecture intégrale non bornée.
-2. Tenter **one bounded retry** (`max_retry=1`) par fenêtres `offset/limit` (au plus trois
-   fenêtres de diagnostic), puis arrêter. La retry est locale au worker : aucun `task`, respawn,
-   boucle de récupération ou attente indéfinie.
-3. Si les fenêtres produisent un résultat **complete-enough** (contexte suffisant pour
-   justifier chaque finding), écrire l'envelope complet avec `rc: 0`. Si une troncature
-   avait été détectée, conserver `transcript-truncated:<session_id>` dans `warnings` comme
-   fait informatif. Cette récupération réussie ne doit pas transformer le worker ni le
-   cron en `rc=1`.
-4. Si la sortie reste partielle, écrire quand même l'envelope avec `rc: 1`, conclusions
-   bornées à la partie lisible et le warning **exact**
-   `transcript-truncated:<session_id>` dans le contrat **et** dans `warnings` du fichier.
-   Ce warning ne doit jamais être remplacé par un texte libre. Si l'envelope est valide,
-   ce warning de troncature est nonblocking pour le code final du cron ; un artefact vide,
-   invalide ou absent reste comptable.
-
-Un retour vide déclenche au plus une retry ; après cette retry, le worker écrit un
-artefact schema-valid et signale l'échec, sans respawn loop. Le plafond worker reste
-10 minutes : timeout = `rc=1` + warning, sans attente ni relance automatique.
+Règle canonique : skill `weekly-quality-audit` (§ retry et code retour). Rappel worker : **one bounded retry** (`max_retry=1`, ≤3 fenêtres `offset/limit`), jamais de respawn loop. `complete-enough` → envelope `rc: 0` + warning informatif `transcript-truncated:<session_id>` conservé ; partiel résiduel → envelope `rc: 1` + warning **exact** dans contrat ET artefact. Plafond worker 10 min : timeout = `rc=1` + warning.
 
 ### Entrées aval et sécurité
 
@@ -285,12 +258,4 @@ artefact schema-valid et signale l'échec, sans respawn loop. Le plafond worker 
   bornée, puis ne rien inventer et ne pas appeler l'étape aval.
 - Tout finding doit être soutenu par l'input effectivement lu. Ne jamais compléter un
   transcript, un digest, un raw ou une proposition par supposition.
-- Toute demande de permission **external-directory** ou toute cible out-of-tree produit
-  un record `{status: "report-only", report_only: true, category:
-  "external-permission-refusal"}` (`environment-change`) : ne pas lire, écrire,
-  déplacer, escalader ou convertir en fatalité ; reprendre seulement dans le worktree
-   autorisé. Le refus hors worktree reste `rc: 0` ; une permission refusée dans le
-   worktree reste comptable.
-- Les identifiants de sécurité critiques (`mcp-tool-poisoning`, `unbounded-delegation`,
-  `memory-write-unscoped`) restent bloquants pour l'action concernée : aucune auto-
-  correction, écriture ou délégation implicite.
+- Sécurité et hors-worktree : voir skill partagé `weekly-safety-guardrails` (external-permission-refusal, environment-change, IDs bloquants).

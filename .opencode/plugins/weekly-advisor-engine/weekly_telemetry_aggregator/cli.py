@@ -56,9 +56,7 @@ def _deduplicate_worker_statuses(records: list[object]) -> list[dict]:
         if not isinstance(record, dict):
             continue
         session_id = record.get("session_id")
-        if not session_id or not any(
-            key in record for key in ("rc", "truncated", "worker_status")
-        ):
+        if not session_id or not any(key in record for key in ("rc", "truncated", "worker_status")):
             continue
         key = str(session_id)
         compact = {
@@ -205,7 +203,9 @@ def _cmd_show_session(args, cfg) -> int:
     return 0
 
 
-def _load_previous_carried_over(output_dir: Path, exclude_dir: Path, current_date: str) -> list[dict]:
+def _load_previous_carried_over(
+    output_dir: Path, exclude_dir: Path, current_date: str
+) -> list[dict]:
     """`carried_over` du run précédent (reprise P2) — best-effort, [] sinon.
 
     Cherche le `weekly-audit-candidates-<date>.json` le plus récent strictement
@@ -772,22 +772,12 @@ def _global_skill_roots() -> tuple[Path, ...]:
     )
 
 
-def _path_is_safely_within(path: Path, root: Path) -> bool:
-    """Return true only when containment is proven without an OS error."""
-    try:
-        path.resolve().relative_to(root.resolve())
-    except (OSError, RuntimeError, ValueError):
-        return False
-    return True
-
-
-def _path_is_within(path: Path, root: Path) -> bool:
-    """Containment predicate for deny-list checks; resolution errors deny access."""
-
+def _path_within(path: Path, root: Path, *, on_error: bool) -> bool:
+    """Containment predicate; resolution errors return ``on_error``."""
     try:
         path.resolve().relative_to(root.resolve())
     except (OSError, RuntimeError):
-        return True
+        return on_error
     except ValueError:
         return False
     return True
@@ -796,7 +786,7 @@ def _path_is_within(path: Path, root: Path) -> bool:
 def _path_is_global_or_unresolvable(path: Path, global_roots: tuple[Path, ...]) -> bool:
     """Deny a path inside a global root, or one whose resolution is uncertain."""
 
-    return any(_path_is_within(path, global_root) for global_root in global_roots)
+    return any(_path_within(path, global_root, on_error=True) for global_root in global_roots)
 
 
 def _normalize_skill_relative(skill_id: str) -> Path | None:
@@ -851,9 +841,9 @@ def _archive_skill(
             ):
                 return "missing", "skill source/destination hors périmètre projet"
             if (
-                not _path_is_safely_within(src, skills_dir)
-                or not _path_is_safely_within(src / "SKILL.md", skills_dir)
-                or not _path_is_safely_within(dst.parent, skills_dir)
+                not _path_within(src, skills_dir, on_error=False)
+                or not _path_within(src / "SKILL.md", skills_dir, on_error=False)
+                or not _path_within(dst.parent, skills_dir, on_error=False)
             ):
                 return "missing", "skill source/destination hors périmètre projet"
             destination_exists = dst.exists()
@@ -909,7 +899,7 @@ def _archive_skill(
     try:
         if any(
             _path_is_global_or_unresolvable(candidate, global_roots)
-            or not _path_is_safely_within(candidate, project_root)
+            or not _path_within(candidate, project_root, on_error=False)
             for candidate in (
                 _skills_dir,
                 src,
@@ -1128,10 +1118,15 @@ def _cmd_skill_curate(args, cfg) -> int:
     }
     # Missing targets are stale proposals and remain non-fatal; real apply
     # refusals must reach the orchestrator.
-    curation_rc = 1 if apply and any(
-        move_status_counts.get(status, 0) > 0
-        for status in ("error", "rejected", "ambiguous", "unverified")
-    ) else 0
+    curation_rc = (
+        1
+        if apply
+        and any(
+            move_status_counts.get(status, 0) > 0
+            for status in ("error", "rejected", "ambiguous", "unverified")
+        )
+        else 0
+    )
     manifest["rc"] = curation_rc
     manifest.update(
         manifest_metadata(

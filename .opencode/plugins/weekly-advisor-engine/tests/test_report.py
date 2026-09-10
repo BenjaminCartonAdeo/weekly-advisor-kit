@@ -80,7 +80,9 @@ def test_report_context_exposes_run_provenance_from_summary(tmp_path: Path):
     expected = {"repository_path": "/repo", "branch": "main", "commit_sha": "abc"}
     data["run_provenance"] = expected
     p.write_text(json.dumps(data), encoding="utf-8")
-    context = __import__("weekly_telemetry_aggregator.report", fromlist=["build_report_context"]).build_report_context(_cfg(tmp_path), anchor=RUN.isoformat())
+    context = __import__(
+        "weekly_telemetry_aggregator.report", fromlist=["build_report_context"]
+    ).build_report_context(_cfg(tmp_path), anchor=RUN.isoformat())
     assert context["provenance"]["run_provenance"] == expected
 
 
@@ -115,9 +117,7 @@ def test_validate_required_artifacts_html_present_when_file_exists_disabled_flag
     (tmp_path / f"weekly-summary-{DATE}.json").write_text("{}", encoding="utf-8")
     html_file = tmp_path / f"weekly-report-{DATE}.html"
     html_file.write_text("<html>ok</html>", encoding="utf-8")
-    gate = validate_required_artifacts(
-        tmp_path, DATE, html_enabled=False, html_path=html_file
-    )
+    gate = validate_required_artifacts(tmp_path, DATE, html_enabled=False, html_path=html_file)
     assert gate["html"]["status"] == "present"
     assert gate["html"]["path"] == str(html_file)
 
@@ -286,10 +286,10 @@ def test_applicable_summary_rc_requires_verified_external_permission_refusal(tmp
         "warnings": [
             {
                 "status": "report-only",
-                    "report_only": True,
-                    "category": "external-permission-refusal",
-                    "permission_refused": True,
-                    "target": str(tmp_path / "inside"),
+                "report_only": True,
+                "category": "external-permission-refusal",
+                "permission_refused": True,
+                "target": str(tmp_path / "inside"),
             }
         ],
     }
@@ -355,7 +355,11 @@ def test_truncated_audit_requires_declared_exact_path_and_envelope(tmp_path: Pat
         ),
         encoding="utf-8",
     )
-    base = {"rc": 1, "warnings": [], "worker_statuses": [{"session_id": "s1", "status": "truncated", "rc": 1}]}
+    base = {
+        "rc": 1,
+        "warnings": [],
+        "worker_statuses": [{"session_id": "s1", "status": "truncated", "rc": 1}],
+    }
     assert applicable_summary_rc(base, out=tmp_path, date=DATE) == 1
     declared = {
         **base,
@@ -433,7 +437,10 @@ def test_applicable_summary_rc_reads_recovered_join_records(tmp_path: Path):
 def test_critical_security_findings_are_detected():
     digest = {"findings": [{"rule": "security/tool-poisoning", "severity": "critical"}]}
     assert _critical_security_findings(digest) == digest["findings"]
-    assert _critical_security_findings({"findings": [{"rule": "security/x", "severity": "high"}]}) == []
+    assert (
+        _critical_security_findings({"findings": [{"rule": "security/x", "severity": "high"}]})
+        == []
+    )
 
 
 def test_report_assemble_critical_security_forces_nonzero_rc(tmp_path: Path):
@@ -464,7 +471,10 @@ def test_report_assemble_nested_blocking_security_rule_is_rc_two(tmp_path: Path,
                 "findings": [],
                 "inspection": {
                     "uncategorized": [
-                        {"path": ".opencode/a.md", "findings": [{"rule": rule, "severity": "critical"}]}
+                        {
+                            "path": ".opencode/a.md",
+                            "findings": [{"rule": rule, "severity": "critical"}],
+                        }
                     ]
                 },
             }
@@ -1622,3 +1632,379 @@ def test_blocking_security_rules_are_nonzero_even_without_critical_severity(tmp_
     final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
     assert final_path is None and rc == 2
     assert not (tmp_path / f"weekly-report-{DATE}.md").exists()
+
+
+# ------------------------------------------------------------------ v6.1 snapshots : next-steps Toi/Pipeline/Agent (tag tri) + passthrough + build_report_context
+
+
+def test_top_next_steps_grouped_by_actor_snapshot(tmp_path: Path):
+    """Snapshot _top_next_steps : groupé Toi/Pipeline/Agent, déterministe, source multiples."""
+    from weekly_telemetry_aggregator.report import _top_next_steps
+
+    digest = {
+        "inspection": {
+            "uncategorized": [
+                {
+                    "findings": [
+                        {"rule": "security/mcp-tool-poisoning", "severity": "warning"},
+                        {"rule": "security/mcp-tool-poisoning", "severity": "warning"},
+                        {"rule": "allowlist/unscoped", "severity": "warning"},
+                        {"rule": "custom/agent-rule", "severity": "warning"},
+                    ]
+                }
+            ]
+        }
+    }
+    insights = {
+        "alerts": [
+            {
+                "rule": "monthly_budget_usd",
+                "severity": "high",
+                "threshold": 25,
+                "observed": 30,
+                "unit": "$",
+            },
+            {
+                "rule": "lint_violations_max",
+                "severity": "medium",
+                "threshold": 10,
+                "observed": 12,
+                "unit": "findings",
+            },
+        ]
+    }
+    findings = {
+        "findings": [
+            {
+                "category": "merge-candidate",
+                "severity": "medium",
+                "description": "skills redondants",
+                "recommendation": "fusionner",
+                "recommendation_type": "merge-candidate",
+            },
+            {
+                "category": "context-bloat",
+                "severity": "high",
+                "description": "gros fichiers relus",
+                "recommendation": "compresser",
+                "recommendation_type": "general",
+            },
+        ]
+    }
+    steps = _top_next_steps(digest, insights, findings, ignored_rules=[], limit=3)
+    # snapshot : 3 entrées, un par acteur en tête (Toi/Pipeline/Agent)
+    assert len(steps) == 3
+    actors = [s["actor"] for s in steps]
+    assert actors == ["Toi", "Pipeline", "Agent"]
+    # Toi vient du harness security ou du budget high → sévérité high en premier
+    assert steps[0]["severity"] in ("high", "critical")
+    # chaque entrée a tag tri : actor, source, severity, text
+    for s in steps:
+        assert s["actor"] in ("Toi", "Pipeline", "Agent")
+        assert s["source"] in ("harness", "alert", "audit")
+        assert s["severity"] in ("high", "critical", "medium", "warning", "low", "info")
+        assert "text" in s and s["text"]
+    # Toi doit être budget ou security (tri high)
+    assert any(
+        "budget" in s.get("rule", "").lower() or "security" in s.get("rule", "").lower()
+        for s in steps
+        if s["actor"] == "Toi"
+    )
+    # Pipeline vient typiquement de allowlist / lint / coverage
+    assert any(s["actor"] == "Pipeline" for s in steps)
+    # Agent vient de l'audit context-bloat / custom rule
+    assert any(s["actor"] == "Agent" for s in steps)
+
+
+def test_top_next_steps_tag_tri_deterministic_snapshot():
+    """Snapshot tag tri : sévérité > source > count > règle > acteur, déterministe + grouping Toi/Pipeline/Agent."""
+    from weekly_telemetry_aggregator.report import _top_next_steps
+
+    # deux candidats même sévérité medium, sources différentes harness/pipeline vs alert/pipeline vs audit/agent
+    # le tri brut est severity > source > count > rule, mais le regroupement final met Toi/Pipeline/Agent en tête
+    digest = {
+        "inspection": {
+            "uncategorized": [{"findings": [{"rule": "custom/low-rule", "severity": "warning"}]}]
+        }
+    }
+    insights = {
+        "alerts": [
+            {"rule": "lint_violations_max", "severity": "medium", "threshold": 10, "observed": 12}
+        ]
+    }
+    findings = {
+        "findings": [
+            {
+                "category": "context-bloat",
+                "severity": "medium",
+                "description": "x",
+                "recommendation": "y",
+            }
+        ]
+    }
+
+    steps = _top_next_steps(digest, insights, findings, limit=5)
+    # à sévérité égale, le grouping Toi/Pipeline/Agent prime : Pipeline (alert) avant Agent (harness+ audit)
+    # donc Pipeline (alert) doit être premier, pas harness
+    assert steps[0]["actor"] == "Pipeline"
+    assert steps[0]["source"] == "alert"
+    # harness et audit sont tous deux Agent : harness (source 0) avant audit (source 2) au sein du groupe Agent
+    agent_steps = [s for s in steps if s["actor"] == "Agent"]
+    assert agent_steps[0]["source"] == "harness"
+    assert agent_steps[1]["source"] == "audit"
+
+    # test count tri : même sévérité + source harness, règle avec plus de violations d'abord
+    # b-rule apparaît dans 2 composants distincts → count 2, a-rule count 1
+    digest2 = {
+        "inspection": {
+            "uncategorized": [
+                {
+                    "path": "a",
+                    "findings": [{"rule": "custom/a-rule", "severity": "warning", "message": "m1"}],
+                },
+                {
+                    "path": "b",
+                    "findings": [{"rule": "custom/b-rule", "severity": "warning", "message": "m1"}],
+                },
+                {
+                    "path": "c",
+                    "findings": [{"rule": "custom/b-rule", "severity": "warning", "message": "m2"}],
+                },
+            ]
+        }
+    }
+    steps2 = _top_next_steps(digest2, None, None, limit=5)
+    # b-rule a count 2 vs a-rule count 1 → b-rule avant
+    rules = [s["rule"] for s in steps2 if s["source"] == "harness"]
+    assert rules[0] == "custom/b-rule"
+
+    # déterministe : deux appels identiques → même résultat
+    steps_a = _top_next_steps(digest, insights, findings, limit=3)
+    steps_b = _top_next_steps(digest, insights, findings, limit=3)
+    assert steps_a == steps_b
+
+    # règle tri alphabétique quand count et sévérité égaux
+    digest3 = {
+        "inspection": {
+            "uncategorized": [
+                {"findings": [{"rule": "custom/z-rule", "severity": "warning"}]},
+                {"findings": [{"rule": "custom/a-rule", "severity": "warning"}]},
+            ]
+        }
+    }
+    steps3 = _top_next_steps(digest3, None, None, limit=5)
+    rules3 = [s["rule"] for s in steps3 if s["source"] == "harness"]
+    assert rules3 == sorted(rules3)
+
+
+def test_top_next_steps_dedup_and_limit_and_empty_snapshot():
+    """Snapshot dedup + limit + vide : fallback [] et passthrough best-effort."""
+    from weekly_telemetry_aggregator.report import _top_next_steps
+
+    # vide → []
+    assert _top_next_steps(None, None, None) == []
+    assert _top_next_steps({}, {}, {}) == []
+    assert _top_next_steps({"inspection": {}}, {"alerts": []}, {"findings": []}) == []
+
+    # dedup : même (actor, rule) deux fois → une seule
+    digest = {
+        "inspection": {
+            "uncategorized": [
+                {"findings": [{"rule": "security/mcp-tool-poisoning", "severity": "warning"}]},
+                {"findings": [{"rule": "security/mcp-tool-poisoning", "severity": "warning"}]},
+            ]
+        }
+    }
+    steps = _top_next_steps(digest, None, None, limit=5)
+    assert len([s for s in steps if s.get("rule") == "security/mcp-tool-poisoning"]) == 1
+    assert steps[0]["count"] == 2  # compté 2 fois mais dédupliqué en une entrée
+
+    # limit : au plus limit entrées, et groupé Toi/Pipeline/Agent d'abord
+    digest_many = {
+        "inspection": {
+            "uncategorized": [
+                {"findings": [{"rule": f"custom/rule-{i}", "severity": "warning"}]}
+                for i in range(10)
+            ]
+        }
+    }
+    steps_many = _top_next_steps(digest_many, None, None, limit=3)
+    assert len(steps_many) == 3
+
+    # ignored_rules : filtré
+    steps_ignored = _top_next_steps(
+        digest, None, None, ignored_rules=["security/mcp-tool-poisoning"]
+    )
+    assert steps_ignored == []
+
+    # passthrough best-effort : digest non-dict ou findings mal formé → pas de crash
+    assert _top_next_steps("not-a-dict", None, None) == []  # type: ignore
+    assert _top_next_steps(None, {"alerts": "not-a-list"}, None) == []  # type: ignore
+    assert _top_next_steps(None, None, {"findings": "not-a-list"}) == []  # type: ignore
+
+
+def test_actor_mapping_snapshot():
+    """Snapshot mapping acteur : Toi/Pipeline/Agent selon tags et règles."""
+    from weekly_telemetry_aggregator.report import (
+        _actor_for_alert,
+        _actor_for_finding,
+        _actor_for_harness_rule,
+    )
+
+    # harness
+    assert _actor_for_harness_rule("security/mcp-tool-poisoning") == "Toi"
+    assert _actor_for_harness_rule("secret/unbounded") == "Toi"
+    assert _actor_for_harness_rule("allowlist/unscoped") == "Pipeline"
+    assert _actor_for_harness_rule("budget/violated") == "Pipeline"
+    assert _actor_for_harness_rule("coverage/scope") == "Pipeline"
+    assert _actor_for_harness_rule("custom/agent-loop") == "Agent"
+
+    # alert
+    assert _actor_for_alert("monthly_budget_usd") == "Toi"
+    assert _actor_for_alert("weekly_budget_usd") == "Toi"
+    assert _actor_for_alert("lint_violations_max") == "Pipeline"
+    assert _actor_for_alert("lint_coverage") == "Pipeline"
+    assert _actor_for_alert("daily_spike_z_min") == "Pipeline"
+    assert _actor_for_alert("cache_hit_rate_min") == "Agent"
+
+    # finding
+    assert (
+        _actor_for_finding({"category": "merge-candidate", "recommendation_type": "merge"}) == "Toi"
+    )
+    assert (
+        _actor_for_finding({"category": "retire-candidate", "recommendation_type": "adopt"})
+        == "Toi"
+    )
+    assert _actor_for_finding({"category": "security/tool-poisoning"}) == "Toi"
+    assert _actor_for_finding({"category": "harness/missing"}) == "Pipeline"
+    assert _actor_for_finding({"category": "coverage", "recommendation_type": ""}) == "Pipeline"
+    assert _actor_for_finding({"category": "loop", "recommendation_type": "general"}) == "Agent"
+    assert _actor_for_finding({"category": "context-bloat"}) == "Agent"
+
+
+def test_report_context_top_next_steps_passthrough_snapshot(tmp_path: Path):
+    """Snapshot build_report_context : top_next_steps exposé, groupé, best-effort."""
+    from weekly_telemetry_aggregator.report import build_report_context
+
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    # pas de digest/insights/findings → top_next_steps == []
+    ctx = build_report_context(cfg, anchor=RUN.isoformat())
+    assert ctx is not None
+    assert "top_next_steps" in ctx
+    assert ctx["top_next_steps"] == []
+
+    # avec digest harness seul → au moins un Toi/Pipeline
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "inspection": {
+                    "uncategorized": [
+                        {
+                            "findings": [
+                                {"rule": "security/mcp-tool-poisoning", "severity": "warning"}
+                            ]
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    # clean run_state cache? rebuild context après ajout digest
+
+    # force rebuild via new anchor same date (build_report_context re-reads files)
+    ctx2 = build_report_context(cfg, anchor=RUN.isoformat())
+    assert ctx2 is not None
+    assert len(ctx2["top_next_steps"]) >= 1
+    assert ctx2["top_next_steps"][0]["actor"] in ("Toi", "Pipeline", "Agent")
+    # tag tri présent
+    for step in ctx2["top_next_steps"]:
+        assert "actor" in step and "source" in step and "severity" in step and "text" in step
+
+    # avec insights alert high (Toi) + lint (Pipeline) + audit (Agent) → groupé trié Toi/Pipeline/Agent
+    # on enrichit le digest avec une règle Pipeline pour garantir un candidat Pipeline harness
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "inspection": {
+                    "uncategorized": [
+                        {
+                            "findings": [
+                                {"rule": "security/mcp-tool-poisoning", "severity": "warning"},
+                                {"rule": "allowlist/unscoped", "severity": "warning"},
+                            ]
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / f"weekly-insights-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "alerts": [
+                    {
+                        "rule": "monthly_budget_usd",
+                        "severity": "high",
+                        "threshold": 25,
+                        "observed": 30,
+                    }
+                ],
+                "maintenance": {"findings": []},
+                "deltas": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / f"weekly-quality-findings-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "findings": [
+                    {
+                        "category": "context-bloat",
+                        "severity": "medium",
+                        "description": "gros",
+                        "recommendation": "réduire",
+                        "recommendation_type": "general",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    ctx3 = build_report_context(cfg, anchor=RUN.isoformat())
+    # attendu : Toi (budget/security), Pipeline (allowlist), Agent (audit) — limit 3
+    assert len(ctx3["top_next_steps"]) == 3
+    assert [s["actor"] for s in ctx3["top_next_steps"]] == ["Toi", "Pipeline", "Agent"]
+
+
+def test_report_context_ignores_harness_ignored_rules_snapshot(tmp_path: Path):
+    """Snapshot ignored_rules : top_next_steps filtre les règles ignorées."""
+    from weekly_telemetry_aggregator.report import build_report_context
+
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    cfg.harness_ignored_rules = ["security/mcp-tool-poisoning"]
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "inspection": {
+                    "uncategorized": [
+                        {
+                            "findings": [
+                                {"rule": "security/mcp-tool-poisoning", "severity": "warning"},
+                                {"rule": "allowlist/unscoped", "severity": "warning"},
+                            ]
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    ctx = build_report_context(cfg, anchor=RUN.isoformat())
+    rules = [s.get("rule") for s in ctx["top_next_steps"] if s.get("source") == "harness"]
+    assert "security/mcp-tool-poisoning" not in rules
+    assert "allowlist/unscoped" in rules

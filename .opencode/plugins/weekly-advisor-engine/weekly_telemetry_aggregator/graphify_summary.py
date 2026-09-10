@@ -19,9 +19,11 @@ GENERIC_LABELS = frozenset({"", "root", "unknown", "generic", "node", "none", "n
 
 def _generic(node: dict[str, Any]) -> bool:
     label = str(node.get("norm_label") or node.get("label") or "").strip().lower()
-    if label in GENERIC_LABELS or len(label) < 2:
-        return True
-    return label in {"object", "string", "number", "boolean", "array"}
+    return (
+        label in GENERIC_LABELS
+        or len(label) < 2
+        or label in {"object", "string", "number", "boolean", "array"}
+    )
 
 
 def _source(node: dict[str, Any]) -> str:

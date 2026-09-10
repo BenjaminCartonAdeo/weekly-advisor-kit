@@ -55,21 +55,23 @@ v6.0.n) — aucun calcul calendaire LLM.
 ## Worktree & cwd (fail-fast, Étape 0)
 
 Le moteur python est résolu depuis le **worktree** du lancement (`--dir` du cron, ou cwd du
-lancement manuel). Un lancement hors du worktree Adeo (ex. `cwd=$HOME`) fait échouer la
-résolution du moteur (`Glob /home/benjamin/Dev/Adeo/.opencode/plugins/weekly-advisor-engine/**/*.py` → 0 match) et
+lancement manuel). Un lancement hors du worktree (ex. `cwd=$HOME`) fait échouer la
+résolution du moteur (`Glob <worktree>/.opencode/plugins/weekly-advisor-engine/**/*.py` → 0 match) et
 l'orchestrateur démarre à vide (incident 15:47, exit=2).
 
 > **Pourquoi des chemins absolus (fix P1)** : en run cron, le tool Glob résout `.`
-> depuis le cwd du serveur persistant (`/home/benjamin`, process :4522) et non depuis
-> le `--dir /home/benjamin/Dev/Adeo` — tout pattern relatif part d'une base fausse
-> (split-brain). D'où : toujours des Globs absolus dérivés du worktree.
+> depuis le cwd du serveur persistant (ex. le $HOME de l'utilisateur du serveur)
+> et non depuis le `--dir <worktree>` — tout pattern relatif part d'une base fausse
+> (split-brain). D'où : toujours des Globs absolus dérivés du worktree (`<worktree>` = `project_root` de `weekly-telemetry-config.json`).
+> L'absolu ne suffit pas si la racine est fausse : vérifier que `--dir` == `project_root`
+> effectif et que `output_dir` == `<worktree>/reports` (ou utiliser sa valeur configurée) avant tout Glob.
 
-**Pre-check Étape 0 (avant `weekly_doctor`)** : `glob` `/home/benjamin/Dev/Adeo/.opencode/plugins/weekly-advisor-engine/**/*.py`
+**Pre-check Étape 0 (avant `weekly_doctor`)** : `glob` `<worktree>/.opencode/plugins/weekly-advisor-engine/**/*.py`
 depuis le worktree (le wrapper cron `cd` déjà vers le worktree ; en manuel, lancer avec `--dir <worktree>` ET cwd=<worktree>).
 Si **0 match** → appeler `weekly_doctor` AVANT tout STOP : le doctor résout le moteur depuis le worktree réel et fait foi.
 STOP immédiat avec message clair UNIQUEMENT si `weekly_doctor` échoue aussi (rc=2) :
-« worktree Adeo requis — relancer avec `--dir /home/benjamin/Dev/Adeo` (ou via le cron) ».
-Les crons (`#45 18 * * 1`, `#35 15 * * 4`) passent déjà `--dir /home/benjamin/Dev/Adeo` ; ce
+« worktree requis — relancer avec `--dir <worktree>` (ou via le cron) ».
+Les crons (`#45 18 * * 1`, `#35 15 * * 4`) passent déjà `--dir <worktree>` ; ce
 gard est pour les lancements manuels/interactifs. Ne jamais STOP sur un simple Glob à vide quand le doctor passe (incident 16:10 : Glob relatif à $HOME, moteur présent).
 
 ## Étape 0 — Garde anti-re-run (TRÈS PREMIÈRE action, avant tout tool)
@@ -78,8 +80,8 @@ Avant même le pre-check worktree et `weekly_doctor`, vérifier qu'un run **déj
 terminé** pour l'ancre courante n'existe pas — pour éviter la ré-agrégation
 coûteuse d'un run déjà produit :
 
-1. Lire `/home/benjamin/Dev/Adeo/reports/anchor-last.txt` (ancre active, ligne unique). `<output_dir>` vaut `<worktree>/reports` par défaut : ne jamais lire `output/anchor-last.txt` (chemin obsolète, incident 16:10) ni de chemin relatif (Glob résolu depuis le cwd serveur, pas `--dir`).
-2. Chercher `/home/benjamin/Dev/Adeo/reports/runs/current/weekly-summary-*.json` (pattern corrigé P1 : l'ancien `reports/runs/current/summary-*.json` ne matchait jamais `weekly-summary-<date>.json`, le préfixe `weekly-` manquait).
+1. Lire `<output_dir>/anchor-last.txt` (ancre active, ligne unique ; vaut `<worktree>/reports/anchor-last.txt` par défaut — `<output_dir>` vient de `weekly-telemetry-config.json`). Ne jamais lire `output/anchor-last.txt` (chemin obsolète, incident 16:10) ni de chemin relatif (Glob résolu depuis le cwd serveur, pas `--dir` : toujours dériver l'absolu de `<worktree>`/`<output_dir>`).
+2. Chercher `<output_dir>/runs/current/weekly-summary-*.json` (pattern corrigé P1 : l'ancien `reports/runs/current/summary-*.json` ne matchait jamais `weekly-summary-<date>.json`, le préfixe `weekly-` manquait).
 3. Si un `weekly-summary-*.json` existe **ET** `exit == 0` (run terminé sans fatale)
    **ET** que `anchor-last.txt` est **non modifié** (même ancre que celle ayant
    produit le summary) → **STOP immédiat (short-circuit)** avec le message exact :
@@ -93,12 +95,12 @@ coûteuse d'un run déjà produit :
 ## Vérif dispatch (F6) — avant tout spawn de worker
 
 Avant WAVE 1, l'orchestrateur vérifie que **l'agent worker est disponible** :
-`glob /home/benjamin/Dev/Adeo/.opencode/agents/weekly-advisor/weekly-advisor-worker.md` (absolu : relatif résolu depuis le cwd serveur).
+`glob <worktree>/.opencode/agents/weekly-advisor/weekly-advisor-worker.md` (absolu dérivé de `<worktree>` : relatif résolu depuis le cwd serveur).
 Absent → **STOP avant WAVE 1**, message clair, `rc=2` (pas de rapport).
 
 Avant chaque WAVE 2 dispatch (D/I/C), vérifier les **skills primaires de branche** ; absence = `rc=2` :
 `weekly-drafting` (D), `weekly-coherence-review` (C) — tenter `glob` sur
-`/home/benjamin/Dev/Adeo/.opencode/skills/<name>/SKILL.md` (absolu), puis `Read` le chemin
+`<worktree>/.opencode/skills/<name>/SKILL.md` (absolu dérivé de `<worktree>`), puis `Read` le chemin
 absolu exact si Glob retourne zéro (le serveur persistant peut avoir une base Glob périmée).
 Un `Read` réussi fait foi pour l'existence du skill et évite un faux STOP.
 Primaire absente → **ne pas dispatcher la branche**, STOP orchestrateur, `rc=2`
@@ -289,7 +291,7 @@ l'orchestrateur spawn **K workers A en parallèle** via `task`
 `audit-findings-<id>.json` dans `runs/current/`.
 L'orchestrateur **barrière uniquement sur les FICHIERS, jamais sur les retours
 workers** (incident 2026-09-06 : worker A8 pendu >40 min, run mort sans rapport) :
-poll glob `/home/benjamin/Dev/Adeo/reports/runs/current/audit-findings-*.json`
+poll glob `<output_dir>/runs/current/audit-findings-*.json`
 — absolu, toutes les 30s, **plafond 10 min strict depuis le spawn**. Au plafond :
 consolider les fichiers présents, émettre pour chaque session sans fichier
 `audit-missing:<session_id>` comme artefact requis manquant (**blocking**, rc=2), **ne pas attendre

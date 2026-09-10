@@ -180,9 +180,7 @@ def test_audit_candidates_merge_duplicate_worker_status_sources():
         tops=[{"session_id": "opencode:a", "cost_per_active_minute": 1.0}],
         worker_statuses=[{"session_id": "opencode:a", "rc": 1}],
     )
-    summary["selection"] = {
-        "worker_statuses": [{"session_id": "opencode:a", "truncated": True}]
-    }
+    summary["selection"] = {"worker_statuses": [{"session_id": "opencode:a", "truncated": True}]}
 
     candidate = select_audit_candidates(summary)[0]
 

@@ -122,10 +122,10 @@ def test_cmd_run_downgrades_report_only_partial_to_success(tmp_path: Path, monke
                 "warnings": [
                     {
                         "status": "report-only",
-                            "report_only": True,
-                            "category": "external-permission-refusal",
-                            "permission_refused": True,
-                            "target": str(tmp_path.parent / "external-reports"),
+                        "report_only": True,
+                        "category": "external-permission-refusal",
+                        "permission_refused": True,
+                        "target": str(tmp_path.parent / "external-reports"),
                     }
                 ],
             }

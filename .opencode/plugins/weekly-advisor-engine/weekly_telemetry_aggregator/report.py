@@ -183,6 +183,202 @@ def _top_harness_rules(
     ).most_common(n)
 
 
+def _match_actor(text: str, toi_keys: tuple[str, ...], pipeline_keys: tuple[str, ...]) -> str:
+    """Matche un texte contre les tables de clés Toi/Pipeline, fallback Agent."""
+    t = (text or "").lower()
+    if any(k in t for k in toi_keys):
+        return "Toi"
+    if any(k in t for k in pipeline_keys):
+        return "Pipeline"
+    return "Agent"
+
+
+def _actor_for_harness_rule(rule: str) -> str:
+    """Mappe une règle harness vers l'acteur propriétaire (Toi/Pipeline/Agent)."""
+    return _match_actor(
+        rule,
+        ("security", "secret", "mcp-tool", "unbounded", "memory-write"),
+        ("allowlist", "scope", "budget", "coverage", "lint"),
+    )
+
+
+def _actor_for_alert(rule: str) -> str:
+    """Mappe une règle d'alerte vers l'acteur."""
+    return _match_actor(rule, ("budget",), ("lint", "coverage", "violation", "spike", "scope"))
+
+
+def _actor_for_finding(finding: dict) -> str:
+    """Mappe un finding d'audit qualité vers l'acteur."""
+    cat = str(finding.get("category") or "")
+    rtype = str(finding.get("recommendation_type") or "")
+    if _match_actor(cat, ("retire", "merge", "security", "adopt"), ()) == "Toi":
+        return "Toi"
+    if _match_actor(rtype, ("adopt", "merge"), ()) == "Toi":
+        return "Toi"
+    return _match_actor(cat, (), ("harness", "coverage", "scope", "drift"))
+
+
+_SEV_RANK = {"high": 0, "critical": 0, "medium": 1, "warning": 1, "low": 2, "info": 2, "ok": 2}
+
+
+def _top_next_steps(
+    digest: dict | None,
+    insights: dict | None,
+    findings: dict | None,
+    *,
+    ignored_rules: list[str] | None = None,
+    limit: int = 3,
+) -> list[dict]:
+    """Dérive déterministe des prochaines actions groupées par acteur.
+
+    Sources (priorité égale, tri final par sévérité) :
+    - harness : per-rule findings (``flatten_harness_findings``), comptés par règle ;
+    - alerts  : ``insights.alerts`` (seuil dépassé) ;
+    - audit   : ``weekly-quality-findings.findings`` (audit qualitatif Partie 3).
+
+    Chaque candidat est assigné à un acteur **Toi** (décision humaine, secret,
+    budget), **Pipeline** (infra/harness/allowlist) ou **Agent** (comportement
+    d'agent, loop, context-bloat). Le résultat est **déterministe** (tri par
+    sévérité, source, compte, règle) et groupé : au plus un par acteur en tête,
+    puis complété jusqu'à ``limit``. Fallback ``[]`` si aucune source.
+    """
+    ignored = set(ignored_rules or [])
+    candidates: list[dict] = []
+
+    # 1) harness per-rule
+    if isinstance(digest, dict):
+        try:
+            flat = flatten_harness_findings(digest)
+        except Exception:
+            flat = []
+        counter: Counter[str] = Counter()
+        for finding in flat:
+            rule = finding.get("rule")
+            if not isinstance(rule, str) or not rule or rule in ignored:
+                continue
+            counter[rule] += 1
+        # most_common est déjà trié par count desc ; on stabilise par règle
+        for rule, count in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0])):
+            actor = _actor_for_harness_rule(rule)
+            sev = "high" if "security" in rule.lower() else "medium"
+            candidates.append(
+                {
+                    "actor": actor,
+                    "source": "harness",
+                    "rule": rule,
+                    "count": count,
+                    "severity": sev,
+                    "text": f"Corriger `{rule}` — {count} violation(s)",
+                    "detail": f"{count} violation(s) pour {rule}",
+                }
+            )
+
+    # 2) alerts
+    if isinstance(insights, dict):
+        alerts = insights.get("alerts")
+        if isinstance(alerts, list):
+            for alert in alerts:
+                if not isinstance(alert, dict):
+                    continue
+                rule = str(alert.get("rule") or "").strip()
+                if not rule:
+                    continue
+                sev = str(alert.get("severity") or "medium").lower()
+                actor = _actor_for_alert(rule)
+                observed = alert.get("observed")
+                threshold = alert.get("threshold")
+                unit = alert.get("unit") or ""
+                candidates.append(
+                    {
+                        "actor": actor,
+                        "source": "alert",
+                        "rule": rule,
+                        "severity": sev,
+                        "observed": observed,
+                        "threshold": threshold,
+                        "unit": unit,
+                        "text": f"Alerte `{rule}` — observé {observed} vs seuil {threshold}{(' ' + unit) if unit else ''} ({sev})",
+                        "detail": f"seuil {threshold}, observé {observed}{(' ' + unit) if unit else ''}",
+                    }
+                )
+
+    # 3) audit findings (qualitatif)
+    if isinstance(findings, dict):
+        flist = findings.get("findings")
+        if isinstance(flist, list):
+            for finding in flist:
+                if not isinstance(finding, dict):
+                    continue
+                cat = str(finding.get("category") or "unknown").strip() or "unknown"
+                sev = str(finding.get("severity") or "medium").lower()
+                actor = _actor_for_finding(finding)
+                desc = str(finding.get("description") or "").strip()
+                rec = str(finding.get("recommendation") or "").strip()
+                # texte concis sans chiffres libres (spec prose) — on garde desc/rec tronqués
+                short = f"{cat} — {desc[:80]} → {rec[:80]}" if desc or rec else cat
+                candidates.append(
+                    {
+                        "actor": actor,
+                        "source": "audit",
+                        "category": cat,
+                        "severity": sev,
+                        "description": desc,
+                        "recommendation": rec,
+                        "text": short,
+                        "detail": desc or cat,
+                    }
+                )
+
+    if not candidates:
+        return []
+
+    # Déduplication par (actor, rule/category/text)
+    seen: set[tuple[str, str]] = set()
+    uniq: list[dict] = []
+    for cand in candidates:
+        key_rule = cand.get("rule") or cand.get("category") or cand.get("text") or ""
+        key = (cand.get("actor") or "Agent", str(key_rule))
+        if key not in seen:
+            seen.add(key)
+            uniq.append(cand)
+
+    def _sort_key(cand: dict) -> tuple[int, int, int, str, str]:
+        sev_rank = _SEV_RANK.get(str(cand.get("severity") or "medium").lower(), 3)
+        source_rank = {"harness": 0, "alert": 1, "audit": 2}.get(str(cand.get("source") or ""), 3)
+        count_rank = -int(cand.get("count", 0)) if isinstance(cand.get("count"), int) else 0
+        rule_key = str(cand.get("rule") or cand.get("category") or "")
+        actor_key = str(cand.get("actor") or "")
+        return (sev_rank, source_rank, count_rank, rule_key, actor_key)
+
+    uniq.sort(key=_sort_key)
+
+    # Grouper : un meilleur par acteur d'abord, dans l'ordre Toi/Pipeline/Agent
+    by_actor: dict[str, list[dict]] = {"Toi": [], "Pipeline": [], "Agent": []}
+    for cand in uniq:
+        actor = cand.get("actor")
+        if actor not in by_actor:
+            actor = "Agent"
+            cand = {**cand, "actor": actor}
+        by_actor[actor].append(cand)
+
+    ordered: list[dict] = []
+    for actor in ("Toi", "Pipeline", "Agent"):
+        if by_actor[actor]:
+            ordered.append(by_actor[actor][0])
+            if len(ordered) >= limit:
+                break
+
+    # Compléter jusqu'à limit avec les suivants les plus sévères
+    if len(ordered) < limit:
+        for cand in uniq:
+            if cand not in ordered:
+                ordered.append(cand)
+                if len(ordered) >= limit:
+                    break
+
+    return ordered[:limit]
+
+
 def _critical_security_findings(digest: object) -> list[dict]:
     """Return critical security findings, preserving deterministic provenance."""
     if not isinstance(digest, dict):
@@ -223,9 +419,7 @@ def _critical_security_findings(digest: object) -> list[dict]:
         for finding in findings
         if (
             str(finding.get("severity") or "").lower() == "critical"
-            and str(finding.get("rule") or finding.get("id") or "")
-            .lower()
-            .startswith("security/")
+            and str(finding.get("rule") or finding.get("id") or "").lower().startswith("security/")
         )
         or _is_blocking_security_rule(finding.get("rule") or finding.get("id"))
     ]
@@ -391,11 +585,9 @@ def _artifact_contract_valid(
     if name == "weekly-harness-digest":
         inspection = value.get("inspection")
         return (
-            isinstance(inspection, Mapping) and bool(inspection)
-        ) or (
-            isinstance(value.get("rules"), list) and bool(value["rules"])
-        ) or (
-            isinstance(value.get("findings"), list) and bool(value["findings"])
+            (isinstance(inspection, Mapping) and bool(inspection))
+            or (isinstance(value.get("rules"), list) and bool(value["rules"]))
+            or (isinstance(value.get("findings"), list) and bool(value["findings"]))
         )
     if name == "weekly-ecosystem":
         return (
@@ -499,9 +691,7 @@ def _record_text(record: object) -> str:
     return " ".join(_text_values(record)).casefold()
 
 
-def _is_report_only_record(
-    record: object, *, project_root: Path | str | None = None
-) -> bool:
+def _is_report_only_record(record: object, *, project_root: Path | str | None = None) -> bool:
     """Recognize external, report-only permission outcomes.
 
     A bare ``permission denied`` or a producer-supplied ``report_only`` flag is
@@ -576,9 +766,7 @@ def _is_recovered_record(record: object) -> bool:
         or "recovered" in text
         or "fallback" in text
         or "récupér" in text
-    ) and any(
-        marker in text for marker in _RECOVERABLE_INPUT_MARKERS
-    )
+    ) and any(marker in text for marker in _RECOVERABLE_INPUT_MARKERS)
 
 
 def _artifact_entry_valid(entry: object) -> bool:
@@ -623,7 +811,13 @@ def _audit_declaration_values(record: object) -> list[str]:
         if isinstance(value, str):
             values.append(value)
         elif isinstance(value, Mapping):
-            for key in ("path", "artifact", "artifact_path", "audit_artifact", "audit_artifact_path"):
+            for key in (
+                "path",
+                "artifact",
+                "artifact_path",
+                "audit_artifact",
+                "audit_artifact_path",
+            ):
                 if key in value:
                     collect(value[key])
         elif isinstance(value, list):
@@ -709,8 +903,7 @@ def _recoverable_artifact_valid(
     allowed = set(_RECOVERABLE_ARTIFACT_STEMS[source_kind])
     if isinstance(artifact, list):
         return any(
-            _recoverable_artifact_valid(out, date, source_text, candidate)
-            for candidate in artifact
+            _recoverable_artifact_valid(out, date, source_text, candidate) for candidate in artifact
         )
     if not isinstance(artifact, str) or not artifact.strip():
         # Recovery must identify the replacement.  Guessing from any valid
@@ -879,7 +1072,9 @@ def _branch_applicability(
                 filename = _declared_run_filename(item, out)
                 if filename is None:
                     continue
-                match = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9_-]*)-(\d{4}-\d{2}-\d{2})\.json", filename)
+                match = re.fullmatch(
+                    r"([A-Za-z0-9][A-Za-z0-9_-]*)-(\d{4}-\d{2}-\d{2})\.json", filename
+                )
                 if match and match.group(2) == date and match.group(1) in optional_names:
                     applicable[match.group(1)] = True
             for nested in value.values():
@@ -937,12 +1132,8 @@ def _warning_is_nonblocking(
         if not isinstance(value, Mapping) or value.get("required") is not False:
             continue
         if (
-            (_artifact_entry_valid(value) or value.get("status") in {"absent", "not_applicable"})
-            and (
-                str(key).casefold() in text
-                or str(value.get("path", "")).casefold() in text
-            )
-        ):
+            _artifact_entry_valid(value) or value.get("status") in {"absent", "not_applicable"}
+        ) and (str(key).casefold() in text or str(value.get("path", "")).casefold() in text):
             return True
     return False
 
@@ -1060,10 +1251,14 @@ def applicable_summary_rc(
             and value.get("required") is True
             and str(value.get("status") or "").casefold() not in {"present", "valid", "ok"}
         ]
-        optional_only = bool(optional_entries) and not blocking_inputs and all(
-            str(value.get("status") or "").casefold() in valid_input_statuses
-            for value in inputs.values()
-            if isinstance(value, Mapping)
+        optional_only = (
+            bool(optional_entries)
+            and not blocking_inputs
+            and all(
+                str(value.get("status") or "").casefold() in valid_input_statuses
+                for value in inputs.values()
+                if isinstance(value, Mapping)
+            )
         )
         if blocking_inputs:
             return 1
@@ -1188,9 +1383,7 @@ def validate_required_artifacts(
         raw_declaration = str(declaration) if isinstance(declaration, str) else ""
         filename = _declared_run_filename(raw_declaration, out)
         match = (
-            re.fullmatch(r"audit-findings-(.+)\.json", filename)
-            if filename is not None
-            else None
+            re.fullmatch(r"audit-findings-(.+)\.json", filename) if filename is not None else None
         )
         key = filename or f"audit-findings-declaration-{len(dynamic_required)}"
         if key in dynamic_required:
@@ -1198,7 +1391,9 @@ def validate_required_artifacts(
         path = out / filename if filename is not None else out / raw_declaration
         sid = match.group(1) if match else ""
         data, state = _json_file_state(path) if match else (None, "ill_readable")
-        valid = bool(match and _canonical_audit_path(out, sid) == path and _audit_envelope_valid(data, sid))
+        valid = bool(
+            match and _canonical_audit_path(out, sid) == path and _audit_envelope_valid(data, sid)
+        )
         dynamic_required[key] = {
             "path": str(path),
             "present": valid,
@@ -1210,6 +1405,7 @@ def validate_required_artifacts(
         }
     required.update(dynamic_required)
     optional = {f"{name}-{date}.json": check_json(name) for name in names["optional"]}
+
     def _check_html(path: Path | None) -> dict[str, object]:
         result: dict[str, object] = {"status": "absent", "path": str(path) if path else None}
         if path is None:
@@ -1234,7 +1430,9 @@ def validate_required_artifacts(
     else:
         html = {"status": "disabled", "path": None}
     required_status = (
-        "pass" if required and all(a["status"] == "present" for a in required.values()) else "incomplete"
+        "pass"
+        if required and all(a["status"] == "present" for a in required.values())
+        else "incomplete"
     )
     optional_missing = [
         entry["path"]
@@ -1302,15 +1500,15 @@ def _gate_status(provenance: dict[str, dict[str, object]]) -> dict[str, object]:
         "required": required,
         "optional": optional,
         "artifacts": {
-            "status": "pass" if all(a["status"] == "present" for a in required.values()) else "incomplete",
+            "status": "pass"
+            if all(a["status"] == "present" for a in required.values())
+            else "incomplete",
             "missing": missing,
             "ill_readable": ill_readable,
             "optional_missing": [
                 a["path"]
                 for a in artifacts
-                if a["status"] == "absent"
-                and not a.get("required")
-                and a.get("applicable", True)
+                if a["status"] == "absent" and not a.get("required") and a.get("applicable", True)
             ],
             "optional_ill_readable": [
                 a["path"]
@@ -1422,9 +1620,7 @@ def _curation_manifest_gate(
     partial.  Apply refusals remain counted, except an explicitly external,
     report-only permission refusal.  A malformed manifest is always nonzero.
     """
-    if not _artifact_contract_valid(
-        "skill-curate", manifest, date=date, allow_legacy_v1=True
-    ):
+    if not _artifact_contract_valid("skill-curate", manifest, date=date, allow_legacy_v1=True):
         return 2, "manifeste de curation malformé (schéma attendu absent ou invalide)"
     if not isinstance(manifest, Mapping):
         return 2, "manifeste de curation malformé (objet JSON attendu)"
@@ -1466,8 +1662,10 @@ def _curation_manifest_gate(
         }
         if statuses & _REFUSAL_STATUSES:
             refusal_records.append(decision)
-    if raw_rc == 1 and refusal_records and all(
-        _is_report_only_record(decision, project_root=project_root)
+    if (
+        raw_rc == 1
+        and refusal_records
+        and all(_is_report_only_record(decision, project_root=project_root))
     ):
         return 0, None
     if raw_rc == 1:
@@ -1545,11 +1743,16 @@ def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> 
             }
             for rule, count in _top_harness_rules(digest, cfg.harness_ignored_rules)
         ],
+        "top_next_steps": _top_next_steps(
+            digest, insights, findings, ignored_rules=cfg.harness_ignored_rules
+        ),
         "cost_outliers_state": summary.get("cost_outliers_state", "computed"),
         "outliers": {o["session_id"] for o in summary.get("cost_outliers", [])},
         "audit_candidates": _load_json(out / f"weekly-audit-candidates-{date}.json"),
         "audit_worker_statuses": (
-            (_load_json(out / f"weekly-audit-candidates-{date}.json") or {}).get("worker_statuses", [])
+            (_load_json(out / f"weekly-audit-candidates-{date}.json") or {}).get(
+                "worker_statuses", []
+            )
         ),
         "watch_findings": _load_json(out / f"weekly-watch-findings-{date}.json"),
         "coherence_findings": coherence_findings,
@@ -2017,17 +2220,16 @@ def report_assemble(
             if not report_only_permission:
                 rc = max(rc, 1)
         elif html_enabled and artifact_gate["html"]["status"] != "present":
-            warnings.append(
-                "HTML enabled but report artifact "
-                f"{artifact_gate['html']['status']}"
-            )
+            warnings.append(f"HTML enabled but report artifact {artifact_gate['html']['status']}")
             rc = max(rc, 1)
         if html_path:
             try:
                 open_html_report(cfg, html_path)
             except Exception as exc:  # best effort; external permission is report-only
                 if _is_external_permission_failure(cfg, exc):
-                    warnings.append("HTML auto-open permission refused outside worktree; report-only")
+                    warnings.append(
+                        "HTML auto-open permission refused outside worktree; report-only"
+                    )
                 else:
                     warnings.append(f"HTML auto-open failed: {type(exc).__name__}")
                     rc = max(rc, 1)
