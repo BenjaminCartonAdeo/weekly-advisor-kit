@@ -46,7 +46,7 @@ _DB_NAME = "session-store.db"
 
 #: Tables cœur exigées par `check_schema` (table → colonnes requises).
 _CORE_TABLES: dict[str, tuple[str, ...]] = {
-    "sessions": ("id", "cwd", "repository", "branch", "summary", "created_at", "updated_at"),
+        "sessions": ("id", "cwd", "repository", "branch", "summary", "created_at", "updated_at"),
     "turns": ("session_id", "turn_index", "user_message", "assistant_response", "timestamp"),
     "assistant_usage_events": (
         "session_id",
@@ -94,7 +94,7 @@ def resolve_copilot_home(source_cfg: dict) -> Path:
     """Résout COPILOT_HOME : ``copilot_home`` > ``COPILOT_CONFIG_DIR`` > défaut OS."""
     if isinstance(source_cfg, dict):
         raw = source_cfg.get("copilot_home")
-        if isinstance(raw, str) and raw.strip():
+        if isinstance(raw, str) and raw.strip() and raw.strip().lower() != "auto":
             return Path(raw).expanduser()
     env = os.environ.get("COPILOT_CONFIG_DIR")
     if env and env.strip():

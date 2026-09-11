@@ -174,6 +174,12 @@ def test_resolve_copilot_home_priority(monkeypatch, tmp_path: Path):
     assert resolve_copilot_home({}) == tmp_path / "env"
 
 
+def test_resolve_copilot_home_auto_uses_default(monkeypatch, tmp_path: Path):
+    monkeypatch.delenv("COPILOT_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    assert resolve_copilot_home({"copilot_home": "auto"}) == tmp_path / ".copilot"
+
+
 def test_harness_constants(provider):
     assert provider.harness == HARNESS_COPILOT_CLI == "copilot-cli"
     assert PROVIDER_TYPE == HARNESS_COPILOT_CLI
