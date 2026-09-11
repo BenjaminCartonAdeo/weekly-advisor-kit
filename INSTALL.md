@@ -54,7 +54,7 @@ Fichier : `.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`
 | `open_browser` | Ouverture automatique du rapport HTML dans le navigateur après l'assemble — mettre `false`, ou poser la variable d'environnement `WEEKLY_NO_BROWSER=1` pour un cron headless | `true` |
 | `kit_root` | (optionnel) Worktree du kit pour la synchro best-effort des drafts auto-rédigés (`commit-draft`, v6.0.l) | absent → désactivé |
 | `harness_include` | Profil et globs allowlistés pour l'étape `harness` (projection étendue au harnais détecté) | `advisory` (policy + documentation) |
-| `session_sources` | Sources de sessions actives (liste d'objets `{type, ...}` : `opencode`, `claude-code`, `copilot-vscode`) ; clé extra `cost_rate_usd_per_mtok` = surcharge du taux d'estimation | `[{"type": "opencode"}]` |
+| `session_sources` | Sources de sessions actives (liste d'objets `{type, ...}` : `opencode`, `claude-code`, `copilot-cli`) ; clé extra `cost_rate_usd_per_mtok` = surcharge du taux d'estimation ; voir §2.3.1 pour la clé Copilot (`copilot_home`) | `[{"type": "opencode"}]` |
 | `draft_targets` | Cible de drafting mono-cible : liste de harnais (override), `[]` (legacy toutes cibles), absent/invalide (détection auto par marqueurs) | détection auto |
 | `harness_auto_fix_rules` | Règles explicitement autorisées pour l'application automatique | `[]` (aucune) |
 | `harness_auto_fix_max_files` | Nombre maximum de fichiers modifiés par remédiation | `1` |
@@ -79,6 +79,37 @@ Toutes les autres clés ont des défauts raisonnables (fenêtre 7 j, budgets, se
 veille `watch`). `~` est supporté des deux côtés — le moteur Python (`expanduser()`)
 et le plugin TS (`os.homedir()`) l'expandent avec la même sémantique ; un chemin
 absolu reste recommandé. Personnalisez `watch` (sources de veille) et les budgets selon votre usage.
+
+#### 2.3.1 Sources Copilot — CLI (Linux/Windows)
+
+Défaut rétrocompatible : `session_sources` absent ⇒ opencode seul. Pour activer
+Copilot, déclarez les sources explicitement (JSON strict : pas de commentaires —
+l'exemple ci-dessous est à fusionner dans votre config, pas à coller tel quel) :
+
+```json
+"session_sources": [
+  {"type": "opencode"},
+  {"type": "copilot-cli", "copilot_home": "auto", "cost_rate_usd_per_mtok": 2.5}
+]
+```
+
+`"auto"` n'est pas résolu par le moteur : omettez simplement la clé pour la
+détection automatique (`copilot_home` absent ⇒ `COPILOT_CONFIG_DIR` puis défaut
+OS).
+
+| Source | Chemin Linux | Chemin Windows | Variable d'environnement |
+|---|---|---|---|
+| `copilot-cli` (`copilot_home`) | `~/.copilot` (`session-store.db`) | `%USERPROFILE%\.copilot` | `COPILOT_CONFIG_DIR` |
+
+Coûts estimés : le CLI persiste de vrais tokens (`assistant_usage_events`) mais
+aucun prix → `cost_estimates` au taux du harnais (défaut générique 5,0 $/Mtok,
+surchargé à 2,5 via `cost_rate_usd_per_mtok` ci-dessus) et warnings
+`missing-pricing:github-copilot/<modèle>`.
+Recherche plein-texte CLI via la table optionnelle `search_index` (FTS5, signalée
+par le doctor : `fts=oui/non`). Le doctor affiche `[copilot-cli] OK
+(home,schema_version,sessions,events,fts)` ; source absente ⇒ warning
+fail-soft, repli sur les sources restantes (exit 2 seulement si zéro source
+utilisable).
 
 #### Lien de configuration vers la racine du kit
 
@@ -129,7 +160,7 @@ digest (`harness_include.unscoped_files`) au lieu d'être scanné silencieusemen
 
 **Placement mono-cible** : chaque projet est rattaché à **un** harnais de drafting,
 résolu par détection de marqueurs au `project_root` (priorité `claude-code` >
-`opencode` > `copilot-vscode` > `codex`), surchargeable par `draft_targets` (`[]` =
+`opencode` > `copilot-cli` > `codex`), surchargeable par `draft_targets` (`[]` =
 mode legacy). Aucun marqueur → défaut `opencode` + warning du doctor (exit 1).
 
 Choisissez explicitement votre harnais cible dans `draft_targets` si vous ne voulez
@@ -139,13 +170,13 @@ pas dépendre de la détection automatique. Exemple pour forcer OpenCode :
 "draft_targets": ["opencode"]
 ```
 
-Valeurs possibles : `claude-code`, `opencode`, `copilot-vscode`, `codex`.
+Valeurs possibles : `claude-code`, `opencode`, `copilot-cli`, `codex`.
 
 | Marqueur projet | Harnais | Cibles de projection des drafts |
 |---|---|---|
 | `.claude/` | claude-code | `.claude/skills` |
 | `.opencode/` | opencode | `.opencode/skills` |
-| `.github/prompts/` ou `.github/skills/` | copilot-vscode | `.github/prompts`, `.github/skills` |
+| `.github/prompts/` ou `.github/skills/` | copilot-cli | `.github/prompts`, `.github/skills` |
 | `.agents/` | codex | `.agents` |
 
 **Zéro symlink** : la projection étape 5 et les artefacts générés sont de vraies
@@ -181,7 +212,7 @@ run cron (mesuré v5.32).
 
 ```sh
 cd .opencode/plugins/weekly-advisor-engine
-uv run python -m pytest -q     # 543 tests — tout doit passer
+uv run python -m pytest -q     # 579 tests — tout doit passer
 cd ../../..
 opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"

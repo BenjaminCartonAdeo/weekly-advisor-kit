@@ -3,7 +3,7 @@
 Revue hebdomadaire automatisée de vos agents de code : analyse de la télémétrie locale, veille écosystème, audit des sessions coûteuses et rapport HTML interactif, avec un moteur 100 % déterministe, zéro LLM pour les chiffres.
 
 [![CI](https://github.com/BenjaminCartonAdeo/weekly-advisor-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/BenjaminCartonAdeo/weekly-advisor-kit/actions/workflows/ci.yml)
-[![tests 543](https://img.shields.io/badge/tests-543-brightgreen)](.opencode/plugins/weekly-advisor-engine)
+[![tests 579](https://img.shields.io/badge/tests-579-brightgreen)](.opencode/plugins/weekly-advisor-engine)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ![Architecture du kit](doc/diagrams/architecture.svg)
@@ -63,13 +63,21 @@ Les clés principales vivent dans [`weekly-telemetry-config.json`](.opencode/plu
 
 | Clé | Rôle | Défaut |
 |---|---|---|
-| `session_sources` | Sources de télémétrie actives (opencode, claude-code, copilot-vscode…) | opencode |
+| `session_sources` | Sources de télémétrie actives (opencode, claude-code, copilot-cli…) | opencode |
 | `draft_targets` | Harnais cible du drafting (auto par marqueurs projet, ou liste) | auto |
 | `output_dir` | Répertoire des runs et archives | `~/opencode-weekly-reviews` |
 | `cost_rate_usd_per_mtok` | Taux de coût par source (surcharge) | par modèle |
 | `lookback_days` | Fenêtre analysée par run | 7 |
 
 Le détail des clés, des seuils et des invariants est dans la [spécification](doc/spec-opencode-weekly-advisor) et [`INSTALL.md`](INSTALL.md) §2.3.
+
+### Sources Copilot (CLI)
+
+Désactivées par défaut (défaut opencode seul, rétrocompatible). Chemin
+auto-détecté : CLI `~/.copilot` (Linux) / `%USERPROFILE%\.copilot` (Windows,
+surcharge `COPILOT_CONFIG_DIR`). Exemple `session_sources` (opencode +
+CLI avec vrais tokens estimés à 2,5 $/Mtok, recherche FTS) : [`INSTALL.md`](INSTALL.md)
+§2.3.1.
 
 ## Contributing
 
@@ -78,7 +86,7 @@ Contributions bienvenues, en particulier : nouveaux providers de harnais, règle
 Validation locale (depuis le dossier moteur `.opencode/plugins/weekly-advisor-engine`) :
 
 ```sh
-uv run python -m pytest -q    # 543 tests
+uv run python -m pytest -q    # 579 tests
 uv run ruff check .           # lint
 uv run ruff format --check .  # format
 ```
@@ -89,7 +97,7 @@ Gate docs ↔ code (depuis la racine du repo, node requis) :
 node scripts/check-flow-docs.mjs   # G1 : comptes de tests cohérents + contrats de flux
 ```
 
-Le CI (`.github/workflows/ci.yml`) répète lint, format, 543 tests, packaging et smoke test du plugin sur Ubuntu et Windows, puis la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec-opencode-weekly-advisor`](doc/spec-opencode-weekly-advisor), l'architecture dans [`doc/ARCHITECTURE.md`](doc/ARCHITECTURE.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
+Le CI (`.github/workflows/ci.yml`) répète lint, format, 579 tests, packaging et smoke test du plugin sur Ubuntu et Windows, puis la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec-opencode-weekly-advisor`](doc/spec-opencode-weekly-advisor), l'architecture dans [`doc/ARCHITECTURE.md`](doc/ARCHITECTURE.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
 
 ## Documentation
 
