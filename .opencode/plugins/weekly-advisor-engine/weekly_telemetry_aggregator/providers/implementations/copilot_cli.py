@@ -46,7 +46,7 @@ _DB_NAME = "session-store.db"
 
 #: Tables cœur exigées par `check_schema` (table → colonnes requises).
 _CORE_TABLES: dict[str, tuple[str, ...]] = {
-        "sessions": ("id", "cwd", "repository", "branch", "summary", "created_at", "updated_at"),
+    "sessions": ("id", "cwd", "repository", "branch", "summary", "created_at", "updated_at"),
     "turns": ("session_id", "turn_index", "user_message", "assistant_response", "timestamp"),
     "assistant_usage_events": (
         "session_id",
