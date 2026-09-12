@@ -416,20 +416,30 @@ function collectPortability(stdout: string): { errors: string[]; warnings: strin
   return { errors, warnings }
 }
 
-// Factories pour les tools « 1 sous-commande → 1 appel CLI » (le cas majoritaire).
-// `lookbackFlag` ajoute l'arg optionnel `lookback_days` (override de run déduit du
+// Tools « 1 sous-commande → 1 appel CLI » (le cas majoritaire).
+// `lookback` ajoute l'arg optionnel `lookback_days` (override de run déduit du
 // prompt — v6.0.b : fenêtre en jours, jamais d'édition de config).
-function anchorTool(
-  description: string,
-  cliArgs: (anchor: string, lookbackDays: number | undefined) => string[],
-  timeoutMs: number,
-  lookbackFlag = false,
-) {
+function withLookback(cliArgs: string[], lookbackDays: number | undefined): string[] {
+  return lookbackDays ? [...cliArgs, "--lookback-days", String(lookbackDays)] : cliArgs
+}
+
+interface SimpleToolSpec {
+  name: string
+  description: string
+  subcommand: string
+  timeoutMs: number
+  anchored?: boolean
+  lookback?: boolean
+}
+
+function simpleTool(spec: SimpleToolSpec) {
   return tool({
-    description,
+    description: spec.description,
     args: {
-      anchor: tool.schema.string().optional().describe("ISO-8601 override (rare)"),
-      ...(lookbackFlag
+      ...(spec.anchored === false
+        ? {}
+        : { anchor: tool.schema.string().optional().describe("ISO-8601 override (rare)") }),
+      ...(spec.lookback
         ? {
             lookback_days: tool.schema
               .number()
@@ -438,26 +448,125 @@ function anchorTool(
           }
         : {}),
     },
-    async execute(args) {
-      const { outputDir } = resolveEngine(worktree)
-      return runCli(worktree, cliArgs(anchorArg(args.anchor, outputDir), args.lookback_days), timeoutMs)
+    async execute(args: any) {
+      const argv = [spec.subcommand]
+      if (spec.anchored !== false) {
+        const { outputDir } = resolveEngine(worktree)
+        argv.push("--anchor", anchorArg(args.anchor, outputDir))
+      }
+      return runCli(worktree, spec.lookback ? withLookback(argv, args.lookback_days) : argv, spec.timeoutMs)
     },
   })
 }
 
-function noArgTool(description: string, cliArgs: string[], timeoutMs: number) {
-  return tool({
-    description,
-    args: {},
-    async execute() {
-      return runCli(worktree, cliArgs, timeoutMs)
-    },
-  })
+function simpleTools(specs: SimpleToolSpec[]) {
+  return Object.fromEntries(specs.map((spec) => [spec.name, simpleTool(spec)]))
 }
 
-function withLookback(cliArgs: string[], lookbackDays: number | undefined): string[] {
-  return lookbackDays ? [...cliArgs, "--lookback-days", String(lookbackDays)] : cliArgs
-}
+const ANCHORED_TOOLS: SimpleToolSpec[] = [
+  {
+    name: "weekly_run",
+    description:
+      "Étape 1 du weekly-advisor : collecte télémétrique complète (run). Écrit weekly-summary-<date>.json. L'ancre est lue/créée/rafraîchie dans <output_dir>/anchor-last.txt.",
+    subcommand: "run",
+    timeoutMs: 1_800_000,
+    lookback: true,
+  },
+  {
+    name: "weekly_releases",
+    description: "Étape 2 : veille écosystème (releases). Écrit weekly-ecosystem-<date>.json.",
+    subcommand: "releases",
+    timeoutMs: 900_000,
+    lookback: true,
+  },
+  {
+    name: "weekly_watch_context",
+    description:
+      "Étape 2.5 : inventaire déterministe du worktree et crosswalk marché/existant. Écrit weekly-watch-context-<date>.json. SÉQUENTIEL : nécessite weekly-ecosystem-<date>.json de l'étape 2 — exécuter weekly_releases d'abord, jamais en parallèle.",
+    subcommand: "watch-context",
+    timeoutMs: 120_000,
+  },
+  {
+    name: "weekly_watch_distill",
+    description:
+      "Étape 2.2 : distillation déterministe de l'écosystème vers ~30 fiches candidates (scoring, screening sécurité, mémoire inter-run). Écrit watch-candidates-<date>.json et watch-memory-digest-<date>.json. SÉQUENTIEL : exécuter après weekly_releases, avant weekly_watch_context ; exit 2 = écosystème absent ou étape désactivée (config watch_distill.enabled) — dégradation attendue, le flux aval retombe sur l'écosystème complet.",
+    subcommand: "watch-distill",
+    timeoutMs: 120_000,
+  },
+  {
+    name: "weekly_watch_validate",
+    description:
+      "Étape 3.6 : valide les findings bruts de la veille contre l'inventaire déterministe. Écrit weekly-watch-findings-<date>.json.",
+    subcommand: "watch-validate",
+    timeoutMs: 120_000,
+  },
+  {
+    name: "weekly_audit_candidates",
+    description:
+      "Étape 3 (1/2) : sélection déterministe des sessions à auditer (audit-candidates) → weekly-audit-candidates-<date>.json (audited/unaudited, plafond audit_max_sessions).",
+    subcommand: "audit-candidates",
+    timeoutMs: 120_000,
+  },
+]
+
+const MIDDLE_TOOLS: SimpleToolSpec[] = [
+  {
+    name: "weekly_harness",
+    description: "Étape 5 : lint de .opencode/ (harness-eval). Écrit weekly-harness-digest-<date>.json.",
+    subcommand: "harness",
+    timeoutMs: 900_000,
+  },
+  {
+    name: "weekly_insights",
+    description: "Étape 6 : deltas, alertes et maintenance. Écrit weekly-insights-<date>.json.",
+    subcommand: "insights",
+    timeoutMs: 300_000,
+  },
+  {
+    name: "weekly_draft_candidates",
+    description:
+      "Étape 4 (1/2) : candidats à l'auto-drafting (draft-candidates) → weekly-draft-candidates-<date>.json (skill-candidate / command-candidate / command-improvement, plafonné).",
+    subcommand: "draft-candidates",
+    timeoutMs: 120_000,
+  },
+  {
+    name: "weekly_report_prep",
+    description: "Étape 7a (1/2) : prépare le brouillon de rapport (report-prep → weekly-report-draft-<date>.md).",
+    subcommand: "report-prep",
+    timeoutMs: 120_000,
+  },
+  {
+    name: "weekly_report_blocks_draft",
+    description:
+      "Étape 7a (2/2) : génère le brouillon auto des blocs (report-blocks-draft → weekly-report-blocks-auto-<date>.md).",
+    subcommand: "report-blocks-draft",
+    timeoutMs: 120_000,
+  },
+  {
+    name: "weekly_report_assemble",
+    description:
+      "Étape 7c : assemble le rapport final (report-assemble → weekly-report-<date>.md). ⚠ un assemble réussi consomme le draft : pour un nouvel assemble, relancer weekly_report_prep d'abord.",
+    subcommand: "report-assemble",
+    timeoutMs: 120_000,
+  },
+]
+
+const FINAL_TOOLS: SimpleToolSpec[] = [
+  {
+    name: "weekly_self_cost",
+    description: "Étape 8 (annexe) : coût de la fenêtre du run (self-cost).",
+    subcommand: "self-cost",
+    timeoutMs: 120_000,
+    anchored: false,
+  },
+  {
+    name: "weekly_doctor",
+    description: "Diagnostic du kit : vérifie opencode, harness-eval, git, gh, DB et la config (doctor).",
+    subcommand: "doctor",
+    timeoutMs: 120_000,
+    anchored: false,
+  },
+]
 
 const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
   worktree = resolveWorktree(ctx.directory, ctx.worktree)
@@ -480,54 +589,7 @@ const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
           return JSON.stringify(preflight(worktree))
         },
       }),
-      weekly_run: anchorTool(
-        "Étape 1 du weekly-advisor : collecte télémétrique complète (run). " +
-          "Écrit weekly-summary-<date>.json. L'ancre est lue/créée/rafraîchie dans <output_dir>/anchor-last.txt.",
-        (anchor, lookback) => withLookback(["run", "--anchor", anchor], lookback),
-        1_800_000,
-        true,
-      ),
-
-      weekly_releases: anchorTool(
-        "Étape 2 : veille écosystème (releases). Écrit weekly-ecosystem-<date>.json.",
-        (anchor, lookback) => withLookback(["releases", "--anchor", anchor], lookback),
-        900_000,
-        true,
-      ),
-
-      weekly_watch_context: anchorTool(
-        "Étape 2.5 : inventaire déterministe du worktree et crosswalk marché/existant. " +
-          "Écrit weekly-watch-context-<date>.json. " +
-          "SÉQUENTIEL : nécessite weekly-ecosystem-<date>.json de l'étape 2 — " +
-          "exécuter weekly_releases d'abord, jamais en parallèle.",
-        (anchor) => ["watch-context", "--anchor", anchor],
-        120_000,
-      ),
-
-      weekly_watch_distill: anchorTool(
-        "Étape 2.2 : distillation déterministe de l'écosystème vers ~30 fiches candidates " +
-          "(scoring, screening sécurité, mémoire inter-run). " +
-          "Écrit watch-candidates-<date>.json et watch-memory-digest-<date>.json. " +
-          "SÉQUENTIEL : exécuter après weekly_releases, avant weekly_watch_context ; " +
-          "exit 2 = écosystème absent ou étape désactivée (config watch_distill.enabled) — " +
-          "dégradation attendue, le flux aval retombe sur l'écosystème complet.",
-        (anchor) => ["watch-distill", "--anchor", anchor],
-        120_000,
-      ),
-
-      weekly_watch_validate: anchorTool(
-        "Étape 3.6 : valide les findings bruts de la veille contre l'inventaire déterministe. " +
-          "Écrit weekly-watch-findings-<date>.json.",
-        (anchor) => ["watch-validate", "--anchor", anchor],
-        120_000,
-      ),
-
-      weekly_audit_candidates: anchorTool(
-        "Étape 3 (1/2) : sélection déterministe des sessions à auditer (audit-candidates) → " +
-          "weekly-audit-candidates-<date>.json (audited/unaudited, plafond audit_max_sessions).",
-        (anchor) => ["audit-candidates", "--anchor", anchor],
-        120_000,
-      ),
+      ...simpleTools(ANCHORED_TOOLS),
 
       weekly_show_session: tool({
         description:
@@ -561,11 +623,7 @@ const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
         },
       }),
 
-      weekly_harness: anchorTool(
-        "Étape 5 : lint de .opencode/ (harness-eval). Écrit weekly-harness-digest-<date>.json.",
-        (anchor) => ["harness", "--anchor", anchor],
-        900_000,
-      ),
+      ...simpleTools(MIDDLE_TOOLS.slice(0, 1)),
 
       weekly_harness_remediate: tool({
         description:
@@ -598,37 +656,7 @@ const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
         },
       }),
 
-      weekly_insights: anchorTool(
-        "Étape 6 : deltas, alertes et maintenance. Écrit weekly-insights-<date>.json.",
-        (anchor) => ["insights", "--anchor", anchor],
-        300_000,
-      ),
-
-      weekly_draft_candidates: anchorTool(
-        "Étape 4 (1/2) : candidats à l'auto-drafting (draft-candidates) → " +
-          "weekly-draft-candidates-<date>.json (skill-candidate / command-candidate / command-improvement, plafonné).",
-        (anchor) => ["draft-candidates", "--anchor", anchor],
-        120_000,
-      ),
-
-      weekly_report_prep: anchorTool(
-        "Étape 7a (1/2) : prépare le brouillon de rapport (report-prep → weekly-report-draft-<date>.md).",
-        (anchor) => ["report-prep", "--anchor", anchor],
-        120_000,
-      ),
-
-      weekly_report_blocks_draft: anchorTool(
-        "Étape 7a (2/2) : génère le brouillon auto des blocs (report-blocks-draft → weekly-report-blocks-auto-<date>.md).",
-        (anchor) => ["report-blocks-draft", "--anchor", anchor],
-        120_000,
-      ),
-
-      weekly_report_assemble: anchorTool(
-        "Étape 7c : assemble le rapport final (report-assemble → weekly-report-<date>.md). " +
-          "⚠ un assemble réussi consomme le draft : pour un nouvel assemble, relancer weekly_report_prep d'abord.",
-        (anchor) => ["report-assemble", "--anchor", anchor],
-        120_000,
-      ),
+      ...simpleTools(MIDDLE_TOOLS.slice(1)),
 
       weekly_commit_draft: tool({
         description:
@@ -686,17 +714,7 @@ const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
         },
       }),
 
-      weekly_self_cost: noArgTool(
-        "Étape 8 (annexe) : coût de la fenêtre du run (self-cost).",
-        ["self-cost"],
-        120_000,
-      ),
-
-      weekly_doctor: noArgTool(
-        "Diagnostic du kit : vérifie opencode, harness-eval, git, gh, DB et la config (doctor).",
-        ["doctor"],
-        120_000,
-      ),
+      ...simpleTools(FINAL_TOOLS),
 
       weekly_skill_curate: tool({
         description:
@@ -767,5 +785,5 @@ const WeeklyAdvisorPlugin: Plugin = async (ctx) => {
 
 // Le loader d'opencode (v1.18.18 / next-17297) exige un export `default`
 // (SchemaError: Missing key at ["default"] sinon) — l'export nommé est conservé
-// pour le smoke test (scripts/plugin-smoke.mjs).
+// pour les tests de contrat (scripts/tests/plugin-preflight.test.mjs).
 export default WeeklyAdvisorPlugin
