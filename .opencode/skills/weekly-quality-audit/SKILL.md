@@ -1,6 +1,6 @@
 ---
 name: weekly-quality-audit
-description: Audit qualitatif des sessions coûteuses (étape 3 du weekly-advisor) — catégories de constats, schéma findings, paraphrase stricte, lien session → commande lanceuse.
+description: Étape 3 — audit qualitatif des sessions coûteuses (paraphrase stricte, findings liés à la commande lanceuse).
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: pipeline-step
@@ -150,7 +150,7 @@ identifiable dans le frontmatter/description du skill.
       "recommendation": "...",
       "recommendation_type": "prompting-habit | environment-change | skill-candidate | skill-improvement | command-candidate | command-improvement",
       "impact_order_of_magnitude": "small | medium | large",
-      "source": "new",                    // new | carried (v6.0.n)
+      "source": "new",                    // new | carried
       "carried_from": "2026-08-16-ace20d4b"  // requis si source=carried (run d'origine)
     }
   ]

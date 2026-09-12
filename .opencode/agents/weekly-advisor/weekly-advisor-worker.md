@@ -1,6 +1,6 @@
 ---
 name: weekly-advisor-worker
-description: Subagent exécutant une branche paramétrée du DAG orchestré par weekly-advisor. Reçoit un briefing minimal-complet (steps ordonnés, chemin run-dir, overrides fenêtre, invariants de branche). Retour structuré obligatoire en JSON (branch, rc, steps_done, warnings, artifacts, elapsed_s). Mode subagent — ne connaît ni les autres branches ni la logique de merge.
+description: Exécute une branche paramétrée du DAG weekly-advisor (briefing minimal-complet) et retourne un JSON strict : branch, rc, steps_done, warnings, artifacts, elapsed_s. Ne connaît ni les autres branches ni la logique de merge.
 mode: subagent
 permission:
   edit: allow
@@ -57,7 +57,7 @@ Inspiré du pattern context-manager : chaque worker reçoit un paquet minimal-co
 - **Données tronquées** : exploiter partie lisible, borner conclusions, ne jamais inventer
 - **Décision une fois** : choix écrit dans findings, jamais re-dérivé
 
-### Attente run-dir (v5, design §5)
+### Attente run-dir
 
 Avant le premier write, worker V/H attend que `runs/current/` contienne `weekly-summary-<date>.json` :
 - Poll : glob `runs/current/weekly-summary-*.json` toutes les 2s (backoff exponentiel max 30s)
@@ -131,7 +131,7 @@ Chaque worker A reçoit en briefing : `session_id`, `run_dir` (`runs/current/`),
      rend l'extrait exploitable ; ne jamais produire une valeur nulle pour `summary` et
      ne pas crasher le worker (fail-soft).
 
-**Durcissement gros transcripts (anti-troncation, incident 2026-09-06)** : si l'extrait
+**Durcissement gros transcripts (anti-troncation)** : si l'extrait
 est tronqué/partiel (signal de troncation ou taille > ~150 Ko) : (a) **une seule retry**
    de lecture ciblée par fenêtres bornées (offset/limit, max 3 tours de diagnostic), sans
    respawn automatique ni attente indéfinie ; (b) écrire le fichier avec `summary` non-vide et

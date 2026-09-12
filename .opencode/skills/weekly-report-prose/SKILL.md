@@ -1,6 +1,6 @@
 ---
 name: weekly-report-prose
-description: Rédaction du bloc prose du rapport hebdomadaire (étape 7b du weekly-advisor) — contrat anti-hallucination, balises de source, zéro chiffre, sources closes.
+description: Étape 7b — bloc prose du rapport sous contrat anti-hallucination (zéro chiffre, sources closes).
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: pipeline-step
@@ -27,7 +27,7 @@ maintenance non vides). Sinon, NE PAS créer le fichier (le brouillon auto suffi
 2. **Balise de source sur chaque affirmation** :
    - `[F:<session_id_complet>#categorie]` — finding étape 3 ; **l'ID de session doit être
      complet** (ex. `ses_01J7XQ4...`, jamais tronqué — un ID raccourci est rejeté par
-     `report-assemble` (v6.0.k F5))
+     `report-assemble`)
    - `[M:categorie]` — maintenance (R1-R4)
    - `[A:regle]` — alerte insights
    - chaque balise doit exister dans les JSON d'entrée

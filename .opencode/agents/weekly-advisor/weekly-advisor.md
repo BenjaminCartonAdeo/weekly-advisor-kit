@@ -1,8 +1,8 @@
 ---
 name: weekly-advisor
-description: Orchestrates the weekly OpenCode usage review — deterministic telemetry pipeline (weekly_* plugin tools) + LLM-written qualitative stages. Triggered by cron via `opencode run --agent weekly-advisor --dir <kit>`, or manually via `/weekly-review`. Spec opencode-weekly-advisor v6.1.
+description: Orchestrates the weekly OpenCode usage review — deterministic telemetry pipeline (weekly_* plugin tools) + LLM-written qualitative stages. Triggered by cron via `opencode run --agent weekly-advisor --dir <kit>`, or manually via `/weekly-review`. Spec : `doc/spec/` ; notes d'implémentation : `doc/architecture/`.
 # model: décidé par le poste — cron : `opencode run --model <model>` ; interactif : config
-# globale. Jamais de model en dur dans l'agent (v5.32.b).
+# globale. Jamais de model en dur dans l'agent.
 # Permissions opencode STANDARD uniquement : deny par défaut sur bash/task/webfetch.
 # Pas de clés de plugins (hive/swarm/swarmmail/skills_* ne font pas partie du kit).
 mode: primary
@@ -19,7 +19,7 @@ permission:
 
 # Weekly Advisor
 
-Orchestrateur de la revue hebdomadaire d'usage OpenCode (spec `opencode-weekly-advisor` v6.1).
+Orchestrateur de la revue hebdomadaire d'usage OpenCode (contrat : `doc/spec/`).
 Les étapes déterministes passent par les **tools du plugin** (`weekly_*` fournis par
 `.opencode/plugins/weekly-advisor.ts`, qui enveloppent le moteur python) ; les étapes
 qualitatives (audit, veille, drafting, cohérence, prose) chargent chacune un skill dédié.
@@ -39,7 +39,7 @@ qualitatives (audit, veille, drafting, cohérence, prose) chargent chacune un sk
 - **Jamais d'édition de config par l'agent** : la fenêtre se déduit du prompt et se passe
   en override de run sur les tools (voir « Fenêtre du run »).
 
-## Fenêtre du run (override déduit du prompt, v6.0.b)
+## Fenêtre du run (override déduit du prompt)
 
 | Prompt utilisateur | `lookback_days` passé à `weekly_run`/`weekly_releases` |
 |---|---|
@@ -49,8 +49,8 @@ qualitatives (audit, veille, drafting, cohérence, prose) chargent chacune un sk
 
 La config JSON n'est jamais réécrite ; l'override est en mémoire pour le run. L'ancre
 reste gérée à 100 % par le plugin (`<output_dir>/anchor-last.txt`) : créée si absente,
-**rafraîchie chaque jour** (conservée dans la même journée pour la stabilité intra-run,
-v6.0.n) — aucun calcul calendaire LLM.
+**rafraîchie chaque jour** (conservée dans la même journée pour la stabilité intra-run)
+— aucun calcul calendaire LLM.
 
 ## Worktree & cwd (fail-fast, Étape 0)
 
@@ -60,13 +60,13 @@ contenant `.opencode/plugins/weekly-advisor-engine`). Ordre de résolution
 `--dir` du lancement > cwd. Un lancement hors du kit (ex. `cwd=$HOME`, ou
 `--dir` vers un autre clone/worktree) fait échouer le preflight (`rc=3`,
 `kit weekly-advisor introuvable`) et l'orchestrateur démarre à vide
-(incidents 15:47 exit=2, #8 : `--dir` vers le mauvais worktree).
+(un `--dir` vers un autre worktree fait échouer le préflight).
 
-> **Pourquoi des chemins absolus (fix P1)** : en run cron, le tool Glob résout `.`
+> **Pourquoi des chemins absolus** : en run cron, le tool Glob résout `.`
 > depuis le cwd du serveur persistant et non depuis le `--dir` — tout pattern
 > relatif part d'une base fausse (split-brain). D'où : toujours des Globs absolus
 > dérivés du kit_root. De plus, `Glob <kit>/.opencode/**/*.py` peut retourner
-> 0 match alors que le moteur existe (dotdir, #8) : **ne jamais STOP sur un Glob
+> 0 match alors que le moteur existe (dotdir) : **ne jamais STOP sur un Glob
 > à vide** — le Glob n'est qu'un indice, `weekly_preflight` / `weekly_doctor`
 > (vérification `fs.existsSync` réelle) font foi.
 > L'absolu ne suffit pas si la racine est fausse : vérifier que `--dir` ==
@@ -82,7 +82,7 @@ STOP immédiat avec message clair UNIQUEMENT si `weekly_preflight` / `weekly_doc
 `WEEKLY_KIT_ROOT=<racine-du-kit>` (ou via le cron).
 Les crons passent déjà `--dir <kit>` ; ce gard est pour les lancements
 manuels/interactifs. Ne jamais STOP sur un simple Glob à vide quand le
-preflight/doctor passe (incidents 16:10 : Glob relatif à $HOME, moteur présent ; #8 : Glob 0 match, moteur présent).
+preflight/doctor passe (un Glob relatif à un autre cwd ou vide ne prouve rien : seul preflight/doctor fait foi).
 
 ## Étape 0 — Garde anti-re-run (TRÈS PREMIÈRE action, avant tout tool)
 
@@ -90,8 +90,8 @@ Avant même le pre-check worktree et `weekly_doctor`, vérifier qu'un run **déj
 terminé** pour l'ancre courante n'existe pas — pour éviter la ré-agrégation
 coûteuse d'un run déjà produit :
 
-1. Lire `<output_dir>/anchor-last.txt` (ancre active, ligne unique ; vaut `<worktree>/reports/anchor-last.txt` par défaut — `<output_dir>` vient de `weekly-telemetry-config.json`). Ne jamais lire `output/anchor-last.txt` (chemin obsolète, incident 16:10) ni de chemin relatif (Glob résolu depuis le cwd serveur, pas `--dir` : toujours dériver l'absolu de `<worktree>`/`<output_dir>`).
-2. Chercher `<output_dir>/runs/current/weekly-summary-*.json` (pattern corrigé P1 : l'ancien `reports/runs/current/summary-*.json` ne matchait jamais `weekly-summary-<date>.json`, le préfixe `weekly-` manquait).
+1. Lire `<output_dir>/anchor-last.txt` (ancre active, ligne unique ; vaut `<worktree>/reports/anchor-last.txt` par défaut — `<output_dir>` vient de `weekly-telemetry-config.json`). Ne jamais lire `output/anchor-last.txt` (chemin obsolète) ni de chemin relatif (Glob résolu depuis le cwd serveur, pas `--dir` : toujours dériver l'absolu de `<worktree>`/`<output_dir>`).
+2. Chercher `<output_dir>/runs/current/weekly-summary-*.json` (le préfixe `weekly-` est requis).
 3. Si un `weekly-summary-*.json` existe **ET** `exit == 0` (run terminé sans fatale)
    **ET** que `anchor-last.txt` est **non modifié** (même ancre que celle ayant
    produit le summary) → **STOP immédiat (short-circuit)** avec le message exact :
@@ -285,7 +285,7 @@ warnings, artifacts, elapsed_s, skills_loaded}` définie dans `.opencode/agents/
 L'orchestrateur lance T (`weekly_run`) en **premier et seul** ; il attend que `runs/current/`
 existe (activation du run dir par `weekly_run` — l'alias est créé dès la naissance du dir) **avant**
 de dispatcher V et H. Sinon V/H résolvent `run_state.json["run_dir"]` avant activation et
-écrivent dans un run dir **différent de T** (fragmentation d'artefacts, incident 15:47).
+écrivent dans un run dir **différent de T** (fragmentation d'artefacts).
 Une fois `runs/current/` présent, V et H sont lancés en parallèle et attendent ensuite le
 **summary** de T (poll read/glob, plafond 10 min ; dépassement → warning fail-soft, la branche
 tente quand même en écriture différée si possible). `weekly_run` est le **seul** caller de
@@ -300,7 +300,7 @@ l'orchestrateur spawn **K workers A en parallèle** via `task`
 (`weekly-quality-audit`, primaire : absente → contrat `rc=2`, pas de rapport) puis écrit
 `audit-findings-<id>.json` dans `runs/current/`.
 L'orchestrateur **barrière uniquement sur les FICHIERS, jamais sur les retours
-workers** (incident 2026-09-06 : worker A8 pendu >40 min, run mort sans rapport) :
+workers** (un worker pendu ne doit pas tuer le run) :
 poll glob `<output_dir>/runs/current/audit-findings-*.json`
 — absolu, toutes les 30s, **plafond 10 min strict depuis le spawn**. Au plafond :
 consolider les fichiers présents, émettre pour chaque session sans fichier
@@ -331,7 +331,7 @@ jamais le fichier `weekly-watch-findings-raw-<date>.json`.
 `html_report_dir`) en premier, puis l'archive (`runs/current/weekly-report-<date>.md`),
 puis les alertes les plus sévères.
 
-### Contrat final JOIN / RC (v6.1)
+### Contrat final JOIN / RC
 
 Le JOIN valide d'abord les contrats et les artefacts requis, puis calcule le code une
 seule fois. Il ne déduit jamais un succès d'un fichier absent, vide ou illisible :
@@ -397,7 +397,7 @@ Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sa
 ## Invariants (transverses à toutes les étapes)
 
 - Étapes déterministes (1/2/2.2/2.5/3.6/5/5.5/6/7) : **ne jamais réécrire les JSON/summary produits par le CLI**
-- **Périmètre lecture/écriture = worktree uniquement** (v6.0.c) : une cible résolue hors
+- **Périmètre lecture/écriture = worktree uniquement** : une cible résolue hors
   worktree (ex. commande globale `~/.config/opencode/commands/`) est **hors périmètre** →
   constat report-only, jamais de lecture ni de draft ; les doublons globaux d'une commande
   projet ne sont jamais lus

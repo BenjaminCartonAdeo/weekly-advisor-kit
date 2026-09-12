@@ -1,6 +1,6 @@
 ---
 name: weekly-watch-review
-description: Veille critique hebdomadaire (étape 3.5 du weekly-advisor) — croiser les fiches candidates distillées avec l'état réel du projet et les findings coûteux, recommandations orientées action.
+description: Étape 3.5 — veille critique : croise fiches candidates, état local et findings coûteux pour des recommandations actionnables.
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: pipeline-step
@@ -33,7 +33,7 @@ fichier (garde amont — annexe du rapport final seulement).
 ### Fallback legacy (repli documenté)
 
 Si `watch-candidates-enriched-<date>.json` est absent ou que son `mode` ≠ `enriched`
-(distill en échec ou snapshot invalide), revenir au comportement v6.1 : lire
+(distill en échec ou snapshot invalide), revenir au comportement de repli : lire
 `weekly-ecosystem-<date>.json` (**TOUS** les items) + `weekly-watch-context-<date>.json`
 et poursuivre aux sections 3 à 5. Ne jamais reconstruire soi-même les fiches.
 
@@ -70,12 +70,12 @@ Sinon (fiches ≥ seuil, ou residual vide) : phase 0 sautée, zéro token, aucun
 
 | Catégorie | Condition | Sens |
 |---|---|---|
-| `install-new` | uniquement `existing_state=absent` | nouveauté pertinente à installer (ex-catégorie `adopt`) |
+| `install-new` | uniquement `existing_state=absent` | nouveauté pertinente à installer |
 | `improve-existing` | doit nommer une cible locale via `target_local` | l'offre marché améliore ou remplace une capacité locale existante ; privilégiée quand `local_relevance_hints` non vide |
 | `ignore` | bruit | serveurs MCP abandonnés, listes mortes — pour mémoire |
 
 Chaque finding porte **obligatoirement** `"token_impact": "high|medium|low"` —
-l'estimation de gain de tokens remplace l'ex-catégorie `token-saver` (justifier
+l'estimation de gain de tokens est obligatoire (justifier
 `high` par un croisement explicite avec les findings coûteux).
 
 Gardes déterministes à respecter :
@@ -115,7 +115,7 @@ un id dans `previously_recommended` ou `recurrents` exige une justification renf
 }
 ```
 
-- `subject` : identique v6.1 — copié depuis la fiche ; pour un id `kept` du residual,
+- `subject` : copié depuis la fiche ; pour un id `kept` du residual,
   reprendre `name` de l'entrée residual et compléter `npm_package`/`repo_url` depuis
   l'entrée correspondante de `weekly-watch-context-<date>.json` (`market_matches`).
   **Jamais inventé.**

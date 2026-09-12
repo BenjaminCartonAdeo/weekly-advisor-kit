@@ -1,6 +1,6 @@
 ---
 name: weekly-coherence-review
-description: Passe critique de cohérence environnement (étape 6.5 du weekly-advisor) — état déclaratif de .opencode vs usage réel, findings avec tags action, aucune écriture auto.
+description: Étape 6.5 — passe critique de cohérence entre l'état déclaratif de `.opencode` et l'usage réel (lecture seule).
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: pipeline-step
@@ -17,7 +17,7 @@ les findings alimentent la revue humaine (fusion, retrait, recalibrage).
 - **Inventaire déterministe (source de vérité, étape 2.5)** : `weekly-watch-context-<date>.json`
   du run — `skills`/`commands`/`agents`/`plugins` + `declared_plugins`/`local_plugins` +
   `plugin_config.files|available|valid` et `counts` — **lecture seule, zéro re-scan**
-  de `.opencode/` (G2, v6.0.p) ; le frontmatter des items vient du `skill_catalog` du summary.
+  de `.opencode/` ; le frontmatter des items vient du `skill_catalog` du summary.
   Exclu de la revue : tout item `skill_class: shared-partial` (ex.
   `weekly-safety-guardrails`, inclus technique) — jamais de finding
   `unused-unreferenced`/`stale` dessus.

@@ -1,6 +1,6 @@
 ---
 name: weekly-drafting
-description: Auto-drafting des skills et commands (étape 4 du weekly-advisor) — généralisation depuis les transcripts, cible harnais unique résolue par le kit, contenu universel multi-plateforme, gate de portabilité avant chaque commit.
+description: Étape 4 — auto-drafting de skills/commands depuis les transcripts (cible harnais unique, contenu universel, gate de portabilité avant commit).
 ---
 
 # Weekly Drafting — étape 4
@@ -58,7 +58,7 @@ Le drafting écrit dans LE harnais cible du projet (décision mono-cible), jamai
   opencode avec warning explicite, à signaler au rapport.
 - Override : liste imposée par la configuration du kit.
 - Mode legacy (liste vide en configuration) : toutes les cibles du tableau ci-dessus,
-  ordre de priorité conservé (comportement historique).
+  ordre de priorité conservé.
 - Zéro symlink : projection réelle des fichiers dans la cible, jamais de lien.
 - Le digest du run expose la décision (`draft_targets.surface_decision`) : s'y fier plutôt
   que re-détecter manuellement.

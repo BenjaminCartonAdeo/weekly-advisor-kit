@@ -1,6 +1,6 @@
 ---
 name: weekly-safety-guardrails
-description: Garde-fous partagés du pipeline weekly-advisor — refus external-directory, environment-change, bounded-retry, IDs sécurité bloquants. Référencé par les skills de branche, jamais chargé seul.
+description: Garde-fous partagés (refus external-directory, environment-change, retry borné, IDs sécurité bloquants) — jamais chargé seul.
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: shared-partial

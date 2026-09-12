@@ -1,6 +1,6 @@
 ---
 name: harness-remediation
-description: "Analyse les findings harness-eval du digest et prépare des propositions de correction (étape 5.5 du weekly-advisor). Use when: corrections à haute confiance, validées par la gate déterministe — dry-run par défaut, aucun commit automatique."
+description: "Étape 5.5 — propositions de correction bornées issues du digest harness-eval (dry-run par défaut, aucun commit automatique)."
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: pipeline-step
@@ -16,7 +16,7 @@ déterministiquement ce qui peut être appliqué.
 ## Entrées
 
 - `weekly-harness-digest-<date>.json` — findings du scan allowlisté, avec `path`, `rule`,
-  `severity`, `message` et `suggestion`. Depuis la cellule 2.2, le scan couvre aussi les
+  `severity`, `message` et `suggestion`. Le scan couvre aussi les
   répertoires du harnais détecté (`DRAFT_HARNESS_TARGETS`, ex. `.claude/skills`) et le
   contenu engine du kit injecté dans la projection — les fichiers sans source réelle
   sont listés comme **orphelins** dans `draft_targets.orphan_files`.
@@ -67,14 +67,14 @@ hang, nouveau finding ou patch inventé pour faire passer la gate. La remédiati
 démarre pas tant que le proposal n'est pas présent et schema-valid. Une recovery réussie
 peut être tracée par `{status: "recovered", source: "harness", artifact: "proposal"}`.
 
-## Surface de remédiation (matrice 5.5, cellule 2.2)
+## Surface de remédiation
 
 Le résultat porte un bloc `draft_target` : `{mode, harnesses, decision, reason}` —
 décision pure déduite du harnais résolu (`resolve_remediation_surface`) :
 
 - cible unique `opencode` → `projection` (surface native `.opencode` déjà couverte) ;
 - cible unique hors `.opencode` → `portability` (remédiation conditionnée au mapping
-  .harness-eval/rules/portability.yaml — règle YAML elle-même : cellule 3.1) ;
+  .harness-eval/rules/portability.yaml — règle YAML elle-même) ;
 - plusieurs cibles avec `opencode` → `combined` ; sans `opencode` → `portability` ;
 - entrée vide ou harnais inconnu → repli sûr `projection`, raison explicite.
 
@@ -123,15 +123,14 @@ l'exact-match de `old_text`, jamais sur `line`.
 une règle explicitement présente dans `harness_auto_fix_rules`. Le tool impose en plus
 la cible .opencode/AGENTS.md exacte, ciblée uniquement lorsque ce fichier optionnel existe, ou `.opencode/{skills,commands,agents,plugins}/`
 (hors `plugins/weekly-advisor-engine/` — le moteur n'est jamais une cible), une seule
-occurrence et une limite de taille (v6.0.k F2).
+occurrence et une limite de taille.
 
 `old_text`/`new_text` : chaîne non vide obligatoire pour `apply` ; pour `propose`,
-`manual` et `dismiss`, ils peuvent être omis ou `null` (v6.0.k F3).
+`manual` et `dismiss`, ils peuvent être omis ou `null`.
 
 ## Règles de sécurité
 
 - Ne jamais appliquer automatiquement une règle `security/*`, même avec `confidence=high`.
-- Ne jamais éditer directement un fichier pendant cette étape.
 - Ne jamais éditer un fichier directement pendant cette étape : seules les propositions
   validées par la gate sont appliquées (jamais .opencode/opencode.json, qui peut être inspecté
   mais ne doit jamais être modifié, jamais le moteur `weekly-advisor-engine/`, jamais la base SQLite,
