@@ -5,7 +5,7 @@ description = "OpenCode weekly advisor pipeline: telemetry aggregation, ecosyste
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-dependencies = ["httpx>=0.26", "jinja2>=3.1"]
+dependencies = ["jinja2>=3.1"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0", "ruff>=0.1.0"]

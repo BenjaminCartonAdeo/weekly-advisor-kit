@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from datetime import UTC, datetime, timedelta
 
-import httpx
 import pytest
 
 from weekly_telemetry_aggregator import releases
@@ -31,20 +31,22 @@ def _dt(*args) -> datetime:
 
 
 class FakeResponse:
-    def __init__(self, payload, status: int = 200):
+    def __init__(self, payload, status: int = 200, text: str | None = None, headers: dict | None = None):
         self.payload = payload
         self.status_code = status
+        self._text = text
+        self.headers = headers or {}
+
+    @property
+    def text(self) -> str:
+        return self._text if self._text is not None else json.dumps(self.payload)
 
     def json(self):
-        return self.payload
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise RuntimeError(f"HTTP {self.status_code}")
+        return json.loads(self._text) if self._text is not None else self.payload
 
 
 class FakeClient:
-    """Drop-in httpx-ish client: canned handler responses, dials recorded."""
+    """Drop-in client-shaped fake: canned handler responses, dials recorded."""
 
     def __init__(self, handler):
         self.handler = handler
@@ -380,7 +382,7 @@ def test_all_sources_failing_exit_1_warnings_filled(monkeypatch):
         if url == URL_MCP:
             return FakeResponse({}, status=404)  # no retry
         if url == URL_RELEASES:
-            raise httpx.TransportError("connection reset")  # network error, retried
+                raise urllib.error.URLError("connection reset")  # network error, retried
         raise AssertionError(url)
 
     data, exit_code = releases.run(make_cfg(), anchor=ANCHOR_ISO, client=FakeClient(handler))
@@ -503,7 +505,7 @@ def test_partial_source_failure_exit_0(monkeypatch):
         if url == URL_NPM:
             return FakeResponse({}, status=500)
         if url == URL_GITHUB:
-            raise httpx.ConnectError("connection refused")
+                raise urllib.error.URLError("connection refused")
         if url == URL_MCP:
             return FakeResponse(
                 {
@@ -652,8 +654,8 @@ def test_watch_repos_falls_back_to_gh(monkeypatch):
     monkeypatch.setattr(releases, "_gh_api", fake_gh)
     handler = make_handler(
         {
-            URL_WATCH_INFO: httpx.TransportError("connection reset"),
-            URL_WATCH_REL: httpx.TransportError("connection reset"),
+            URL_WATCH_INFO: urllib.error.URLError("connection reset"),
+            URL_WATCH_REL: urllib.error.URLError("connection reset"),
             URL_NPM: npm_payload(),
             URL_GITHUB: {"items": []},
             URL_MCP: {"servers": []},
@@ -696,8 +698,8 @@ def test_github_topic_search_falls_back_to_gh(monkeypatch):
     monkeypatch.setattr(releases, "_gh_api", fake_gh)
     handler = make_handler(
         {
-            URL_GITHUB: httpx.TransportError("connection reset"),  # HTTP échoue
-            URL_RELEASES: httpx.TransportError("connection reset"),
+            URL_GITHUB: urllib.error.URLError("connection reset"),  # HTTP échoue
+            URL_RELEASES: urllib.error.URLError("connection reset"),
             URL_NPM: npm_payload(),
             URL_MCP: {"servers": []},
         }
@@ -769,7 +771,7 @@ def test_watch_list_baseline_then_diff(monkeypatch, tmp_path):
         raise AssertionError(endpoint)
 
     monkeypatch.setattr(releases, "_gh_api", fake_gh)
-    client = FakeClient(lambda url, p, h: (_ for _ in ()).throw(httpx.TransportError("reset")))
+    client = FakeClient(lambda url, p, h: (_ for _ in ()).throw(urllib.error.URLError("reset")))
     end = _dt(2026, 8, 14)
 
     first = releases._fetch_watch_list(client, "awesome-opencode/awesome-opencode", end, state)
@@ -846,7 +848,7 @@ def test_fetch_github_topics(monkeypatch):
         raise AssertionError(endpoint)
 
     monkeypatch.setattr(releases, "_gh_api", fake_gh)
-    client = FakeClient(lambda url, p, h: (_ for _ in ()).throw(httpx.TransportError("reset")))
+    client = FakeClient(lambda url, p, h: (_ for _ in ()).throw(urllib.error.URLError("reset")))
     items = releases._fetch_github_topics(
         client, "claude-code", _dt(2026, 8, 1), _dt(2026, 8, 14), 5
     )
@@ -913,20 +915,24 @@ def _radar_opencode_json(tmp_path, mcp=None):
     return tmp_path
 
 
-def _radar_handler(tools_call):
-    """MockTransport MCP : initialize OK (session), tools/call piloté par `tools_call`."""
+class RadarFake:
+    """Fake client radar MCP : initialize → session, tools/call piloté, GET RSS piloté."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.method != "POST":
-            return httpx.Response(503)  # flux RSS indisponible par défaut
-        body = json.loads(request.content)
-        method = body.get("method")
+    def __init__(self, tools_call, *, rss_status: int = 503, rss_text: str = ""):
+        self.tools_call = tools_call
+        self.rss_status = rss_status
+        self.rss_text = rss_text
+        self.posts: list[dict] = []
+        self.gets: list[str] = []
+
+    def post(self, url, *, json=None, headers=None):
+        self.posts.append(json or {})
+        method = (json or {}).get("method")
         if method == "initialize":
-            assert request.headers["accept"] == "application/json, text/event-stream"
-            assert request.headers["content-type"].startswith("application/json")
-            return httpx.Response(
-                200,
-                json={
+            assert headers["Accept"] == "application/json, text/event-stream"
+            assert headers["Content-Type"].startswith("application/json")
+            return FakeResponse(
+                {
                     "jsonrpc": "2.0",
                     "id": 1,
                     "result": {
@@ -934,17 +940,23 @@ def _radar_handler(tools_call):
                         "serverInfo": {"name": "agents-radar"},
                     },
                 },
+                200,
                 headers={"mcp-session-id": "sess-42"},
             )
         if method == "tools/call":
-            assert request.headers.get("mcp-session-id") == "sess-42", (
+            assert headers.get("mcp-session-id") == "sess-42", (
                 "la session initialize doit être reprise dans tools/call"
             )
-            assert body["params"]["name"] == RADAR_ENTRY["tool"]
-            return tools_call(request)
-        return httpx.Response(404)
+            assert json["params"]["name"] == RADAR_ENTRY["tool"]
+            return self.tools_call(json)
+        return FakeResponse({}, 404)
 
-    return handler
+    def get(self, url, *, timeout=None):
+        self.gets.append(url)
+        return FakeResponse(None, self.rss_status, text=self.rss_text)
+
+    def close(self):
+        pass
 
 
 def test_fetch_radar_happy_path_mcp(tmp_path):
@@ -952,20 +964,21 @@ def test_fetch_radar_happy_path_mcp(tmp_path):
     root = _radar_opencode_json(
         tmp_path, {RADAR_ENTRY["name"]: {"type": "remote", "url": RADAR_URL}}
     )
-    client = httpx.Client(
-        transport=httpx.MockTransport(
-            _radar_handler(
-                lambda _rq: httpx.Response(
-                    200,
-                    json={
-                        "jsonrpc": "2.0",
-                        "id": 2,
-                        "result": {"content": [{"type": "text", "text": RADAR_MARKDOWN}]},
-                    },
-                )
-            )
+
+    def tools_call(_body):
+        return FakeResponse(
+            None,
+            200,
+            text=json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "result": {"content": [{"type": "text", "text": RADAR_MARKDOWN}]},
+                }
+            ),
         )
-    )
+
+    client = RadarFake(tools_call)
     items = releases._fetch_radar(client, RADAR_ENTRY, PERIOD_START, PERIOD_END, project_root=root)
 
     names = [i["name"] for i in items]
@@ -977,7 +990,6 @@ def test_fetch_radar_happy_path_mcp(tmp_path):
     assert first["found_via"] == ["radar"]
     assert first["new_repo"] is False
     assert first["published_at"] == datetime(2026, 8, 5, tzinfo=UTC)
-    client.close()
 
 
 def test_fetch_radar_parses_sse_tools_call(tmp_path):
@@ -986,16 +998,15 @@ def test_fetch_radar_parses_sse_tools_call(tmp_path):
         tmp_path, {RADAR_ENTRY["name"]: {"type": "remote", "url": RADAR_URL}}
     )
 
-    def tools_call(_request):
-        return httpx.Response(
-            200, text=SSE_TOOLS_CALL, headers={"content-type": "text/event-stream"}
+    def tools_call(_body):
+        return FakeResponse(
+            None, 200, text=SSE_TOOLS_CALL, headers={"content-type": "text/event-stream"}
         )
 
-    client = httpx.Client(transport=httpx.MockTransport(_radar_handler(tools_call)))
+    client = RadarFake(tools_call)
     items = releases._fetch_radar(client, RADAR_ENTRY, PERIOD_START, PERIOD_END, project_root=root)
     assert [i["name"] for i in items] == ["SSE Tool"]
     assert items[0]["published_at"] == datetime(2026, 8, 6, tzinfo=UTC)
-    client.close()
 
 
 def test_fetch_radar_falls_back_to_rss_when_tools_call_500(tmp_path):
@@ -1010,16 +1021,14 @@ def test_fetch_radar_falls_back_to_rss_when_tools_call_500(tmp_path):
         "<updated>2026-08-05T09:00:00Z</updated></entry>\n</feed>"
     )
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "GET" and str(request.url) == RADAR_FEED_URL:
-            return httpx.Response(200, text=fallback_atom)
-        return _radar_handler(lambda _rq: httpx.Response(500))(request)
+    def tools_call(_body):
+        return FakeResponse(None, 500)
 
-    client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = RadarFake(tools_call, rss_status=200, rss_text=fallback_atom)
     items = releases._fetch_radar(client, RADAR_ENTRY, PERIOD_START, PERIOD_END, project_root=root)
     assert [i["name"] for i in items] == ["Fallback Item"]
     assert items[0]["found_via"] == [f"rss:{RADAR_FEED_URL}"]
-    client.close()
+    assert client.gets == [RADAR_FEED_URL]
 
 
 def test_fetch_radar_both_dead_raises_source_error(tmp_path):
@@ -1028,26 +1037,20 @@ def test_fetch_radar_both_dead_raises_source_error(tmp_path):
         tmp_path, {RADAR_ENTRY["name"]: {"type": "remote", "url": RADAR_URL}}
     )
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "GET":
-            return httpx.Response(503)
-        return _radar_handler(lambda _rq: httpx.Response(500))(request)
+    def tools_call(_body):
+        return FakeResponse(None, 500)
 
-    client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = RadarFake(tools_call)  # RSS mort aussi (503 par défaut)
     with pytest.raises(releases.SourceError, match="feed.xml"):
         releases._fetch_radar(client, RADAR_ENTRY, PERIOD_START, PERIOD_END, project_root=root)
-    client.close()
 
 
 def test_fetch_radar_missing_mcp_url_raises_clear_error(tmp_path):
     """URL absente de opencode.json → SourceError nommant la clé manquante."""
     root = _radar_opencode_json(tmp_path, None)  # pas de clé mcp du tout
-    client = httpx.Client(
-        transport=httpx.MockTransport(_radar_handler(lambda _rq: httpx.Response(200, json={})))
-    )
+    client = RadarFake(lambda _body: FakeResponse(None, 200, text="{}"))
     with pytest.raises(releases.SourceError, match=r"mcp\.agents-radar\.url.*opencode\.json"):
         releases._fetch_radar(client, RADAR_ENTRY, PERIOD_START, PERIOD_END, project_root=root)
-    client.close()
 
 
 def test_collect_routes_radar_entries(monkeypatch, tmp_path):

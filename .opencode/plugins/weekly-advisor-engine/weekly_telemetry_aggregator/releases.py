@@ -29,10 +29,11 @@ import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
+from json import dumps as _dumps
 from pathlib import Path
-from urllib.parse import quote
-
-import httpx
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
 
 from . import __version__
 from .config import apply_lookback_override
@@ -76,6 +77,58 @@ class SourceError(Exception):
     """One watch source ultimately failed; the run continues (warning, non-fatal)."""
 
 
+class _Response:
+    """Réponse HTTP minimale : status, corps texte, headers (interface stable)."""
+
+    def __init__(self, status: int, body: bytes, headers):
+        self.status_code = status
+        self.text = body.decode("utf-8", errors="replace")
+        self.headers = headers
+
+    def json(self):
+        return json.loads(self.text)
+
+
+class _HttpClient:
+    """Client HTTP synchrone minimal sur stdlib urllib — zéro dépendance réseau.
+
+    Couvre exactement la surface du watch : GET JSON paginé (params encodés
+    en UTF-8 : espace ``%20``, ``+`` en ``%2B``), GET RSS, POST JSON-RPC
+    MCP avec session header. Les statuts 4xx/5xx sont retournés en réponse
+    (pas d'exception) — la politique retry/échec appartient aux appelants.
+    """
+
+    def __init__(self, timeout: int = 15) -> None:
+        self._timeout = timeout
+
+    def _open(self, url: str, data: bytes | None, headers: dict | None, timeout: int) -> _Response:
+        request = Request(url, data=data, headers=headers or {})
+        try:
+            with urlopen(request, timeout=timeout) as resp:
+                return _Response(resp.status, resp.read(), resp.headers)
+        except HTTPError as exc:  # 4xx/5xx : le corps reste lisible
+            return _Response(exc.code, exc.read(), exc.headers)
+
+    def get(
+        self,
+        url: str,
+        *,
+        params: dict | None = None,
+        headers: dict | None = None,
+        timeout: int | None = None,
+    ) -> _Response:
+        if params:
+            url = f"{url}?{urlencode(params, quote_via=quote)}"
+        return self._open(url, None, headers, timeout if timeout is not None else self._timeout)
+
+    def post(self, url: str, *, json: dict | None = None, headers: dict | None = None) -> _Response:
+        data = None if json is None else _dumps(json)
+        return self._open(url, data, headers, self._timeout)
+
+    def close(self) -> None:  # aucune ressource persistante
+        return None
+
+
 def _get_json(client, url: str, *, params: dict | None = None, headers: dict | None = None):
     """GET JSON with retry/backoff on {429, 5xx} and network errors.
 
@@ -87,18 +140,11 @@ def _get_json(client, url: str, *, params: dict | None = None, headers: dict | N
         if attempt:
             time.sleep(_BACKOFF[attempt - 1])
         try:
-            # C9 (v6.0.p) : timeout hérité du client (httpx.Client(timeout=15)) —
-            # le `timeout=None` périmé désactivait toute borne réseau.
+            # timeout réseau hérité du client (_HttpClient(timeout=15)) — borne
+            # explicite C9 (v6.0.p), jamais désactivée.
             resp = client.get(url, params=params, headers=headers)
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 429 or exc.response.status_code >= 500:
-                last = exc
-                continue
-            raise SourceError(f"{url}: HTTP {exc.response.status_code}") from exc
-        except httpx.TransportError as exc:
-            last = exc  # network: ConnectError, TimeoutException, read/write errors…
-            continue
-        except httpx.HTTPError as exc:  # any other transport-level failure
+        except (URLError, OSError, TimeoutError) as exc:
+            # réseau : DNS, connexion refusée/reset, timeout → retry.
             last = exc
             continue
         if resp.status_code == 429 or resp.status_code >= 500:
@@ -204,7 +250,7 @@ def _fetch_github_topics(
 
     Une seule implémentation pour tous les topics (y compris opencode-plugin,
     le topic historique de la Partie 2). Query pré-construite : le + serait
-    encodé en %2B par httpx/quote et GitHub le chercherait comme terme littéral.
+    encodé en %2B par urlencode/quote et GitHub le chercherait comme terme littéral.
     """
     query = f"q=topic:{quote(topic)}%20stars:%3E{min_stars}&sort=updated&per_page=50"
     payload = _github_json(client, f"{URL_GITHUB_TOPICS}?{query}")
@@ -1053,7 +1099,7 @@ def run(
 
     own_client = client is None
     if own_client:
-        client = httpx.Client(timeout=15)
+        client = _HttpClient(timeout=15)
     try:
         return _collect(cfg, client, start, run_time)
     finally:
