@@ -121,7 +121,7 @@ l'exact-match de `old_text`, jamais sur `line`.
 
 `apply` n'est admissible que pour une correction mécanique, un remplacement exact et
 une règle explicitement présente dans `harness_auto_fix_rules`. Le tool impose en plus
-la cible .opencode/AGENTS.md exacte, ciblée uniquement lorsque ce fichier optionnel existe, ou `.opencode/{skills,commands,agents,plugins}/`
+la cible résolue sous le périmètre scanné (`.opencode/AGENTS.md` exact, si ce fichier optionnel existe, ou `.opencode/{skills,commands,agents,plugins}/`, selon la surface)
 (hors `plugins/weekly-advisor-engine/` — le moteur n'est jamais une cible), une seule
 occurrence et une limite de taille.
 

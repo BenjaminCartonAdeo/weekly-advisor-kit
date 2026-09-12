@@ -1,6 +1,6 @@
 ---
 name: weekly-coherence-review
-description: Étape 6.5 — passe critique de cohérence entre l'état déclaratif de `.opencode` et l'usage réel (lecture seule).
+description: Étape 6.5 — passe critique de cohérence entre la surface déclarative (`.opencode` par défaut) et l'usage réel (lecture seule).
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: pipeline-step
@@ -9,7 +9,7 @@ metadata:
 # Weekly Coherence Review — étape 6.5
 
 Dernière passe LLM : vérifier que l'état **déclaratif** de l'environnement
-(`.opencode/{agents,skills,commands}`) colle à son **usage réel**. Lecture seule —
+(surface déclarative inventoriée à l'étape 2.5 — `.opencode/{agents,skills,commands}` par défaut) colle à son **usage réel**. Lecture seule —
 les findings alimentent la revue humaine (fusion, retrait, recalibrage).
 
 ## Entrées
@@ -17,7 +17,7 @@ les findings alimentent la revue humaine (fusion, retrait, recalibrage).
 - **Inventaire déterministe (source de vérité, étape 2.5)** : `weekly-watch-context-<date>.json`
   du run — `skills`/`commands`/`agents`/`plugins` + `declared_plugins`/`local_plugins` +
   `plugin_config.files|available|valid` et `counts` — **lecture seule, zéro re-scan**
-  de `.opencode/` ; le frontmatter des items vient du `skill_catalog` du summary.
+  de la surface déclarative ; le frontmatter des items vient du `skill_catalog` du summary.
   Exclu de la revue : tout item `skill_class: shared-partial` (ex.
   `weekly-safety-guardrails`, inclus technique) — jamais de finding
   `unused-unreferenced`/`stale` dessus.
@@ -25,7 +25,7 @@ les findings alimentent la revue humaine (fusion, retrait, recalibrage).
 - `insights.maintenance` (R1 retire / R3 merge) et le digest harness (triggers/budget)
 - Findings de l'étape 3 (sessions coûteuses → cibles de forcing)
 
-> La passe critique ne refait jamais `ls`/`read` de `.opencode/{agents,skills,commands}`
+> La passe critique ne refait jamais `ls`/`read` de la surface déclarative
 > pour établir l'état déclaratif : l'inventaire JSON de l'étape 2.5 est produit par la
 > même exécution du moteur et fait foi. Un re-scan LLM re-dériverait l'état avec une
 > précision moindre et ferait diverger la revue du run qu'elle documente.
