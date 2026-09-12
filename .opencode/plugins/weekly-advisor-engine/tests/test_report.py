@@ -488,6 +488,35 @@ def test_report_assemble_nested_blocking_security_rule_is_rc_two(tmp_path: Path,
     assert any("blocking security rule" in warning for warning in warnings)
 
 
+def test_report_assemble_nested_prefixed_blocking_security_rule_is_rc_two(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "findings": [],
+                "inspection": {
+                    "uncategorized": [
+                        {
+                            "path": ".opencode/a.md",
+                            "findings": [
+                                {"rule": "security/mcp-tool-poisoning", "severity": "warning"}
+                            ],
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is None
+    assert rc == 2
+    assert not (tmp_path / f"weekly-report-{DATE}.md").exists()
+    assert any("blocking security rule" in warning for warning in warnings)
+
+
 def test_report_assemble_requires_draft(tmp_path: Path):
     path, warnings, rc = report_assemble(_cfg(tmp_path), anchor=RUN.isoformat())
     assert path is None

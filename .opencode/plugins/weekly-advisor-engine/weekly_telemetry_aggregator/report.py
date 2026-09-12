@@ -1506,6 +1506,7 @@ _BLOCKING_SECURITY_RULES = {
 def _is_blocking_security_rule(rule: object) -> bool:
     """Match only the documented critical rule identifiers."""
     normalized = str(rule or "").strip().lower()
+    normalized = normalized.removeprefix("security/")
     return normalized in _BLOCKING_SECURITY_RULES
 
 

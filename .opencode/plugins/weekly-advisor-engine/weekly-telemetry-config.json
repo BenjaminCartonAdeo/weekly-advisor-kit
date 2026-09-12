@@ -38,6 +38,8 @@
         ".opencode/skills/**/SKILL.md",
         ".opencode/skills/**/references/**/*.md",
         ".opencode/skills/**/examples/**/*",
+        ".opencode/skills/**/assets/**/*",
+        ".opencode/skills/**/*.json",
         ".opencode/context/**/*.md",
         ".opencode/*.json"
       ]
