@@ -54,25 +54,35 @@ v6.0.n) — aucun calcul calendaire LLM.
 
 ## Worktree & cwd (fail-fast, Étape 0)
 
-Le moteur python est résolu depuis le **worktree** du lancement (`--dir` du cron, ou cwd du
-lancement manuel). Un lancement hors du worktree (ex. `cwd=$HOME`) fait échouer la
-résolution du moteur (`Glob <worktree>/.opencode/plugins/weekly-advisor-engine/**/*.py` → 0 match) et
-l'orchestrateur démarre à vide (incident 15:47, exit=2).
+Le moteur python est résolu depuis la **racine du kit** (`kit_root` = dossier
+contenant `.opencode/plugins/weekly-advisor-engine`). Ordre de résolution
+(plugin `resolveWorktree`) : `WEEKLY_KIT_ROOT` > emplacement du plugin >
+`--dir` du lancement > cwd. Un lancement hors du kit (ex. `cwd=$HOME`, ou
+`--dir` vers un autre clone/worktree) fait échouer le preflight (`rc=3`,
+`kit weekly-advisor introuvable`) et l'orchestrateur démarre à vide
+(incidents 15:47 exit=2, #8 : `--dir` vers le mauvais worktree).
 
 > **Pourquoi des chemins absolus (fix P1)** : en run cron, le tool Glob résout `.`
-> depuis le cwd du serveur persistant (ex. le $HOME de l'utilisateur du serveur)
-> et non depuis le `--dir <worktree>` — tout pattern relatif part d'une base fausse
-> (split-brain). D'où : toujours des Globs absolus dérivés du worktree (`<worktree>` = `project_root` de `weekly-telemetry-config.json`).
-> L'absolu ne suffit pas si la racine est fausse : vérifier que `--dir` == `project_root`
-> effectif et que `output_dir` == `<worktree>/reports` (ou utiliser sa valeur configurée) avant tout Glob.
+> depuis le cwd du serveur persistant et non depuis le `--dir` — tout pattern
+> relatif part d'une base fausse (split-brain). D'où : toujours des Globs absolus
+> dérivés du kit_root. De plus, `Glob <kit>/.opencode/**/*.py` peut retourner
+> 0 match alors que le moteur existe (dotdir, #8) : **ne jamais STOP sur un Glob
+> à vide** — le Glob n'est qu'un indice, `weekly_preflight` / `weekly_doctor`
+> (vérification `fs.existsSync` réelle) font foi.
+> L'absolu ne suffit pas si la racine est fausse : vérifier que `--dir` ==
+> kit_root effectif (ou poser `WEEKLY_KIT_ROOT=<racine-du-kit>`) avant tout Glob.
 
-**Pre-check Étape 0 (avant `weekly_doctor`)** : `glob` `<worktree>/.opencode/plugins/weekly-advisor-engine/**/*.py`
-depuis le worktree (le wrapper cron `cd` déjà vers le worktree ; en manuel, lancer avec `--dir <worktree>` ET cwd=<worktree>).
-Si **0 match** → appeler `weekly_doctor` AVANT tout STOP : le doctor résout le moteur depuis le worktree réel et fait foi.
-STOP immédiat avec message clair UNIQUEMENT si `weekly_doctor` échoue aussi (rc=2) :
-« worktree requis — relancer avec `--dir <worktree>` (ou via le cron) ».
-Les crons (`#45 18 * * 1`, `#35 15 * * 4`) passent déjà `--dir <worktree>` ; ce
-gard est pour les lancements manuels/interactifs. Ne jamais STOP sur un simple Glob à vide quand le doctor passe (incident 16:10 : Glob relatif à $HOME, moteur présent).
+**Pre-check Étape 0 (avant `weekly_doctor`)** : appeler `weekly_preflight`
+(source de vérité, `rc=0` = kit OK). Un `glob`
+`<kit>/.opencode/plugins/weekly-advisor-engine/**/*.py` à 0 match n'autorise
+AUCUN STOP : appeler `weekly_doctor` AVANT toute décision.
+STOP immédiat avec message clair UNIQUEMENT si `weekly_preflight` / `weekly_doctor`
+échouent aussi (`rc=3` / `rc=2`) : relancer avec `--dir <racine-du-kit>`
+(dossier contenant `.opencode/plugins/weekly-advisor-engine`) ou poser
+`WEEKLY_KIT_ROOT=<racine-du-kit>` (ou via le cron).
+Les crons passent déjà `--dir <kit>` ; ce gard est pour les lancements
+manuels/interactifs. Ne jamais STOP sur un simple Glob à vide quand le
+preflight/doctor passe (incidents 16:10 : Glob relatif à $HOME, moteur présent ; #8 : Glob 0 match, moteur présent).
 
 ## Étape 0 — Garde anti-re-run (TRÈS PREMIÈRE action, avant tout tool)
 

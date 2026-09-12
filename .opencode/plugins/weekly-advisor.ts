@@ -85,7 +85,15 @@ function preflight(root: string): PreflightResult {
     python_ok: pythonOk,
     config_ok: configOk,
     py_count: pyCount,
-    ...(ok ? {} : { message: "worktree Adeo requis — relancer avec `--dir /home/benjamin/Dev/Adeo` (ou via le cron)" }),
+    ...(ok
+      ? {}
+      : {
+          message:
+            `kit weekly-advisor introuvable depuis worktree=${root} ` +
+            `(engine=${engine}, engine_ok=${engineOk}, python_ok=${pythonOk}, config_ok=${configOk}, py_count=${pyCount}) — ` +
+            `lancer opencode avec --dir <racine-du-kit> (dossier contenant .opencode/plugins/weekly-advisor-engine) ` +
+            `ou poser WEEKLY_KIT_ROOT=<racine-du-kit>`,
+        }),
   }
 }
 

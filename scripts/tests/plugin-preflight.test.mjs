@@ -48,7 +48,7 @@ test("weekly-review preflight fails with rc 3 before command execution", async (
   try {
     await assert.rejects(
       plugin["command.execute.before"]({ command: "weekly-review", sessionID: "s", arguments: "" }, output),
-      /rc=3.*worktree Adeo requis/,
+      /rc=3.*kit weekly-advisor introuvable/,
     )
   } finally {
     if (previous === undefined) delete process.env.WEEKLY_KIT_ROOT
@@ -67,7 +67,7 @@ test("weekly-advisor agent preflight fails before direct run boot", async () => 
         { agent: "weekly-advisor", sessionID: "s", messageID: "m" },
         output,
       ),
-      /rc=3.*worktree Adeo requis/,
+      /rc=3.*kit weekly-advisor introuvable/,
     )
     await plugin["chat.message"]({ agent: "other-agent", sessionID: "s", messageID: "m" }, output)
   } finally {
