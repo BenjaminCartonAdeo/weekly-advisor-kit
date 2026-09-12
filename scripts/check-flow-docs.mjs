@@ -28,7 +28,6 @@ import fs from "node:fs"
 import path from "node:path"
 import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
-import { checkArchitectureDocs } from "./check-architecture-docs.mjs"
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const TS_FILE = path.join(ROOT, ".opencode", "plugins", "weekly-advisor.ts")
@@ -99,7 +98,7 @@ export function checkTestCounts({ docs, collection }) {
 
 // ---------------------------------------------------------------- collecteurs
 
-/** Sous-commandes TS : 1er argv littéral des cliArgs ([…"run", "--anchor"]…). */
+/** Sous-commandes TS : 1er argv littéral (`["run", "--anchor"]…`) ou table déclarative (`subcommand: "run"`). */
 export function tsCommands(src) {
   const cmds = new Set()
   // On retire les commentaires `//` (ex: `["default"]` en prose) et les enums
@@ -117,22 +116,25 @@ export function tsCommands(src) {
     // token — un futur binaire externe reste hors contrat automatiquement).
     .replace(/execFile\(\s*"[^"]+"\s*,\s*\[[^\]]*\]/g, "")
   for (const m of clean.matchAll(/\[\s*"([a-z][a-z-]+)"\s*[,\]]/g)) cmds.add(m[1])
+  for (const m of clean.matchAll(/subcommand:\s*"([a-z][a-z-]+)"/g)) cmds.add(m[1])
   return cmds
 }
 
-/** Sous-commandes CLI : noms des sous-parsers (sub.add_parser("name", …)). */
+/** Sous-commandes CLI : sous-parsers explicites ou entrées de la table déclarative `_SUBCOMMANDS`. */
 function cliCommands(src) {
   const cmds = new Set()
   for (const m of src.matchAll(/sub\.add_parser\(\s*"([a-z][a-z-]+)"/g)) cmds.add(m[1])
+  for (const m of src.matchAll(/\(\s*"([a-z][a-z-]+)",\s*"[^"]*",\s*_cmd_[a-z_]+/g)) cmds.add(m[1])
   return cmds
 }
 
-/** Handlers : définis (def _cmd_*) et câblés (set_defaults(func=_cmd_*)). */
+/** Handlers : définis (def _cmd_*) et câblés (directement ou via la table déclarative `_SUBCOMMANDS`). */
 function cliHandlers(src) {
   const defined = new Set()
   for (const m of src.matchAll(/def (_cmd_[a-z_]+)\(/g)) defined.add(m[1])
   const wired = new Set()
   for (const m of src.matchAll(/set_defaults\(\s*func=(_cmd_[a-z_]+)/g)) wired.add(m[1])
+  for (const m of src.matchAll(/,\s*(_cmd_[a-z_]+)(?=\s*,)/g)) wired.add(m[1])
   return { defined, wired }
 }
 
@@ -315,15 +317,6 @@ ok(
   "commande référence agent: weekly-advisor dans son frontmatter",
   /agent:\s*weekly-advisor\b/.test(frontmatter(commandSrc7)),
 )
-
-// ---------------------------------------------------------------- surface 8 (advisory)
-
-// Architecture documentation is observed alongside the flow contract. Keep this
-// non-blocking until the repository baseline is explicitly ratified.
-console.log("— Surface 8 : contrats documentation architecture (advisory)")
-for (const check of checkArchitectureDocs().checks) {
-  console.log(`${check.passed ? "ok" : "WARN"} ${check.name}`)
-}
 
 console.log(
   failures === 0

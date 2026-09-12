@@ -3,10 +3,10 @@
 Revue hebdomadaire automatisée de vos agents de code : analyse de la télémétrie locale, veille écosystème, audit des sessions coûteuses et rapport HTML interactif, avec un moteur 100 % déterministe, zéro LLM pour les chiffres.
 
 [![CI](https://github.com/BenjaminCartonAdeo/weekly-advisor-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/BenjaminCartonAdeo/weekly-advisor-kit/actions/workflows/ci.yml)
-[![tests 605](https://img.shields.io/badge/tests-605-brightgreen)](.opencode/plugins/weekly-advisor-engine)
+[![tests 657](https://img.shields.io/badge/tests-657-brightgreen)](.opencode/plugins/weekly-advisor-engine)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-![Architecture du kit](doc/diagrams/architecture.svg)
+Schéma d'architecture : [`doc/diagrams/architecture.html`](doc/diagrams/architecture.html).
 
 ## Ce que fait le kit
 
@@ -120,7 +120,7 @@ Gate docs ↔ code (depuis la racine du repo, node requis) :
 node scripts/check-flow-docs.mjs   # G1 : comptes de tests cohérents + contrats de flux
 ```
 
-Le CI (`.github/workflows/ci.yml`) répète lint, format, 657 tests, packaging et smoke test du plugin sur Ubuntu et Windows, exécute les tests de contrat node sur Ubuntu, puis la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec-opencode-weekly-advisor`](doc/spec-opencode-weekly-advisor), l'architecture dans [`doc/ARCHITECTURE.md`](doc/ARCHITECTURE.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
+Le CI (`.github/workflows/ci.yml`) répète lint, format, 657 tests et packaging sur Ubuntu et Windows, puis exécute les tests de contrat node (Ubuntu) et la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec-opencode-weekly-advisor`](doc/spec-opencode-weekly-advisor), l'architecture dans [`doc/ARCHITECTURE.md`](doc/ARCHITECTURE.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
 
 ### WAVE 2.5 — manifeste de curation (dry-run)
 

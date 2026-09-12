@@ -51,13 +51,6 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Plugin smoke test (exécution)
-        # Régression layout v6.0 : les tools plantaient au 1er appel
-        # (ReferenceError: worktree is not defined) — node --check ne le voit pas.
-        # Faux moteur + python factice : closure, lookback_days, ancre fraîche/périmée.
-        run: node scripts/plugin-smoke.mjs
-        working-directory: .
-
       - name: Tests de contrat node (POSIX)
         # scripts/tests/*.test.mjs : contrats docs ↔ code (runner worker, exit,
         # F6, preflight). POSIX-only (sh, /tmp) → Ubuntu uniquement.
@@ -65,7 +58,7 @@ jobs:
         run: node --test scripts/tests/*.test.mjs
         working-directory: .
 
-      - name: Contrat de flux docs ↔ code (G1, 7 surfaces + advisory)
+      - name: Contrat de flux docs ↔ code (G1, 7 surfaces)
         # Mediation TS→CLI, handlers, artefacts par étape, chaînage d'ordre,
         # collecte pytest exécutable (documentation counts are advisory).
         run: node scripts/check-flow-docs.mjs

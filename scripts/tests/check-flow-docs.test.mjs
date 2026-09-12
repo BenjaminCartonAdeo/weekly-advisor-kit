@@ -65,11 +65,11 @@ test("engine README carries the canonical bounded pytest guard for workers", () 
   assert.match(readme, /jamais `uv run pytest` ni[\s\S]*`uv run rtk pytest`/)
 })
 
-test("tsCommands extracts command literals from multi-line argv arrays", () => {
+test("tsCommands extracts command literals from multi-line argv arrays and declarative tables", () => {
   const cmds = tsCommands(
-    'tool: { argv: [\n  "harness-remediate",\n  "--anchor",\n] }, other: ["run"],\n// ["default"]',
+    'tool: { argv: [\n  "harness-remediate",\n  "--anchor",\n] }, entry: { subcommand: "self-cost" },\n// ["default"]',
   )
-  assert.deepEqual([...cmds].sort(), ["harness-remediate", "run"])
+  assert.deepEqual([...cmds].sort(), ["harness-remediate", "self-cost"])
 })
 
 test("tsCommands discovers every CLI-mediating tool in the real plugin", () => {

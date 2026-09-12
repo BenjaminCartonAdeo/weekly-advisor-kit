@@ -25,7 +25,7 @@ adapte sa configuration à ce repo, valide l'installation par des portes déterm
 - `<TARGET>/.opencode/` (copie du kit), `<TARGET>/reports/` (rapport d'installation)
 - réseau sortant limité à github.com (`github.com`, `raw.githubusercontent.com`)
 - commandes : `git clone` / `git rev-parse` (lecture), `uv sync`, `sed` (config),
-  `python`/`pytest` du venv moteur, `node` (smoke), `cp`, `rm`, `cmp`, `grep`, `mkdir`
+  `python`/`pytest` du venv moteur, `node` (contrats plugin), `cp`, `rm`, `cmp`, `grep`, `mkdir`
 
 **INTERDIT (violation = arrêt immédiat + rapport KO) :**
 - crontab : **ne jamais** installer/modifier — la ligne est seulement *proposée* en fin de run
@@ -144,14 +144,14 @@ cd <TARGET>/.opencode/plugins/weekly-advisor-engine
 - rc `0` ou `1` = OK (warning `opencode` hors PATH acceptable)
 - rc `2` = **FATAL** → rollback (5.8) + rapport KO
 
-**2. Smoke plugin (depuis le clone, pas la cible)**
+**2. Contrats node du plugin (depuis le clone, pas la cible ; node ≥ 23)**
 
 ```sh
 cd /tmp/weekly-advisor-kit-src
-node scripts/plugin-smoke.mjs
+node --test scripts/tests/plugin-preflight.test.mjs
 ```
 
-Doit terminer sur `SMOKE OK — plugin chargé et exécuté (closure, lookback, ancre)`, sinon STOP.
+100 % pass, sinon STOP.
 
 **3. Tests moteur (cible)**
 
@@ -189,7 +189,7 @@ opencode agent list
   "target": "<TARGET>",
   "date": "<DATE>",
   "phases": [ { "id": "…", "status": "ok|failed|skipped", "detail": "…" } ],
-  "validations": { "doctor_rc": 0, "smoke": "SMOKE OK", "pytest": "passed" },
+  "validations": { "doctor_rc": 0, "node_contract": "passed", "pytest": "passed" },
   "warnings": [],
   "conflicts": [],
   "rolled_back": false,
@@ -202,7 +202,7 @@ opencode agent list
 ### 5.10 Résumé final (à l'écran, rien d'autre)
 
 - `INSTALL OK` / `INSTALL KO: <phase>`
-- validations : doctor rc, smoke, pytest (vert / rouge)
+- validations : doctor rc, contrats node, pytest (vert / rouge)
 - avertissements éventuels
 - **ligne crontab PROPOSÉE** (jamais installée) — remplace `<TARGET>` et les chemins PATH réels :
 
@@ -215,7 +215,7 @@ opencode agent list
 ## 6. Contrat anti-hallucination — relis-le avant de commencer
 
 1. Aucune commande hors de ce document ; substitutions limitées à `<TARGET>` et `<DATE>`.
-2. Les sorties attendues sont **littérales** (`true`, `SMOKE OK`, pytest passed, rc 0/1) — un écart est un échec, pas une adaptation.
+2. Les sorties attendues sont **littérales** (`true`, contrats node pass, pytest passed, rc 0/1) — un écart est un échec, pas une adaptation.
 3. Ne réécris jamais : config après adaptation, JSON de rapport, sorties de doctor/pytest, digest.
 4. Ne lance jamais le pipeline ni la revue hebdomadaire.
 5. Aucun commit, push, checkout, crontab, sudo, secret ; aucune édition hors périmètre.
