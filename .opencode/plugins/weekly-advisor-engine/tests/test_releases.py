@@ -31,7 +31,9 @@ def _dt(*args) -> datetime:
 
 
 class FakeResponse:
-    def __init__(self, payload, status: int = 200, text: str | None = None, headers: dict | None = None):
+    def __init__(
+        self, payload, status: int = 200, text: str | None = None, headers: dict | None = None
+    ):
         self.payload = payload
         self.status_code = status
         self._text = text
@@ -382,7 +384,7 @@ def test_all_sources_failing_exit_1_warnings_filled(monkeypatch):
         if url == URL_MCP:
             return FakeResponse({}, status=404)  # no retry
         if url == URL_RELEASES:
-                raise urllib.error.URLError("connection reset")  # network error, retried
+            raise urllib.error.URLError("connection reset")  # network error, retried
         raise AssertionError(url)
 
     data, exit_code = releases.run(make_cfg(), anchor=ANCHOR_ISO, client=FakeClient(handler))
@@ -505,7 +507,7 @@ def test_partial_source_failure_exit_0(monkeypatch):
         if url == URL_NPM:
             return FakeResponse({}, status=500)
         if url == URL_GITHUB:
-                raise urllib.error.URLError("connection refused")
+            raise urllib.error.URLError("connection refused")
         if url == URL_MCP:
             return FakeResponse(
                 {

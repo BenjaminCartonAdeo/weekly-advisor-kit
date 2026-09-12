@@ -122,7 +122,9 @@ def test_summary_to_dict_schema_v2_fields():
         skills={"demo-skill": 1},
         user_turns=["/optimize x", "salut"],
     )
-    summary = aggregate([usage], period=period, generated_at=period.end, skill_catalog=["demo-skill"])
+    summary = aggregate(
+        [usage], period=period, generated_at=period.end, skill_catalog=["demo-skill"]
+    )
     data = summary_to_dict(summary)
 
     assert data["schema_version"] == 2

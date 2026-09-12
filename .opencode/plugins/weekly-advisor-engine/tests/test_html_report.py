@@ -182,9 +182,7 @@ def test_render_html_reports_curation_manifest_and_required_signal(tmp_path: Pat
     ).read_text(encoding="utf-8")
     start = template.index("{% if skill_curate %}")
     end = template.index("{% set inspection", start)
-    macros = template[
-        template.index("{% macro usd") : template.index("{# ---- Phrase-thèse")
-    ]
+    macros = template[template.index("{% macro usd") : template.index("{# ---- Phrase-thèse")]
     block = macros + template[start:end]
     env = Environment(autoescape=False, trim_blocks=True, lstrip_blocks=True)
     rendered = env.from_string(block).render(

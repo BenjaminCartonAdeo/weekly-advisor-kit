@@ -1227,9 +1227,7 @@ _SUBCOMMANDS = (
         (
             (
                 ("--ecosystem",),
-                {
-                    "help": "Override the anchor-derived weekly-ecosystem-<date>.json input path"
-                },
+                {"help": "Override the anchor-derived weekly-ecosystem-<date>.json input path"},
             ),
         ),
     ),
@@ -1252,9 +1250,7 @@ _SUBCOMMANDS = (
         (
             (
                 ("--baseline-summary",),
-                {
-                    "help": "Previous summary used when no prior run exists (P1.1, v5.28)"
-                },
+                {"help": "Previous summary used when no prior run exists (P1.1, v5.28)"},
             ),
         ),
     ),
@@ -1356,15 +1352,11 @@ _SUBCOMMANDS = (
         (
             (
                 ("--coherence",),
-                {
-                    "help": "JSON: findings de cohérence (tag_action pertinents)"
-                },
+                {"help": "JSON: findings de cohérence (tag_action pertinents)"},
             ),
             (
                 ("--catalog",),
-                {
-                    "help": "JSON: catalogue de skills (skill_id, metadata.origin/ttl_policy)"
-                },
+                {"help": "JSON: catalogue de skills (skill_id, metadata.origin/ttl_policy)"},
             ),
             (
                 ("--usage",),
