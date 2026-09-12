@@ -97,16 +97,6 @@ implicite) :
 Le check est **déterministe** (glob, zéro LLM) et s'exécute **une seule fois**, au début
 de la branche. `skills_loaded` est obligatoire dans le contrat retour (champ non-nul).
 
-## Garde de test canonique (obligatoire)
-
-Lorsqu'un worker vérifie le moteur, il exécute les tests depuis
-`.opencode/plugins/weekly-advisor-engine` avec `uv run python -m pytest -q` et un
-sélecteur explicite appartenant au moteur. Ne jamais utiliser `uv run pytest` ou
-préfixer la commande par `rtk`. Vérifier d'abord que le sélecteur existe ; sinon,
-exécuter au plus une collecte bornée avec `uv run python -m pytest --collect-only -q`
-comme diagnostic, jamais comme validation. Maximum un test ciblé puis ce fallback ;
-aucune boucle de relance.
-
 ## Exécution par branche
 
 Chaque worker reçoit son ordre figé d'étapes. Invariants ci-dessus s'appliquent à tous.
