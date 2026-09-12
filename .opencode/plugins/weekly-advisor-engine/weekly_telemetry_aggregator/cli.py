@@ -1162,6 +1162,244 @@ def _cmd_self_cost(args, cfg) -> int:
 # ------------------------------------------------------------------ parser
 
 
+_SUBCOMMANDS = (
+    (
+        "run",
+        "Aggregate OpenCode telemetry into weekly-summary-<date>.json (default)",
+        _cmd_run,
+        (
+            (
+                ("--top-sessions-limit",),
+                {"type": int, "help": "Override top_sessions_limit"},
+            ),
+            (
+                ("--include-subagents",),
+                {
+                    "dest": "include_subagents",
+                    "action": "store_true",
+                    "default": None,
+                },
+            ),
+            (
+                ("--no-subagents",),
+                {"dest": "include_subagents", "action": "store_false"},
+            ),
+            (
+                ("--fail-on-missing-telemetry",),
+                {
+                    "action": "store_true",
+                    "help": "Exit 1 as soon as a session read fails",
+                },
+            ),
+        ),
+    ),
+    (
+        "show-session",
+        "Render a session transcript (Partie 0 §3)",
+        _cmd_show_session,
+        (
+            (("session_id",), {}),
+            (
+                ("--include-children",),
+                {
+                    "action": "store_true",
+                    "help": "Include child sessions (subagents) via parent_id",
+                },
+            ),
+            (
+                ("--extract-dir",),
+                {
+                    "help": "Also write transcript-extract-<session_id>.md into this directory (Partie 3 §6.b)"
+                },
+            ),
+        ),
+    ),
+    (
+        "releases",
+        "Ecosystem watch + core changes (Partie 2)",
+        _cmd_releases,
+        (),
+    ),
+    (
+        "watch-context",
+        "Join weekly-ecosystem with project plugins/skills/commands/agents",
+        _cmd_watch_context,
+        (
+            (
+                ("--ecosystem",),
+                {
+                    "help": "Override the anchor-derived weekly-ecosystem-<date>.json input path"
+                },
+            ),
+        ),
+    ),
+    (
+        "watch-distill",
+        "Deterministic ecosystem distill: fuse, screen, score, quota top-N fiches (étape 2.2)",
+        _cmd_watch_distill,
+        (),
+    ),
+    (
+        "watch-validate",
+        "Validate raw watch findings against the local dated watch context",
+        _cmd_watch_validate,
+        (),
+    ),
+    (
+        "insights",
+        "Deltas, alerts, maintenance rules R1-R4 (Partie 6)",
+        _cmd_insights,
+        (
+            (
+                ("--baseline-summary",),
+                {
+                    "help": "Previous summary used when no prior run exists (P1.1, v5.28)"
+                },
+            ),
+        ),
+    ),
+    (
+        "report-prep",
+        "Render deterministic report sections (Partie 7a)",
+        _cmd_report_prep,
+        (),
+    ),
+    (
+        "report-assemble",
+        "Inject LLM blocks into the draft (Partie 7c)",
+        _cmd_report_assemble,
+        (),
+    ),
+    (
+        "harness",
+        "Step 5: scoped harness-eval lint → weekly-harness-digest-<date>.json",
+        _cmd_harness,
+        (),
+    ),
+    (
+        "harness-remediate",
+        "Deterministic, gated harness proposal dry-run or remediation",
+        _cmd_harness_remediate,
+        (
+            (
+                ("--proposal",),
+                {
+                    "required": True,
+                    "help": "JSON proposal file under output_dir",
+                },
+            ),
+            (
+                ("--mode",),
+                {
+                    "choices": ("dry-run", "apply"),
+                    "default": "dry-run",
+                    "help": "dry-run is the safe default; apply requires every gate",
+                },
+            ),
+        ),
+    ),
+    (
+        "report-blocks-draft",
+        "Deterministic section-4 blocks draft (v5.28, P5.1)",
+        _cmd_report_blocks_draft,
+        (),
+    ),
+    (
+        "audit-candidates",
+        "Partie 3 §2: deterministic audit-candidate selection from weekly-summary",
+        _cmd_audit_candidates,
+        (),
+    ),
+    (
+        "draft-candidates",
+        "Partie 4 §3: skill/command-candidate findings, capped, severity DESC",
+        _cmd_draft_candidates,
+        (),
+    ),
+    (
+        "commit-draft",
+        "Validate + commit an auto-drafted skill/command/agent (Partie 4 §7)",
+        _cmd_commit_draft,
+        (
+            (
+                ("--file",),
+                {
+                    "required": True,
+                    "help": "Absolute path to the SKILL.md, command or agent .md",
+                },
+            ),
+            (
+                ("--kind",),
+                {
+                    "choices": ("skill", "command", "fix", "agent"),
+                    "required": True,
+                },
+            ),
+        ),
+    ),
+    (
+        "doctor",
+        "Diagnose the installation (Partie 1 §12)",
+        _cmd_doctor,
+        (),
+    ),
+    (
+        "self-cost",
+        "Cost of the pipeline's own run session (Partie 1 §12)",
+        _cmd_self_cost,
+        (),
+    ),
+    (
+        "skill-curate",
+        "Curation/décroissance skills (R4 curation/GC + R8 TTL) — dry-run par défaut",
+        _cmd_skill_curate,
+        (
+            (
+                ("--coherence",),
+                {
+                    "help": "JSON: findings de cohérence (tag_action pertinents)"
+                },
+            ),
+            (
+                ("--catalog",),
+                {
+                    "help": "JSON: catalogue de skills (skill_id, metadata.origin/ttl_policy)"
+                },
+            ),
+            (
+                ("--usage",),
+                {
+                    "help": "JSON: usage_records pour TTL (fallback inter-run .watch-memory.jsonl si absent)"
+                },
+            ),
+            (
+                ("--runs-seen",),
+                {
+                    "type": int,
+                    "default": 0,
+                    "help": "Nombre de runs consécutifs observés",
+                },
+            ),
+            (
+                ("--stale-days",),
+                {
+                    "type": int,
+                    "default": 90,
+                    "help": "Seuil d'obsolescence last_loaded (jours)",
+                },
+            ),
+            (
+                ("--apply",),
+                {
+                    "action": "store_true",
+                    "help": "Exécute (sinon dry-run, imprime seulement)",
+                },
+            ),
+        ),
+    ),
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="weekly-telemetry-aggregator",
@@ -1211,184 +1449,13 @@ def build_parser() -> argparse.ArgumentParser:
         baseline_summary=None,
     )
 
-    p_run = sub.add_parser(
-        "run",
-        parents=[global_parent],
-        help="Aggregate OpenCode telemetry into weekly-summary-<date>.json (default)",
-    )
-    p_run.add_argument("--top-sessions-limit", type=int, help="Override top_sessions_limit")
-    p_run.add_argument(
-        "--include-subagents", dest="include_subagents", action="store_true", default=None
-    )
-    p_run.add_argument("--no-subagents", dest="include_subagents", action="store_false")
-    p_run.add_argument(
-        "--fail-on-missing-telemetry",
-        action="store_true",
-        help="Exit 1 as soon as a session read fails",
-    )
-    p_run.set_defaults(func=_cmd_run)
-
-    p_show = sub.add_parser(
-        "show-session", parents=[global_parent], help="Render a session transcript (Partie 0 §3)"
-    )
-    p_show.add_argument("session_id")
-    p_show.add_argument(
-        "--include-children",
-        action="store_true",
-        help="Include child sessions (subagents) via parent_id",
-    )
-    p_show.add_argument(
-        "--extract-dir",
-        help="Also write transcript-extract-<session_id>.md into this directory (Partie 3 §6.b)",
-    )
-    p_show.set_defaults(func=_cmd_show_session)
-
-    p_rel = sub.add_parser(
-        "releases", parents=[global_parent], help="Ecosystem watch + core changes (Partie 2)"
-    )
-    p_rel.set_defaults(func=_cmd_releases)
-
-    p_watch = sub.add_parser(
-        "watch-context",
-        parents=[global_parent],
-        help="Join weekly-ecosystem with project plugins/skills/commands/agents",
-    )
-    p_watch.add_argument(
-        "--ecosystem",
-        help="Override the anchor-derived weekly-ecosystem-<date>.json input path",
-    )
-    p_watch.set_defaults(func=_cmd_watch_context)
-
-    p_watch_distill = sub.add_parser(
-        "watch-distill",
-        parents=[global_parent],
-        help="Deterministic ecosystem distill: fuse, screen, score, quota top-N fiches (étape 2.2)",
-    )
-    p_watch_distill.set_defaults(func=_cmd_watch_distill)
-
-    p_watch_validate = sub.add_parser(
-        "watch-validate",
-        parents=[global_parent],
-        help="Validate raw watch findings against the local dated watch context",
-    )
-    p_watch_validate.set_defaults(func=_cmd_watch_validate)
-
-    p_ins = sub.add_parser(
-        "insights",
-        parents=[global_parent],
-        help="Deltas, alerts, maintenance rules R1-R4 (Partie 6)",
-    )
-    p_ins.add_argument(
-        "--baseline-summary",
-        help="Previous summary used when no prior run exists (P1.1, v5.28)",
-    )
-    p_ins.set_defaults(func=_cmd_insights)
-
-    p_prep = sub.add_parser(
-        "report-prep",
-        parents=[global_parent],
-        help="Render deterministic report sections (Partie 7a)",
-    )
-    p_prep.set_defaults(func=_cmd_report_prep)
-
-    p_asm = sub.add_parser(
-        "report-assemble",
-        parents=[global_parent],
-        help="Inject LLM blocks into the draft (Partie 7c)",
-    )
-    p_asm.set_defaults(func=_cmd_report_assemble)
-
-    p_harness = sub.add_parser(
-        "harness",
-        parents=[global_parent],
-        help="Step 5: scoped harness-eval lint → weekly-harness-digest-<date>.json",
-    )
-    p_harness.set_defaults(func=_cmd_harness)
-
-    p_harness_remediate = sub.add_parser(
-        "harness-remediate",
-        parents=[global_parent],
-        help="Deterministic, gated harness proposal dry-run or remediation",
-    )
-    p_harness_remediate.add_argument(
-        "--proposal", required=True, help="JSON proposal file under output_dir"
-    )
-    p_harness_remediate.add_argument(
-        "--mode",
-        choices=("dry-run", "apply"),
-        default="dry-run",
-        help="dry-run is the safe default; apply requires every gate",
-    )
-    p_harness_remediate.set_defaults(func=_cmd_harness_remediate)
-
-    p_blocks = sub.add_parser(
-        "report-blocks-draft",
-        parents=[global_parent],
-        help="Deterministic section-4 blocks draft (v5.28, P5.1)",
-    )
-    p_blocks.set_defaults(func=_cmd_report_blocks_draft)
-
-    p_ac = sub.add_parser(
-        "audit-candidates",
-        parents=[global_parent],
-        help="Partie 3 §2: deterministic audit-candidate selection from weekly-summary",
-    )
-    p_ac.set_defaults(func=_cmd_audit_candidates)
-
-    p_dc = sub.add_parser(
-        "draft-candidates",
-        parents=[global_parent],
-        help="Partie 4 §3: skill/command-candidate findings, capped, severity DESC",
-    )
-    p_dc.set_defaults(func=_cmd_draft_candidates)
-
-    p_cd = sub.add_parser(
-        "commit-draft",
-        parents=[global_parent],
-        help="Validate + commit an auto-drafted skill/command/agent (Partie 4 §7)",
-    )
-    p_cd.add_argument(
-        "--file", required=True, help="Absolute path to the SKILL.md, command or agent .md"
-    )
-    p_cd.add_argument("--kind", choices=("skill", "command", "fix", "agent"), required=True)
-    p_cd.set_defaults(func=_cmd_commit_draft)
-
-    p_doctor = sub.add_parser(
-        "doctor", parents=[global_parent], help="Diagnose the installation (Partie 1 §12)"
-    )
-    p_doctor.set_defaults(func=_cmd_doctor)
-
-    p_self = sub.add_parser(
-        "self-cost",
-        parents=[global_parent],
-        help="Cost of the pipeline's own run session (Partie 1 §12)",
-    )
-    p_self.set_defaults(func=_cmd_self_cost)
-
-    p_sc = sub.add_parser(
-        "skill-curate",
-        parents=[global_parent],
-        help="Curation/décroissance skills (R4 curation/GC + R8 TTL) — dry-run par défaut",
-    )
-    p_sc.add_argument("--coherence", help="JSON: findings de cohérence (tag_action pertinents)")
-    p_sc.add_argument(
-        "--catalog",
-        help="JSON: catalogue de skills (skill_id, metadata.origin/ttl_policy)",
-    )
-    p_sc.add_argument(
-        "--usage",
-        help="JSON: usage_records pour TTL (fallback inter-run .watch-memory.jsonl si absent)",
-    )
-    p_sc.add_argument(
-        "--runs-seen", type=int, default=0, help="Nombre de runs consécutifs observés"
-    )
-    p_sc.add_argument(
-        "--stale-days", type=int, default=90, help="Seuil d'obsolescence last_loaded (jours)"
-    )
-    p_sc.add_argument(
-        "--apply", action="store_true", help="Exécute (sinon dry-run, imprime seulement)"
-    )
-    p_sc.set_defaults(func=_cmd_skill_curate)
+    for name, help_text, func, arguments in _SUBCOMMANDS:
+        # Résolution tardive : les tests remplacent les handlers après import.
+        handler = globals()[func.__name__]
+        command_parser = sub.add_parser(name, parents=[global_parent], help=help_text)
+        for flags, options in arguments:
+            command_parser.add_argument(*flags, **options)
+        command_parser.set_defaults(func=handler)
 
     return parser
 
