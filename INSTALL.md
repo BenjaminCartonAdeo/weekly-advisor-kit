@@ -8,7 +8,7 @@ Temps total : ~10 min (hors run complet de test : ~8-12 min).
 > agent de lire `https://raw.githubusercontent.com/BenjaminCartonAdeo/weekly-advisor-kit/master/INSTALL_PROMPT.md`
 > et de l'exécuter. Ce guide reste la référence humaine (explications, dépannage, cron).
 
-> Vue d'ensemble et architecture : [`README.md`](README.md) · Contrat complet : `doc/spec-opencode-weekly-advisor`
+> Vue d'ensemble et architecture : [`README.md`](README.md) · Contrat fonctionnel : [`doc/spec/`](doc/spec/README.md)
 
 ## 1. Prérequis (binaires du poste)
 

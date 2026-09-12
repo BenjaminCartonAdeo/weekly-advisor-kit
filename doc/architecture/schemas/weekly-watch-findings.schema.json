@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "weekly-watch-findings.schema.json",
+  "title": "weekly-watch-findings-<date>.json",
+  "description": "Findings de la revue critique de veille (étapes 3.5 brute puis 3.6 validée) : décisions, annexe sécurité et compteurs de validation. Schéma documentaire : seules les clés principales sont contraintes, le reste est libre.",
+  "type": "object",
+  "required": ["schema_version", "date"],
+  "properties": {
+    "schema_version": { "type": "integer" },
+    "date": { "type": "string", "format": "date" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "category": { "type": "string" },
+          "severity": { "type": "string" },
+          "token_impact": { "type": "string" },
+          "target_local": { "type": "string" },
+          "description": { "type": "string" },
+          "evidence_summary": { "type": "string" },
+          "recommendation": { "type": "string" },
+          "subject": { "type": "object" },
+          "recommendation_type": { "type": "string" },
+          "impact_order_of_magnitude": { "type": "string" },
+          "existing_state": { "type": "string" },
+          "decision": { "type": "string" }
+        }
+      }
+    },
+    "rejected_findings": { "type": "array" },
+    "security_annex": {
+      "type": "object",
+      "properties": {
+        "blocked_count": { "type": "integer" },
+        "ids": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "properties": {
+        "status": { "type": "string" },
+        "summary": { "type": "string" },
+        "counts": {
+          "type": "object",
+          "properties": {
+            "input": { "type": "integer" },
+            "accepted": { "type": "integer" },
+            "rejected": { "type": "integer" },
+            "downgraded": { "type": "integer" },
+            "market_matched": { "type": "integer" },
+            "market_unknown": { "type": "integer" }
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}

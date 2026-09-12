@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "weekly-draft-candidates.schema.json",
+  "title": "weekly-draft-candidates-<date>.json",
+  "description": "Candidats à l'auto-drafting (étape 4) : skills, commands et améliorations éligibles, plafonnés. Schéma documentaire : seules les clés principales sont contraintes, le reste est libre.",
+  "type": "object",
+  "required": ["schema_version", "date"],
+  "properties": {
+    "schema_version": { "type": "integer" },
+    "date": { "type": "string", "format": "date" },
+    "candidates": { "type": "array" },
+    "limit": { "type": "integer" },
+    "findings_file": { "type": "string" }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "skill-curate-<date>.json",
+  "description": "Manifeste de curation des skills produit par skill-curate (WAVE 2.5). Clés principales ; additionalProperties libre.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": { "type": "integer" },
+    "rc": { "type": "integer" },
+    "mode": { "type": "string" },
+    "dry_run": { "type": "boolean" },
+    "date": { "type": "string" },
+    "run_dir": { "type": "string" },
+    "generated_at": { "type": "string" },
+    "anchor": { "type": ["string", "null"] },
+    "coherence_count": { "type": "integer" },
+    "catalog_count": { "type": "integer" },
+    "applied": { "type": "integer" },
+    "proposed": { "type": "integer" },
+    "skipped": { "type": "integer" },
+    "archive_pending": { "type": "integer" },
+    "skipped_user": { "type": "integer" },
+    "decisions": { "type": "array" },
+    "skipped_details": { "type": "array" },
+    "move_status_counts": { "type": "object" },
+    "move_counts": { "type": "object" },
+    "archive_candidates": { "type": "array" },
+    "archive_candidates_ttl": { "type": "array" },
+    "summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "by_action": { "type": "object" }
+      }
+    },
+    "run_provenance": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "repository_path": { "type": "string" },
+        "branch": { "type": ["string", "null"] },
+        "commit_sha": { "type": ["string", "null"] },
+        "working_tree_dirty": { "type": "boolean" },
+        "start_time": { "type": ["string", "null"] },
+        "run_started_at": { "type": ["string", "null"] },
+        "pipeline_version": { "type": "string" }
+      }
+    }
+  }
+}

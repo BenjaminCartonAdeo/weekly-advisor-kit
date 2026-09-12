@@ -94,7 +94,7 @@ test("canonical worker pytest command enforces engine cwd and selector", () => {
 })
 
 test("execution contract documents provenance, bounded delegation, transport and statuses", () => {
-  const docs = ["README.md", "INSTALL.md", path.join("doc", "ARCHITECTURE.md")].map((file) =>
+  const docs = ["README.md", "INSTALL.md", path.join("doc", "architecture", "README.md")].map((file) =>
     fs.readFileSync(path.join(ROOT, file), "utf8"),
   )
   const source = docs.join("\n")

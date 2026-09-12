@@ -12,7 +12,7 @@ Schéma d'architecture : [`doc/diagrams/architecture.html`](doc/diagrams/archite
 
 Chaque lundi, le kit produit un rapport unique qui répond à vos questions : combien vous avez dépensé, ce qui a coûté cher et pourquoi, quels skills et commands sont inutilisés ou redondants, quoi surveiller dans l'écosystème, et quelles corrections peuvent être auto-rédigées (proposées, jamais imposées).
 
-Le cœur est 100 % déterministe : le moteur Python lit directement la télémétrie locale des harnais actifs (base SQLite OpenCode, transcripts JSONL Claude Code, sessions Copilot VS Code) et produit des JSON reproductibles, sans SDK ni serveur. Le LLM n'intervient que sur les étapes qualitatives, encadrées par des skills dédiés et des contrats anti-hallucination. Le pipeline complet (8 étapes, de la télémétrie au rapport final) est décrit dans la [spécification](doc/spec-opencode-weekly-advisor).
+Le cœur est 100 % déterministe : le moteur Python lit directement la télémétrie locale des harnais actifs (base SQLite OpenCode, transcripts JSONL Claude Code, sessions Copilot VS Code) et produit des JSON reproductibles, sans SDK ni serveur. Le LLM n'intervient que sur les étapes qualitatives, encadrées par des skills dédiés et des contrats anti-hallucination. Le pipeline complet (8 étapes, de la télémétrie au rapport final) est décrit dans la [spécification](doc/spec/README.md).
 
 ## Fonctionnalités clés
 
@@ -71,7 +71,7 @@ Les clés principales vivent dans [`weekly-telemetry-config.json`](.opencode/plu
 | `cost_rate_usd_per_mtok` | Taux de coût par source (surcharge) | par modèle |
 | `lookback_days` | Fenêtre analysée par run | 7 |
 
-Le détail des clés, des seuils et des invariants est dans la [spécification](doc/spec-opencode-weekly-advisor) et [`INSTALL.md`](INSTALL.md) §2.3. En interne, la configuration est exposée en **vues groupées** (sources, stockage, coûts, curation) — vues en lecture seule **rétro-compatibles** : le fichier JSON garde ses clés plates historiques, aucune migration requise.
+Le détail des clés, des seuils et des invariants est dans la [spécification](doc/spec/README.md) et [`INSTALL.md`](INSTALL.md) §2.3. En interne, la configuration est exposée en **vues groupées** (sources, stockage, coûts, curation) — vues en lecture seule **rétro-compatibles** : le fichier JSON garde ses clés plates historiques, aucune migration requise.
 
 ### Contrat d'exécution et provenance
 
@@ -120,7 +120,7 @@ Gate docs ↔ code (depuis la racine du repo, node requis) :
 node scripts/check-flow-docs.mjs   # G1 : comptes de tests cohérents + contrats de flux
 ```
 
-Le CI (`.github/workflows/ci.yml`) répète lint, format, 659 tests et packaging sur Ubuntu et Windows, puis exécute les tests de contrat node (Ubuntu) et la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec-opencode-weekly-advisor`](doc/spec-opencode-weekly-advisor), l'architecture dans [`doc/ARCHITECTURE.md`](doc/ARCHITECTURE.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
+Le CI (`.github/workflows/ci.yml`) répète lint, format, 659 tests et packaging sur Ubuntu et Windows, puis exécute les tests de contrat node (Ubuntu) et la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec/`](doc/spec/README.md), l'architecture dans [`doc/architecture/`](doc/architecture/README.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
 
 ### WAVE 2.5 — manifeste de curation (dry-run)
 
@@ -142,8 +142,8 @@ rc=1 (partiel).
 
 | Document | Contenu |
 |---|---|
-| [`doc/spec-opencode-weekly-advisor`](doc/spec-opencode-weekly-advisor) | Spécification fonctionnelle : le contrat complet du pipeline |
-| [`doc/ARCHITECTURE.md`](doc/ARCHITECTURE.md) | Architecture du kit et du pipeline |
+| [`doc/spec/`](doc/spec/README.md) | Spécification fonctionnelle : le contrat complet du pipeline (8 chapitres) |
+| [`doc/architecture/`](doc/architecture/README.md) | Architecture de l'implémentation de référence + schémas JSON |
 | [`INSTALL.md`](INSTALL.md) | Installation pas à pas, cron, mise à jour, dépannage |
 | [`INSTALL_PROMPT.md`](INSTALL_PROMPT.md) | Installation pilotée par agent (à coller dans une session OpenCode) |
 | [`doc/diagrams/`](doc/diagrams/) | Schémas d'architecture et séquences |

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "watch-memory-digest.schema.json",
+  "title": "watch-memory-digest-<date>.json",
+  "description": "Digest de la mémoire inter-run de la veille (étape 2.2) : récemment ignorés, précédemment recommandés, récurrents. Schéma documentaire : seules les clés principales sont contraintes, le reste est libre.",
+  "type": "object",
+  "required": ["schema_version", "week"],
+  "properties": {
+    "schema_version": { "type": "integer" },
+    "week": { "type": "string" },
+    "recently_ignored": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "week": { "type": "string" },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "previously_recommended": { "type": "array", "items": { "type": "string" } },
+    "recurrents": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": true
+}

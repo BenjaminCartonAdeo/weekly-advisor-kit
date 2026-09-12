@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "weekly-ecosystem.schema.json",
+  "title": "weekly-ecosystem-<date>.json",
+  "description": "Nouveautés et évolutions de l'écosystème collectées sur la fenêtre (étape 2, veille). Schéma documentaire : seules les clés principales sont contraintes, le reste est libre.",
+  "type": "object",
+  "required": ["schema_version", "period", "generated_at"],
+  "properties": {
+    "schema_version": { "type": "integer" },
+    "period": {
+      "type": "object",
+      "properties": {
+        "start": { "type": "string", "format": "date-time" },
+        "end": { "type": "string", "format": "date-time" }
+      }
+    },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "new_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "category": { "type": "string" },
+          "repo_url": { "type": "string" },
+          "npm_package": { "type": "string" },
+          "version": { "type": "string" },
+          "description": { "type": "string" },
+          "published_at": { "type": "string" },
+          "found_via": { "type": "array", "items": { "type": "string" } },
+          "new_repo": { "type": "boolean" }
+        }
+      }
+    },
+    "core_changes": { "type": "array" },
+    "counts_by_category": {
+      "type": "object",
+      "properties": {
+        "plugin": { "type": "integer" },
+        "skill": { "type": "integer" },
+        "agent": { "type": "integer" },
+        "mcp-server": { "type": "integer" },
+        "repo": { "type": "integer" }
+      }
+    },
+    "counts_by_source": { "type": "object", "additionalProperties": { "type": "integer" } },
+    "watch_repos": { "type": "array" },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "source": { "type": "string" },
+          "message": { "type": "string" }
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}

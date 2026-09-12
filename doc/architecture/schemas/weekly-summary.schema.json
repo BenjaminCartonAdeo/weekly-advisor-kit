@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "weekly-summary-<date>.json",
+  "description": "Résumé télémétrique hebdomadaire produit par l'étape 1 (collecte). Clés principales ; additionalProperties libre.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": { "type": "integer" },
+    "period": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "start": { "type": "string" },
+        "end": { "type": "string" }
+      }
+    },
+    "generated_at": { "type": "string" },
+    "totals": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "session_count": { "type": "integer" },
+        "total_tokens": { "type": "integer" },
+        "total_cost_usd": { "type": "number" },
+        "cache_read_tokens": { "type": "integer" },
+        "cache_write_tokens": { "type": "integer" },
+        "fresh_input_tokens": { "type": "integer" },
+        "output_tokens": { "type": "integer" },
+        "reasoning_tokens": { "type": "integer" },
+        "cache_hit_rate": { "type": ["number", "null"] }
+      }
+    },
+    "daily_totals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "date": { "type": "string" },
+          "cost_usd": { "type": "number" },
+          "total_tokens": { "type": "integer" },
+          "cache_hit_rate": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "by_model": { "type": "array" },
+    "top_sessions_by_cost": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "session_id": { "type": "string" },
+          "title_or_topic": { "type": ["string", "null"] },
+          "cost_usd": { "type": "number" },
+          "reported_cost_usd_lifetime": { "type": ["number", "null"] },
+          "total_tokens": { "type": "integer" },
+          "project_path": { "type": ["string", "null"] },
+          "duration_seconds": { "type": ["number", "null"] },
+          "active_time_seconds": { "type": ["number", "null"] },
+          "cost_per_active_minute": { "type": ["number", "null"] },
+          "api_call_count": { "type": ["integer", "null"] },
+          "includes_subagents": { "type": "boolean" }
+        }
+      }
+    },
+    "cost_outliers": { "type": "array" },
+    "cost_outliers_state": { "type": "string" },
+    "tool_usage": { "type": "array" },
+    "skill_usage": { "type": "array" },
+    "command_usage": { "type": "array" },
+    "skill_similar_pairs": { "type": "array" },
+    "skill_catalog_count": { "type": "integer" },
+    "skills_never_loaded": { "type": "array", "items": { "type": "string" } },
+    "skills_targets": { "type": "object" },
+    "user_prompt_repeats": { "type": "array" },
+    "subagent_totals": { "type": "object" },
+    "cost_estimates": { "type": "object" },
+    "warnings": { "type": "array" },
+    "run_provenance": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "repository_path": { "type": "string" },
+        "branch": { "type": ["string", "null"] },
+        "commit_sha": { "type": ["string", "null"] },
+        "working_tree_dirty": { "type": "boolean" },
+        "pipeline_version": { "type": "string" }
+      }
+    }
+  }
+}
