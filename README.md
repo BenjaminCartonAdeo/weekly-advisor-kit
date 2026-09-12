@@ -101,7 +101,7 @@ Contributions bienvenues, en particulier : nouveaux providers de harnais, règle
 Validation locale (depuis le dossier moteur `.opencode/plugins/weekly-advisor-engine`) :
 
 ```sh
-uv run python -m pytest -q    # 628 tests
+uv run python -m pytest -q    # 657 tests
 uv run ruff check .           # lint
 uv run ruff format --check .  # format
 ```
@@ -120,7 +120,7 @@ Gate docs ↔ code (depuis la racine du repo, node requis) :
 node scripts/check-flow-docs.mjs   # G1 : comptes de tests cohérents + contrats de flux
 ```
 
-Le CI (`.github/workflows/ci.yml`) répète lint, format, 628 tests, packaging et smoke test du plugin sur Ubuntu et Windows, puis la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec-opencode-weekly-advisor`](doc/spec-opencode-weekly-advisor), l'architecture dans [`doc/ARCHITECTURE.md`](doc/ARCHITECTURE.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
+Le CI (`.github/workflows/ci.yml`) répète lint, format, 657 tests, packaging et smoke test du plugin sur Ubuntu et Windows, exécute les tests de contrat node sur Ubuntu, puis la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec-opencode-weekly-advisor`](doc/spec-opencode-weekly-advisor), l'architecture dans [`doc/ARCHITECTURE.md`](doc/ARCHITECTURE.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
 
 ### WAVE 2.5 — manifeste de curation (dry-run)
 

@@ -3,7 +3,7 @@ import fs from "node:fs"
 import test from "node:test"
 import path from "node:path"
 
-import { canonicalPytestCommand, checkTestCounts, collectPytest, documentedTestCounts } from "../check-flow-docs.mjs"
+import { canonicalPytestCommand, checkTestCounts, collectPytest, documentedTestCounts, tsCommands } from "../check-flow-docs.mjs"
 
 const ROOT = path.resolve(import.meta.dirname, "../..")
 
@@ -63,6 +63,20 @@ test("engine README carries the canonical bounded pytest guard for workers", () 
   assert.match(readme, /--collect-only -q/)
   assert.match(readme, /fallback diagnostique\s+unique et borné/)
   assert.match(readme, /jamais `uv run pytest` ni[\s\S]*`uv run rtk pytest`/)
+})
+
+test("tsCommands extracts command literals from multi-line argv arrays", () => {
+  const cmds = tsCommands(
+    'tool: { argv: [\n  "harness-remediate",\n  "--anchor",\n] }, other: ["run"],\n// ["default"]',
+  )
+  assert.deepEqual([...cmds].sort(), ["harness-remediate", "run"])
+})
+
+test("tsCommands discovers every CLI-mediating tool in the real plugin", () => {
+  const ts = fs.readFileSync(path.join(ROOT, ".opencode", "plugins", "weekly-advisor.ts"), "utf8")
+  const cmds = [...tsCommands(ts)].sort()
+  assert.equal(cmds.length, 18)
+  assert.ok(cmds.includes("harness-remediate"))
 })
 
 test("canonical worker pytest command enforces engine cwd and selector", () => {

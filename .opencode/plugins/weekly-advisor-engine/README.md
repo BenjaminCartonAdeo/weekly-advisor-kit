@@ -4,7 +4,7 @@ Moteur Python du kit weekly-advisor : agrégation de télémétrie OpenCode (lec
 SQLite locale), veille écosystème (npm/GitHub/MCP/RSS), insights, lint harness et
 rendu du rapport hebdomadaire — 100 % déterministe, zéro LLM.
 
-- Spécification : `opencode-weekly-advisor` (racine du kit)
+- Spécification : `doc/spec-opencode-weekly-advisor` (racine du kit)
 - CLI : `python -m weekly_telemetry_aggregator --help` (sous-commandes `run`,
   `releases`, `watch-context`, `watch-validate`, `harness-remediate`, `insights`, `report-prep`,
   `report-assemble`, `doctor`, …)

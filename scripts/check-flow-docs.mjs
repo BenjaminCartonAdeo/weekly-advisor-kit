@@ -100,7 +100,7 @@ export function checkTestCounts({ docs, collection }) {
 // ---------------------------------------------------------------- collecteurs
 
 /** Sous-commandes TS : 1er argv littéral des cliArgs ([…"run", "--anchor"]…). */
-function tsCommands(src) {
+export function tsCommands(src) {
   const cmds = new Set()
   // On retire les commentaires `//` (ex: `["default"]` en prose) et les enums
   // de schéma (tool.schema.enum(["dry-run", "apply"]), multilignes possibles)
@@ -116,7 +116,7 @@ function tsCommands(src) {
     // leur argv est retiré avant l'extraction (exclusion par mécanisme, pas par
     // token — un futur binaire externe reste hors contrat automatiquement).
     .replace(/execFile\(\s*"[^"]+"\s*,\s*\[[^\]]*\]/g, "")
-  for (const m of clean.matchAll(/\["([a-z][a-z-]+)"[,\]]/g)) cmds.add(m[1])
+  for (const m of clean.matchAll(/\[\s*"([a-z][a-z-]+)"\s*[,\]]/g)) cmds.add(m[1])
   return cmds
 }
 

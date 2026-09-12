@@ -12,8 +12,8 @@ const ORCH = ".opencode/agents/weekly-advisor/weekly-advisor.md"
 const CMD = ".opencode/commands/weekly-review.md"
 
 /**
- * Contrat F6 — fiabilité du chargement des skills worker (design
- * 2026-09-01-weekly-run-reliability-design.md §5/§6/§7). Vérifie statiquement
+ * Contrat F6 — fiabilité du chargement des skills worker (cf. orchestrateur
+ * weekly-advisor + skill weekly-safety-guardrails). Vérifie statiquement
  * que worker + orchestrateur + commande déclarent le pre-flight skills :
  *   - `skills_loaded` dans le contrat worker ;
  *   - mapping rc : primaire absente → rc=2 (STOP), secondaire absente → rc=1 +

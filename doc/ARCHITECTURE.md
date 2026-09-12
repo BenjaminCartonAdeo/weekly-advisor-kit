@@ -18,16 +18,16 @@ l'architecture telle qu'implémentée et les invariants à préserver.
 
 - Moteur Python déterministe `weekly-telemetry-aggregator` dans
   `.opencode/plugins/weekly-advisor-engine/`, zéro LLM sur les étapes chiffrées.
-- Plugin enveloppe OpenCode : 18 tools `weekly_*` (`weekly_run`, `weekly_harness`,
-  `weekly_doctor`, `weekly_commit_draft`, `weekly_skill_curate`, etc.) qui pilotent le moteur.
+- Plugin enveloppe OpenCode : 19 tools `weekly_*` (`weekly_run`, `weekly_harness`,
+  `weekly_doctor`, `weekly_commit_draft`, `weekly_skill_curate`, etc.) — 18 pilotent le
+  moteur, `weekly_preflight` est une gate locale sans sous-commande CLI.
 - **Configuration en vues groupées** : `TelemetryConfig` expose des vues **en lecture
   seule** — `sources`, `storage`, `cost`, `curation` — construites sur les champs
   plats historiques. Le fichier JSON garde sa forme (clés plates, aucune migration) ;
   les vues sont un confort de code rétro-compatible, pas un nouveau format.
 - Sorties JSON reproductibles dans `<output_dir>/runs/<date>-<uuid8>/`, alias
   stable `runs/current/`. Codes de sortie : `0` complet, `1` partiel, `2` fatal.
-- L'exécution du run est **orchestrée en waves parallèles de subagents** (spec v6.1,
-  design `doc/2026-08-25-parallel-orchestration-design.md`) : la session principale
+- L'exécution du run est **orchestrée en waves parallèles de subagents** (spec v6.1) : la session principale
   devient un coordinateur léger (gate, dispatch, join, tail). Le moteur Python et le
   plugin enveloppe restent inchangés — seule la couche d'orchestration agent évolue.
 

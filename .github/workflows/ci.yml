@@ -58,7 +58,14 @@ jobs:
         run: node scripts/plugin-smoke.mjs
         working-directory: .
 
-      - name: Contrat de flux docs ↔ code (G1, 5 surfaces)
+      - name: Tests de contrat node (POSIX)
+        # scripts/tests/*.test.mjs : contrats docs ↔ code (runner worker, exit,
+        # F6, preflight). POSIX-only (sh, /tmp) → Ubuntu uniquement.
+        if: runner.os == 'Linux'
+        run: node --test scripts/tests/*.test.mjs
+        working-directory: .
+
+      - name: Contrat de flux docs ↔ code (G1, 7 surfaces + advisory)
         # Mediation TS→CLI, handlers, artefacts par étape, chaînage d'ordre,
         # collecte pytest exécutable (documentation counts are advisory).
         run: node scripts/check-flow-docs.mjs
