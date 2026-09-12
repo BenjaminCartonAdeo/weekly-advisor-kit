@@ -12,6 +12,7 @@ const AUDIT = ".opencode/skills/weekly-quality-audit/SKILL.md"
 const WATCH = ".opencode/skills/weekly-watch-review/SKILL.md"
 const REMEDIATION = ".opencode/skills/harness-remediation/SKILL.md"
 const DRAFTING = ".opencode/skills/weekly-drafting/SKILL.md"
+const GUARDRAILS = ".opencode/skills/weekly-safety-guardrails/SKILL.md"
 
 test("audit worker defines a schema-valid bounded transcript artifact", () => {
   const source = read(WORKER)
@@ -51,8 +52,9 @@ test("watch review writes raw findings before validation and forbids invention",
   assert.match(source, /weekly-watch-findings-raw-<date>\.json/)
   assert.match(source, /weekly_watch_validate|watch-validate/)
   assert.match(source, /Jamais inventé|ne jamais inventer|never invent/i)
-  assert.match(source, /hors worktree|out-of-tree|out of tree/i)
-  assert.match(source, /external[-_ ]directory|permission[^\n]*report-only|report-only/i)
+  assert.match(source, /hors[- ]worktree|out-of-tree|out of tree/i)
+  // Sécurité external-directory report-only : single-source `weekly-safety-guardrails`.
+  assert.match(source, /weekly-safety-guardrails/)
 })
 
 test("harness remediation requires proposals before apply and keeps security IDs blocking", () => {
@@ -63,8 +65,9 @@ test("harness remediation requires proposals before apply and keeps security IDs
   assert.match(source, /harness-remediate/)
   assert.match(source, /une seule retry|une seule relance|one bounded\s+retry/i)
   assert.match(source, /ne jamais inventer|never invent/i)
-  assert.match(source, /hors worktree|out-of-tree|out of tree/i)
-  assert.match(source, /external[-_ ]directory|permission[^\n]*report-only|report-only/i)
+  assert.match(source, /hors[- ]worktree|out-of-tree|out of tree/i)
+  // Sécurité external-directory report-only : single-source `weekly-safety-guardrails`.
+  assert.match(source, /weekly-safety-guardrails/)
   for (const rule of ["mcp-tool-poisoning", "unbounded-delegation", "memory-write-unscoped"]) {
     assert.match(source, new RegExp(rule.replaceAll("-", "\\-")))
   }
@@ -82,13 +85,17 @@ test("drafting keeps recovery bounded and reports out-of-tree permission request
 test("valid truncation and external permission records are nonblocking facts", () => {
   const worker = read(WORKER)
   const audit = read(AUDIT)
-  assert.match(worker, /transcript-truncated:<session_id>[\s\S]{0,260}nonblocking/i)
+  const guardrails = read(GUARDRAILS)
+  assert.match(worker, /transcript-truncated:<session_id>[\s\S]{0,260}(?:nonblocking|non-bloquant|informatif)/i)
   assert.match(audit, /transcript-truncated:<session_id>[\s\S]{0,260}nonblocking/i)
 
+  // Les skills de branche délèguent le contrat sécurité au single-source partagé…
   for (const relativePath of [WORKER, AUDIT, WATCH, REMEDIATION, DRAFTING]) {
-    const source = read(relativePath)
-    assert.match(source, /report_only:\s*true/)
-    assert.match(source, /external-permission-refusal/)
-    assert.match(source, /out-of-tree[\s\S]{0,320}(?:ne pas|no)\s+(?:lire|read),?\s+(?:écrire|write)/i)
+    assert.match(read(relativePath), /weekly-safety-guardrails/)
   }
+  // …et le record report-only canonique y est défini (JSON, quoting libre).
+  assert.match(guardrails, /report_only["'`]?\s*:\s*true/)
+  assert.match(guardrails, /external-permission-refusal/)
+  assert.match(guardrails, /out-of-tree[\s\S]{0,400}ne pas\s+lire,\s*écrire/i)
+  assert.match(guardrails, /nonblocking/i)
 })

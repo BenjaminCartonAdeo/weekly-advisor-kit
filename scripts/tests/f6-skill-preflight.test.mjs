@@ -70,18 +70,20 @@ test("orchestrateur agrège skills_loaded au JOIN", () => {
   assert.match(src, /skills_loaded.*JOIN|JOIN.*skills_loaded/s)
 })
 
-test("commande documente la vérif dispatch F6 sans mutation de skills", () => {
-  const src = read(CMD)
-  assert.match(src, /vérif dispatch F6|Vérif dispatch F6/i)
+test("orchestrateur documente la vérif dispatch F6 sans mutation de skills", () => {
+  const src = read(ORCH)
+  assert.match(src, /vérif dispatch[^\n]*F6/i)
   assert.match(src, /skill-missing:<name>/)
-  assert.match(src, /Aucune écriture ni déplacement dans `?\.opencode\/skills\/`?/)
+  assert.match(src, /Aucune écriture[\s\S]{0,200}aucun déplacement de skill/i)
 })
 
-test("commande exige la propagation du rc final après génération du rapport", () => {
+test("orchestrateur exige la propagation du rc final après génération du rapport", () => {
   const orch = read(ORCH)
   const cmd = read(CMD)
   const all = `${orch}\n${cmd}`
-  assert.match(all, /rapport.*génér|génér.*rapport/i)
+  // Canonique post-dedup : « le tail ne peut pas modifier ce résultat et un
+  // assemble réussi ne peut jamais réinitialiser un run partiel. »
+  assert.match(all, /assemble réussi ne peut jamais réinitialiser|ne peut pas modifier ce résultat/i)
   assert.match(all, /rc final|code retour final/i)
   assert.match(all, /exit 1.*warnings|warnings.*exit 1/i)
   assert.match(all, /rapport.*même.*rc|rc.*rapport/i)
@@ -94,6 +96,6 @@ test("aucun apply automatique ni déplacement de skill (F6 signal only)", () => 
   const all = worker + "\n" + orch + "\n" + cmd
   // F6 ne déclenche jamais d'apply ni de move : le pre-flight signale, ne mute pas.
   assert.match(all, /Aucune écriture/)
-  assert.match(all, /jamais de chargement implicite|Aucune écriture ni déplacement/)
+  assert.match(all, /aucun chargement implicite|Aucune écriture ni déplacement/i)
   assert.doesNotMatch(worker, /apply=true/)
 })

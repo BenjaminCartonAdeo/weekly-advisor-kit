@@ -52,16 +52,17 @@ test("execution and parser failures remain blocking", () => {
   }
 })
 
-test("worker protocol requires canonical bounded pytest guard", () => {
-  const worker = fs.readFileSync(
-    path.join(ROOT, ".opencode", "agents", "weekly-advisor", "weekly-advisor-worker.md"),
+test("engine README carries the canonical bounded pytest guard for workers", () => {
+  // Single-source post-dedup : la garde pytest vit dans le README du moteur, pas
+  // dupliquée dans le doc worker.
+  const readme = fs.readFileSync(
+    path.join(ROOT, ".opencode", "plugins", "weekly-advisor-engine", "README.md"),
     "utf8",
   )
-  assert.match(worker, /cwd moteur|\.opencode\/plugins\/weekly-advisor-engine/)
-  assert.match(worker, /uv run python -m pytest -q/)
-  assert.match(worker, /--collect-only -q/)
-  assert.match(worker, /Maximum un test ciblé puis ce fallback/)
-  assert.match(worker, /Ne jamais utiliser `uv run pytest`[\s\S]*préfixer la commande par `rtk`/)
+  assert.match(readme, /depuis ce dossier, `uv run python -m pytest -q`/)
+  assert.match(readme, /--collect-only -q/)
+  assert.match(readme, /fallback diagnostique\s+unique et borné/)
+  assert.match(readme, /jamais `uv run pytest` ni[\s\S]*`uv run rtk pytest`/)
 })
 
 test("canonical worker pytest command enforces engine cwd and selector", () => {

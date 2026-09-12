@@ -5,9 +5,10 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+// Single-source post-dedup (26339c6) : la commande `weekly-review` est un wrapper
+// thin qui renvoie à l'agent ; les contrats JOIN/RC vivent dans l'agent uniquement.
 const contractFiles = [
   resolve(root, '.opencode/agents/weekly-advisor/weekly-advisor.md'),
-  resolve(root, '.opencode/commands/weekly-review.md'),
 ];
 
 const readContracts = () => Promise.all(contractFiles.map((file) => readFile(file, 'utf8')));
