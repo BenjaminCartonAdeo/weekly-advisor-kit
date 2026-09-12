@@ -83,6 +83,47 @@ def _pending_auto_commits(project_root: Path, cutoff_iso: str) -> int:
     )
 
 
+def _head_commit(project_root: Path) -> dict | None:
+    """HEAD au moment du run : {hash, date, subject} ; None hors git (reco §8 12/09)."""
+    if project_root is None or not (project_root / ".git").exists():
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_root), "log", "-1", "--format=%H|%ad|%s", "--date=short"],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    parts = proc.stdout.strip().split("|", 2)
+    if len(parts) != 3:
+        return None
+    return {"hash": parts[0], "date": parts[1], "subject": parts[2]}
+
+
+def _dirty_files(project_root: Path, limit: int = 50) -> list[str]:
+    """Lignes `git status --short` au moment du run (capées) ; [] hors git (reco §8 12/09)."""
+    if project_root is None or not (project_root / ".git").exists():
+        return []
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_root), "status", "--short"],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0:
+        return []
+    return proc.stdout.splitlines()[:limit]
+
+
 def _self_cost_value(cfg: TelemetryConfig) -> dict | None:
     """Advisor session info {cost, tokens} for the report; None when undetectable."""
     from .costing import advisor_cost
@@ -1715,6 +1756,8 @@ def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> 
         cfg.project_root,
         _iso(run_time - timedelta(weeks=cfg.review_window_weeks)),
     )
+    head_commit = _head_commit(cfg.project_root)
+    dirty_files = _dirty_files(cfg.project_root)
     # v6.0.l (E11) : delta par règle vs run précédent (null en first-run).
     lint_delta = ((insights or {}).get("deltas") or {}).get("lint_violations_delta_by_rule") or {}
 
@@ -1785,6 +1828,8 @@ def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> 
         "daily_totals": _complete_daily(summary.get("period", {}), summary.get("daily_totals", [])),
         "auto_commits": git_commits,
         "pending_auto_commits": pending,
+        "head_commit": head_commit,
+        "dirty_files": dirty_files,
         "self_cost": info["cost"] if (info := _self_cost_value(cfg)) else None,
         "self_cost_tokens": (info or {}).get("tokens"),
     }

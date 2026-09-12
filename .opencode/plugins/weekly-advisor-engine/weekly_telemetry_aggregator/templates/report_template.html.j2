@@ -798,6 +798,8 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
           {% if auto_commits %}<ul class="clean">{% for c in auto_commits[:10] %}<li><code>{{ c.get("hash") }}</code> {{ c.get("date") }} {{ c.get("subject") }}</li>{% endfor %}{% if auto_commits|length > 10 %}<li class="muted">(+{{ auto_commits|length - 10 }} autres — liste tronquée)</li>{% endif %}</ul>{% endif %}</p>
         {% set pending_v = pending_auto_commits if pending_auto_commits is defined else none %}
         {% if pending_v is not none %}<p><b>{{ pending_v }}</b> commit(s) auto-rédigé(s) en attente de revue.</p>{% endif %}
+        {% if head_commit is defined and head_commit %}<p><b>HEAD au run :</b> <code>{{ head_commit.get("hash") }}</code> {{ head_commit.get("date") }} {{ head_commit.get("subject") }}</p>{% endif %}
+        {% if dirty_files is defined and dirty_files %}<p><b>Fichiers dirty au run ({{ dirty_files|length }}) :</b> <code>{{ dirty_files[:30]|join("`, `") }}{% if dirty_files|length > 30 %}…{% endif %}</code></p>{% endif %}
         {% if audit_candidates and (audit_candidates.get("unaudited") or []) %}
         <p><b>Candidates d'audit non traitées (plafond {{ audit_candidates.get("limit", "n/a") }}) :</b>
           {{ audit_candidates.unaudited|map(attribute="session_id")|join(", ") }}.</p>

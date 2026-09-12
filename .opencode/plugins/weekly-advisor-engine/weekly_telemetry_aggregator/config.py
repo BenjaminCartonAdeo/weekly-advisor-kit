@@ -43,6 +43,8 @@ DEFAULT_HARNESS_INCLUDE_PROFILES: dict[str, tuple[str, ...]] = {
         ".opencode/skills/**/SKILL.md",
         ".opencode/skills/**/references/**/*.md",
         ".opencode/skills/**/examples/**/*",
+        ".opencode/skills/**/assets/**/*",
+        ".opencode/skills/**/*.json",
         ".opencode/context/**/*.md",
         ".opencode/*.json",
     ),
@@ -80,8 +82,8 @@ class AuditConfig:
 class InsightsConfig:
     """Part 6 alert/maintenance thresholds (Part 1 §6)."""
 
-    weekly_budget_usd: float = 25.0
-    monthly_budget_usd: float = 100.0
+    weekly_budget_usd: float = 35.0
+    monthly_budget_usd: float = 500.0
     daily_spike_z_min: float = 3.0
     cache_hit_rate_min: float = 0.6
     cost_wow_pct_max: float = 15.0

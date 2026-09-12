@@ -71,8 +71,8 @@
   "opencode_version_min": "1.18.0",
   "ignored_findings": [],
   "insights": {
-    "weekly_budget_usd": 25.0,
-    "monthly_budget_usd": 100.0,
+    "weekly_budget_usd": 35.0,
+    "monthly_budget_usd": 500.0,
     "daily_spike_z_min": 3.0,
     "cache_hit_rate_min": 0.6,
     "cost_wow_pct_max": 15.0,

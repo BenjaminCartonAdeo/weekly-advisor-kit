@@ -49,6 +49,8 @@ def test_resolve_scope_matches_strict_and_advisory_profiles(tmp_path: Path):
     _touch(tmp_path, ".opencode/skills/demo/references/guide.md")
     _touch(tmp_path, ".opencode/skills/demo/examples/example.txt")
     _touch(tmp_path, ".opencode/skills/demo/README.md")
+    _touch(tmp_path, ".opencode/skills/demo/assets/preview.html")
+    _touch(tmp_path, ".opencode/skills/demo/.swarm-bundled-skill.json")
     _touch(tmp_path, ".opencode/package.json")  # C3 : *.json racine inclus
 
     strict = resolve_harness_scope(tmp_path, HarnessIncludeConfig(default_profile="strict"))
@@ -63,6 +65,8 @@ def test_resolve_scope_matches_strict_and_advisory_profiles(tmp_path: Path):
     assert ".opencode/skills/demo/references/guide.md" in advisory.included_files
     assert ".opencode/skills/demo/examples/example.txt" in advisory.included_files
     assert ".opencode/skills/demo/README.md" in advisory.unscoped_files
+    assert ".opencode/skills/demo/assets/preview.html" in advisory.included_files
+    assert ".opencode/skills/demo/.swarm-bundled-skill.json" in advisory.included_files
     assert ".opencode/package.json" in advisory.included_files
     assert any("unscoped" in warning for warning in advisory.warnings)
 

@@ -281,6 +281,12 @@ Constats de maintenance (R1-R4) :
   - _(+{{ auto_commits|length - 10 }} autres sur la fenêtre — liste tronquée)_
 {% endif %}
 - **{{ pending_auto_commits }}** commits auto-rédigés en attente de revue (du plus vieux que {{ date }})
+{% if head_commit %}
+- HEAD au run : `{{ head_commit.hash }}` {{ head_commit.date }} {{ head_commit.subject }}
+{% endif %}
+{% if dirty_files %}
+- Fichiers dirty au run ({{ dirty_files|length }}) :{% for f in dirty_files[:30] %} `{{ f }}`{% if not loop.last %},{% endif %}{% endfor %}{% if dirty_files|length > 30 %} _(+{{ dirty_files|length - 30 }} autres)_ {% endif %}
+{% endif %}
 {% if summary.skills_targets %}
 - **Skills auto-rédigés et cibles** :{% for name, agents in summary.skills_targets.items() %} `{{ name }}` → {{ agents|join(", ") }}{% if not loop.last %} ;{% endif %}{{ "\n" }}{% endfor %}
 {% endif %}

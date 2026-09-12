@@ -151,6 +151,13 @@ def _load_proposal_document(path: Path) -> tuple[str, list[object]]:
     ):
         raise ProposalInputError(f"schema_version must be {PROPOSAL_SCHEMA_VERSION}")
     proposal_date = raw.get("date")
+    if isinstance(proposal_date, str):
+        # Incident cron 12/09 : le worker écrit parfois l'ancre ISO complète
+        # (ex. "2026-09-12T12:00:24Z") au lieu du jour calendaire. Normaliser en
+        # frontière vers YYYY-MM-DD, puis valider strictement comme avant.
+        anchor_day = re.match(r"^(\d{4}-\d{2}-\d{2})T", proposal_date)
+        if anchor_day is not None:
+            proposal_date = anchor_day.group(1)
     if not _valid_date(proposal_date):
         raise ProposalInputError("date must be YYYY-MM-DD")
     proposals = raw.get("proposals")

@@ -1467,6 +1467,36 @@ def test_git_log_filters_real_auto_commits(tmp_path: Path):
     assert commits[0]["subject"].startswith("skill:demo")
 
 
+def test_head_commit_and_dirty_files_listed_in_annex(tmp_path: Path):
+    """Reco §8 12/09 : HEAD + fichiers dirty du run inventoriés en annexe."""
+    import subprocess as sp
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    sp.run(["git", "init", "-q"], cwd=repo, check=True)
+    sp.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    sp.run(["git", "config", "user.name", "T"], cwd=repo, check=True)
+    (repo / "a.txt").write_text("x")
+    sp.run(["git", "add", "-A"], cwd=repo, check=True)
+    sp.run(
+        ["git", "commit", "-q", "-m", "sync(weekly-advisor): portable preflight (kit #8)"],
+        cwd=repo,
+        check=True,
+    )
+    (repo / "dirty.md").write_text("wip")
+
+    from weekly_telemetry_aggregator.report import _dirty_files, _head_commit
+
+    head = _head_commit(repo)
+    assert head is not None
+    assert head["subject"].startswith("sync(weekly-advisor)")
+    assert len(head["hash"]) == 40 and head["date"] != ""
+    dirty = _dirty_files(repo)
+    assert any("dirty.md" in line for line in dirty)
+    assert _head_commit(tmp_path) is None  # hors git
+    assert _dirty_files(tmp_path) == []
+
+
 def test_assemble_missing_draft_message_explicit(tmp_path: Path):
     """v5.31 (a) : le message draft inexistant rappelle la consommation par assemble."""
     _write_summary(tmp_path)
