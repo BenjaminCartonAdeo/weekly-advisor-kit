@@ -2,6 +2,7 @@
 name: weekly-safety-guardrails
 description: Garde-fous partagés (refus external-directory, environment-change, retry borné, IDs sécurité bloquants) — jamais chargé seul.
 metadata:
+  ttl_policy: pin
   authored_by: opencode-weekly-advisor
   skill_class: shared-partial
 ---
