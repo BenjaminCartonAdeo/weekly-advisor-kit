@@ -381,22 +381,17 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
         <div class="k-sub">{% if new_items %}actif{% else %}non activé{% endif %}</div>
       </div>
     </div>
+    {% if tns and tns|length > 0 %}
     <div class="next-steps">
-      <strong>Prochaines actions — Top {{ tns|length if tns else 3 }} (Toi / Pipeline / Agent)</strong>
-      {% if tns and tns|length > 0 %}
+      <strong>Prochaines actions — Top {{ tns|length }} (Toi / Pipeline / Agent)</strong>
       <ol>
         {% for step in tns %}
         <li><b>{{ step.get("actor", "Agent") }}</b> — {{ step.get("text", step.get("detail", "")) }} {% if step.get("severity") %}<span class="badge badge-{{ 'crit' if step.severity|lower in ('high','critical') else ('warn' if step.severity|lower in ('medium','warning') else 'info') }}">{{ step.severity|upper }}</span>{% endif %} <span class="muted">({{ step.get("source","?") }}{% if step.get("count") %} · {{ step.get("count") }}×{% endif %})</span></li>
         {% endfor %}
       </ol>
-      {% else %}
-      <ol>
-        <li><b>Toi</b> — Vérifier les alertes HIGH et les secrets détectés.</li>
-        <li><b>Pipeline</b> — Contrôler l'allowlist harness ({{ unscoped if unscoped is not none else "n/a" }} surfaces non scannées).</li>
-        <li><b>Agent</b> — Réduire le context-bloat / compress intra-session.</li>
       </ol>
-      {% endif %}
     </div>
+    {% endif %}
     <h3>Répartition journalière — 7 j</h3>
     {% if daily %}
     {% set max_c = daily|map(attribute="cost_usd")|max %}

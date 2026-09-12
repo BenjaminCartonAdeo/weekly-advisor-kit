@@ -391,7 +391,9 @@ def test_open_html_report_never_fatal(monkeypatch, tmp_path: Path, caplog):
 
 def test_html_exec_fold_open_snapshot(tmp_path: Path):
     """Snapshot exec fold : exactement 1 wrapper ouvert, KPI + next-steps + SVG présents."""
-    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=_ctx(), quality_block=None)
+    ctx = _ctx()
+    ctx["top_next_steps"] = [{"actor": "Toi", "text": "Donnée de test", "source": "harness"}]
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx, quality_block=None)
     html = dated.read_text(encoding="utf-8")
     # template brut contient une seule occurrence avec open
     tpl = (
@@ -447,7 +449,7 @@ def test_html_annexes_collapsed_sessionStorage_snapshot(tmp_path: Path):
 
 
 def test_html_next_steps_grouped_snapshot(tmp_path: Path):
-    """Snapshot next-steps : groupés Toi/Pipeline/Agent, ordre déterministe, fallback."""
+    """Snapshot next-steps : groupés Toi/Pipeline/Agent, ordre déterministe."""
     # html_report passthrough best-effort : le template rend dans l'ordre fourni (le tri Toi/Pipeline/Agent est fait côté report.py)
     # on fournit donc déjà trié Toi > Pipeline > Agent et le rendu doit préserver cet ordre
     ctx = _ctx()
@@ -495,19 +497,13 @@ def test_html_next_steps_grouped_snapshot(tmp_path: Path):
     assert "(harness" in html
     assert "×" in html or "2×" in html
 
-    # fallback : tns vide → 3 defaults Toi/Pipeline/Agent
+    # tns vide → section next-steps masquée, aucun item générique
     ctx2 = _ctx()
     ctx2["top_next_steps"] = []
     dated2 = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx2, quality_block=None)
     html2 = PAYLOAD_RE.sub("", dated2.read_text(encoding="utf-8"))
-    assert "Prochaines actions — Top 3" in html2
-    assert html2.count("<b>Toi</b>") >= 1
-    assert html2.count("<b>Pipeline</b>") >= 1
-    assert html2.count("<b>Agent</b>") >= 1
-    # fallback contient les libellés par défaut
-    assert "Vérifier les alertes HIGH" in html2 or "secrets" in html2
-    assert "allowlist harness" in html2
-    assert "context-bloat" in html2
+    assert '<div class="next-steps">' not in html2
+    assert "Prochaines actions" not in html2
 
 
 def test_html_next_steps_tag_tri_order_snapshot(tmp_path: Path):
@@ -571,16 +567,16 @@ def test_html_report_passthrough_best_effort_snapshot(tmp_path: Path):
     dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx_missing, quality_block=None)
     assert dated is not None and dated.exists()
     html = dated.read_text(encoding="utf-8")
-    assert "Prochaines actions — Top" in html
-    # le template définit tns = [] quand top_next_steps absent → fallback 3 items
-    assert PAYLOAD_RE.sub("", html).count("<b>Toi</b>") >= 1
+    assert "Prochaines actions" not in html
+    # top_next_steps absent → section next-steps masquée, aucun fallback générique
+    assert '<div class="next-steps">' not in PAYLOAD_RE.sub("", html)
 
     # 2) None → normalisé en []
     ctx_none = _ctx()
     ctx_none["top_next_steps"] = None
     dated2 = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx_none, quality_block=None)
     assert dated2 is not None
-    assert "Prochaines actions — Top" in dated2.read_text(encoding="utf-8")
+    assert "Prochaines actions" not in dated2.read_text(encoding="utf-8")
     payload2 = _payload(dated2.read_text(encoding="utf-8"))
     assert payload2.get("top_next_steps") is None  # payload garde le ctx brut, le rendu a normalisé
 
