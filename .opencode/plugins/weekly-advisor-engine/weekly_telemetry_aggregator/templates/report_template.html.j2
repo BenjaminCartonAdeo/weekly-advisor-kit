@@ -389,7 +389,6 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
         <li><b>{{ step.get("actor", "Agent") }}</b> — {{ step.get("text", step.get("detail", "")) }} {% if step.get("severity") %}<span class="badge badge-{{ 'crit' if step.severity|lower in ('high','critical') else ('warn' if step.severity|lower in ('medium','warning') else 'info') }}">{{ step.severity|upper }}</span>{% endif %} <span class="muted">({{ step.get("source","?") }}{% if step.get("count") %} · {{ step.get("count") }}×{% endif %})</span></li>
         {% endfor %}
       </ol>
-      </ol>
     </div>
     {% endif %}
     <h3>Répartition journalière — 7 j</h3>
@@ -713,16 +712,19 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     {% endfor %}
     {% endif %}
     {% if new_items %}
-    <h3>Nouveautés écosystème</h3>
-    <p><span class="count-pill">{{ new_items|length }} détectées</span> sur la fenêtre — sélection pertinente (tags : dépôt / release / plugin) :</p>
-    <ul class="clean">
-      {% for item in new_items %}
-      <li>
-        <span class="badge badge-info">{{ item.get("category") }}</span>
-        {{ repo_source(item) }}
-      </li>
-      {% endfor %}
-    </ul>
+    <details class="disc">
+      <summary><span class="count-pill">{{ new_items|length }}</span> &nbsp;Nouveautés écosystème — déplier</summary>
+      <div class="disc-body">
+        {% for cat, items in new_items|groupby("category", default="autre") %}
+        <h4>{{ cat }} ({{ items|length }})</h4>
+        <ul class="clean">
+          {% for item in items %}
+          <li>{{ repo_source(item) }}</li>
+          {% endfor %}
+        </ul>
+        {% endfor %}
+      </div>
+    </details>
     {% elif not watch_f %}
     <p class="muted">Veille non réalisée ce run.</p>
     {% endif %}
