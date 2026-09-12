@@ -46,17 +46,8 @@ dans le périmètre explicitement autorisé.
   recommandations, l'humain décide.
 - Il ne réécrit pas ses propres consignes ni son propre code à partir de l'audit (hors contrôle
   de santé déclaratif de l'environnement).
-- Il ne réalise **pas** d'exploration d'architecture en dehors de la revue : une telle exploration
-  (ex. analyse de graphe du code) reste **optionnelle et out-of-band**, ses artefacts de sortie
-  sont **ignorés** par le pipeline et n'apparaissent jamais dans le rapport. Une mise à jour de
-  code seule, sans passe LLM, peut s'exécuter indépendamment de la revue hebdomadaire.
-- Un **résumé d'architecture filtré** peut être projeté depuis un **graphe brut** out-of-band
-  (projection **en lecture seule** : le graphe n'est jamais modifié, l'outil de projection ne
-  déclenche jamais l'outil d'exploration). La projection est **déterministe** : elle exclut les
-  nœuds sans fichier source, les nœuds génériques (étiquettes absentes, vides ou non
-  significatives) et les sources disparues ; elle restreint les liens aux nœuds retenus, omet
-  les auto-liens et trie toutes les collections (sortie reproductible). Elle n'est **jamais
-  consommée par la revue au moment de son exécution** : ni la revue ni le rapport ne la lisent.
+- Il ne réalise **pas** d'exploration d'architecture : aucune analyse de graphe de code ni aucun
+  artefact d'architecture n'apparaît dans la revue ou le rapport.
 
 ## 1.3 Cycle de vie d'une revue
 
@@ -91,7 +82,6 @@ rapport).
 | **Snooze (ignored_findings)** | Liste manuelle d'identifiants de constats à ne plus proposer ; éditée dans la configuration, jamais maintenue automatiquement. |
 | **Digest** | Extraction bornée d'une sortie volumineuse, destinée à alimenter une étape suivante sans excès de volume. |
 | **Observation d'architecture** | Projection **en lecture seule** de faits d'environnement (compteurs d'états déclaré/observé/absent/inconnu, disponibilité et validité de la configuration, compteurs d'inventaire, périmètre de harnais). Elle n'infère aucune intention, ne propose ni n'applique aucun changement ; utilisée pour détecter une dérive d'architecture/configuration. |
-| **Résumé d'architecture (graphe)** | Projection déterministe **filtrée** d'un **graphe brut** de code out-of-band (nœuds/fichiers/relations). Filtrage : nœuds sans fichier source, nœuds génériques et sources disparues exclus ; liens restreints aux nœuds retenus ; auto-liens omis ; collections triées (sortie reproductible). Jamais consommée par la revue ; le graphe brut n'est jamais modifié. |
 | **Vue de configuration** | Regroupement thématique **en lecture seule** de la configuration (sources, stockage, coûts, curation), dérivé de la configuration persistée. Une vue ne modifie jamais la configuration ; la forme persistée (plate) reste inchangée, rétro-compatible, aucune migration imposée. |
 
 ---

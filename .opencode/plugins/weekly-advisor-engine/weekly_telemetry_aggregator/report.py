@@ -1760,7 +1760,6 @@ def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> 
         "skill_curate": skill_curate,
         "curation_detail": _curation_manifest_detail(skill_curate),
         "coherence_curation_signal": _coherence_has_curation_signal(coherence_findings),
-        "graphify_state": _load_json(out / f"weekly-graphify-state-{date}.json"),
         "harness_budget": (digest or {}).get("budget"),
         "harness_triggers": (digest or {}).get("triggers"),
         "harness_dependencies": (digest or {}).get("dependencies"),

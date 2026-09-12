@@ -152,7 +152,6 @@ rc=1 (partiel).
 
 - Le moteur lit les tables internes de la base SQLite d'opencode : ce n'est pas une API publique, une mise à jour majeure peut rompre la collecte jusqu'à la mise à jour du kit. `weekly_doctor` diagnostique.
 - La veille dépend d'APIs publiques (npm, GitHub, registre MCP) : rate-limits possibles, warnings tolérés, le run continue.
-- L'exploration d'architecture via Graphify (`graphify-out/`) est **hors pipeline** : out-of-band et optionnelle, elle ne nourrit ni la revue ni le rapport, et ses sorties sont ignorées par le kit. Une mise à jour de graphe seule (code-only) peut s'exécuter sans LLM. État courant : graphe brut `graph.json` — 2766 nœuds · 7032 liens, construit au commit `6b1117d`. Un **résumé d'architecture filtré** peut être projeté en lecture seule (`scripts/graphify-architecture-summary.py`) : 2744 nœuds · 6937 arêtes · 99 fichiers (19 nœuds génériques exclus). Le filtrage exclut les nœuds sans fichier source, les nœuds génériques et les sources disparues (`stale`) ; liens restreints aux nœuds retenus, self-loops omis, collections triées (sortie reproductible). Le graphe n'est jamais modifié et la projection n'entre ni dans la revue ni dans le rapport.
 
 ## Licence
 

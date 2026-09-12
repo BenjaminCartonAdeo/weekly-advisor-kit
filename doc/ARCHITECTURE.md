@@ -14,27 +14,6 @@ l'architecture telle qu'implémentée et les invariants à préserver.
 | `ARCHITECTURE.md` | Structure technique et invariants (ce document) |
 | `spec-opencode-weekly-advisor` | Spécification fonctionnelle, source de vérité contractuelle |
 
-## Graphify — exploration out-of-band (hors périmètre)
-
-L'analyse de graphe du code via Graphify (`graphify-out/`) est une **exploration
-d'architecture optionnelle, hors pipeline** : elle ne fait pas partie de la revue
-hebdomadaire, ne nourrit ni les étapes ni le rapport, et ses sorties sont **ignorées**
-par le kit. Une mise à jour de graphe seule (code-only, `graphify update .`) peut
-s'exécuter **sans LLM**, indépendamment de tout run. `graphify-out/` relève du
-développement, jamais de la revue.
-
-**Résumé d'architecture déterministe (out-of-band)** : le module
-`weekly_telemetry_aggregator/graphify_summary.py` projette un **résumé compact en
-lecture seule** depuis un artefact de graphe — il ne met jamais à jour `graph.json`,
-n'invoque jamais Graphify, et n'est consommé par aucune étape de la revue. Le CLI
-`scripts/graphify-architecture-summary.py` lit `graphify-out/graph.json` (défaut) et
-écrit le résumé sur stdout ou via `--output` (le graphe brut n'est jamais touché).
-Projection stable : exclusion des nœuds sans fichier source, des nœuds génériques et
-des sources disparues (`stale`), liens restreints aux nœuds retenus, self-loops omis,
-collections triées (reproductibilité). Sortie : `schema_version`, `built_at_commit`,
-`node_count`, `edge_count`, `source_file_count`, `filtered` (génériques / stale /
-self-loops), `files` (par fichier source), `relations` (triées).
-
 ## Moteur et orchestration
 
 - Moteur Python déterministe `weekly-telemetry-aggregator` dans

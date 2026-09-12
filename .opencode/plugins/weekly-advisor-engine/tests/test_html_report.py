@@ -56,7 +56,7 @@ def _ctx() -> dict:
                 {"tool": "read", "call_count": 12, "estimated_input_tokens": 480},
                 {"tool": "edit", "call_count": 4, "estimated_input_tokens": 120},
             ],
-            "skill_usage": [{"skill": "graphify", "load_count": 2, "sessions_used_in": 1}],
+            "skill_usage": [{"skill": "demo-skill", "load_count": 2, "sessions_used_in": 1}],
             "command_usage": [{"command": "optimize", "call_count": 3, "sessions_used_in": 2}],
             "cost_outliers": [],
             "top_sessions_by_cost": [top_session],
@@ -239,22 +239,7 @@ def test_render_html_reports_skipped_decision_once_and_preserves_metadata(tmp_pa
     assert "archive" in body
 
 
-def test_render_html_reports_graphify_as_out_of_band(tmp_path: Path):
-    ctx = _ctx()
-    ctx["graphify_state"] = {"status": "ok", "stale": True}
-    ctx["coherence_items"] = [{"tag": "drift", "description": "x"}]
-    ctx["curation_detail"] = {
-        "decisions": [{"action": "archive", "skill_id": "x", "reason": "stale"}],
-        "skipped_details": [{"skill_id": "u", "reason": "protected"}],
-    }
-    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx, quality_block=None)
-    html = dated.read_text(encoding="utf-8")
-    assert "out-of-band" in html
-    assert "hors revue" in html
-    assert "archive" in html and "protected" in html
-
-
-def test_render_html_report_end_to_end_curation_graphify_and_escaping(tmp_path: Path):
+def test_render_html_report_end_to_end_curation_and_escaping(tmp_path: Path):
     """Render complete report and inspect its public HTML contract."""
     skipped = {
         "action": "archive",
@@ -273,7 +258,6 @@ def test_render_html_report_end_to_end_curation_graphify_and_escaping(tmp_path: 
         "dry_run": True,
     }
     ctx["skill_curate"] = {"applied": 0, "proposed": 1, "skipped": 1}
-    ctx["graphify_state"] = {"status": "ok", "stale": True}
 
     dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx, quality_block=None)
     assert dated is not None
@@ -285,7 +269,6 @@ def test_render_html_report_end_to_end_curation_graphify_and_escaping(tmp_path: 
     assert "&lt;unsafe-title&gt;" in body
     assert "Curation (WAVE 2.5 — dry-run — propositions)" in body
     assert "archive" in body
-    assert "out-of-band" in body and "relancer Graphify hors run" in body
     assert _payload(html)["top_sessions"][0]["title_or_topic"] == "<unsafe-title>"
 
 

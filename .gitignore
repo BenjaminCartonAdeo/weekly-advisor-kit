@@ -19,6 +19,4 @@ reports/*
 *.log
 dist/
 
-# graphify (graphe regenerable, cache local)
-graphify-out/
 docs/

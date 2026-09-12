@@ -10,28 +10,15 @@ const read = (file) => fs.readFileSync(file, "utf8")
 
 /**
  * Check architecture documentation without failing rollout.
- * @param {{architecture?: string, summaryScript?: string, diagrams?: string[], config?: string, rollout?: string}} [sources]
+ * @param {{architecture?: string, diagrams?: string[], config?: string, rollout?: string}} [sources]
  * @returns {{checks: Array<{name: string, passed: boolean}>, failures: string[], advisory: boolean}}
  */
 export function checkArchitectureDocs(sources = {}) {
   const architecture = sources.architecture ?? read(path.join(ROOT, "doc", "ARCHITECTURE.md"))
-  const summaryScript = sources.summaryScript ?? read(path.join(ROOT, "scripts", "graphify-architecture-summary.py"))
   const diagrams = sources.diagrams ?? fs.readdirSync(path.join(ROOT, "doc", "diagrams"))
   const config = sources.config ?? architecture
   const rollout = sources.rollout ?? architecture
   const checks = [
-    {
-      name: "architecture-summary artifact contract",
-      passed:
-        /graphify-architecture-summary\.py/.test(architecture) &&
-        /schema_version/.test(architecture) &&
-        /built_at_commit/.test(architecture) &&
-        /node_count/.test(architecture) &&
-        /edge_count/.test(architecture) &&
-        /source_file_count/.test(architecture) &&
-        /--output/.test(summaryScript) &&
-        /raw graph is never touched/.test(summaryScript),
-    },
     {
       name: "paired HTML/SVG diagram parity",
       passed: (() => {

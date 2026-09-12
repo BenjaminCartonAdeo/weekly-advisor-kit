@@ -113,15 +113,15 @@ def test_skill_usage_and_never_loaded():
     root = make_usage(
         "r",
         [make_step("r", period.start, cost=0.1)],
-        skills={"graphify": 2},
+        skills={"demo-skill": 2},
     )
     summary = aggregate(
         [root],
         period=period,
         generated_at=period.end,
-        skill_catalog=["graphify", "unused-skill"],
+        skill_catalog=["demo-skill", "unused-skill"],
     )
-    assert summary.skill_usage[0].skill == "graphify"
+    assert summary.skill_usage[0].skill == "demo-skill"
     assert summary.skill_usage[0].load_count == 2
     assert summary.skills_never_loaded == ["unused-skill"]
     assert summary.skill_catalog_count == 2
@@ -235,7 +235,7 @@ def test_skill_similar_pairs():
             body="usage: beta-helper",
         ),
         SkillCatalogEntry(
-            name="graphify", description="construit un graphe de connaissance", body="graph"
+            name="gamma-helper", description="construit un graphe de connaissance", body="graph"
         ),
     ]
     summary = aggregate(

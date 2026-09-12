@@ -119,10 +119,10 @@ def test_summary_to_dict_schema_v2_fields():
         title="Sujet",
         agent="docs",
         tools={"read": 1},
-        skills={"graphify": 1},
+        skills={"demo-skill": 1},
         user_turns=["/optimize x", "salut"],
     )
-    summary = aggregate([usage], period=period, generated_at=period.end, skill_catalog=["graphify"])
+    summary = aggregate([usage], period=period, generated_at=period.end, skill_catalog=["demo-skill"])
     data = summary_to_dict(summary)
 
     assert data["schema_version"] == 2

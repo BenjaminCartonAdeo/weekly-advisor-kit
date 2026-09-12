@@ -647,10 +647,6 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     {% else %}
     <p class="muted">Curation (WAVE 2.5) : aucun signal de curation dans les findings de cohérence.</p>
     {% endif %}
-    {% if graphify_state %}
-    <h3>État Graphify (hors pipeline)</h3>
-    <div class="callout info">Graphify est une exploration d'architecture <b>out-of-band</b>, optionnelle et hors revue : état informatif, sans effet sur les décisions ni preuve de cohérence.{% if graphify_state.get("status") == "unavailable" %} Artefacts indisponibles ou illisibles : {{ graphify_state.get("reason", "raison non fournie") }}.{% elif graphify_state.get("stale") %} Résumé obsolète par rapport au HEAD : relancer Graphify hors run.{% else %} Résumé disponible en lecture seule ; le graphe n'est jamais modifié par le pipeline.{% endif %}</div>
-    {% endif %}
     {% set inspection = (digest.get("inspection") or {}).get("summary") or {} %}
     {% set insp_errors = inspection.get("errors", 0) or 0 %}
     {% set insp_warnings = inspection.get("warnings", 0) or 0 %}

@@ -168,12 +168,6 @@ Aucun manifeste `skill-curate-{{ date }}.json` trouvé bien que les findings de 
 Rien à curate (aucun signal de curation dans les findings de cohérence).
 {% endif %}
 
-{% if graphify_state %}
-#### État Graphify (hors pipeline)
-
-Graphify est une exploration d'architecture **out-of-band**, optionnelle et hors revue : cet état est informatif, n'alimente aucune décision et ne constitue pas une preuve de cohérence.{% if graphify_state.status == "unavailable" %} Artefacts indisponibles ou illisibles : {{ graphify_state.reason|default("raison non fournie") }}.{% elif graphify_state.stale %} Résumé obsolète par rapport au HEAD : relancer Graphify hors run.{% else %} Résumé disponible en lecture seule ; le graphe n'est jamais modifié par le pipeline.{% endif %}
-{% endif %}
-
 {% if digest %}
 - Inspection : {{ digest.inspection.summary.errors if digest.inspection.summary is defined else "n/a" }} erreurs, {{ digest.inspection.summary.warnings if digest.inspection.summary is defined else "n/a" }} warnings
 {% if harness_counts %}
