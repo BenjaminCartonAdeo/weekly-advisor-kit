@@ -68,6 +68,27 @@
 {%- set s = (sev or "info")|lower -%}
 <span class="badge badge-{{ 'crit' if s == 'high' or s == 'critical' else ('warn' if s == 'medium' or s == 'warning' else ('ok' if s == 'low' or s == 'ok' else 'info')) }}">{{ (sev or "?")|upper }}</span>
 {%- endmacro %}
+{% macro curation_card(d, default_action="?") -%}
+<div class="card info">
+  <h4><span class="badge badge-info">{{ d.get("action", default_action)|upper }}</span> <code>{{ d.get("skill_id", "?") }}</code></h4>
+  <dl class="fields">
+    <dt>Source</dt><dd>{{ d.get("source", "curation") }}</dd>
+    <dt>Motif</dt><dd>{{ d.get("reason", "n/a") }}</dd>
+    {% if d.get("status") %}<dt>Statut</dt><dd>{{ d.get("status") }}</dd>{% endif %}
+  </dl>
+</div>
+{%- endmacro %}
+{% macro repo_source(item) -%}
+{%- if item.get("repo_url") %}<a href="{{ item.get("repo_url") }}" target="_blank" rel="noopener noreferrer"><b>{{ item.get("name") }}</b> ↗</a>
+{%- elif "/" in (item.get("name") or "") %}<a href="https://github.com/{{ item.get("name") }}" target="_blank" rel="noopener noreferrer"><b>{{ item.get("name") }}</b> ↗</a>
+{%- else %}<b>{{ item.get("name") }}</b>{% endif %}
+— {{ (item.get("description") or "")[:160] }}
+{%- endmacro %}
+{% macro alert_observation(a) -%}
+<dt>Seuil</dt><dd>{{ a.get("threshold", "n/a") }}</dd>
+<dt>Observé</dt><dd>{% if a.get("unit") == "$" %}{{ usd(a.get("observed")) }}{% else %}{{ a.get("observed", "n/a") }}{% if a.get("unit") %}&nbsp;{{ a.get("unit") }}{% endif %}{% endif %}</dd>
+{% if a.get("note") %}<dt>Note</dt><dd>{{ a.get("note") }}</dd>{% endif %}
+{%- endmacro %}
 {# ---- Phrase-thèse exécutive (KPI du ctx) ---- #}
 {% set ns = namespace(tail="") %}
 {% for a in alerts %}
@@ -414,9 +435,7 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
       <div class="card {{ 'crit' if (a.get('severity') or '')|lower in ('high','critical') else 'warn' }}">
         <h4>{{ sev_badge(a.get("severity")) }} {{ alert_label(a.get("rule")) }} <span class="muted">({{ a.get("rule") }})</span></h4>
         <dl class="fields">
-          <dt>Seuil</dt><dd>{{ a.get("threshold", "n/a") }}</dd>
-          <dt>Observé</dt><dd>{% if a.get("unit") == "$" %}{{ usd(a.get("observed")) }}{% else %}{{ a.get("observed", "n/a") }}{% if a.get("unit") %}&nbsp;{{ a.get("unit") }}{% endif %}{% endif %}</dd>
-          {% if a.get("note") %}<dt>Note</dt><dd>{{ a.get("note") }}</dd>{% endif %}
+        {{ alert_observation(a) }}
         </dl>
       </div>
       {% endfor %}
@@ -622,24 +641,10 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     </div>
     {% if curation_summary %}<p class="muted">Actions : {% for action, count in curation_summary.items() %}<code>{{ action }}</code>=<b>{{ count }}</b>{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
     {% for d in manifest_decisions if d.get("status") != "skipped" %}
-    <div class="card info">
-      <h4><span class="badge badge-info">{{ d.get("action", "?")|upper }}</span> <code>{{ d.get("skill_id", "?") }}</code></h4>
-      <dl class="fields">
-        <dt>Source</dt><dd>{{ d.get("source", "curation") }}</dd>
-        <dt>Motif</dt><dd>{{ d.get("reason", "n/a") }}</dd>
-        {% if d.get("status") %}<dt>Statut</dt><dd>{{ d.get("status") }}</dd>{% endif %}
-      </dl>
-    </div>
+    {{ curation_card(d) }}
     {% endfor %}
     {% for d in manifest_skips %}
-    <div class="card info">
-      <h4><span class="badge badge-info">{{ d.get("action", "skip")|upper }}</span> <code>{{ d.get("skill_id", "?") }}</code></h4>
-      <dl class="fields">
-        <dt>Source</dt><dd>{{ d.get("source", "curation") }}</dd>
-        <dt>Motif</dt><dd>{{ d.get("reason", "n/a") }}</dd>
-        {% if d.get("status") %}<dt>Statut</dt><dd>{{ d.get("status") }}</dd>{% endif %}
-      </dl>
-    </div>
+    {{ curation_card(d, "skip") }}
     {% endfor %}
     {% elif coherence_curation_signal %}
     <div class="callout crit"><b>⚠ Curation (WAVE 2.5) requise — non exécutée</b><br>
@@ -719,10 +724,7 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
       {% for item in new_items %}
       <li>
         <span class="badge badge-info">{{ item.get("category") }}</span>
-        {%- if item.get("repo_url") %}<a href="{{ item.get("repo_url") }}" target="_blank" rel="noopener noreferrer"><b>{{ item.get("name") }}</b> ↗</a>
-        {%- elif "/" in (item.get("name") or "") %}<a href="https://github.com/{{ item.get("name") }}" target="_blank" rel="noopener noreferrer"><b>{{ item.get("name") }}</b> ↗</a>
-        {%- else %}<b>{{ item.get("name") }}</b>{% endif %}
-        — {{ (item.get("description") or "")[:160] }}
+        {{ repo_source(item) }}
       </li>
       {% endfor %}
     </ul>
@@ -735,10 +737,7 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     <ul class="clean">
       {% for item in wi %}
       <li>
-        {%- if item.get("repo_url") %}<a href="{{ item.get("repo_url") }}" target="_blank" rel="noopener noreferrer"><b>{{ item.get("name") }}</b> ↗</a>
-        {%- elif "/" in (item.get("name") or "") %}<a href="https://github.com/{{ item.get("name") }}" target="_blank" rel="noopener noreferrer"><b>{{ item.get("name") }}</b> ↗</a>
-        {%- else %}<b>{{ item.get("name") }}</b>{% endif %}
-        — {{ (item.get("description") or "")[:160] }}
+        {{ repo_source(item) }}
       </li>
       {% endfor %}
     </ul>
