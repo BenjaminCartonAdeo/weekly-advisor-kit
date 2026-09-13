@@ -13,8 +13,11 @@ from weekly_telemetry_aggregator.config import TelemetryConfig
 from weekly_telemetry_aggregator.main import RunProvenance
 from weekly_telemetry_aggregator.models import Period
 from weekly_telemetry_aggregator.report import (
+    _BLOCKING_SECURITY_RULES,
+    _coerce_rc,
     _coherence_has_curation_signal,
     _critical_security_findings,
+    _gate_status,
     applicable_summary_rc,
     report_assemble,
     report_blocks_draft,
@@ -444,6 +447,7 @@ def test_critical_security_findings_are_detected():
 
 
 def test_report_assemble_critical_security_forces_nonzero_rc(tmp_path: Path):
+    # warn-only migration (epic warn-only) : critical non-blocking → rc==1, rapport écrit.
     _write_summary(tmp_path)
     cfg = _cfg(tmp_path)
     report_prep(cfg, anchor=RUN.isoformat())
@@ -453,7 +457,7 @@ def test_report_assemble_critical_security_forces_nonzero_rc(tmp_path: Path):
     )
     final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
     assert final_path is not None
-    assert rc != 0
+    assert rc == 1
     assert any("security/critical" in warning for warning in warnings)
 
 
@@ -462,6 +466,7 @@ def test_report_assemble_critical_security_forces_nonzero_rc(tmp_path: Path):
     ["mcp-tool-poisoning", "unbounded-delegation", "memory-write-unscoped"],
 )
 def test_report_assemble_nested_blocking_security_rule_is_rc_two(tmp_path: Path, rule: str):
+    # warn-only migration (epic warn-only) : blocking → rc==1, rapport écrit.
     _write_summary(tmp_path)
     cfg = _cfg(tmp_path)
     report_prep(cfg, anchor=RUN.isoformat())
@@ -482,13 +487,14 @@ def test_report_assemble_nested_blocking_security_rule_is_rc_two(tmp_path: Path,
         encoding="utf-8",
     )
     final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
-    assert final_path is None
-    assert rc == 2
-    assert not (tmp_path / f"weekly-report-{DATE}.md").exists()
+    assert final_path is not None
+    assert rc == 1
+    assert (tmp_path / f"weekly-report-{DATE}.md").exists()
     assert any("blocking security rule" in warning for warning in warnings)
 
 
 def test_report_assemble_nested_prefixed_blocking_security_rule_is_rc_two(tmp_path: Path):
+    # warn-only migration (epic warn-only) : blocking → rc==1, rapport écrit.
     _write_summary(tmp_path)
     cfg = _cfg(tmp_path)
     report_prep(cfg, anchor=RUN.isoformat())
@@ -511,9 +517,9 @@ def test_report_assemble_nested_prefixed_blocking_security_rule_is_rc_two(tmp_pa
         encoding="utf-8",
     )
     final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
-    assert final_path is None
-    assert rc == 2
-    assert not (tmp_path / f"weekly-report-{DATE}.md").exists()
+    assert final_path is not None
+    assert rc == 1
+    assert (tmp_path / f"weekly-report-{DATE}.md").exists()
     assert any("blocking security rule" in warning for warning in warnings)
 
 
@@ -1681,6 +1687,7 @@ def test_assemble_prose_rejection_is_explicit_fallback_and_gate_manifest(tmp_pat
 
 
 def test_blocking_security_rules_are_nonzero_even_without_critical_severity(tmp_path: Path):
+    # warn-only migration (epic warn-only) : blocking sans critical → rc==1, rapport écrit.
     _write_summary(tmp_path)
     cfg = _cfg(tmp_path)
     report_prep(cfg, anchor=RUN.isoformat())
@@ -1689,8 +1696,8 @@ def test_blocking_security_rules_are_nonzero_even_without_critical_severity(tmp_
         encoding="utf-8",
     )
     final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
-    assert final_path is None and rc == 2
-    assert not (tmp_path / f"weekly-report-{DATE}.md").exists()
+    assert final_path is not None and rc == 1
+    assert (tmp_path / f"weekly-report-{DATE}.md").exists()
 
 
 # ------------------------------------------------------------------ v6.1 snapshots : next-steps Toi/Pipeline/Agent (tag tri) + passthrough + build_report_context
@@ -2067,3 +2074,53 @@ def test_report_context_ignores_harness_ignored_rules_snapshot(tmp_path: Path):
     rules = [s.get("rule") for s in ctx["top_next_steps"] if s.get("source") == "harness"]
     assert "security/mcp-tool-poisoning" not in rules
     assert "allowlist/unscoped" in rules
+
+
+def test_assemble_security_warn_only(tmp_path: Path):
+    """Warn-only sécu : findings blocking + autres gates verts → rc==1, rapport écrit.
+
+    gate_status.security.status == "warn", blocking_rules exposées triées,
+    exit 2 conservé pour les cas non-sécu (draft manquant, _coerce_rc malformé).
+    """
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "findings": [],
+                "inspection": {
+                    "uncategorized": [
+                        {
+                            "path": ".opencode/a.md",
+                            "findings": [
+                                {"rule": "security/mcp-tool-poisoning", "severity": "warning"}
+                            ],
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert rc == 1
+    assert final_path is not None and final_path.exists()
+    assert (tmp_path / f"weekly-report-{DATE}.md").exists()
+    assert any("blocking security rule" in w for w in warnings)
+    gates = json.loads((tmp_path / f"weekly-report-gates-{DATE}.json").read_text(encoding="utf-8"))
+    assert gates["security"]["status"] == "warn"
+    assert gates["security"]["blocking_count"] >= 1
+    assert gates["blocking_rules"] == sorted(_BLOCKING_SECURITY_RULES)
+    assert gates["security"]["blocking_rules"] == sorted(_BLOCKING_SECURITY_RULES)
+    # exit 2 conservé pour cas non-sécu : draft manquant reste fatal
+    missing_path, _w2, rc2 = report_assemble(_cfg(tmp_path / "empty"), anchor=RUN.isoformat())
+    assert missing_path is None and rc2 == 2
+    # _coerce_rc ne casse pas les autres cas : malformés → default, valides intacts
+    assert _coerce_rc(True, default=0) == 0
+    assert _coerce_rc(None, default=1) == 1
+    assert _coerce_rc(-1, default=1) == 1
+    assert _coerce_rc("2") == 2
+    assert _coerce_rc("crash", default=0) == 0
+    # _gate_status par défaut : security pass, autres gates inchangées
+    assert _gate_status({})["security"]["status"] == "pass"

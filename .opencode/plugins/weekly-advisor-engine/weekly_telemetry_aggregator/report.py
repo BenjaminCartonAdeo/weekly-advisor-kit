@@ -1562,6 +1562,12 @@ def _gate_status(provenance: dict[str, dict[str, object]]) -> dict[str, object]:
         },
         "prose": {"status": "not_validated"},
         "html": {"status": "not_run"},
+        "security": {
+            "status": "pass",
+            "critical_count": 0,
+            "blocking_count": 0,
+            "blocking_rules": sorted(_BLOCKING_SECURITY_RULES),
+        },
         "blocking_rules": sorted(_BLOCKING_SECURITY_RULES),
     }
 
@@ -2118,15 +2124,22 @@ def report_assemble(
     harness_digest = _load_json(out / f"weekly-harness-digest-{date}.json")
     critical_security = _critical_security_findings(harness_digest)
     blocking = _blocking_security_findings(harness_digest)
+    security_gate: dict[str, object] = {
+        "status": "pass",
+        "critical_count": len(critical_security),
+        "blocking_count": len(blocking),
+        "blocking_rules": sorted(_BLOCKING_SECURITY_RULES),
+    }
     if critical_security:
         warnings.append(
             "⚠ findings security/critical présents — rapport marqué en échec déterministe"
             + (" (blocking security rule)" if blocking else "")
+            + (" — warn-only, rapport écrit" if blocking else "")
         )
-        if blocking:
-            # Exact critical rules are a hard stop.  Do not consume the draft or
-            # write Markdown/HTML/gate artifacts after a security block.
-            return None, warnings, 2
+        # Warn-only sécu : les règles blocking restent visibles (rc=1) mais
+        # n'empêchent plus l'écriture du rapport. Seuls les cas non-sécu
+        # (draft manquant, artefact requis, curation malformée) restent exit 2.
+        security_gate["status"] = "warn"
         rc = max(rc, 1)
     if _coherence_has_curation_signal(coherence) and curation_state == "absent":
         warnings.append(
@@ -2286,6 +2299,7 @@ def report_assemble(
             "validated": status == "prose agent (7b LLM)",
         }
         ctx["gate_status"]["summary_rc"] = rc
+        ctx["gate_status"]["security"] = security_gate
         ctx["gate_status"]["blocking_rules"] = sorted(_BLOCKING_SECURITY_RULES)
         (out / f"weekly-report-gates-{date}.json").write_text(
             json.dumps(ctx["gate_status"], ensure_ascii=False, indent=2), encoding="utf-8"
