@@ -98,6 +98,53 @@ def test_commit_draft_rejects_outside_opencode(tmp_path: Path):
     assert _git(repo, "log", "-1", "--format=%s") == "base"  # aucun commit ajouté
 
 
+VALID_COMMAND = (
+    "---\nname: x\ndescription: Fait x\nmetadata:\n  verification: none\n---\n\n"
+    "## Procédure\n\nContenu de la commande.\n"
+)
+
+
+def test_commit_draft_rejects_foreign_repo_outside_project_root(tmp_path: Path):
+    """Nested/foreign repo : project_root configuré ⇒ commit refusé hors de ce dépôt.
+
+    Trou réel (run 2026-09-13) : un draft ciblant un AUTRE dépôt git (dont le
+    chemin contient `.opencode/`) pouvait être committé dans ce dépôt étranger.
+    """
+    project = _init_repo(tmp_path)  # repo_A = projet configuré
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    _git(foreign, "init", "-q")
+    _git(foreign, "config", "user.email", "advisor@local")
+    _git(foreign, "config", "user.name", "t")
+    (foreign / "base.txt").write_text("base", encoding="utf-8")
+    _git(foreign, "add", ".")
+    _git(foreign, "commit", "-qm", "base")
+    draft = foreign / ".opencode" / "commands" / "x.md"
+    draft.parent.mkdir(parents=True)
+    draft.write_text(VALID_COMMAND, encoding="utf-8")
+
+    cfg = TelemetryConfig(git_name="Advisor Test", git_email="advisor@test")
+    cfg.project_root = project
+    ok, msg = commit_draft(cfg, draft, "command")
+    assert ok is False
+    assert "projet" in msg
+    # aucun commit ajouté dans le dépôt étranger
+    assert _git(foreign, "log", "-1", "--format=%s") == "base"
+
+
+def test_commit_draft_project_root_allows_in_project(tmp_path: Path):
+    """Contre-preuve : project_root configuré et cible DANS ce dépôt ⇒ commit OK."""
+    project = _init_repo(tmp_path)
+    draft = project / ".opencode" / "commands" / "x.md"
+    draft.parent.mkdir(parents=True)
+    draft.write_text(VALID_COMMAND, encoding="utf-8")
+    cfg = TelemetryConfig(git_name="Advisor Test", git_email="advisor@test")
+    cfg.project_root = project
+    ok, msg = commit_draft(cfg, draft, "command")
+    assert ok, msg
+    assert "command:x" in _git(project, "log", "-1", "--format=%s")
+
+
 def test_commit_draft_rejects_outside_repo(tmp_path: Path):
     outside = tmp_path / "no-git" / "SKILL.md"
     outside.parent.mkdir()

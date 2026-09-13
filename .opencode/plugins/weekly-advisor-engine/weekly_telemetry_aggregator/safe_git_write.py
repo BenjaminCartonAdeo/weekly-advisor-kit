@@ -249,6 +249,9 @@ def commit_draft(cfg: TelemetryConfig, file_path: Path, kind: str) -> tuple[bool
     if not ok:
         return False, f"{msg} — pas de commit"
 
+    if cfg.project_root is not None and root.resolve() != cfg.project_root.resolve():
+        return False, f"cible hors du projet configuré ({cfg.project_root}) — pas de commit"
+
     branch = _run_git(root, "rev-parse", "--abbrev-ref", "HEAD")
     if branch.returncode != 0 or branch.stdout.strip() == "HEAD":
         return False, "HEAD détaché — pas de commit auto"

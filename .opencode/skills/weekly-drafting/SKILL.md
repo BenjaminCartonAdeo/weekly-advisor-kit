@@ -27,6 +27,9 @@ portables, avec commit direct traçable. Jamais de correction du code applicatif
    la **gate de portabilité** s'exécute d'abord (voir plus bas), puis validation frontmatter,
    pré-checks git, add scopé, message construit depuis le frontmatter ; **1 commit par écriture** ;
    échec → exit 1, fichier conservé, signaler au rapport.
+   **Preuve obligatoire** : `status: committed` n'est déclaré QUE sur preuve du tool — sortie
+   `commit-draft: OK` **et** SHA HEAD réellement renvoyé ; `KO`, timeout ou sortie absente/muette
+   ⇒ statut `no-draft`/`failed` avec le message exact. Jamais `committed` sans preuve vérifiable.
 
 ### Entrées, recovery et absence d'invention
 
@@ -171,6 +174,10 @@ sont pas inspectés par ces règles ; ne pas compenser par un lint maison.
 - Commande ciblée par improvement : résolue DANS LE PROJET d'abord (la copie projet gagne
   toujours) ; absente du projet → hors périmètre : constat environment-change
   (report-only), pas de draft, pas de lecture.
+- Cible résolue HORS de `project_root` (autre dépôt, chemin absolu externe, repo imbriqué) :
+  constat environment-change (report-only) — **AUCUN appel commit-draft, aucun `committed`,
+  aucune lecture** ; le moteur refuse d'ailleurs le commit quand `project_root` est configuré
+  et ne correspond pas au dépôt git de la cible.
 - Session dont project_path est hors project_root ⇒ constat environment-change
   (report-only) — rien n'est écrit dans le projet courant.
 - Sécurité et hors-worktree : voir skill partagé `weekly-safety-guardrails` (external-permission-refusal, bounded-retry). Un échec de permission hors worktree n'est jamais fatal (`rc: 0`) ; dans le worktree = warning comptable (`rc: 1`).
