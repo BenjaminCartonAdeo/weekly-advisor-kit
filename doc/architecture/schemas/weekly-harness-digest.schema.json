@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "weekly-harness-digest.schema.json",
+  "title": "weekly-harness-digest-<date>.json",
+  "description": "Digest structuré du contrôle déclaratif du harnais (étape 5, scanner) : budget tokens, déclencheurs, dépendances, findings, inspection, périmètre inclus/exclus. Schéma documentaire : seules les clés principales sont contraintes, le reste est libre.",
+  "type": "object",
+  "required": ["schema_version"],
+  "properties": {
+    "schema_version": { "type": "integer" },
+    "setup": { "type": "string" },
+    "detected_tools": { "type": "array", "items": { "type": "string" } },
+    "component_count": { "type": "integer" },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "total_tokens": { "type": "integer" },
+        "always_loaded": { "type": "integer" },
+        "on_demand": { "type": "integer" },
+        "always_loaded_ratio": { "type": "number" },
+        "by_type": { "type": "object", "additionalProperties": { "type": "integer" } }
+      }
+    },
+    "triggers": {
+      "type": "object",
+      "properties": {
+        "skill_count": { "type": "integer" },
+        "with_description": { "type": "integer" },
+        "missing_use_when": { "type": "array" },
+        "overlaps": { "type": "array" }
+      }
+    },
+    "dependencies": {
+      "type": "object",
+      "properties": {
+        "total_edges": { "type": "integer" },
+        "broken": { "type": "array" }
+      }
+    },
+    "findings": { "type": "array" },
+    "inspection": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "object",
+          "properties": {
+            "total": { "type": "integer" },
+            "errors": { "type": "integer" },
+            "warnings": { "type": "integer" }
+          }
+        },
+        "command": { "type": "array" },
+        "uncategorized": { "type": "array" }
+      }
+    },
+    "uncategorized_files": { "type": "array", "items": { "type": "string" } },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "version": { "type": "string" },
+        "duration_seconds": { "type": "number" },
+        "components_scanned": { "type": "integer" },
+        "invocation_source": { "type": "string" },
+        "rules_checked": { "type": "integer" }
+      }
+    },
+    "harness_include": {
+      "type": "object",
+      "properties": {
+        "profile": { "type": "string" },
+        "include_patterns": { "type": "array", "items": { "type": "string" } },
+        "exclude_patterns": { "type": "array", "items": { "type": "string" } },
+        "included_file_count": { "type": "integer" },
+        "included_files": { "type": "array", "items": { "type": "string" } },
+        "included_counts_by_pattern": { "type": "object" },
+        "excluded_file_count": { "type": "integer" },
+        "excluded_counts_by_pattern": { "type": "object" },
+        "unscoped_file_count": { "type": "integer" },
+        "unscoped_files": { "type": "array", "items": { "type": "string" } },
+        "warnings": { "type": "array" }
+      }
+    }
+  },
+  "additionalProperties": true
+}

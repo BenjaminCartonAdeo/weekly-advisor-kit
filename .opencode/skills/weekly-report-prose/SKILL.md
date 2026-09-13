@@ -1,6 +1,6 @@
 ---
 name: weekly-report-prose
-description: Rédaction du bloc prose du rapport hebdomadaire (étape 7b du weekly-advisor) — contrat anti-hallucination, balises de source, zéro chiffre, sources closes.
+description: Étape 7b — bloc prose du rapport sous contrat anti-hallucination (zéro chiffre, sources closes).
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: pipeline-step
@@ -27,12 +27,22 @@ maintenance non vides). Sinon, NE PAS créer le fichier (le brouillon auto suffi
 2. **Balise de source sur chaque affirmation** :
    - `[F:<session_id_complet>#categorie]` — finding étape 3 ; **l'ID de session doit être
      complet** (ex. `ses_01J7XQ4...`, jamais tronqué — un ID raccourci est rejeté par
-     `report-assemble` (v6.0.k F5))
+     `report-assemble`)
    - `[M:categorie]` — maintenance (R1-R4)
    - `[A:regle]` — alerte insights
    - chaque balise doit exister dans les JSON d'entrée
-3. **Taille ≤ 60 lignes** (cible ~40) et ≥ 40 mots
-4. Tout finding `severity: high` doit être cité au moins une fois (sinon warning annexe)
+3. **Traçabilité des rejets** : chaque balise inconnue ou mal formée est rejetée
+   avec son numéro de ligne ; corriger la balise signalée, sans réécrire les données
+   d'entrée. Une balise vide (`[F:]`, `[M:]`, `[A:]`) ne constitue jamais une source.
+4. **Taille ≤ 60 lignes** (cible ~40) et ≥ 40 mots
+5. Tout finding `severity: high` doit être cité au moins une fois (sinon warning annexe)
+
+## Parité déterministe des rapports
+
+Les findings de cohérence et le manifeste `skill-curate-<date>.json` sont des sources
+de vérité JSON communes aux sorties Markdown et HTML. Ne pas reformuler, compter ou
+déduire leurs décisions dans la prose : le code rend les mêmes entrées dans les deux
+formats, y compris les détails `skipped_details` et le statut de chaque décision.
 
 ## Règles d'écriture
 
@@ -50,7 +60,5 @@ maintenance non vides). Sinon, NE PAS créer le fichier (le brouillon auto suffi
 ## Après écriture
 
 `report-assemble` injecte le bloc dans le draft → `weekly-report-<date>.md` (le signal
-du cron) **et rend le rapport HTML interactif** (`reports/html/weekly-report-latest.html`,
-v6.1 — ton bloc y apparaît section « Constats qualitatifs » avec légende F/M/A et
-distribution par catégorie). ⚠ Un assemble réussi **supprime le draft (consommé)** : pour un nouvel assemble
+du cron). ⚠ Un assemble réussi **supprime le draft (consommé)** : pour un nouvel assemble
 (ex. après édition du bloc), relancer `report-prep` d'abord — sinon erreur « draft inexistant ».

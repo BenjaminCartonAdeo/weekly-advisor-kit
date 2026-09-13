@@ -1,4 +1,4 @@
-// Stub minimal de `@opencode-ai/plugin` pour le smoke test (CI, zéro dépendance).
+// Stub minimal de `@opencode-ai/plugin` pour les tests de contrat node (zéro dépendance).
 // Le vrai module est fourni par opencode au chargement ; ici seul le contrat
 // utilisé par weekly-advisor.ts compte : `tool(def)` + chaîne `tool.schema.*`.
 const chain = {

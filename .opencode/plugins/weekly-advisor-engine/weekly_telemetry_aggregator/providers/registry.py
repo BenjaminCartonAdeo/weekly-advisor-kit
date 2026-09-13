@@ -1,20 +1,19 @@
-"""Registre des providers de sessions — auto-découverte fail-soft.
+"""Registre explicite des providers de sessions — table fail-soft.
 
-Scan pkgutil de `providers/implementations/` : chaque module y expose
-`PROVIDER_TYPE: str` et une factory `build_provider(source_cfg, cfg) ->
-SessionProvider | None`. Type inconnu ou source indisponible (factory → None)
-→ avertissement + skip, jamais de crash.
+Les trois modules de `providers/implementations/` y sont câblés
+explicitement : chacun expose `PROVIDER_TYPE: str` et une factory
+`build_provider(source_cfg, cfg) -> SessionProvider | None`. Type inconnu ou
+source indisponible (factory → None) → avertissement + skip, jamais de crash.
 """
 
 from __future__ import annotations
 
-import importlib
-import pkgutil
 import warnings
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from .base import SessionProvider, validate_provider
+from .implementations import claude_code, copilot_vscode, opencode
 
 if TYPE_CHECKING:
     from ..config import TelemetryConfig
@@ -23,34 +22,17 @@ if TYPE_CHECKING:
 #: None = source indisponible sur cette machine (harnais absent, base absente…).
 ProviderFactory = Callable[[dict, "TelemetryConfig"], SessionProvider | None]
 
+#: Table explicite : aucun scan dynamique, comportement stable et lisible.
+_BUILTIN_FACTORIES: dict[str, ProviderFactory] = {
+    opencode.PROVIDER_TYPE: opencode.build_provider,
+    claude_code.PROVIDER_TYPE: claude_code.build_provider,
+    copilot_vscode.PROVIDER_TYPE: copilot_vscode.build_provider,
+}
+
 
 def discover_provider_factories() -> dict[str, ProviderFactory]:
-    """Découvre les factories des modules de `providers/implementations/`.
-
-    Modules sans couple valide (`PROVIDER_TYPE` str + `build_provider`
-    appelable) ignorés ; type dupliqué → avertissement, premier déclaré gagne
-    (ordre stable de `iter_modules`).
-    """
-    from . import implementations
-
-    factories: dict[str, ProviderFactory] = {}
-    for mod_info in pkgutil.iter_modules(implementations.__path__):
-        if mod_info.name.startswith("_"):
-            continue
-        module = importlib.import_module(f"{implementations.__name__}.{mod_info.name}")
-        ptype = getattr(module, "PROVIDER_TYPE", None)
-        factory = getattr(module, "build_provider", None)
-        if not isinstance(ptype, str) or not callable(factory):
-            continue
-        if ptype in factories:
-            warnings.warn(
-                f"PROVIDER_TYPE dupliqué {ptype!r} dans {mod_info.name} — "
-                "première factory conservée",
-                stacklevel=2,
-            )
-            continue
-        factories[ptype] = factory
-    return factories
+    """Retourne une copie de la table explicite des trois factories connues."""
+    return dict(_BUILTIN_FACTORIES)
 
 
 def build_providers(

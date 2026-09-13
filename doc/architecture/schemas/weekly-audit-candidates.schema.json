@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "weekly-audit-candidates.schema.json",
+  "title": "weekly-audit-candidates-<date>.json",
+  "description": "Sélection déterministe des sessions à auditer (étape 3) : auditées, non auditées, reportées, plafond. Schéma documentaire : seules les clés principales sont contraintes, le reste est libre.",
+  "type": "object",
+  "required": ["schema_version", "date"],
+  "properties": {
+    "schema_version": { "type": "integer" },
+    "date": { "type": "string", "format": "date" },
+    "audited": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "session_id": { "type": "string" },
+          "reasons": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "unaudited": { "type": "array" },
+    "carried_over": { "type": "array" },
+    "limit": { "type": "integer" },
+    "worker_statuses": { "type": "array" }
+  },
+  "additionalProperties": true
+}

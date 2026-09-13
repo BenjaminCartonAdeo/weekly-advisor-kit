@@ -113,15 +113,15 @@ def test_skill_usage_and_never_loaded():
     root = make_usage(
         "r",
         [make_step("r", period.start, cost=0.1)],
-        skills={"graphify": 2},
+        skills={"demo-skill": 2},
     )
     summary = aggregate(
         [root],
         period=period,
         generated_at=period.end,
-        skill_catalog=["graphify", "unused-skill"],
+        skill_catalog=["demo-skill", "unused-skill"],
     )
-    assert summary.skill_usage[0].skill == "graphify"
+    assert summary.skill_usage[0].skill == "demo-skill"
     assert summary.skill_usage[0].load_count == 2
     assert summary.skills_never_loaded == ["unused-skill"]
     assert summary.skill_catalog_count == 2
@@ -235,7 +235,7 @@ def test_skill_similar_pairs():
             body="usage: beta-helper",
         ),
         SkillCatalogEntry(
-            name="graphify", description="construit un graphe de connaissance", body="graph"
+            name="gamma-helper", description="construit un graphe de connaissance", body="graph"
         ),
     ]
     summary = aggregate(
@@ -527,3 +527,12 @@ def test_dedup_resumed_chain_keeps_single_survivor():
     assert [u.session_id for u in kept] == ["ses_c"]
     assert {r["dropped_session_id"] for r in records} == {"ses_a", "ses_b"}
     assert all(r["kept_session_id"] == "ses_c" for r in records)
+
+
+def test_aggregate_preserves_deterministic_tool_fingerprints():
+    usage = make_usage("r", [], tools={"task": 3})
+    usage.tool_arg_fingerprints = {"task": {"b": 1, "a": 2}}
+    usage.tool_result_fingerprints = {"task": {"same": 3}}
+    summary = aggregate([usage], period=_period(), generated_at=_period().end)
+    assert summary.tool_argument_fingerprints == {"task": {"a": 2, "b": 1}}
+    assert summary.tool_result_fingerprints == {"task": {"same": 3}}

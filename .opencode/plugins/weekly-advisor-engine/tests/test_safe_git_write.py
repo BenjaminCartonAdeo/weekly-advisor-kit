@@ -21,7 +21,8 @@ def _git(repo: Path, *args: str) -> str:
 
 
 VALID_SKILL = (
-    "---\nname: my-skill\ndescription: Fait quelque chose d'utile\n---\n\nContenu du skill.\n"
+    "---\nname: my-skill\ndescription: Fait quelque chose d'utile\nmetadata:\n  verification: none\n---\n\n"
+    "## Quand utiliser\n\nContenu du skill.\n"
 )
 
 
@@ -97,6 +98,53 @@ def test_commit_draft_rejects_outside_opencode(tmp_path: Path):
     assert _git(repo, "log", "-1", "--format=%s") == "base"  # aucun commit ajouté
 
 
+VALID_COMMAND = (
+    "---\nname: x\ndescription: Fait x\nmetadata:\n  verification: none\n---\n\n"
+    "## Procédure\n\nContenu de la commande.\n"
+)
+
+
+def test_commit_draft_rejects_foreign_repo_outside_project_root(tmp_path: Path):
+    """Nested/foreign repo : project_root configuré ⇒ commit refusé hors de ce dépôt.
+
+    Trou réel (run 2026-09-13) : un draft ciblant un AUTRE dépôt git (dont le
+    chemin contient `.opencode/`) pouvait être committé dans ce dépôt étranger.
+    """
+    project = _init_repo(tmp_path)  # repo_A = projet configuré
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    _git(foreign, "init", "-q")
+    _git(foreign, "config", "user.email", "advisor@local")
+    _git(foreign, "config", "user.name", "t")
+    (foreign / "base.txt").write_text("base", encoding="utf-8")
+    _git(foreign, "add", ".")
+    _git(foreign, "commit", "-qm", "base")
+    draft = foreign / ".opencode" / "commands" / "x.md"
+    draft.parent.mkdir(parents=True)
+    draft.write_text(VALID_COMMAND, encoding="utf-8")
+
+    cfg = TelemetryConfig(git_name="Advisor Test", git_email="advisor@test")
+    cfg.project_root = project
+    ok, msg = commit_draft(cfg, draft, "command")
+    assert ok is False
+    assert "projet" in msg
+    # aucun commit ajouté dans le dépôt étranger
+    assert _git(foreign, "log", "-1", "--format=%s") == "base"
+
+
+def test_commit_draft_project_root_allows_in_project(tmp_path: Path):
+    """Contre-preuve : project_root configuré et cible DANS ce dépôt ⇒ commit OK."""
+    project = _init_repo(tmp_path)
+    draft = project / ".opencode" / "commands" / "x.md"
+    draft.parent.mkdir(parents=True)
+    draft.write_text(VALID_COMMAND, encoding="utf-8")
+    cfg = TelemetryConfig(git_name="Advisor Test", git_email="advisor@test")
+    cfg.project_root = project
+    ok, msg = commit_draft(cfg, draft, "command")
+    assert ok, msg
+    assert "command:x" in _git(project, "log", "-1", "--format=%s")
+
+
 def test_commit_draft_rejects_outside_repo(tmp_path: Path):
     outside = tmp_path / "no-git" / "SKILL.md"
     outside.parent.mkdir()
@@ -121,7 +169,10 @@ def test_commit_draft_rejects_detached_head(tmp_path: Path):
     _git(repo, "checkout", "-q", dash)  # detached HEAD
     skill = repo / ".opencode" / "skills" / "det" / "SKILL.md"
     skill.parent.mkdir(parents=True)
-    skill.write_text("---\nname: det\ndescription: d\n---\nx", encoding="utf-8")
+    skill.write_text(
+        "---\nname: det\ndescription: d\nmetadata:\n  verification: none\n---\n\n## Procédure\n\nx",
+        encoding="utf-8",
+    )
     ok, msg = commit_draft(TelemetryConfig(), skill, "skill")
     assert ok is False
     assert "détaché" in msg
@@ -132,7 +183,7 @@ def test_commit_body_includes_target_agents(tmp_path: Path):
     skill = repo / ".opencode" / "skills" / "my-skill" / "SKILL.md"
     skill.parent.mkdir(parents=True)
     skill.write_text(
-        "---\nname: my-skill\ndescription: un skill de test\nmetadata:\n  source_sessions:\n    - ses_abc\n  target_agents:\n    - java-pro\n    - backend-architect\n---\n# Corps\n",
+        "---\nname: my-skill\ndescription: un skill de test\nmetadata:\n  verification: none\n  source_sessions:\n    - ses_abc\n  target_agents:\n    - java-pro\n    - backend-architect\n---\n## Corps\n",
         encoding="utf-8",
     )
     cfg = TelemetryConfig(git_name="Advisor Test", git_email="advisor@test")
@@ -164,3 +215,29 @@ def test_commit_draft_agent_kind(tmp_path: Path):
     assert subject.startswith("agent:my-agent")
     # le reste du worktree est intact (add scoped)
     assert _git(repo, "status", "--porcelain") == ""
+
+
+def test_commit_draft_rejects_missing_verification_field(tmp_path: Path):
+    """R6 gate: un draft sans metadata.verification est rejeté."""
+    skill = tmp_path / "my-skill" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "---\nname: my-skill\ndescription: d\n---\n\n## Section\n",
+        encoding="utf-8",
+    )
+    ok, msg = validate_draft(skill, "skill")
+    assert ok is False
+    assert "metadata.verification" in msg
+
+
+def test_commit_draft_rejects_missing_sections(tmp_path: Path):
+    """R6 gate: un body sans heading ## est rejeté."""
+    skill = tmp_path / "my-skill" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "---\nname: my-skill\ndescription: d\nmetadata:\n  verification: none\n---\n\ncorps sans section\n",
+        encoding="utf-8",
+    )
+    ok, msg = validate_draft(skill, "skill")
+    assert ok is False
+    assert "missing mandatory section" in msg

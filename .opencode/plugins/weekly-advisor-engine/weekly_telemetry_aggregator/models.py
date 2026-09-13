@@ -76,6 +76,10 @@ class SessionUsage:
     steps: list[StepFinish] = field(default_factory=list)
     tool_calls: dict[str, int] = field(default_factory=dict)
     tool_arg_chars: dict[str, int] = field(default_factory=dict)
+    #: Stable SHA-256 argument fingerprints per tool and occurrence count.
+    tool_arg_fingerprints: dict[str, dict[str, int]] = field(default_factory=dict)
+    #: Stable SHA-256 result fingerprints per tool and occurrence count.
+    tool_result_fingerprints: dict[str, dict[str, int]] = field(default_factory=dict)
     skills_loaded: dict[str, int] = field(default_factory=dict)
     user_turns: list[str] = field(default_factory=list)
     #: Part char counts per category (chars/4 → tokens): file, tool_result, text, reasoning.
@@ -246,11 +250,16 @@ class WeeklySummary:
     skill_similar_pairs: list[SkillSimilarPair] = field(default_factory=list)
     skill_catalog_source: str = "filesystem"
     skill_catalog_count: int = 0
+    #: Snapshot autorité du catalogue (skill_id + metadata origin/ttl_policy/usage).
+    skill_catalog_entries: list[dict] = field(default_factory=list)
     skills_never_loaded: list[str] = field(default_factory=list)
     #: skills auto-rédigés → agents ciblés (metadata.target_agents, v5.30).
     skills_targets: dict[str, list[str]] = field(default_factory=dict)
     user_prompt_repeats: list[UserPromptRepeat] = field(default_factory=list)
     subagent_totals: SubagentTotals = field(default_factory=SubagentTotals)
+    #: Additive tool payload fingerprints for deterministic loop analysis.
+    tool_argument_fingerprints: dict[str, dict[str, int]] = field(default_factory=dict)
+    tool_result_fingerprints: dict[str, dict[str, int]] = field(default_factory=dict)
     #: selection audit — why each window-touched session was/wasn't counted (v5.28).
     selection: dict = field(default_factory=dict)
     #: coûts estimés ($, round6) des sessions sans AUCUN coût enregistré,

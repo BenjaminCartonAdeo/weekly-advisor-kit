@@ -1,6 +1,6 @@
 ---
 name: weekly-watch-review
-description: Veille critique hebdomadaire (étape 3.5 du weekly-advisor) — croiser les fiches candidates distillées avec l'état réel du projet et les findings coûteux, recommandations orientées action.
+description: "Étape 3.5 — veille critique : croise fiches candidates, état local et findings coûteux pour des recommandations actionnables."
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: pipeline-step
@@ -27,13 +27,15 @@ sur l'arbre `reports/`.
 Une fiche candidate porte exactement : `id, name, sources[], score {total, breakdown},
 security {verdict, reason}, summary (≤200 car.), signature {version, published_at},
 existing_state ∈ {absent, declared, observed, unknown}, market_match,
-local_relevance_hints[]`. Les items bloqués sécurité ne sont **jamais** dans ce
-fichier (garde amont — annexe du rapport final seulement).
+local_relevance_hints[]`. Les items filtrés sécurité ne sont jamais dans ce
+fichier (garde amont) : ils restent visibles en warn-only dans la section
+`<details id="security">` repliée du rapport final, qui est toujours écrit avec
+`rc: 1` et un WARNING, l'exit 2 restant réservé aux cas non-sécu.
 
 ### Fallback legacy (repli documenté)
 
 Si `watch-candidates-enriched-<date>.json` est absent ou que son `mode` ≠ `enriched`
-(distill en échec ou snapshot invalide), revenir au comportement v6.1 : lire
+(distill en échec ou snapshot invalide), revenir au comportement de repli : lire
 `weekly-ecosystem-<date>.json` (**TOUS** les items) + `weekly-watch-context-<date>.json`
 et poursuivre aux sections 3 à 5. Ne jamais reconstruire soi-même les fiches.
 
@@ -70,12 +72,12 @@ Sinon (fiches ≥ seuil, ou residual vide) : phase 0 sautée, zéro token, aucun
 
 | Catégorie | Condition | Sens |
 |---|---|---|
-| `install-new` | uniquement `existing_state=absent` | nouveauté pertinente à installer (ex-catégorie `adopt`) |
+| `install-new` | uniquement `existing_state=absent` | nouveauté pertinente à installer |
 | `improve-existing` | doit nommer une cible locale via `target_local` | l'offre marché améliore ou remplace une capacité locale existante ; privilégiée quand `local_relevance_hints` non vide |
 | `ignore` | bruit | serveurs MCP abandonnés, listes mortes — pour mémoire |
 
 Chaque finding porte **obligatoirement** `"token_impact": "high|medium|low"` —
-l'estimation de gain de tokens remplace l'ex-catégorie `token-saver` (justifier
+l'estimation de gain de tokens est obligatoire (justifier
 `high` par un croisement explicite avec les findings coûteux).
 
 Gardes déterministes à respecter :
@@ -115,7 +117,7 @@ un id dans `previously_recommended` ou `recurrents` exige une justification renf
 }
 ```
 
-- `subject` : identique v6.1 — copié depuis la fiche ; pour un id `kept` du residual,
+- `subject` : copié depuis la fiche ; pour un id `kept` du residual,
   reprendre `name` de l'entrée residual et compléter `npm_package`/`repo_url` depuis
   l'entrée correspondante de `weekly-watch-context-<date>.json` (`market_matches`).
   **Jamais inventé.**
@@ -146,6 +148,24 @@ Il n'écrit jamais directement `weekly-watch-findings-<date>.json` : ce fichier 
 produit ensuite par la sous-commande `watch-validate` du plugin weekly-advisor, qui
 applique les garde-fous déterministes (coercitions, writer mémoire, annexe sécurité).
 
+### Gate raw → validate
+
+<!-- ponytail: une gate fichier suffit ; aucun payload parallèle à maintenir. -->
+
+Le raw est une entrée obligatoire, pas une suggestion : `watch-validate` ne peut être
+appelé **qu'après** l'écriture et la validation locale de
+`weekly-watch-findings-raw-<date>.json`. Vérifier au minimum `schema_version: 1` et un
+tableau `findings`; ne jamais valider un payload inline, absent ou partiellement lu.
+
+Si le raw manque, est illisible ou ne respecte pas cette forme, effectuer **one bounded
+retry** (`max_retry=1`, une seule recovery bornée, relecture ciblée du contexte
+disponible), puis arrêter la branche avec un signal bloquant non-sécu pour cette étape (exit 2 réservé à ce cas non-sécu ; un finding sécu reste en warn-only avec `rc: 1`, WARNING et rapport toujours écrit). Ne pas
+boucler, respawn, attendre indéfiniment ou inventer un finding pour permettre la
+validation. Le fichier final n'est pas écrit par ce skill : seul `watch-validate` peut
+le produire après cette gate. Une recovery réussie peut être signalée comme
+`{status: "recovered", source: "watch", artifact: "weekly-watch-findings"}` ; elle
+reste nonblocking seulement si le raw/final observé est valide.
+
 ## 7. Sécurité (non négociable)
 
 - **Jamais d'installation automatique d'outils externes** — les candidats sont remontés,
@@ -156,7 +176,11 @@ applique les garde-fous déterministes (coercitions, writer mémoire, annexe sé
   l'absence d'un plugin à partir du seul texte d'une description
 - Dédupliquer par repo GitHub source ; privilégier les entrées « Official »/« Claimed »
   et les repos actifs
-- Les items bloqués sécurité sont exclus amont (annexe rapport seulement) — ne pas
+- Les items filtrés sécurité sont exclus amont mais restent visibles en warn-only dans la section `<details id="security">` repliée du rapport final, qui est toujours écrit — ne pas
   chercher à les réintroduire ; une fiche `suspicious` garde sa mention de risque
 - Les `install-new`/`improve-existing` restent des candidats à revoir — l'écriture
   d'outils externes n'est pas automatisée
+- Sécurité et hors-worktree : voir skill partagé `weekly-safety-guardrails` (external-permission-refusal, environment-change, IDs sécurité en warn-only).
+- Aucun finding ne peut être inventé à partir d'un résumé, d'un nom de package ou d'une
+  fiche absente de l'entrée effectivement lue ; les identifiants de sécurité critiques
+  (`mcp-tool-poisoning`, `unbounded-delegation`, `memory-write-unscoped`) restent en warn-only avec `rc: 1` et un WARNING, le rapport est toujours écrit avec une section `<details id="security">` repliée, ne sont jamais réintroduits par le review, et l'exit 2 reste réservé aux cas non-sécu.

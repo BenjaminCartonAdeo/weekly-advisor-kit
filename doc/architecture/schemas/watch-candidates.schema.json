@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "watch-candidates.schema.json",
+  "title": "watch-candidates-<date>.json / watch-candidates-enriched-<date>.json",
+  "description": "Fiches candidates distillées (étape 2.2), puis enrichies avec l'inventaire local (étape 2.5). Schéma documentaire : seules les clés principales sont contraintes, le reste est libre.",
+  "type": "object",
+  "required": ["schema_version", "date"],
+  "properties": {
+    "schema_version": { "type": "integer" },
+    "mode": { "type": "string" },
+    "date": { "type": "string", "format": "date" },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "sources": { "type": "array", "items": { "type": "string" } },
+          "score": { "type": "object" },
+          "security": { "type": "object" },
+          "summary": { "type": "string" },
+          "signature": { "type": "object" },
+          "local_relevance_hints": { "type": "array", "items": { "type": "string" } },
+          "existing_state": { "type": "string" },
+          "market_match": { "type": "string" }
+        }
+      }
+    },
+    "residual": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "score_total": { "type": "number" }
+        }
+      }
+    },
+    "warnings": { "type": "array" }
+  },
+  "additionalProperties": true
+}

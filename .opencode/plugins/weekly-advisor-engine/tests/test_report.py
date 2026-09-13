@@ -5,12 +5,25 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from helpers import make_step, make_usage, tzutc
 
 from weekly_telemetry_aggregator.aggregator import aggregate
 from weekly_telemetry_aggregator.config import TelemetryConfig
+from weekly_telemetry_aggregator.main import RunProvenance
 from weekly_telemetry_aggregator.models import Period
-from weekly_telemetry_aggregator.report import report_assemble, report_blocks_draft, report_prep
+from weekly_telemetry_aggregator.report import (
+    _BLOCKING_SECURITY_RULES,
+    _coerce_rc,
+    _coherence_has_curation_signal,
+    _critical_security_findings,
+    _gate_status,
+    applicable_summary_rc,
+    report_assemble,
+    report_blocks_draft,
+    report_prep,
+    validate_required_artifacts,
+)
 from weekly_telemetry_aggregator.writer import summary_to_dict
 
 RUN = tzutc(2026, 8, 12)
@@ -53,6 +66,463 @@ def test_report_prep_renders_draft(tmp_path: Path):
     assert f"weekly-summary-{DATE}.json" in text
 
 
+def test_report_context_exposes_deterministic_provenance(tmp_path: Path):
+    _write_summary(tmp_path)
+    from weekly_telemetry_aggregator.report import build_report_context
+
+    context = build_report_context(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert context is not None
+    assert context["provenance"]["anchor"] == RUN.isoformat()
+    assert context["provenance"]["artifact_inputs"][f"weekly-summary-{DATE}.json"]["present"]
+
+
+def test_report_context_exposes_run_provenance_from_summary(tmp_path: Path):
+    _write_summary(tmp_path)
+    p = tmp_path / f"weekly-summary-{DATE}.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    expected = {"repository_path": "/repo", "branch": "main", "commit_sha": "abc"}
+    data["run_provenance"] = expected
+    p.write_text(json.dumps(data), encoding="utf-8")
+    context = __import__(
+        "weekly_telemetry_aggregator.report", fromlist=["build_report_context"]
+    ).build_report_context(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert context["provenance"]["run_provenance"] == expected
+
+
+def test_run_provenance_serializes_canonical_start_time():
+    provenance = RunProvenance("/repo", "main", "abc", False, RUN.isoformat(), "test")
+    payload = provenance.as_dict()
+    assert payload["start_time"] == RUN.isoformat()
+    assert payload["run_started_at"] == RUN.isoformat()
+
+
+def test_validate_required_artifacts_separates_required_optional_and_statuses(tmp_path: Path):
+    _write_summary(tmp_path)
+    (tmp_path / f"weekly-insights-{DATE}.json").write_text("not-json", encoding="utf-8")
+    gate = validate_required_artifacts(tmp_path, DATE)
+    assert gate["status"] == "pass"
+    assert gate["required"][f"weekly-summary-{DATE}.json"]["status"] == "present"
+    assert gate["optional"][f"weekly-insights-{DATE}.json"]["status"] == "ill_readable"
+    assert gate["optional"][f"weekly-harness-digest-{DATE}.json"]["status"] == "absent"
+
+
+def test_validate_required_artifacts_enabled_html_absence_is_nonzero_gate(tmp_path: Path):
+    _write_summary(tmp_path)
+    gate = validate_required_artifacts(
+        tmp_path, DATE, html_enabled=True, html_path=tmp_path / "missing.html"
+    )
+    assert gate["html"]["status"] == "absent"
+    assert gate["status"] == "pass"  # HTML failure is handled as assemble rc=1.
+
+
+def test_validate_required_artifacts_html_present_when_file_exists_disabled_flag(tmp_path: Path):
+    """P0 : fichier HTML réellement produit → gate `present`, même si rendu configuré off."""
+    (tmp_path / f"weekly-summary-{DATE}.json").write_text("{}", encoding="utf-8")
+    html_file = tmp_path / f"weekly-report-{DATE}.html"
+    html_file.write_text("<html>ok</html>", encoding="utf-8")
+    gate = validate_required_artifacts(tmp_path, DATE, html_enabled=False, html_path=html_file)
+    assert gate["html"]["status"] == "present"
+    assert gate["html"]["path"] == str(html_file)
+
+
+def test_validate_required_artifacts_html_disabled_when_off_and_no_file(tmp_path: Path):
+    """P0 : rendu off ET aucun fichier produit → gate `disabled`."""
+    (tmp_path / f"weekly-summary-{DATE}.json").write_text("{}", encoding="utf-8")
+    gate = validate_required_artifacts(tmp_path, DATE, html_enabled=False, html_path=None)
+    assert gate["html"]["status"] == "disabled"
+    assert gate["html"]["path"] is None
+
+
+def test_artifact_applicability_marks_optional_inputs_without_blocking(tmp_path: Path):
+    _write_summary(tmp_path)
+    gate = validate_required_artifacts(
+        tmp_path,
+        DATE,
+        applicability={"weekly-insights": False},
+    )
+    insights = gate["optional"][f"weekly-insights-{DATE}.json"]
+    assert insights["status"] == "absent"
+    assert insights["applicable"] is False
+    assert gate["status"] == "pass"
+
+
+def test_validate_required_artifacts_branch_enabled_requires_exact_schema(tmp_path: Path):
+    _write_summary(tmp_path)
+    gate = validate_required_artifacts(tmp_path, DATE, applicability={"weekly-insights": True})
+    assert gate["status"] == "incomplete"
+    assert gate["required"][f"weekly-insights-{DATE}.json"]["schema_valid"] is False
+    (tmp_path / f"weekly-insights-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "period": {"start": "2026-08-05T00:00:00Z", "end": "2026-08-12T00:00:00Z"},
+                "generated_at": "2026-08-12T00:00:00Z",
+                "deltas": {},
+                "alerts": [],
+                "maintenance": {"findings": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    gate = validate_required_artifacts(tmp_path, DATE, applicability={"weekly-insights": True})
+    assert gate["status"] == "pass"
+
+
+def test_report_assemble_requires_declared_branch_artifact(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (tmp_path / f"weekly-timings-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "branches": {
+                    "I": {
+                        "artifacts": [f"weekly-insights-{DATE}.json"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is None
+    assert rc == 2
+    assert any("weekly-insights" in warning for warning in warnings)
+
+
+def test_applicable_summary_rc_accepts_valid_transcript_truncation(tmp_path: Path):
+    _write_summary(tmp_path)
+    summary_path = tmp_path / f"weekly-summary-{DATE}.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary.update(
+        {
+            "rc": 1,
+            "warnings": [
+                {
+                    "message": "transcript-truncated:s1",
+                    "partial": True,
+                    "artifacts": ["audit-findings-s1.json"],
+                }
+            ],
+            "worker_statuses": [
+                {
+                    "session_id": "s1",
+                    "status": "truncated",
+                    "rc": 1,
+                    "artifacts": ["audit-findings-s1.json"],
+                }
+            ],
+        }
+    )
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    (tmp_path / "audit-findings-s1.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session_id": "s1",
+                "summary": "partiel",
+                "findings": [],
+                "rc": 1,
+                "warnings": ["transcript-truncated:s1"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert applicable_summary_rc(summary, out=tmp_path, date=DATE) == 0
+
+
+def test_applicable_summary_rc_accepts_recovered_watch_and_report_only_permission(tmp_path: Path):
+    summary = {
+        "rc": 1,
+        "warnings": [
+            {"status": "recovered", "source": "watch", "artifact": "weekly-watch-findings"},
+            {
+                "status": "report-only",
+                "report_only": True,
+                "category": "external-permission-refusal",
+                "permission_refused": True,
+                "target": str(tmp_path.parent / "external-reports"),
+            },
+        ],
+    }
+    (tmp_path / f"weekly-watch-findings-{DATE}.json").write_text(
+        json.dumps({"schema_version": 2, "findings": [], "validation": {}}), encoding="utf-8"
+    )
+    assert applicable_summary_rc(summary, out=tmp_path, date=DATE, project_root=tmp_path) == 0
+
+
+def test_applicable_summary_rc_keeps_in_worktree_permission_failure(tmp_path: Path):
+    summary = {
+        "rc": 1,
+        "warnings": [{"partial": True, "message": "permission denied in worktree"}],
+    }
+    assert applicable_summary_rc(summary, out=tmp_path, date=DATE) == 1
+
+
+def test_applicable_summary_rc_missing_status_is_not_implicit_success():
+    assert applicable_summary_rc({"warnings": []}) == 1
+    assert applicable_summary_rc({"warnings": []}, fallback_rc=0) == 0
+
+
+def test_applicable_summary_rc_fallback_is_baseline_not_early_success():
+    assert (
+        applicable_summary_rc(
+            {"warnings": [{"message": "worker failed", "partial": True}]},
+            fallback_rc=0,
+        )
+        == 1
+    )
+    assert (
+        applicable_summary_rc(
+            {"warnings": []},
+            additional_records=[{"rc": 2, "status": "error"}],
+            fallback_rc=0,
+        )
+        == 2
+    )
+
+
+def test_applicable_summary_rc_requires_verified_external_permission_refusal(tmp_path: Path):
+    target = tmp_path.parent / "external-target"
+    inside = {
+        "rc": 1,
+        "warnings": [
+            {
+                "status": "report-only",
+                "report_only": True,
+                "category": "external-permission-refusal",
+                "permission_refused": True,
+                "target": str(tmp_path / "inside"),
+            }
+        ],
+    }
+    assert applicable_summary_rc(inside, out=tmp_path, date=DATE) == 1
+    external = {
+        "rc": 1,
+        "warnings": [
+            {
+                "status": "report-only",
+                "report_only": True,
+                "category": "external-permission-refusal",
+                "permission_refused": True,
+                "target": str(target),
+            }
+        ],
+    }
+    assert applicable_summary_rc(external, out=tmp_path, date=DATE, project_root=tmp_path) == 0
+
+
+def test_applicable_summary_rc_rejects_serialized_report_only_text(tmp_path: Path):
+    summary = {
+        "rc": 1,
+        "warnings": [
+            "status=report-only category=external-permission-refusal "
+            f"target={tmp_path.parent / 'outside'} project_root={tmp_path}"
+        ],
+    }
+    assert applicable_summary_rc(summary, out=tmp_path, date=DATE, project_root=tmp_path) == 1
+
+
+def test_recovered_input_requires_exact_valid_disk_artifact(tmp_path: Path):
+    summary = {
+        "rc": 1,
+        "warnings": [
+            {
+                "status": "recovered",
+                "source": "watch",
+                "artifact": "weekly-watch-findings",
+            }
+        ],
+    }
+    path = tmp_path / f"weekly-watch-findings-{DATE}.json"
+    path.write_text("{}", encoding="utf-8")
+    assert applicable_summary_rc(summary, out=tmp_path, date=DATE) == 1
+    path.write_text(
+        json.dumps({"schema_version": 2, "findings": [], "validation": {}}), encoding="utf-8"
+    )
+    assert applicable_summary_rc(summary, out=tmp_path, date=DATE) == 0
+
+
+def test_truncated_audit_requires_declared_exact_path_and_envelope(tmp_path: Path):
+    audit_path = tmp_path / "audit-findings-s1.json"
+    audit_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session_id": "s1",
+                "summary": "partiel",
+                "findings": [],
+                "rc": 1,
+                "warnings": ["transcript-truncated:s1"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    base = {
+        "rc": 1,
+        "warnings": [],
+        "worker_statuses": [{"session_id": "s1", "status": "truncated", "rc": 1}],
+    }
+    assert applicable_summary_rc(base, out=tmp_path, date=DATE) == 1
+    declared = {
+        **base,
+        "worker_statuses": [
+            {
+                "session_id": "s1",
+                "status": "truncated",
+                "rc": 1,
+                "artifacts": ["nested/audit-findings-s1.json"],
+            }
+        ],
+    }
+    assert applicable_summary_rc(declared, out=tmp_path, date=DATE) == 1
+    declared["worker_statuses"][0]["artifacts"] = ["audit-findings-s1.json"]
+    assert applicable_summary_rc(declared, out=tmp_path, date=DATE) == 0
+
+
+def test_validate_required_artifacts_requires_dynamic_audit_declaration(tmp_path: Path):
+    _write_summary(tmp_path)
+    audit = tmp_path / "audit-findings-s1.json"
+    audit.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session_id": "s1",
+                "summary": "audit",
+                "findings": [],
+                "rc": 0,
+                "warnings": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    gate = validate_required_artifacts(
+        tmp_path,
+        DATE,
+        dynamic_audit_artifacts=["nested/audit-findings-s1.json"],
+    )
+    assert gate["status"] == "incomplete"
+    gate = validate_required_artifacts(
+        tmp_path,
+        DATE,
+        dynamic_audit_artifacts=["audit-findings-s1.json"],
+    )
+    assert gate["status"] == "pass"
+
+
+def test_applicable_summary_rc_reads_recovered_join_records(tmp_path: Path):
+    (tmp_path / f"weekly-harness-remediation-proposals-{DATE}.json").write_text(
+        json.dumps({"schema_version": 2, "date": DATE, "proposals": []}), encoding="utf-8"
+    )
+    summary = {"rc": 1}
+    timings = {
+        "branches": {
+            "H": {
+                "rc": 1,
+                "warnings": ["recovered harness proposal input"],
+                "artifacts": [f"weekly-harness-remediation-proposals-{DATE}.json"],
+            }
+        }
+    }
+    from weekly_telemetry_aggregator.report import _join_status_records
+
+    assert (
+        applicable_summary_rc(
+            summary,
+            out=tmp_path,
+            date=DATE,
+            additional_records=_join_status_records(timings),
+        )
+        == 0
+    )
+
+
+def test_critical_security_findings_are_detected():
+    digest = {"findings": [{"rule": "security/tool-poisoning", "severity": "critical"}]}
+    assert _critical_security_findings(digest) == digest["findings"]
+    assert (
+        _critical_security_findings({"findings": [{"rule": "security/x", "severity": "high"}]})
+        == []
+    )
+
+
+def test_report_assemble_critical_security_forces_nonzero_rc(tmp_path: Path):
+    # warn-only migration (epic warn-only) : critical non-blocking → rc==1, rapport écrit.
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps({"findings": [{"rule": "security/tool-poisoning", "severity": "critical"}]}),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 1
+    assert any("security/critical" in warning for warning in warnings)
+
+
+@pytest.mark.parametrize(
+    "rule",
+    ["mcp-tool-poisoning", "unbounded-delegation", "memory-write-unscoped"],
+)
+def test_report_assemble_nested_blocking_security_rule_is_rc_two(tmp_path: Path, rule: str):
+    # warn-only migration (epic warn-only) : blocking → rc==1, rapport écrit.
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "findings": [],
+                "inspection": {
+                    "uncategorized": [
+                        {
+                            "path": ".opencode/a.md",
+                            "findings": [{"rule": rule, "severity": "critical"}],
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 1
+    assert (tmp_path / f"weekly-report-{DATE}.md").exists()
+    assert any("blocking security rule" in warning for warning in warnings)
+
+
+def test_report_assemble_nested_prefixed_blocking_security_rule_is_rc_two(tmp_path: Path):
+    # warn-only migration (epic warn-only) : blocking → rc==1, rapport écrit.
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "findings": [],
+                "inspection": {
+                    "uncategorized": [
+                        {
+                            "path": ".opencode/a.md",
+                            "findings": [
+                                {"rule": "security/mcp-tool-poisoning", "severity": "warning"}
+                            ],
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 1
+    assert (tmp_path / f"weekly-report-{DATE}.md").exists()
+    assert any("blocking security rule" in warning for warning in warnings)
+
+
 def test_report_assemble_requires_draft(tmp_path: Path):
     path, warnings, rc = report_assemble(_cfg(tmp_path), anchor=RUN.isoformat())
     assert path is None
@@ -71,6 +541,227 @@ def test_report_assemble_placeholder_without_blocks(tmp_path: Path):
     assert "<!-- QUALITY_BLOCK -->" not in final_path.read_text(encoding="utf-8")
     assert "non disponible" in final_path.read_text(encoding="utf-8")
     assert any("placeholder" in w for w in warnings)
+
+
+def test_report_assemble_propagates_skill_curate_rc(tmp_path: Path):
+    """An upstream curation failure remains visible in assemble's exit code."""
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (tmp_path / f"skill-curate-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "rc": 1,
+                "mode": "apply",
+                "dry_run": False,
+                "date": DATE,
+                "decisions": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+
+    assert final_path is not None
+    assert rc == 1
+
+
+def test_report_assemble_preserves_upstream_summary_rc(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    p = tmp_path / f"weekly-summary-{DATE}.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data["rc"] = 2
+    p.write_text(json.dumps(data), encoding="utf-8")
+    report_prep(cfg, anchor=RUN.isoformat())
+    final_path, _warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 2
+
+
+def test_report_assemble_requires_curation_manifest_when_signaled(tmp_path: Path):
+    """Curation signal raises partial gate, without applying or moving anything."""
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"weekly-coherence-findings-{DATE}.json").write_text(
+        json.dumps({"curation_signal": {"R4_archive_candidates": {"strong_8of8": ["x"]}}}),
+        encoding="utf-8",
+    )
+    report_prep(cfg, anchor=RUN.isoformat())
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 1
+    assert any("WAVE 2.5" in warning and "skill-curate" in warning for warning in warnings)
+    assert "REQUIRED, non exécutée" in final_path.read_text(encoding="utf-8")
+
+
+def test_report_assemble_curation_manifest_clears_gate(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"weekly-coherence-findings-{DATE}.json").write_text(
+        json.dumps({"findings": [{"tag_action": "archive", "target_skill_id": "x"}]}),
+        encoding="utf-8",
+    )
+    (tmp_path / f"skill-curate-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "rc": 0,
+                "mode": "apply",
+                "dry_run": False,
+                "date": DATE,
+                "applied": 0,
+                "proposed": 1,
+                "skipped": 0,
+                "decisions": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_prep(cfg, anchor=RUN.isoformat())
+    blocks_path, block_warnings, block_rc = report_blocks_draft(cfg, anchor=RUN.isoformat())
+    assert blocks_path is not None
+    assert block_rc == 0
+    assert any("brouillon de blocs généré" in warning for warning in block_warnings)
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 0
+    assert not any("WAVE 2.5" in warning for warning in warnings)
+    assert "Curation (WAVE 2.5 — apply — appliquées)" in final_path.read_text(encoding="utf-8")
+
+
+def test_report_assemble_does_not_count_curation_dry_run(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"skill-curate-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "mode": "dry-run",
+                "dry_run": True,
+                "rc": 1,
+                "date": DATE,
+                "proposed": 2,
+                "decisions": [{"action": "archive", "status": "proposed"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_prep(cfg, anchor=RUN.isoformat())
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 0
+    assert not any("refus" in warning for warning in warnings)
+
+
+def test_report_assemble_rejects_malformed_curation_manifest(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"skill-curate-{DATE}.json").write_text("[]", encoding="utf-8")
+    report_prep(cfg, anchor=RUN.isoformat())
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is None
+    assert rc == 2
+    assert any("manifeste de curation" in warning for warning in warnings)
+
+
+def test_report_assemble_active_empty_curation_manifest_stops_final_report(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    manifest = tmp_path / f"skill-curate-{DATE}.json"
+    manifest.write_text("{}", encoding="utf-8")
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is None
+    assert rc == 2
+    assert not (tmp_path / f"weekly-report-{DATE}.md").exists()
+    assert any("manifeste de curation" in warning for warning in warnings)
+
+
+def test_report_assemble_missing_required_summary_is_fatal_even_with_draft(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"weekly-report-draft-{DATE}.md").write_text(
+        "# report\n\n<!-- QUALITY_BLOCK -->\n", encoding="utf-8"
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is None
+    assert rc == 2
+    assert any("artefact requis" in warning for warning in warnings)
+
+
+def test_coherence_curation_signal_accepts_r4_mapping_and_ignores_bad_findings():
+    assert _coherence_has_curation_signal(
+        {"curation_signal": {"R4_archive_candidates": {"strong_8of8": ["x"]}}}
+    )
+    assert not _coherence_has_curation_signal({"findings": ["not-a-finding", None]})
+
+
+def test_report_context_normalizes_coherence_and_curation_details(tmp_path: Path):
+    """Markdown and HTML consume the same filtered JSON projections."""
+    _write_summary(tmp_path)
+    (tmp_path / f"weekly-coherence-findings-{DATE}.json").write_text(
+        json.dumps({"findings": [{"tag": "drift", "description": "x"}, "bad"]}),
+        encoding="utf-8",
+    )
+    (tmp_path / f"skill-curate-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "summary": {"by_action": {"archive": 1}},
+                "decisions": [{"action": "archive", "skill_id": "x", "reason": "stale"}],
+                "skipped_details": [{"skill_id": "u", "reason": "protected"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    from weekly_telemetry_aggregator.report import build_report_context
+
+    ctx = build_report_context(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert ctx is not None
+    assert ctx["coherence_items"] == [{"tag": "drift", "description": "x"}]
+    assert [d["skill_id"] for d in ctx["curation_detail"]["decisions"]] == ["x"]
+    assert [d["skill_id"] for d in ctx["curation_detail"]["skipped_details"]] == ["u"]
+
+
+def test_report_markdown_renders_skipped_decision_once(tmp_path: Path):
+    """A skipped v2 decision is rendered only by the skipped-details section."""
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"skill-curate-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "applied": 0,
+                "proposed": 0,
+                "skipped": 1,
+                "decisions": [
+                    {
+                        "action": "archive",
+                        "skill_id": "protected-skill",
+                        "source": "user",
+                        "reason": "user-origin protected",
+                        "status": "skipped",
+                    }
+                ],
+                "skipped_details": [
+                    {
+                        "action": "archive",
+                        "skill_id": "protected-skill",
+                        "source": "user",
+                        "reason": "user-origin protected",
+                        "status": "skipped",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    draft, context = report_prep(cfg, anchor=RUN.isoformat())
+    assert draft is not None and context is not None
+    text = draft.read_text(encoding="utf-8")
+    assert text.count("`protected-skill`") == 1
+    assert "`skip` `protected-skill`" in text
 
 
 def test_report_assemble_injects_blocks(tmp_path: Path):
@@ -115,9 +806,12 @@ def test_report_assemble_rejects_too_short_blocks(tmp_path: Path):
     (tmp_path / f"weekly-report-blocks-{DATE}.md").write_text("*court*", encoding="utf-8")
     report_prep(cfg, anchor=RUN.isoformat())
     path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
-    assert rc == 2
-    assert path is None
-    assert any("trop court" in w for w in warnings)
+    assert rc == 0
+    assert path is not None
+    text = path.read_text(encoding="utf-8")
+    assert "brouillon automatique" in text
+    assert "bloc LLM trop court" in text
+    assert any("trop court" in w and "fallback" in w for w in warnings)
 
 
 def test_report_prep_renders_top_harness_rules(tmp_path: Path):
@@ -533,6 +1227,31 @@ def test_validate_llm_blocks_rejects_digits_and_unknown():
     assert coverage == []
 
 
+def test_validate_llm_blocks_reports_source_violation_line():
+    from weekly_telemetry_aggregator.report import validate_llm_blocks
+
+    violations, _ = validate_llm_blocks(
+        "Constat étayé [F:s1#loop].\nRéférence inventée [F:ses_fake#loop].\n",
+        {"findings": [{"session_id": "s1", "category": "loop", "severity": "medium"}]},
+        None,
+    )
+
+    assert any(
+        "ligne 2" in violation and "[F:ses_fake#loop]" in violation for violation in violations
+    )
+
+
+def test_validate_llm_blocks_rejects_malformed_source_tag():
+    from weekly_telemetry_aggregator.report import validate_llm_blocks
+
+    violations, _ = validate_llm_blocks("Constat [F:] non traçable.\n", None, None)
+
+    assert any(
+        "balise de source mal formée" in violation and "ligne 1" in violation
+        for violation in violations
+    )
+
+
 def test_validate_llm_blocks_allows_dates_percent_versions():
     from weekly_telemetry_aggregator.report import validate_llm_blocks
 
@@ -783,6 +1502,36 @@ def test_git_log_filters_real_auto_commits(tmp_path: Path):
     assert commits[0]["subject"].startswith("skill:demo")
 
 
+def test_head_commit_and_dirty_files_listed_in_annex(tmp_path: Path):
+    """Reco §8 12/09 : HEAD + fichiers dirty du run inventoriés en annexe."""
+    import subprocess as sp
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    sp.run(["git", "init", "-q"], cwd=repo, check=True)
+    sp.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    sp.run(["git", "config", "user.name", "T"], cwd=repo, check=True)
+    (repo / "a.txt").write_text("x")
+    sp.run(["git", "add", "-A"], cwd=repo, check=True)
+    sp.run(
+        ["git", "commit", "-q", "-m", "sync(weekly-advisor): portable preflight (kit #8)"],
+        cwd=repo,
+        check=True,
+    )
+    (repo / "dirty.md").write_text("wip")
+
+    from weekly_telemetry_aggregator.report import _dirty_files, _head_commit
+
+    head = _head_commit(repo)
+    assert head is not None
+    assert head["subject"].startswith("sync(weekly-advisor)")
+    assert len(head["hash"]) == 40 and head["date"] != ""
+    dirty = _dirty_files(repo)
+    assert any("dirty.md" in line for line in dirty)
+    assert _head_commit(tmp_path) is None  # hors git
+    assert _dirty_files(tmp_path) == []
+
+
 def test_assemble_missing_draft_message_explicit(tmp_path: Path):
     """v5.31 (a) : le message draft inexistant rappelle la consommation par assemble."""
     _write_summary(tmp_path)
@@ -888,3 +1637,490 @@ def test_assemble_html_disabled_is_silent_noop(tmp_path: Path):
     final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
     assert rc == 0 and final_path is not None
     assert not (tmp_path / "reports").exists()
+
+
+def test_assemble_html_enabled_missing_artifact_is_nonzero(tmp_path: Path, monkeypatch):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    cfg.html_report_dir = str(tmp_path / "html")
+    report_prep(cfg, anchor=RUN.isoformat())
+    monkeypatch.setattr(
+        "weekly_telemetry_aggregator.report.render_html_report",
+        lambda *args, **kwargs: tmp_path / "html" / f"weekly-report-{DATE}.html",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None and rc != 0
+    assert any("HTML enabled" in warning and "absent" in warning for warning in warnings)
+
+
+def test_assemble_external_html_permission_is_report_only(tmp_path: Path, monkeypatch):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    cfg.html_report_dir = str(tmp_path.parent / "external-reports")
+    report_prep(cfg, anchor=RUN.isoformat())
+    monkeypatch.setattr(
+        "weekly_telemetry_aggregator.report.render_html_report",
+        lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("outside worktree")),
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 0
+    assert any("report-only" in warning for warning in warnings)
+    gates = json.loads((tmp_path / f"weekly-report-gates-{DATE}.json").read_text(encoding="utf-8"))
+    assert gates["html"]["category"] == "external-permission-refusal"
+    assert gates["html"]["report_only"] is True
+
+
+def test_assemble_prose_rejection_is_explicit_fallback_and_gate_manifest(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    _write_auto_blocks(tmp_path)
+    (tmp_path / f"weekly-report-blocks-{DATE}.md").write_text("too short", encoding="utf-8")
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None and rc == 0
+    text = final_path.read_text(encoding="utf-8")
+    assert "auto_draft_fallback" in text
+    assert "never validated" in text
+    gates = json.loads((tmp_path / f"weekly-report-gates-{DATE}.json").read_text(encoding="utf-8"))
+    assert gates["prose"]["validated"] is False
+
+
+def test_blocking_security_rules_are_nonzero_even_without_critical_severity(tmp_path: Path):
+    # warn-only migration (epic warn-only) : blocking sans critical → rc==1, rapport écrit.
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps({"findings": [{"rule": "mcp-tool-poisoning", "severity": "high"}]}),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None and rc == 1
+    assert (tmp_path / f"weekly-report-{DATE}.md").exists()
+
+
+# ------------------------------------------------------------------ v6.1 snapshots : next-steps Toi/Pipeline/Agent (tag tri) + passthrough + build_report_context
+
+
+def test_top_next_steps_grouped_by_actor_snapshot(tmp_path: Path):
+    """Snapshot _top_next_steps : groupé Toi/Pipeline/Agent, déterministe, source multiples."""
+    from weekly_telemetry_aggregator.report import _top_next_steps
+
+    digest = {
+        "inspection": {
+            "uncategorized": [
+                {
+                    "findings": [
+                        {"rule": "security/mcp-tool-poisoning", "severity": "warning"},
+                        {"rule": "security/mcp-tool-poisoning", "severity": "warning"},
+                        {"rule": "allowlist/unscoped", "severity": "warning"},
+                        {"rule": "custom/agent-rule", "severity": "warning"},
+                    ]
+                }
+            ]
+        }
+    }
+    insights = {
+        "alerts": [
+            {
+                "rule": "monthly_budget_usd",
+                "severity": "high",
+                "threshold": 25,
+                "observed": 30,
+                "unit": "$",
+            },
+            {
+                "rule": "lint_violations_max",
+                "severity": "medium",
+                "threshold": 10,
+                "observed": 12,
+                "unit": "findings",
+            },
+        ]
+    }
+    findings = {
+        "findings": [
+            {
+                "category": "merge-candidate",
+                "severity": "medium",
+                "description": "skills redondants",
+                "recommendation": "fusionner",
+                "recommendation_type": "merge-candidate",
+            },
+            {
+                "category": "context-bloat",
+                "severity": "high",
+                "description": "gros fichiers relus",
+                "recommendation": "compresser",
+                "recommendation_type": "general",
+            },
+        ]
+    }
+    steps = _top_next_steps(digest, insights, findings, ignored_rules=[], limit=3)
+    # snapshot : 3 entrées, un par acteur en tête (Toi/Pipeline/Agent)
+    assert len(steps) == 3
+    actors = [s["actor"] for s in steps]
+    assert actors == ["Toi", "Pipeline", "Agent"]
+    # Toi vient du harness security ou du budget high → sévérité high en premier
+    assert steps[0]["severity"] in ("high", "critical")
+    # chaque entrée a tag tri : actor, source, severity, text
+    for s in steps:
+        assert s["actor"] in ("Toi", "Pipeline", "Agent")
+        assert s["source"] in ("harness", "alert", "audit")
+        assert s["severity"] in ("high", "critical", "medium", "warning", "low", "info")
+        assert "text" in s and s["text"]
+    # Toi doit être budget ou security (tri high)
+    assert any(
+        "budget" in s.get("rule", "").lower() or "security" in s.get("rule", "").lower()
+        for s in steps
+        if s["actor"] == "Toi"
+    )
+    # Pipeline vient typiquement de allowlist / lint / coverage
+    assert any(s["actor"] == "Pipeline" for s in steps)
+    # Agent vient de l'audit context-bloat / custom rule
+    assert any(s["actor"] == "Agent" for s in steps)
+
+
+def test_top_next_steps_tag_tri_deterministic_snapshot():
+    """Snapshot tag tri : sévérité > source > count > règle > acteur, déterministe + grouping Toi/Pipeline/Agent."""
+    from weekly_telemetry_aggregator.report import _top_next_steps
+
+    # deux candidats même sévérité medium, sources différentes harness/pipeline vs alert/pipeline vs audit/agent
+    # le tri brut est severity > source > count > rule, mais le regroupement final met Toi/Pipeline/Agent en tête
+    digest = {
+        "inspection": {
+            "uncategorized": [{"findings": [{"rule": "custom/low-rule", "severity": "warning"}]}]
+        }
+    }
+    insights = {
+        "alerts": [
+            {"rule": "lint_violations_max", "severity": "medium", "threshold": 10, "observed": 12}
+        ]
+    }
+    findings = {
+        "findings": [
+            {
+                "category": "context-bloat",
+                "severity": "medium",
+                "description": "x",
+                "recommendation": "y",
+            }
+        ]
+    }
+
+    steps = _top_next_steps(digest, insights, findings, limit=5)
+    # à sévérité égale, le grouping Toi/Pipeline/Agent prime : Pipeline (alert) avant Agent (harness+ audit)
+    # donc Pipeline (alert) doit être premier, pas harness
+    assert steps[0]["actor"] == "Pipeline"
+    assert steps[0]["source"] == "alert"
+    # harness et audit sont tous deux Agent : harness (source 0) avant audit (source 2) au sein du groupe Agent
+    agent_steps = [s for s in steps if s["actor"] == "Agent"]
+    assert agent_steps[0]["source"] == "harness"
+    assert agent_steps[1]["source"] == "audit"
+
+    # test count tri : même sévérité + source harness, règle avec plus de violations d'abord
+    # b-rule apparaît dans 2 composants distincts → count 2, a-rule count 1
+    digest2 = {
+        "inspection": {
+            "uncategorized": [
+                {
+                    "path": "a",
+                    "findings": [{"rule": "custom/a-rule", "severity": "warning", "message": "m1"}],
+                },
+                {
+                    "path": "b",
+                    "findings": [{"rule": "custom/b-rule", "severity": "warning", "message": "m1"}],
+                },
+                {
+                    "path": "c",
+                    "findings": [{"rule": "custom/b-rule", "severity": "warning", "message": "m2"}],
+                },
+            ]
+        }
+    }
+    steps2 = _top_next_steps(digest2, None, None, limit=5)
+    # b-rule a count 2 vs a-rule count 1 → b-rule avant
+    rules = [s["rule"] for s in steps2 if s["source"] == "harness"]
+    assert rules[0] == "custom/b-rule"
+
+    # déterministe : deux appels identiques → même résultat
+    steps_a = _top_next_steps(digest, insights, findings, limit=3)
+    steps_b = _top_next_steps(digest, insights, findings, limit=3)
+    assert steps_a == steps_b
+
+    # règle tri alphabétique quand count et sévérité égaux
+    digest3 = {
+        "inspection": {
+            "uncategorized": [
+                {"findings": [{"rule": "custom/z-rule", "severity": "warning"}]},
+                {"findings": [{"rule": "custom/a-rule", "severity": "warning"}]},
+            ]
+        }
+    }
+    steps3 = _top_next_steps(digest3, None, None, limit=5)
+    rules3 = [s["rule"] for s in steps3 if s["source"] == "harness"]
+    assert rules3 == sorted(rules3)
+
+
+def test_top_next_steps_dedup_and_limit_and_empty_snapshot():
+    """Snapshot dedup + limit + vide : fallback [] et passthrough best-effort."""
+    from weekly_telemetry_aggregator.report import _top_next_steps
+
+    # vide → []
+    assert _top_next_steps(None, None, None) == []
+    assert _top_next_steps({}, {}, {}) == []
+    assert _top_next_steps({"inspection": {}}, {"alerts": []}, {"findings": []}) == []
+
+    # dedup : même (actor, rule) deux fois → une seule
+    digest = {
+        "inspection": {
+            "uncategorized": [
+                {"findings": [{"rule": "security/mcp-tool-poisoning", "severity": "warning"}]},
+                {"findings": [{"rule": "security/mcp-tool-poisoning", "severity": "warning"}]},
+            ]
+        }
+    }
+    steps = _top_next_steps(digest, None, None, limit=5)
+    assert len([s for s in steps if s.get("rule") == "security/mcp-tool-poisoning"]) == 1
+    assert steps[0]["count"] == 2  # compté 2 fois mais dédupliqué en une entrée
+
+    # limit : au plus limit entrées, et groupé Toi/Pipeline/Agent d'abord
+    digest_many = {
+        "inspection": {
+            "uncategorized": [
+                {"findings": [{"rule": f"custom/rule-{i}", "severity": "warning"}]}
+                for i in range(10)
+            ]
+        }
+    }
+    steps_many = _top_next_steps(digest_many, None, None, limit=3)
+    assert len(steps_many) == 3
+
+    # ignored_rules : filtré
+    steps_ignored = _top_next_steps(
+        digest, None, None, ignored_rules=["security/mcp-tool-poisoning"]
+    )
+    assert steps_ignored == []
+
+    # passthrough best-effort : digest non-dict ou findings mal formé → pas de crash
+    assert _top_next_steps("not-a-dict", None, None) == []  # type: ignore
+    assert _top_next_steps(None, {"alerts": "not-a-list"}, None) == []  # type: ignore
+    assert _top_next_steps(None, None, {"findings": "not-a-list"}) == []  # type: ignore
+
+
+def test_actor_mapping_snapshot():
+    """Snapshot mapping acteur : Toi/Pipeline/Agent selon tags et règles."""
+    from weekly_telemetry_aggregator.report import (
+        _actor_for_alert,
+        _actor_for_finding,
+        _actor_for_harness_rule,
+    )
+
+    # harness
+    assert _actor_for_harness_rule("security/mcp-tool-poisoning") == "Toi"
+    assert _actor_for_harness_rule("secret/unbounded") == "Toi"
+    assert _actor_for_harness_rule("allowlist/unscoped") == "Pipeline"
+    assert _actor_for_harness_rule("budget/violated") == "Pipeline"
+    assert _actor_for_harness_rule("coverage/scope") == "Pipeline"
+    assert _actor_for_harness_rule("custom/agent-loop") == "Agent"
+
+    # alert
+    assert _actor_for_alert("monthly_budget_usd") == "Toi"
+    assert _actor_for_alert("weekly_budget_usd") == "Toi"
+    assert _actor_for_alert("lint_violations_max") == "Pipeline"
+    assert _actor_for_alert("lint_coverage") == "Pipeline"
+    assert _actor_for_alert("daily_spike_z_min") == "Pipeline"
+    assert _actor_for_alert("cache_hit_rate_min") == "Agent"
+
+    # finding
+    assert (
+        _actor_for_finding({"category": "merge-candidate", "recommendation_type": "merge"}) == "Toi"
+    )
+    assert (
+        _actor_for_finding({"category": "retire-candidate", "recommendation_type": "adopt"})
+        == "Toi"
+    )
+    assert _actor_for_finding({"category": "security/tool-poisoning"}) == "Toi"
+    assert _actor_for_finding({"category": "harness/missing"}) == "Pipeline"
+    assert _actor_for_finding({"category": "coverage", "recommendation_type": ""}) == "Pipeline"
+    assert _actor_for_finding({"category": "loop", "recommendation_type": "general"}) == "Agent"
+    assert _actor_for_finding({"category": "context-bloat"}) == "Agent"
+
+
+def test_report_context_top_next_steps_passthrough_snapshot(tmp_path: Path):
+    """Snapshot build_report_context : top_next_steps exposé, groupé, best-effort."""
+    from weekly_telemetry_aggregator.report import build_report_context
+
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    # pas de digest/insights/findings → top_next_steps == []
+    ctx = build_report_context(cfg, anchor=RUN.isoformat())
+    assert ctx is not None
+    assert "top_next_steps" in ctx
+    assert ctx["top_next_steps"] == []
+
+    # avec digest harness seul → au moins un Toi/Pipeline
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "inspection": {
+                    "uncategorized": [
+                        {
+                            "findings": [
+                                {"rule": "security/mcp-tool-poisoning", "severity": "warning"}
+                            ]
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    # clean run_state cache? rebuild context après ajout digest
+
+    # force rebuild via new anchor same date (build_report_context re-reads files)
+    ctx2 = build_report_context(cfg, anchor=RUN.isoformat())
+    assert ctx2 is not None
+    assert len(ctx2["top_next_steps"]) >= 1
+    assert ctx2["top_next_steps"][0]["actor"] in ("Toi", "Pipeline", "Agent")
+    # tag tri présent
+    for step in ctx2["top_next_steps"]:
+        assert "actor" in step and "source" in step and "severity" in step and "text" in step
+
+    # avec insights alert high (Toi) + lint (Pipeline) + audit (Agent) → groupé trié Toi/Pipeline/Agent
+    # on enrichit le digest avec une règle Pipeline pour garantir un candidat Pipeline harness
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "inspection": {
+                    "uncategorized": [
+                        {
+                            "findings": [
+                                {"rule": "security/mcp-tool-poisoning", "severity": "warning"},
+                                {"rule": "allowlist/unscoped", "severity": "warning"},
+                            ]
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / f"weekly-insights-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "alerts": [
+                    {
+                        "rule": "monthly_budget_usd",
+                        "severity": "high",
+                        "threshold": 25,
+                        "observed": 30,
+                    }
+                ],
+                "maintenance": {"findings": []},
+                "deltas": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / f"weekly-quality-findings-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "findings": [
+                    {
+                        "category": "context-bloat",
+                        "severity": "medium",
+                        "description": "gros",
+                        "recommendation": "réduire",
+                        "recommendation_type": "general",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    ctx3 = build_report_context(cfg, anchor=RUN.isoformat())
+    # attendu : Toi (budget/security), Pipeline (allowlist), Agent (audit) — limit 3
+    assert len(ctx3["top_next_steps"]) == 3
+    assert [s["actor"] for s in ctx3["top_next_steps"]] == ["Toi", "Pipeline", "Agent"]
+
+
+def test_report_context_ignores_harness_ignored_rules_snapshot(tmp_path: Path):
+    """Snapshot ignored_rules : top_next_steps filtre les règles ignorées."""
+    from weekly_telemetry_aggregator.report import build_report_context
+
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    cfg.harness_ignored_rules = ["security/mcp-tool-poisoning"]
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "inspection": {
+                    "uncategorized": [
+                        {
+                            "findings": [
+                                {"rule": "security/mcp-tool-poisoning", "severity": "warning"},
+                                {"rule": "allowlist/unscoped", "severity": "warning"},
+                            ]
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    ctx = build_report_context(cfg, anchor=RUN.isoformat())
+    rules = [s.get("rule") for s in ctx["top_next_steps"] if s.get("source") == "harness"]
+    assert "security/mcp-tool-poisoning" not in rules
+    assert "allowlist/unscoped" in rules
+
+
+def test_assemble_security_warn_only(tmp_path: Path):
+    """Warn-only sécu : findings blocking + autres gates verts → rc==1, rapport écrit.
+
+    gate_status.security.status == "warn", blocking_rules exposées triées,
+    exit 2 conservé pour les cas non-sécu (draft manquant, _coerce_rc malformé).
+    """
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "findings": [],
+                "inspection": {
+                    "uncategorized": [
+                        {
+                            "path": ".opencode/a.md",
+                            "findings": [
+                                {"rule": "security/mcp-tool-poisoning", "severity": "warning"}
+                            ],
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert rc == 1
+    assert final_path is not None and final_path.exists()
+    assert (tmp_path / f"weekly-report-{DATE}.md").exists()
+    assert any("blocking security rule" in w for w in warnings)
+    gates = json.loads((tmp_path / f"weekly-report-gates-{DATE}.json").read_text(encoding="utf-8"))
+    assert gates["security"]["status"] == "warn"
+    assert gates["security"]["blocking_count"] >= 1
+    assert gates["blocking_rules"] == sorted(_BLOCKING_SECURITY_RULES)
+    assert gates["security"]["blocking_rules"] == sorted(_BLOCKING_SECURITY_RULES)
+    # exit 2 conservé pour cas non-sécu : draft manquant reste fatal
+    missing_path, _w2, rc2 = report_assemble(_cfg(tmp_path / "empty"), anchor=RUN.isoformat())
+    assert missing_path is None and rc2 == 2
+    # _coerce_rc ne casse pas les autres cas : malformés → default, valides intacts
+    assert _coerce_rc(True, default=0) == 0
+    assert _coerce_rc(None, default=1) == 1
+    assert _coerce_rc(-1, default=1) == 1
+    assert _coerce_rc("2") == 2
+    assert _coerce_rc("crash", default=0) == 0
+    # _gate_status par défaut : security pass, autres gates inchangées
+    assert _gate_status({})["security"]["status"] == "pass"

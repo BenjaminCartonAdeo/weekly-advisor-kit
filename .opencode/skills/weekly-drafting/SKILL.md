@@ -1,6 +1,6 @@
 ---
 name: weekly-drafting
-description: Auto-drafting des skills et commands (étape 4 du weekly-advisor) — généralisation depuis les transcripts, cible harnais unique résolue par le kit, contenu universel multi-plateforme, gate de portabilité avant chaque commit.
+description: Étape 4 — auto-drafting de skills/commands depuis les transcripts (cible harnais unique, contenu universel, gate de portabilité avant commit).
 ---
 
 # Weekly Drafting — étape 4
@@ -18,12 +18,29 @@ portables, avec commit direct traçable. Jamais de correction du code applicatif
    (`transcript-extract-<session_id>.md`, fallback transcription à la demande),
    **généraliser (jamais verbatim)**, rédiger l'artefact dans la cible résolue
    (voir « Cible unique »).
-3. Vérifier le chevauchement contre les artefacts existants du projet → si chevauchement ⇒
-   **NE PAS committer** : constat environment-change (report-only), pas de création.
+3. Vérifier le chevauchement contre les artefacts existants du projet → si `overlaps_with`
+   non vide **OU** collision de nom ⇒ **PATCH le skill existant (umbrella consolidation)** :
+   **ÉDITE** le skill existant (pose `target_skill_id`, `action=patch`), fusionne le contenu
+   nouveau dans l'existant ; **ne crée PAS de doublon**. Si aucun chevauchement ⇒ création
+   normale via commit-draft.
 4. Commit via la sous-commande commit-draft du plugin (`--kind skill|command --file <absolu>`) :
    la **gate de portabilité** s'exécute d'abord (voir plus bas), puis validation frontmatter,
    pré-checks git, add scopé, message construit depuis le frontmatter ; **1 commit par écriture** ;
    échec → exit 1, fichier conservé, signaler au rapport.
+   **Preuve obligatoire** : `status: committed` n'est déclaré QUE sur preuve du tool — sortie
+   `commit-draft: OK` **et** SHA HEAD réellement renvoyé ; `KO`, timeout ou sortie absente/muette
+   ⇒ statut `no-draft`/`failed` avec le message exact. Jamais `committed` sans preuve vérifiable.
+
+### Entrées, recovery et absence d'invention
+
+<!-- ponytail: une recovery bornée évite une boucle de draft coûteuse. -->
+
+Le candidat, l'extrait et le résultat de la gate sont des entrées vérifiables. Si une
+entrée attendue manque, est tronquée ou invalide, effectuer **one bounded retry**
+(`max_retry=1`, une seule recovery bornée), puis signaler l'échec sans respawn loop ni
+attente indéfinie.
+Ne jamais inventer un candidat, une session, une preuve ou un contenu pour produire un
+draft ; sans source lisible, aucun artefact n'est écrit.
 
 ## Cible unique — résolution du harnais
 
@@ -44,7 +61,7 @@ Le drafting écrit dans LE harnais cible du projet (décision mono-cible), jamai
   opencode avec warning explicite, à signaler au rapport.
 - Override : liste imposée par la configuration du kit.
 - Mode legacy (liste vide en configuration) : toutes les cibles du tableau ci-dessus,
-  ordre de priorité conservé (comportement historique).
+  ordre de priorité conservé.
 - Zéro symlink : projection réelle des fichiers dans la cible, jamais de lien.
 - Le digest du run expose la décision (`draft_targets.surface_decision`) : s'y fier plutôt
   que re-détecter manuellement.
@@ -54,8 +71,33 @@ Le drafting écrit dans LE harnais cible du projet (décision mono-cible), jamai
 Tout artefact généré doit rester portable d'un harnais et d'une machine à l'autre.
 Règles de génération NON NÉGOCIABLES :
 
-1. **Frontmatter minimal** — seuls name et description sont requis ; seuls metadata,
-   license et compatibility sont tolérés en plus. Tout autre champ de premier niveau est interdit.
+1. **Frontmatter étendu** — `name` et `description` restent les seuls champs requis ;
+   tout artefact doit porter le bloc `metadata` complet ci-dessous (schéma canonique,
+   à respecter à la lettre) :
+
+   ```yaml
+   metadata:
+     authored_by: opencode-weekly-advisor
+     authored_at: "ISO-8601"
+     origin: weekly-background            # user|bundled|weekly-foreground|weekly-background
+     write_context: "<court>"             # optionnel
+     confidence: medium                   # high|medium|low
+     skill_id: "skill_<8 hex>"            # = 'skill_' + sha256(nom.normalize().lower())[:8]
+     source_sessions: ["ses_xxx"]
+     overlaps_with: []                    # désormais = CIBLE de PATCH (merge), pas blocage
+     target_agents: ["<agent>"]
+     last_verified_at: null               # ISO|null
+     verification: none                   # comment validé, ou 'none' explicite (gate validate_draft / R6)
+     usage: { last_loaded: null, load_count: 0 }
+     ttl_policy: decay                    # decay|pin|null
+   ```
+
+   Mint déterministe du `skill_id` : `skill_` + 8 premiers hex de
+   `sha256(nom.strip().lower())`. `origin` par défaut `weekly-background`
+   (`weekly-foreground` si issu d'un nudge direct de l'utilisateur). `confidence`
+   par défaut `medium`. Le champ `metadata.verification` DOIT être renseigné
+   (comment le skill a été validé, ou `none` explicite) — il est vérifié par la
+   gate `validate_draft` (R6).
 2. **Outils par nom conceptuel** — aucun identifiant technique propre au kit ou à un
    harnais dans le corps : dire « la commande de collecte hebdomadaire », pas son nom interne.
 3. **Section « Comment invoquer » multi-plateforme obligatoire** — tout skill généré décrit
@@ -65,18 +107,22 @@ Règles de génération NON NÉGOCIABLES :
 5. **Scripts auto-contenus** — tout script référencé vit avec l'artefact (ex. `scripts/`)
    et s'appelle en chemin relatif projet ; ni script hors du projet, ni script distant.
 
-Format skill (agentskills.io) — gabarit conforme :
+6. **Do NOT capture (anti-learning)** — ne JAMAIS créer de skill à partir de :
+   - un échec transitoire (erreur réseau, timeout, crash éphémère) ;
+   - une prohibition spécifique à l'environnement (chemin/absence propre à une machine) ;
+   - un récit one-off (anecdote sans pattern reproductible) ;
+   - un secret (password / token / credential / api key) ;
+   - une référence PR/ticket (JIRA, GH-, PR #…).
+   Ces patterns ne généralisent pas : émettre un constat `environment-change` (report-only)
+   ou ignorer — jamais en faire un artefact.
+
+Format skill (agentskills.io) — même gabarit que le bloc `metadata` canonique ci-dessus (§ Contenu universel, champs + mint `skill_id` identiques) :
 
 ```yaml
 ---
-name: string            # == nom du dossier
-description: string     # une ligne, déclenche le chargement à la demande
-metadata:
-  authored_by: opencode-weekly-advisor
-  authored_at: "ISO-8601"
-  source_sessions: ["ses_xxx"]        # traçabilité > 6 mois
-  overlaps_with: []                   # vide OBLIGATOIRE pour committer
-  target_agents: ["<agent-cible>"]    # public du skill
+name: string            # == nom du dossier (requis)
+description: string     # une ligne, déclenche le chargement à la demande (requis)
+metadata: {voir bloc canonique ci-dessus — ne pas diverger}
 ---
 # <Nom>
 ## Quand utiliser
@@ -128,8 +174,10 @@ sont pas inspectés par ces règles ; ne pas compenser par un lint maison.
 - Commande ciblée par improvement : résolue DANS LE PROJET d'abord (la copie projet gagne
   toujours) ; absente du projet → hors périmètre : constat environment-change
   (report-only), pas de draft, pas de lecture.
-- Toute lecture/écriture hors worktree est impossible (permissions de l'agent) — ne jamais
-  tenter ; un échec de permission n'est jamais fatal : constater, signaler au rapport,
-  continuer l'ordre figé (exit 1 partiel, pas 2).
+- Cible résolue HORS de `project_root` (autre dépôt, chemin absolu externe, repo imbriqué) :
+  constat environment-change (report-only) — **AUCUN appel commit-draft, aucun `committed`,
+  aucune lecture** ; le moteur refuse d'ailleurs le commit quand `project_root` est configuré
+  et ne correspond pas au dépôt git de la cible.
 - Session dont project_path est hors project_root ⇒ constat environment-change
   (report-only) — rien n'est écrit dans le projet courant.
+- Sécurité et hors-worktree : voir skill partagé `weekly-safety-guardrails` (external-permission-refusal, bounded-retry). Un échec de permission hors worktree n'est jamais fatal (`rc: 0`) ; dans le worktree = warning comptable (`rc: 1`).

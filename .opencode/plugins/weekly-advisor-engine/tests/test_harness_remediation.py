@@ -597,3 +597,20 @@ def test_line_invalid_non_null_values_are_still_rejected(tmp_path: Path, bad_lin
     result = _result(cfg)
     assert result["summary"]["blocked"] == 1
     assert result["proposals"][0]["reason"] == "malformed proposal: line must be a positive integer"
+
+
+def test_iso_anchor_datetime_date_is_normalized_to_calendar_day(tmp_path: Path):
+    """Incident cron 12/09 : le worker a écrit l'ancre ISO dans `date`."""
+    project, _target = _project(tmp_path)
+    cfg = _config(tmp_path, project)
+    cfg.harness_auto_fix_rules = ["quality/example-rule"]
+    proposal = _proposal(cfg.output_dir / "proposal.json")
+    doc = json.loads(proposal.read_text(encoding="utf-8"))
+    doc["date"] = ANCHOR  # "2026-08-12T00:00:00Z", comme l'ancre du run
+    proposal.write_text(json.dumps(doc), encoding="utf-8")
+    _write_baseline(cfg)
+
+    assert run(cfg, proposal_path=proposal, mode="dry-run", anchor=ANCHOR) == EXIT_OK
+
+    result = _result(cfg)
+    assert result["proposals"][0]["status"] == "proposed"

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "weekly-insights-<date>.json",
+  "description": "Deltas, alertes et maintenance produits par l'étape 6 (insights). Clés principales ; additionalProperties libre.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": { "type": "integer" },
+    "period": { "type": "object" },
+    "previous_run_date": { "type": ["string", "null"] },
+    "generated_at": { "type": "string" },
+    "cost_discrepancies": { "type": "array" },
+    "deltas": {
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "properties": {
+        "cost_wow_pct": { "type": ["number", "null"] },
+        "cache_hit_rate_delta": { "type": ["number", "null"] },
+        "total_tokens_delta_pct": { "type": ["number", "null"] },
+        "skills": { "type": "object" },
+        "lint_violations_delta_by_rule": { "type": "object" }
+      }
+    },
+    "alerts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "rule": { "type": "string" },
+          "threshold": { "type": ["number", "null"] },
+          "observed": { "type": ["number", "null"] },
+          "over_by": { "type": ["number", "null"] },
+          "severity": { "type": "string" },
+          "recommended_action": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "maintenance": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "session_id": { "type": ["string", "null"] },
+              "category": { "type": "string" },
+              "severity": { "type": "string" },
+              "description": { "type": "string" },
+              "evidence_summary": { "type": "string" },
+              "recommendation": { "type": "string" },
+              "recommendation_type": { "type": "string" },
+              "impact_order_of_magnitude": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "stats": { "type": "object" }
+      }
+    }
+  }
+}

@@ -56,7 +56,7 @@ def _ctx() -> dict:
                 {"tool": "read", "call_count": 12, "estimated_input_tokens": 480},
                 {"tool": "edit", "call_count": 4, "estimated_input_tokens": 120},
             ],
-            "skill_usage": [{"skill": "graphify", "load_count": 2, "sessions_used_in": 1}],
+            "skill_usage": [{"skill": "demo-skill", "load_count": 2, "sessions_used_in": 1}],
             "command_usage": [{"command": "optimize", "call_count": 3, "sessions_used_in": 2}],
             "cost_outliers": [],
             "top_sessions_by_cost": [top_session],
@@ -170,6 +170,109 @@ def test_render_without_project_root_warns_and_returns_none(tmp_path: Path, capl
     assert any("project_root" in record.message for record in caplog.records)
 
 
+def test_render_html_reports_curation_manifest_and_required_signal(tmp_path: Path):
+    """HTML exposes applied decisions, or a P0 when the manifest is absent."""
+    from jinja2 import Environment
+
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "weekly_telemetry_aggregator"
+        / "templates"
+        / "report_template.html.j2"
+    ).read_text(encoding="utf-8")
+    start = template.index("{% if skill_curate %}")
+    end = template.index("{% set inspection", start)
+    macros = template[template.index("{% macro usd") : template.index("{# ---- Phrase-thèse")]
+    block = macros + template[start:end]
+    env = Environment(autoescape=False, trim_blocks=True, lstrip_blocks=True)
+    rendered = env.from_string(block).render(
+        date=DATE,
+        skill_curate={
+            "applied": 1,
+            "proposed": 2,
+            "skipped": 3,
+            "decisions": [
+                {
+                    "action": "archive",
+                    "skill_id": "old/skill",
+                    "source": "coherence",
+                    "reason": "stale",
+                    "status": "moved",
+                }
+            ],
+        },
+        coherence_curation_signal=False,
+    )
+    assert "Curation (WAVE 2.5 — appliquée)" in rendered
+    assert "old/skill" in rendered and "moved" in rendered
+    assert "Appliquées" in rendered and "Proposées" in rendered and "Ignorées" in rendered
+
+    required = env.from_string(block).render(
+        date=DATE, skill_curate=None, coherence_curation_signal=True
+    )
+    assert "Curation (WAVE 2.5) requise" in required
+    assert "weekly_skill_curate --apply" in required
+
+
+def test_render_html_reports_skipped_decision_once_and_preserves_metadata(tmp_path: Path):
+    skipped = {
+        "action": "archive",
+        "skill_id": "protected-skill",
+        "source": "user",
+        "reason": "protected",
+        "status": "skipped",
+    }
+    ctx = _ctx()
+    ctx["curation_detail"] = {
+        "decisions": [skipped],
+        "skipped_details": [skipped],
+        "by_action": {"archive": 1},
+        "mode": "dry-run",
+        "dry_run": True,
+    }
+    ctx["skill_curate"] = {"applied": 0, "proposed": 0, "skipped": 1}
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx, quality_block=None)
+    assert dated is not None
+    html = dated.read_text(encoding="utf-8")
+    body = PAYLOAD_RE.sub("", html)
+    assert body.count("protected-skill") == 1
+    assert "Curation (WAVE 2.5 — dry-run — propositions)" in body
+    assert "archive" in body
+
+
+def test_render_html_report_end_to_end_curation_and_escaping(tmp_path: Path):
+    """Render complete report and inspect its public HTML contract."""
+    skipped = {
+        "action": "archive",
+        "skill_id": "<protected-skill>",
+        "source": "user",
+        "reason": "<protected>",
+        "status": "skipped",
+    }
+    ctx = _ctx()
+    ctx["top_sessions"] = [dict(ctx["top_sessions"][0], title_or_topic="<unsafe-title>")]
+    ctx["curation_detail"] = {
+        "decisions": [skipped],
+        "skipped_details": [skipped],
+        "by_action": {"archive": 1},
+        "mode": "dry-run",
+        "dry_run": True,
+    }
+    ctx["skill_curate"] = {"applied": 0, "proposed": 1, "skipped": 1}
+
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx, quality_block=None)
+    assert dated is not None
+    html = dated.read_text(encoding="utf-8")
+    body = PAYLOAD_RE.sub("", html)
+
+    assert body.count("&lt;protected-skill&gt;") == 1
+    assert "<protected-skill>" not in body
+    assert "&lt;unsafe-title&gt;" in body
+    assert "Curation (WAVE 2.5 — dry-run — propositions)" in body
+    assert "archive" in body
+    assert _payload(html)["top_sessions"][0]["title_or_topic"] == "<unsafe-title>"
+
+
 def test_render_explicit_dir_expands_tilde(tmp_path: Path, monkeypatch):
     # expanduser lit HOME (POSIX) mais USERPROFILE d'abord (Windows).
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -281,3 +384,362 @@ def test_open_html_report_never_fatal(monkeypatch, tmp_path: Path, caplog):
     with caplog.at_level(logging.WARNING, logger="weekly_telemetry_aggregator.html_report"):
         assert open_html_report(_cfg(tmp_path), tmp_path / "x.html") is False
     assert any("navigateur" in record.getMessage() for record in caplog.records)
+
+
+# ------------------------------------------------------------------ v6.1 snapshots : exec fold open, annexes collapsed sessionStorage, next-steps Toi/Pipeline/Agent (tag tri), passthrough best-effort
+
+
+def test_html_exec_fold_open_snapshot(tmp_path: Path):
+    """Snapshot exec fold : exactement 1 wrapper ouvert, KPI + next-steps + SVG présents."""
+    ctx = _ctx()
+    ctx["top_next_steps"] = [{"actor": "Toi", "text": "Donnée de test", "source": "harness"}]
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx, quality_block=None)
+    html = dated.read_text(encoding="utf-8")
+    # template brut contient une seule occurrence avec open
+    tpl = (
+        Path(__file__).resolve().parents[1]
+        / "weekly_telemetry_aggregator"
+        / "templates"
+        / "report_template.html.j2"
+    ).read_text(encoding="utf-8")
+    assert tpl.count('<details class="exec-fold" open') == 1
+    assert '<details class="exec-fold" open id="exec">' in html
+    # une seule occurrence dans le rendu
+    assert html.count('class="exec-fold"') == 1
+    assert (
+        html.count('class="exec-fold" open') == 1
+        or html.count('<details class="exec-fold" open') == 1
+    )
+    # exec-body contenu : KPI + next-steps + daily + Top3/callback
+    assert '<div class="exec-body"' in html
+    assert "Prochaines actions — Top" in html
+    assert "Coût quotidien" in html or "Répartition journalière" in html
+    # CSS souple présent
+    assert "details.exec-fold" in html
+    assert "details.exec-fold[open]" in html
+
+
+def test_html_annexes_collapsed_sessionStorage_snapshot(tmp_path: Path):
+    """Snapshot annexes : 7 détails collapsed par défaut, JS sessionStorage wa-details-state-v2."""
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=_ctx(), quality_block=None)
+    html = dated.read_text(encoding="utf-8")
+    tpl = (
+        Path(__file__).resolve().parents[1]
+        / "weekly_telemetry_aggregator"
+        / "templates"
+        / "report_template.html.j2"
+    ).read_text(encoding="utf-8")
+    # 7 annexes A-G dans le template, toutes sans open
+    assert tpl.count('<details class="annex"') == 7
+    assert '<details class="annex" open' not in tpl
+    # rendu idem : 7 collapsed
+    assert html.count('<details class="annex"') == 7
+    assert html.count('<details class="annex" open') == 0
+    for annex_id in ("annex-a", "annex-b", "annex-c", "annex-d", "annex-e", "annex-f", "annex-g"):
+        assert f'id="{annex_id}"' in html
+    # sessionStorage : clé + restore + persist
+    assert "wa-details-state-v2" in html
+    assert "sessionStorage" in html
+    assert "details.exec-fold, details.annex" in html
+    assert "getItem" in html and "setItem" in html
+    assert 'd.addEventListener("toggle"' in html or "addEventListener" in html
+    # annexes-wrapper présent
+    assert "annexes-wrapper" in html
+    assert "Annexes — détails repliables" in html
+
+
+def test_html_next_steps_grouped_snapshot(tmp_path: Path):
+    """Snapshot next-steps : groupés Toi/Pipeline/Agent, ordre déterministe."""
+    # html_report passthrough best-effort : le template rend dans l'ordre fourni (le tri Toi/Pipeline/Agent est fait côté report.py)
+    # on fournit donc déjà trié Toi > Pipeline > Agent et le rendu doit préserver cet ordre
+    ctx = _ctx()
+    ctx["top_next_steps"] = [
+        {
+            "actor": "Toi",
+            "source": "harness",
+            "rule": "security/mcp-tool-poisoning",
+            "severity": "high",
+            "text": "Corriger `security/mcp-tool-poisoning` — 2 violation(s)",
+            "detail": "2 violation(s)",
+            "count": 2,
+        },
+        {
+            "actor": "Pipeline",
+            "source": "alert",
+            "rule": "lint_violations_max",
+            "severity": "medium",
+            "text": "Alerte `lint_violations_max` — observé 2734 vs seuil 10 (medium)",
+            "detail": "seuil 10",
+            "count": 3,
+        },
+        {
+            "actor": "Agent",
+            "source": "audit",
+            "category": "loop",
+            "severity": "medium",
+            "text": "Agent — loop → réduire bloat",
+            "detail": "bloat",
+            "count": 1,
+        },
+    ]
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx, quality_block=None)
+    html = dated.read_text(encoding="utf-8")
+    # ordre Toi avant Pipeline avant Agent dans le HTML (préservé)
+    toi_pos = html.index("<b>Toi</b>")
+    pipe_pos = html.index("<b>Pipeline</b>")
+    agent_pos = html.index("<b>Agent</b>")
+    assert toi_pos < pipe_pos < agent_pos
+    assert "security/mcp-tool-poisoning" in html
+    assert "lint_violations_max" in html
+    assert "loop" in html
+    # tag tri : severity badge + source + count× présent
+    assert "badge-crit" in html or "badge-warn" in html
+    assert "(harness" in html
+    assert "×" in html or "2×" in html
+
+    # tns vide → section next-steps masquée, aucun item générique
+    ctx2 = _ctx()
+    ctx2["top_next_steps"] = []
+    dated2 = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx2, quality_block=None)
+    html2 = PAYLOAD_RE.sub("", dated2.read_text(encoding="utf-8"))
+    assert '<div class="next-steps">' not in html2
+    assert "Prochaines actions" not in html2
+
+
+def test_html_next_steps_tag_tri_order_snapshot(tmp_path: Path):
+    """Snapshot tag tri : sévérité > source > count > règle > acteur (déterministe) — passthrough HTML préserve l'ordre report.py."""
+    # html_report est best-effort : il préserve l'ordre fourni (tri déjà fait côté report.py). On vérifie le passthrough.
+    ctx = _ctx()
+    ctx["top_next_steps"] = [
+        {
+            "actor": "Toi",
+            "source": "harness",
+            "rule": "security/secret",
+            "severity": "high",
+            "text": "high Toi",
+            "detail": "x",
+            "count": 1,
+        },
+        {
+            "actor": "Pipeline",
+            "source": "harness",
+            "rule": "allowlist/scope",
+            "severity": "medium",
+            "text": "medium harness Pipeline",
+            "detail": "x",
+            "count": 10,
+        },
+        {
+            "actor": "Agent",
+            "source": "alert",
+            "rule": "cost_wow",
+            "severity": "medium",
+            "text": "medium alert Agent",
+            "detail": "x",
+            "count": 5,
+        },
+        {
+            "actor": "Agent",
+            "source": "audit",
+            "category": "context-bloat",
+            "severity": "low",
+            "text": "low audit",
+            "detail": "x",
+            "count": 1,
+        },
+    ]
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx, quality_block=None)
+    html = dated.read_text(encoding="utf-8")
+    # high Toi doit apparaître avant les medium (ordre fourni trié)
+    assert html.index("high Toi") < html.index("medium harness Pipeline")
+    assert html.index("high Toi") < html.index("medium alert Agent")
+    assert html.index("high Toi") < html.index("low audit")
+    # le payload garde l'ordre fourni (le tri est côté report.py, ici on snapshot le passthrough)
+    payload = _payload(html)
+    assert payload["top_next_steps"][0]["actor"] == "Toi"  # ordre d'entrée préservé côté payload
+
+
+def test_html_report_passthrough_best_effort_snapshot(tmp_path: Path):
+    """Passthrough html_report best-effort : top_next_steps manquant/None/non-dict → template stable, jamais fatal."""
+    # 1) ctx sans clé top_next_steps
+    ctx_missing = _ctx()
+    ctx_missing.pop("top_next_steps", None)
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx_missing, quality_block=None)
+    assert dated is not None and dated.exists()
+    html = dated.read_text(encoding="utf-8")
+    assert "Prochaines actions" not in html
+    # top_next_steps absent → section next-steps masquée, aucun fallback générique
+    assert '<div class="next-steps">' not in PAYLOAD_RE.sub("", html)
+
+    # 2) None → normalisé en []
+    ctx_none = _ctx()
+    ctx_none["top_next_steps"] = None
+    dated2 = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx_none, quality_block=None)
+    assert dated2 is not None
+    assert "Prochaines actions" not in dated2.read_text(encoding="utf-8")
+    payload2 = _payload(dated2.read_text(encoding="utf-8"))
+    assert payload2.get("top_next_steps") is None  # payload garde le ctx brut, le rendu a normalisé
+
+    # 3) [] explicite
+    ctx_empty = _ctx()
+    ctx_empty["top_next_steps"] = []
+    dated3 = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx_empty, quality_block=None)
+    assert dated3 is not None
+
+    # 4) ctx non-dict : best-effort, ne doit pas lever
+    dated4 = render_html_report(_cfg(tmp_path), anchor=DATE, ctx={}, quality_block=None)  # type: ignore
+    assert dated4 is not None
+
+    # 5) vérifie le template passthrough : tns = (top_next_steps if top_next_steps is defined ...) sinon []
+    tpl = (
+        Path(__file__).resolve().parents[1]
+        / "weekly_telemetry_aggregator"
+        / "templates"
+        / "report_template.html.j2"
+    ).read_text(encoding="utf-8")
+    assert "top_next_steps if top_next_steps is defined" in tpl
+    assert "top_next_steps" in tpl
+
+    # 6) html_report.py best-effort : forward if present else [] to keep template stable
+    src = (
+        Path(__file__).resolve().parents[1] / "weekly_telemetry_aggregator" / "html_report.py"
+    ).read_text(encoding="utf-8")
+    assert "top_next_steps = ctx.get" in src
+    assert "if top_next_steps is None" in src
+
+
+# ------------------------------------------------------------------ Task2 : section sécurité repliée (MD + HTML, counts-only)
+
+
+def _sec_gate_full() -> dict:
+    return {
+        "status": "warn",
+        "critical_count": 3,
+        "blocking_count": 7,
+        "blocking_rules": [
+            "security/mcp-tool-poisoning",
+            "security/unbounded-delegation",
+            "security/memory-write-unscoped",
+            "security/extra-a",
+            "security/extra-b",
+            "security/extra-c",
+            "security/extra-d",
+        ],
+    }
+
+
+def _sec_gate_ras() -> dict:
+    return {"status": "pass", "critical_count": 0, "blocking_count": 0, "blocking_rules": []}
+
+
+def _assert_security_collapsed(fragment: str, *, expect_rules: bool) -> None:
+    assert 'id="security"' in fragment
+    assert '<details id="security" open' not in fragment
+    assert '<details id="security"' in fragment
+    # replié par défaut : aucune variante open sur ce details
+    head = fragment.split('id="security"')[0].split("<details")[-1]
+    assert "open" not in head
+    if expect_rules:
+        assert "security/mcp-tool-poisoning" in fragment
+    # top-5 max : les 2 règles excédentaires ne doivent pas apparaître
+    assert "security/extra-c" not in fragment
+    assert "security/extra-d" not in fragment
+
+
+def test_security_section_ras_and_full(tmp_path: Path):
+    from weekly_telemetry_aggregator import html_report as hr
+    from weekly_telemetry_aggregator import report as rp
+
+    assert hasattr(rp, "_render_security_section"), "report._render_security_section absent"
+    assert hasattr(hr, "_render_security_section"), "html_report._render_security_section absent"
+
+    # --- RAS : pass, zéro finding ---
+    md_ras = rp._render_security_section(_sec_gate_ras())
+    html_ras = str(hr._render_security_section(_sec_gate_ras()))
+    assert "Aucun" in md_ras or "aucun" in md_ras.lower()
+    _assert_security_collapsed(md_ras, expect_rules=False)
+    _assert_security_collapsed(html_ras, expect_rules=False)
+
+    # --- FULL : warn, counts + rules only (jamais de verbatim de finding) ---
+    gate = _sec_gate_full()
+    md_full = rp._render_security_section(gate)
+    html_full = str(hr._render_security_section(gate))
+    for fragment in (md_full, html_full):
+        _assert_security_collapsed(fragment, expect_rules=True)
+        assert "3" in fragment and "7" in fragment
+        # paraphrases génériques ≤200 caractères par ligne de règle, pas de procédure
+        for line in fragment.splitlines():
+            if "security/" in line:
+                assert len(line) <= 200, f"paraphrase trop longue ({len(line)}): {line[:80]}"
+        lowered = fragment.lower()
+        assert "contournement" not in lowered
+        assert "bypass" not in lowered
+        # le message brut du finding ne doit jamais être recopié
+        assert "procédure secrète du finding" not in fragment
+
+    # --- Intégration HTML : render_html_report embarque la section repliée ---
+    ctx = _ctx()
+    ctx["gate_status"] = {"security": gate}
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx, quality_block=None)
+    assert dated is not None
+    html = dated.read_text(encoding="utf-8")
+    body = PAYLOAD_RE.sub("", html)
+    _assert_security_collapsed(body, expect_rules=True)
+    assert body.count('id="security"') == 1
+
+    # --- Intégration MD : report_assemble ajoute la section repliée ---
+    import json as _json
+
+    from weekly_telemetry_aggregator.config import TelemetryConfig as _Cfg
+    from weekly_telemetry_aggregator.report import report_assemble as _assemble
+    from weekly_telemetry_aggregator.report import report_prep as _prep
+    from weekly_telemetry_aggregator.run_state import resolve_active_run_dir as _resolve
+
+    cfg2 = _Cfg()
+    cfg2.project_root = tmp_path
+    cfg2.output_dir = tmp_path
+    cfg2.html_report_dir = ""
+    cfg2.opencode_db_path = "/nonexistent/opencode.db"
+    cfg2.project_root = tmp_path
+    cfg2.open_browser = False
+    run_iso = tzutc(2026, 8, 12).isoformat()
+    from helpers import make_step as _mk_step
+    from helpers import make_usage as _mk_usage
+
+    from weekly_telemetry_aggregator.aggregator import aggregate as _agg
+    from weekly_telemetry_aggregator.models import Period as _Period
+    from weekly_telemetry_aggregator.writer import summary_to_dict as _to_dict
+
+    _period = _Period(start=tzutc(2026, 8, 5), end=tzutc(2026, 8, 12))
+    _u = _mk_usage("r", [_mk_step("r", tzutc(2026, 8, 6, 10), cost=0.5)], title="S")
+    _data = _to_dict(_agg([_u], period=_period, generated_at=tzutc(2026, 8, 12)))
+    out = _resolve(tmp_path, DATE)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / f"weekly-summary-{DATE}.json").write_text(
+        _json.dumps(_data, ensure_ascii=False), encoding="utf-8"
+    )
+    _prep(cfg2, anchor=run_iso)
+    (out / f"weekly-harness-digest-{DATE}.json").write_text(
+        _json.dumps(
+            {
+                "findings": [],
+                "inspection": {
+                    "uncategorized": [
+                        {
+                            "path": ".opencode/a.md",
+                            "findings": [
+                                {"rule": "security/mcp-tool-poisoning", "severity": "warning"}
+                            ],
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, _warnings, rc = _assemble(cfg2, anchor=run_iso)
+    assert rc == 1
+    assert final_path is not None
+    md_text = final_path.read_text(encoding="utf-8")
+    _assert_security_collapsed(md_text, expect_rules=True)
+    assert md_text.count('id="security"') == 1

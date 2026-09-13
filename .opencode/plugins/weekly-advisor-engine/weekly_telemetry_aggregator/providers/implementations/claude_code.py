@@ -139,7 +139,7 @@ def _usage_tokens(message: object) -> tuple[float, float, float, float, float] |
 
     def _num(key: str) -> float:
         value = usage.get(key)
-        return float(value) if isinstance(value, (int, float)) and value > 0 else 0.0
+        return float(value) if isinstance(value, int | float) and value > 0 else 0.0
 
     tin, tout = _num("input_tokens"), _num("output_tokens")
     if tin <= 0 and tout <= 0:
@@ -320,6 +320,12 @@ class ClaudeCodeSessionProvider:
                 arg_chars = len(json.dumps(block.get("input"), ensure_ascii=False))
                 tool_arg_chars[name] = tool_arg_chars.get(name, 0) + arg_chars
         return tool_calls, tool_arg_chars, {}  # skills_loaded : sans objet hors CLI
+
+    def session_tool_fingerprints(
+        self, _session_id: str, _start_ms: int, _end_ms: int
+    ) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, int]]]:
+        """Payloads bruts non exposés par ce harnais : dicts vides."""
+        return {}, {}
 
     def session_user_turns(self, session_id: str, start_ms: int, end_ms: int) -> list[str]:
         session = self._get(session_id)

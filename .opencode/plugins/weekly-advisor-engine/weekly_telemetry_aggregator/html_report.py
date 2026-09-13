@@ -52,7 +52,7 @@ def _resolve_html_dir(cfg: TelemetryConfig) -> Path | None:
 
 def _json_default(obj: Any) -> Any:
     """Sérialisation défensive du ctx (sets du ctx réel → listes triées)."""
-    if isinstance(obj, (set, frozenset)):
+    if isinstance(obj, set | frozenset):
         return sorted(obj)
     return str(obj)
 
@@ -91,6 +91,79 @@ def _render_quality_block(block: str | None) -> Markup:
     return Markup("\n".join(paragraphs))
 
 
+_SECURITY_PARAPHRASE = {
+    "mcp-tool-poisoning": "Contenu outil non fiable — revue humaine avant usage.",
+    "unbounded-delegation": "Délégation trop large — restreindre le périmètre.",
+    "memory-write-unscoped": "Écriture mémoire hors périmètre — revue requise.",
+}
+
+
+def _render_security_section(security: dict | None) -> Markup:
+    """Section Sécurité repliée (HTML) — counts/rules only, warn-only.
+
+    Entrées Task1 uniquement : ``security.{status,critical_count,
+    blocking_count,blocking_rules}`` via ``ctx["gate_status"]["security"]``.
+    ``_critical``/``_blocking_security_findings`` inchangés : aucun finding
+    brut affiché, paraphrases génériques (≤200 caractères, top-5 max).
+    Retourne un ``<details id="security">`` replié par défaut (jamais open).
+    """
+    # <!-- ponytail: counts-only — aucun finding brut, paraphrases génériques -->
+    status = "pass"
+    critical_count = 0
+    blocking_count = 0
+    rules: list[str] = []
+    if isinstance(security, dict):
+        raw = str(security.get("status") or "pass").strip().lower()
+        status = raw if raw in {"pass", "warn", "fail"} else "pass"
+        try:
+            critical_count = max(0, int(security.get("critical_count") or 0))
+        except (TypeError, ValueError):
+            critical_count = 0
+        try:
+            blocking_count = max(0, int(security.get("blocking_count") or 0))
+        except (TypeError, ValueError):
+            blocking_count = 0
+        raw_rules = security.get("blocking_rules") or []
+        if isinstance(raw_rules, list):
+            seen: set[str] = set()
+            for r in raw_rules:
+                name = str(r or "").strip()
+                if not name or name in seen:
+                    continue
+                seen.add(name)
+                rules.append(name if "/" in name else f"security/{name}")
+            rules = rules[:5]
+    badge = "badge-ok" if status == "pass" else "badge-warn"
+    parts = [
+        '<details id="security" class="security">',
+        f'<summary>Sécurité — <span class="badge {badge}">{escape(status.upper())}</span>'
+        f" · {critical_count} critical · {blocking_count} blocking</summary>",
+        '<div class="security-body">',
+    ]
+    if status == "pass" and critical_count == 0 and blocking_count == 0:
+        parts.append("<p>Aucun finding security/critical ce run.</p>")
+    else:
+        parts.append(
+            f"<p>Statut : <b>{escape(status)}</b> (warn-only, rapport écrit)."
+            f" Findings critical : <b>{critical_count}</b>"
+            f" · blocking : <b>{blocking_count}</b>.</p>"
+        )
+        if rules:
+            parts.append("<ul>")
+            for rule in rules:
+                short = str(rule).strip().lower().removeprefix("security/")
+                para = _SECURITY_PARAPHRASE.get(
+                    short, "Signal de sécurité — revue humaine requise."
+                )
+                row = f"<li><code>{escape(rule)}</code> — {escape(para)}</li>"
+                parts.append(row[:200] if len(row) > 200 else row)
+            parts.append("</ul>")
+        parts.append("<p>Revue humaine requise — détails non affichés.</p>")
+    parts.append("</div>")
+    parts.append("</details>")
+    return Markup("\n".join(parts))
+
+
 def render_html_report(
     cfg: TelemetryConfig,
     *,
@@ -119,14 +192,26 @@ def render_html_report(
             keep_trailing_newline=True,
         )
         template = env.get_template(_TEMPLATE_NAME)
+        # <!-- ponytail: best-effort top_next_steps — forward if present else [] to keep template stable -->
+        top_next_steps = ctx.get("top_next_steps", []) if isinstance(ctx, dict) else []
+        if top_next_steps is None:
+            top_next_steps = []
         rendered = template.render(
             **{
                 **ctx,
                 "date": date,
                 "payload_json": _payload_json(ctx),
                 "quality_html": _render_quality_block(quality_block),
+                "top_next_steps": top_next_steps,
             }
         )
+        # Task2 : section Sécurité repliée (counts-only Task1) sans toucher au gabarit.
+        gate = ctx.get("gate_status", {}).get("security") if isinstance(ctx, dict) else None
+        sec_html = str(_render_security_section(gate if isinstance(gate, dict) else None))
+        if "</main>" in rendered:
+            rendered = rendered.replace("</main>", sec_html + "\n</main>", 1)
+        else:
+            rendered += "\n" + sec_html + "\n"
 
         out_dir.mkdir(parents=True, exist_ok=True)
         dated = out_dir / f"weekly-report-{date}.html"

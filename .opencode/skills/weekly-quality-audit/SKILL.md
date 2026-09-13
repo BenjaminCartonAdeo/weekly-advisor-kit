@@ -1,6 +1,6 @@
 ---
 name: weekly-quality-audit
-description: Audit qualitatif des sessions coûteuses (étape 3 du weekly-advisor) — catégories de constats, schéma findings, paraphrase stricte, lien session → commande lanceuse.
+description: Étape 3 — audit qualitatif des sessions coûteuses (paraphrase stricte, findings liés à la commande lanceuse).
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: pipeline-step
@@ -32,6 +32,51 @@ Sélection déterministe en amont (aucun choix de session ici), examen LLM des t
 5. Écrire `weekly-quality-findings-<date>.json` (schéma ci-dessous)
 6. Ne PAS ré-émettre un candidat snoozé (`ignored_findings` de la config)
 
+## Contrat de sortie worker (strict)
+
+<!-- ponytail: le worker envelope est minimal ; le JOIN reste déterministe. -->
+
+Le worker A écrit un fichier par session (`audit-findings-<session_id>.json`) avant la
+consolidation déterministe. Chaque fichier doit respecter l'envelope JSON v1 suivante,
+y compris pour un transcript borné, tronqué ou illisible :
+
+```json
+{
+  "schema_version": 1,
+  "session_id": "ses_xxx",
+  "summary": "Résumé non-vide, borné à ce qui est vérifiable.",
+  "findings": [],
+  "rc": 0,
+  "warnings": []
+}
+```
+
+`schema_version` vaut `1`, `session_id` est celui du briefing, `summary` est une chaîne
+non-vide (jamais `null`), `findings` et `warnings` sont des tableaux, et `rc` vaut `0`
+ou `1`. Un extrait vide produit un résumé explicite et `findings: []`, pas un finding
+deviné : ne jamais inventer un finding. Le JOIN ne répare ni ne réécrit l'envelope ; il fusionne uniquement les findings
+ déjà validés. Il vérifie le `session_id` contre le nom canonique du fichier et
+ recopie cet identifiant dans chaque finding ; un finding sans identifiant devient
+ un warning structuré, jamais un finding attribué par supposition.
+
+### Transcript borné, retry et code retour
+
+- Détecter la troncature ou la lecture partielle ; lire seulement des fenêtres bornées
+  `offset/limit`, jamais un export intégral non borné.
+- Autoriser **une seule retry bornée** (`max_retry=1`, au plus trois fenêtres de
+  diagnostic). Aucun hang, respawn loop ou nouvelle sous-tâche après cette tentative.
+- Si la sortie récupérée est **complete-enough**, c'est-à-dire suffisante pour justifier
+  chaque finding, produire l'envelope avec `rc: 0` : une recovery réussie ne doit pas
+  faire passer le cron en `rc=1`. Si une troncature avait été détectée, conserver
+  `transcript-truncated:<session_id>` dans `warnings` comme fait informatif.
+- Si elle reste partielle, produire l'envelope avec `rc: 1`, conclusions limitées à la
+  partie lisible et warning exact `transcript-truncated:<session_id>` dans le contrat
+  **et** dans `warnings` de l'artefact. Ne jamais remplacer cet identifiant par une
+  paraphrase. Tant que l'envelope est valide et non vide, ce warning reste visible mais
+  nonblocking au JOIN ; un artefact absent, vide ou invalide reste comptable.
+
+Toute conclusion doit être soutenue par le transcript effectivement lu. Sécurité et hors-worktree : voir skill partagé `weekly-safety-guardrails` (external-permission-refusal, environment-change). L'envelope reste valide avec `rc: 0` et `findings: []` en refus hors worktree.
+
 ## Harnais d'origine
 
 Chaque session provient d'un harnais identifiable : ids canoniques
@@ -39,6 +84,36 @@ Chaque session provient d'un harnais identifiable : ids canoniques
 `show-session` accepte l'id canonique ET l'id brut (le brut est résolu vers la
 première source qui le possède) ; les titres Claude Code sont tronqués à
 100 caractères à la lecture.
+
+## Pré-filtre anti-learning (déterministe) — R2
+
+Avant d'émettre un `skill-candidate`, vérifier que le pattern N'EST PAS :
+
+- **échec transitoire** : erreur ponctuelle due au modèle/infra, non reproductible (une seule session, pas de récurrence)
+- **prohibition env-spécifique** : action interdite par l'environnement (permissions, secrets, réseau) — pas un pattern skillable
+- **récit one-off** : demande utilisateur singulière, jamais réutilisable ailleurs
+- **secret** : contient une clé/token/secret ou des données à ne pas généraliser
+- **référence PR/ticket** : lié à un artefact externe éphémère (PR #, ticket Jira) sans valeur durable
+
+Si un de ces critères matche → **ne PAS émettre `skill-candidate`**. Émettre
+`environment-change` (si la cible est hors `project_root` ou non écrasable) ou **drop**
+(ignorer le constat). Ce pré-filtre évite d'alimenter l'étape 4 avec du bruit
+non-apprenable.
+
+## Boucle usage → raffinement — R7
+
+Les **gaps récurrents d'usage d'un skill existant** (ex. un skill mal ciblé,
+mal documenté, ou dont le frontmatter ne déclenche pas le chargement attendu —
+cf. catégorie `skill-underuse` poussée plus loin) doivent être émis comme :
+
+```jsonc
+"recommendation_type": "skill-improvement"
+```
+
+`skill-improvement` ferme la boucle usage→raffinement : il alimente directement
+l'étape 4 (drafting) pour corriger le skill en place plutôt que de proposer un
+nouveau skill. Inclus dans la catégorie `skill-underuse` quand la cause est
+identifiable dans le frontmatter/description du skill.
 
 ## Catégories de constats
 
@@ -52,6 +127,7 @@ première source qui le possède) ; les titres Claude Code sont tronqués à
 | `command-underuse` | Tâche répétée qui dispose d'une commande jamais invoquée |
 | `command-candidate` | Séquence répétée N fois dans la session qui mérite une commande |
 | `skill-candidate` | Workflow coûteux reproductible ailleurs qui mérite un skill |
+| `skill-improvement` | Skill existant dont l'usage est défaillant (frontmatter/description mal calibré) — boucle raffinement R7 |
 | `model-mismatch` | Modèle surdimensionné pour la tâche (coût/min actif anormal) |
 | `command-improvement` | Session coûteuse lancée par une commande existante → garde-fous manquants |
 | `environment-change` | Constat dont la cible est hors `project_root` ou non écrasable (report-only) |
@@ -72,9 +148,9 @@ première source qui le possède) ; les titres Claude Code sont tronqués à
       "evidence_summary": "≤ 200 caractères — PARAPHRASE, jamais de citation verbatim"
                                            // (règle copyright : pas de copie du transcript)
       "recommendation": "...",
-      "recommendation_type": "prompting-habit | environment-change | skill-candidate | command-candidate | command-improvement",
+      "recommendation_type": "prompting-habit | environment-change | skill-candidate | skill-improvement | command-candidate | command-improvement",
       "impact_order_of_magnitude": "small | medium | large",
-      "source": "new",                    // new | carried (v6.0.n)
+      "source": "new",                    // new | carried
       "carried_from": "2026-08-16-ace20d4b"  // requis si source=carried (run d'origine)
     }
   ]

@@ -2,23 +2,36 @@
 
 Subcommands: run (default), show-session, releases, watch-context, watch-distill,
 watch-validate, insights, report-prep, report-assemble, harness, harness-remediate,
-commit-draft, doctor, self-cost.
+audit-candidates, draft-candidates, commit-draft, doctor, self-cost, skill-curate.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 from . import __version__
 from .config import load_config
 from .costing import self_cost
-from .main import doctor, run
+from .curation import (
+    _skill_fields,
+    build_catalog_from_skills,
+    catalog_entry_is_complete,
+    decide_actions,
+    manifest_metadata,
+    normalize_curation_findings,
+    read_carry,
+    select_catalog_entry,
+    ttl_archive_candidates,
+)
+from .main import _run_provenance, doctor, run
 
 
 def _load_cfg(args) -> object:
-
     cfg = load_config(args.config)
     if getattr(args, "output_dir", None):
         cfg.output_dir = Path(args.output_dir).expanduser()
@@ -35,6 +48,44 @@ def _out_dir(cfg, date: str) -> Path:
     return resolve_active_run_dir(cfg.output_dir, date)
 
 
+def _deduplicate_worker_statuses(records: list[object]) -> list[dict]:
+    """Return one compact worker outcome record per session."""
+    by_session: dict[str, dict] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        session_id = record.get("session_id")
+        if not session_id or not any(key in record for key in ("rc", "truncated", "worker_status")):
+            continue
+        key = str(session_id)
+        compact = {
+            field: record[field]
+            for field in ("session_id", "rc", "truncated", "worker_status", "status")
+            if field in record
+        }
+        merged = by_session.setdefault(key, {})
+        # Status sources can arrive in different order (summary, selection,
+        # candidates). Never let a later healthy record erase a failure.
+        if "session_id" in compact:
+            merged["session_id"] = compact["session_id"]
+        if "rc" in compact:
+            try:
+                rc = int(compact["rc"])
+            except (TypeError, ValueError):
+                rc = 1
+            merged["rc"] = max(int(merged.get("rc", 0) or 0), rc)
+        if "truncated" in compact:
+            merged["truncated"] = bool(merged.get("truncated", False) or compact["truncated"])
+        for field in ("worker_status", "status"):
+            if field in compact and compact[field]:
+                # Truncation provenance is monotonic: a later healthy record
+                # must not erase a previously observed truncation.
+                if field == "worker_status" and merged.get(field) == "truncated":
+                    continue
+                merged[field] = compact[field]
+    return list(by_session.values())
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
@@ -43,13 +94,66 @@ def _positive_int(value: str) -> int:
 
 
 def _cmd_run(args, cfg) -> int:
-    return run(
+    rc = run(
         cfg,
         anchor=args.anchor,
         top_sessions_limit=args.top_sessions_limit,
         include_subagents=args.include_subagents,
         fail_on_missing_telemetry=args.fail_on_missing_telemetry,
         lookback_days=args.lookback_days,
+    )
+    # `run()` predates the final JOIN contract and reports every partial worker
+    # warning as rc=1.  Re-read the source-of-truth summary once it exists so
+    # valid transcript-truncated/recovered/report-only inputs remain observable
+    # without becoming a counted failure.  Fatal rc=2 is never downgraded.
+    if rc >= 2 or rc < 0:
+        return rc
+    if rc not in (0, 1):
+        return rc
+    from .main import _parse_anchor
+    from .report import (
+        _audit_artifact_declarations,
+        _branch_applicability,
+        _join_status_records,
+        applicable_summary_rc,
+        validate_required_artifacts,
+    )
+
+    run_time = _parse_anchor(args.anchor)
+    date = run_time.strftime("%Y-%m-%d")
+    out = _out_dir(cfg, date)
+    timings_path = out / f"weekly-timings-{date}.json"
+    timings: object = None
+    if timings_path.is_file():
+        try:
+            timings = json.loads(timings_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            timings = None
+    gate = validate_required_artifacts(
+        out,
+        date,
+        applicability=_branch_applicability(timings, date, out=out),
+        dynamic_audit_artifacts=_audit_artifact_declarations(timings),
+    )
+    if gate["status"] != "pass":
+        return 2
+    summary_path = out / f"weekly-summary-{date}.json"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return 2
+    if not isinstance(summary, dict):
+        return 2
+    additional_records: list[object] = []
+    if timings is not None:
+        additional_records = _join_status_records(timings)
+    return applicable_summary_rc(
+        summary,
+        out=out,
+        date=date,
+        additional_records=additional_records,
+        project_root=cfg.project_root,
+        fallback_rc=rc,
     )
 
 
@@ -98,9 +202,56 @@ def _cmd_show_session(args, cfg) -> int:
     return 0
 
 
+def _load_previous_carried_over(
+    output_dir: Path, exclude_dir: Path, current_date: str
+) -> list[dict]:
+    """`carried_over` du run précédent (reprise P2) — best-effort, [] sinon.
+
+    Cherche le `weekly-audit-candidates-<date>.json` le plus récent strictement
+    antérieur (racine, `runs/*/`, `runs/*/legacy/`), avec fallback même-date
+    hors run courant (reruns/tests). Lit `carried_over` puis `unaudited`.
+    """
+    import re as _re
+
+    root = Path(output_dir)
+    patterns = [
+        *root.glob("weekly-audit-candidates-*.json"),
+        *root.glob("runs/*/weekly-audit-candidates-*.json"),
+        *root.glob("runs/*/legacy/weekly-audit-candidates-*.json"),
+    ]
+    dated: list[tuple[str, Path]] = []
+    for path in patterns:
+        m = _re.search(r"(\d{4}-\d{2}-\d{2})\.json$", path.name)
+        if m and m.group(1) < current_date:
+            dated.append((m.group(1), path))
+    target: Path | None = sorted(dated)[-1][1] if dated else None
+    if target is None:
+        same_day = []
+        for path in patterns:
+            if path.parent == exclude_dir:
+                continue
+            m = _re.search(r"(\d{4}-\d{2}-\d{2})\.json$", path.name)
+            if m:
+                same_day.append((m.group(1), path))
+        if same_day:
+            target = sorted(same_day)[-1][1]
+    if target is None:
+        return []
+    try:
+        previous = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    carried = (previous or {}).get("carried_over") or (previous or {}).get("unaudited") or []
+    return [c for c in carried if isinstance(c, dict) and c.get("session_id")]
+
+
 def _cmd_audit_candidates(args, cfg) -> int:
     """Partie 3 §2 — sélection déterministe des sessions à auditer (archive JSON)."""
-    from .candidates import select_audit_candidates
+    from .candidates import (
+        prepend_carried_over,
+        select_audit_candidates,
+        split_audit_candidates,
+    )
     from .main import EXIT_TOTAL_FAILURE, _parse_anchor
     from .writer import write_json_atomic
 
@@ -124,14 +275,27 @@ def _cmd_audit_candidates(args, cfg) -> int:
         cost_per_active_minute_min=cfg.audit.cost_per_active_minute_min,
         cache_efficiency_gap=cfg.audit.cache_efficiency_gap,
     )
-    audited = candidates[: max(0, cfg.audit_max_sessions)]
-    unaudited = candidates[max(0, cfg.audit_max_sessions) :]
+    candidates = prepend_carried_over(
+        candidates, _load_previous_carried_over(cfg.output_dir, out, date)
+    )
+    audited, carried_over = split_audit_candidates(candidates, cfg.audit_max_sessions)
+    unaudited = carried_over  # alias legacy : mêmes sessions, intention reprise explicite
     data = {
         "schema_version": 1,
         "date": date,
         "audited": audited,
         "unaudited": unaudited,
+        "carried_over": carried_over,
         "limit": cfg.audit_max_sessions,
+        # Preserve worker outcomes even when candidates are bounded or output
+        # was compacted by the orchestrator.
+        "worker_statuses": _deduplicate_worker_statuses(
+            [
+                *(summary.get("worker_statuses") or []),
+                *((summary.get("selection") or {}).get("worker_statuses") or []),
+                *candidates,
+            ]
+        ),
     }
     out_path = out / f"weekly-audit-candidates-{date}.json"
     write_json_atomic(out_path, data)
@@ -385,8 +549,14 @@ def _cmd_insights(args, cfg) -> int:
 
 
 def _cmd_report_prep(args, cfg) -> int:
-    from .main import EXIT_OK, EXIT_TOTAL_FAILURE
-    from .report import report_prep
+    from .main import EXIT_TOTAL_FAILURE, _parse_anchor
+    from .report import (
+        _audit_artifact_declarations,
+        _branch_applicability,
+        applicable_summary_rc,
+        report_prep,
+        validate_required_artifacts,
+    )
 
     path, ctx = report_prep(cfg, anchor=args.anchor)
     if ctx is None:
@@ -397,7 +567,38 @@ def _cmd_report_prep(args, cfg) -> int:
         )
         return EXIT_TOTAL_FAILURE
     print(f"report-prep: draft {path}", flush=True)
-    return EXIT_OK
+    run_time = _parse_anchor(args.anchor)
+    date = run_time.strftime("%Y-%m-%d")
+    out = _out_dir(cfg, date)
+    timings: object = None
+    timings_path = out / f"weekly-timings-{date}.json"
+    if timings_path.is_file():
+        try:
+            timings = json.loads(timings_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            timings = None
+    if (
+        validate_required_artifacts(
+            out,
+            date,
+            applicability=_branch_applicability(timings, date, out=out),
+            dynamic_audit_artifacts=_audit_artifact_declarations(timings),
+        )["status"]
+        != "pass"
+    ):
+        return EXIT_TOTAL_FAILURE
+    summary_path = out / f"weekly-summary-{date}.json"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return EXIT_TOTAL_FAILURE
+    return applicable_summary_rc(
+        summary,
+        out=out,
+        date=date,
+        project_root=cfg.project_root,
+        fallback_rc=0,
+    )
 
 
 def _cmd_report_assemble(args, cfg) -> int:
@@ -405,6 +606,8 @@ def _cmd_report_assemble(args, cfg) -> int:
 
     path, warnings, rc = report_assemble(cfg, anchor=args.anchor)
     if path is None:
+        for warning in warnings:
+            print(f"report-assemble: FATAL: {warning}", file=sys.stderr, flush=True)
         return rc
     for w in warnings:
         print(f"report-assemble: WARNING: {w}", flush=True)
@@ -449,6 +652,505 @@ def _cmd_commit_draft(args, cfg) -> int:
     return 0 if ok else 1
 
 
+def _read_json_arg(path) -> object | None:
+    """Lit un fichier JSON fourni en argument CLI; None si non fourni."""
+    if not path:
+        return None
+    p = Path(path).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"fichier introuvable: {p}")
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def _auto_load(out: Path, output_dir: Path, date: str, stem: str) -> dict | None:
+    """Charge un artefact de run par date, avec repli legacy (racine output_dir).
+
+    Cherche ``<out>/<stem>-<date>.json`` puis un glob ``<stem>-*.json`` dans
+    ``out`` (run actif), enfin dans ``output_dir`` racine (mode legacy). Retourne
+    le dict ou ``None`` si introuvable. Ne lève jamais.
+    """
+    primary = out / f"{stem}-{date}.json"
+    if primary.is_file():
+        return _read_json_arg(str(primary))
+    candidates = sorted(out.glob(f"{stem}-*.json"), reverse=True)
+    if not candidates:
+        candidates = sorted(Path(output_dir).glob(f"{stem}-*.json"), reverse=True)
+    for path in candidates:
+        data = _read_json_arg(str(path))
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def _auto_load_catalog(out: Path, cfg, date: str) -> list[dict]:
+    """Catalogue de skills pour l'auto-load (Phase 1), sans piping LLM.
+
+    Priorité : ``--catalog`` (override, géré par l'appelant) → ``weekly-summary``
+    du run (champ ``skill_catalog`` si présent, sinon ``skill_catalog_entries``
+    mappés) → scan disque autorité (``build_catalog_from_skills``) qui lit
+    ``metadata.origin``/``ttl_policy``/``usage``. Retourne [] si tout absent.
+    """
+    summary = _auto_load(out, cfg.output_dir, date, "weekly-summary")
+    if isinstance(summary, dict):
+        catalog = summary.get("skill_catalog")
+        if isinstance(catalog, list) and catalog:
+            return [entry for entry in catalog if isinstance(entry, dict)]
+        entries = summary.get("skill_catalog_entries")
+        if isinstance(entries, list) and entries:
+            catalog: list[dict] = []
+            for raw_entry in entries:
+                if not isinstance(raw_entry, dict):
+                    continue
+                entry = dict(raw_entry)
+                raw_metadata = entry.get("metadata")
+                metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+                # ``skill_catalog_entries`` is serialized from a dataclass in
+                # older summaries, while newer producers may put lifecycle
+                # fields at either level.  Preserve every protection field
+                # instead of replacing metadata with an empty mapping.
+                for key in (
+                    "skill_id",
+                    "origin",
+                    "ttl_policy",
+                    "usage",
+                    "last_verified_at",
+                    "verification",
+                ):
+                    if key not in entry:
+                        continue
+                    value = entry[key]
+                    current = metadata.get(key)
+                    # Lifecycle protection is monotonic when producers disagree:
+                    # user/pin may never be weakened by a nested/flattened row.
+                    if (
+                        (key == "origin" and str(value).strip().casefold() == "user")
+                        or (key == "ttl_policy" and str(value).strip().casefold() == "pin")
+                        or key not in metadata
+                        or current in (None, "")
+                    ):
+                        metadata[key] = value
+                skill_id = entry.get("skill_id") or entry.get("name") or metadata.get("skill_id")
+                if not isinstance(skill_id, str) or not skill_id.strip():
+                    continue
+                entry["skill_id"] = skill_id.strip()
+                entry["metadata"] = metadata
+                catalog.append(entry)
+            if catalog:
+                return catalog
+    return build_catalog_from_skills(cfg.project_root)
+
+
+def _skill_dirs_for(cfg) -> list[Path]:
+    """Project-local skill roots eligible for future apply moves.
+
+    ``main._skill_dirs`` also returns the global OpenCode skills directory for
+    telemetry discovery.  Curation deliberately narrows that universe to the
+    three project roots so ``--apply`` can never mutate global skills.
+    """
+    try:
+        project_root = (cfg.project_root or Path.cwd()).expanduser().resolve()
+    except (OSError, RuntimeError):
+        # Apply must fail closed when even the project root cannot be resolved.
+        return []
+    roots = [
+        project_root / ".opencode" / "skills",
+        project_root / ".claude" / "skills",
+        project_root / ".agents" / "skills",
+    ]
+    global_roots = _global_skill_roots()
+    return [root for root in roots if not _path_is_global_or_unresolvable(root, global_roots)]
+
+
+def _global_skill_roots() -> tuple[Path, ...]:
+    """All supported user-level skill roots, resolved for symlink protection."""
+
+    return (
+        Path.home() / ".config" / "opencode" / "skills",
+        Path.home() / ".claude" / "skills",
+        Path.home() / ".agents" / "skills",
+    )
+
+
+def _path_within(path: Path, root: Path, *, on_error: bool) -> bool:
+    """Containment predicate; resolution errors return ``on_error``."""
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, RuntimeError):
+        return on_error
+    except ValueError:
+        return False
+    return True
+
+
+def _path_is_global_or_unresolvable(path: Path, global_roots: tuple[Path, ...]) -> bool:
+    """Deny a path inside a global root, or one whose resolution is uncertain."""
+
+    return any(_path_within(path, global_root, on_error=True) for global_root in global_roots)
+
+
+def _normalize_skill_relative(skill_id: str) -> Path | None:
+    """Normalize one relative skill id without changing its identity."""
+
+    requested = str(skill_id or "").strip()
+    if not requested or "\\" in requested or requested.startswith("/") or requested.startswith("~"):
+        return None
+    raw_parts = requested.split("/")
+    if any(part in {"", ".", ".."} for part in raw_parts):
+        return None
+    normalized = Path(*raw_parts)
+    if normalized.is_absolute() or normalized.parts != tuple(raw_parts):
+        return None
+    if "_archive" in normalized.parts:
+        return None
+    return normalized
+
+
+def _archive_skill(
+    skill_id: str,
+    skills_dirs: list[Path],
+    date: str,
+    mover,
+    *,
+    catalog_entry: Mapping[str, object] | None = None,
+) -> tuple[str, str | None]:
+    """Déplace un skill (dir) vers ``<skills_dir>/_archive/<date>/<id>`` (idempotent).
+
+    Retourne le statut de ``safe_git_move``. Aucun delete. Si introuvable sur
+    disque, retourne ``("missing", None)`` (compté skipped, jamais fatale).
+    """
+    requested_path = _normalize_skill_relative(skill_id)
+    if requested_path is None:
+        return "missing", "skill_id absent or unsafe"
+    if not isinstance(date, str) or re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) is None:
+        return "missing", "date archive absente ou unsafe"
+    global_roots = _global_skill_roots()
+    candidates: list[tuple[Path, Path, Path]] = []
+    for skills_dir in skills_dirs:
+        if _path_is_global_or_unresolvable(skills_dir, global_roots):
+            continue
+        src = skills_dir / requested_path
+        dst = skills_dir / "_archive" / date / requested_path
+        try:
+            # Check every resolved path before consulting exists/is_dir.  In
+            # particular, an existing destination symlink must not short-circuit
+            # the global-root and project-root containment gates.
+            if any(
+                _path_is_global_or_unresolvable(candidate, global_roots)
+                for candidate in (src, src / "SKILL.md", dst, dst.parent)
+            ):
+                return "missing", "skill source/destination hors périmètre projet"
+            if (
+                not _path_within(src, skills_dir, on_error=False)
+                or not _path_within(src / "SKILL.md", skills_dir, on_error=False)
+                or not _path_within(dst.parent, skills_dir, on_error=False)
+            ):
+                return "missing", "skill source/destination hors périmètre projet"
+            destination_exists = dst.exists()
+            source_exists = src.is_dir()
+        except (OSError, RuntimeError) as exc:
+            return "rejected", f"chemin source illisible: {exc}"
+        if destination_exists or source_exists:
+            candidates.append((skills_dir, src, dst))
+
+    if not candidates:
+        return "missing", None
+    if len(candidates) > 1:
+        return "ambiguous", "skill_id existe dans plusieurs racines projet"
+
+    _skills_dir, src, dst = candidates[0]
+    # A previous successful run leaves the source absent but destination present.
+    # Report ``exists`` rather than ``missing`` and never attempt a second move.
+    if dst.exists():
+        return "exists", f"{dst} déjà présent (idempotent)"
+    if not src.is_dir():
+        return "missing", "skill source absent ou non-répertoire"
+    catalog_sid, catalog_origin, catalog_ttl = _skill_fields(catalog_entry)
+    if catalog_origin == "user" or catalog_ttl == "pin":
+        return "protected", "catalogue protège cette skill (origin=user ou ttl_policy=pin)"
+    if catalog_entry is None or not catalog_entry_is_complete(catalog_entry):
+        # A name-only or absent catalogue entry is sufficient for a dry-run
+        # proposal, never for an apply move.  Still inspect the source so a
+        # stale proposal cannot hide user/pinned protection behind missing data.
+        from .safe_git_write import validate_skill_source
+
+        _valid, metadata, detail = validate_skill_source(src / "SKILL.md")
+        if metadata.get("origin") == "user" or metadata.get("ttl_policy") == "pin":
+            return "protected", detail
+        return "unverified", "catalogue incomplet ou absent; archive apply refusé"
+    # Re-read frontmatter on every apply. A stale catalogue must never weaken
+    # source validation or protection metadata.
+    from .safe_git_write import validate_skill_source
+
+    valid, metadata, detail = validate_skill_source(src / "SKILL.md")
+    if metadata.get("origin") == "user" or metadata.get("ttl_policy") == "pin":
+        return "protected", detail
+    if not valid:
+        return "unverified", detail
+    if (
+        catalog_sid != skill_id
+        or metadata.get("origin") != catalog_origin
+        or metadata.get("ttl_policy") != catalog_ttl
+    ):
+        return "unverified", "catalogue et frontmatter source incohérents"
+    # Revalidate immediately before the move: symlink/race changes after the
+    # discovery checks must fail closed, including project-root containment.
+    project_root = _skills_dir.parents[2]
+    try:
+        if any(
+            _path_is_global_or_unresolvable(candidate, global_roots)
+            or not _path_within(candidate, project_root, on_error=False)
+            for candidate in (
+                _skills_dir,
+                src,
+                src / "SKILL.md",
+                dst,
+                dst.parent,
+            )
+        ):
+            return "rejected", "skill source/destination hors périmètre projet"
+        if not src.is_dir() or dst.exists():
+            return "rejected", "état source/destination modifié avant déplacement"
+    except (OSError, RuntimeError) as exc:
+        return "rejected", f"chemin source illisible: {exc}"
+    try:
+        return mover(src, dst)
+    except (OSError, ValueError, RuntimeError) as exc:
+        return "rejected", str(exc)
+
+
+def _cmd_skill_curate(args, cfg) -> int:
+    """Curation/décroissance des skills (R4 curation/GC + R8 TTL).
+
+    DRY-RUN par défaut (imprime les décisions, n'écrit rien, ne déplace rien).
+    Auto-load des entrées (Phase 1) : sans ``--coherence``/``--catalog``, lit
+    depuis le run actif (``runs/current`` ou legacy) — aucun piping LLM requis.
+    ``--apply`` exécute les archives (move vers ``_archive/<date>/``, idempotent,
+    jamais delete) et consigne un manifeste ; ``merge``/``reference``/``pin``/
+    ``delete``/``recalibrate`` restent PROPOSITIONS (aucune op fs).
+    ``origin='user'`` jamais touché.
+    """
+
+    from .run_state import resolve_active_run_dir
+    from .safe_git_write import safe_git_move
+    from .util import parse_anchor as _parse_anchor
+
+    engine_dir = Path(__file__).resolve().parent
+    apply = bool(getattr(args, "apply", False))
+    stale_days = int(getattr(args, "stale_days", 90) or 90)
+
+    # --- date + run dir (base de l'auto-load) ---
+    run_time = _parse_anchor(getattr(args, "anchor", None))
+    date = run_time.strftime("%Y-%m-%d")
+    out = resolve_active_run_dir(cfg.output_dir, date)
+
+    # --- Phase 1 : auto-discovery des entrées (override --coherence/--catalog) ---
+    coherence_raw = _read_json_arg(getattr(args, "coherence", None))
+    if coherence_raw is None:
+        coherence_raw = _auto_load(out, cfg.output_dir, date, "weekly-coherence-findings")
+    # Normalization is centralized in curation.py: structured R4 signals and
+    # legacy comma-separated archive findings become individual records once.
+    coherence = normalize_curation_findings(coherence_raw or [])
+
+    catalog = _read_json_arg(getattr(args, "catalog", None))
+    if catalog is None:
+        catalog = _auto_load_catalog(out, cfg, date)
+    catalog = catalog if isinstance(catalog, list) else []
+
+    usage = _read_json_arg(getattr(args, "usage", None))
+    runs_seen = int(getattr(args, "runs_seen", 0) or 0)
+
+    # Carry inter-run: si usage non fourni, on lit le fallback de l'engine.
+    if usage is None:
+        watch_cfg = getattr(cfg, "watch_distill", None)
+        configured_memory = getattr(watch_cfg, "memory_file", None)
+        carry = read_carry(
+            engine_dir,
+            output_dir=cfg.output_dir,
+            memory_file=configured_memory,
+        )
+        runs_seen = max(runs_seen, carry["runs_seen"])
+        usage = [
+            {
+                "skill_id": sid,
+                "origin": u.get("origin"),
+                "ttl_policy": u.get("ttl_policy"),
+                "usage": {
+                    "last_loaded": u.get("last_loaded"),
+                    "load_count": u.get("load_count", 0),
+                },
+            }
+            for sid, u in carry.get("usage", {}).items()
+        ]
+
+    usage = usage if isinstance(usage, list) else []
+    archive_ids = ttl_archive_candidates(usage, runs_seen, stale_days=stale_days)
+    ttl_findings = [
+        {
+            "tag_action": "archive",
+            "target_skill_id": sid,
+            "reason": "TTL stale/zero-load",
+            "_source": "ttl",
+        }
+        for sid in archive_ids
+    ]
+    decisions = decide_actions([*coherence, *ttl_findings], catalog)
+
+    mode = "APPLY" if apply else "DRY-RUN"
+    print(f"=== skill-curate ({mode}) ===", flush=True)
+    print(f"  run_dir: {out}", flush=True)
+    print(
+        f"  coherence={len(coherence)} catalog={len(catalog)} "
+        f"decisions={len(decisions)} ttl-archive={len(archive_ids)}",
+        flush=True,
+    )
+    for d in decisions:
+        print(f"  decision: {d['action']:>10} {d['target_skill_id']} — {d['reason']}", flush=True)
+    print(
+        f"  archive candidates ({len(archive_ids)}): {', '.join(archive_ids) or '<none>'}",
+        flush=True,
+    )
+
+    # --- Phase 2 : dry-run or gated apply execution ---
+    skills_dirs = _skill_dirs_for(cfg)
+    applied = 0
+    proposed = 0
+    skipped = 0
+    skipped_user = 0
+    archive_pending = 0
+    move_status_counts = {
+        "moved": 0,
+        "exists": 0,
+        "missing": 0,
+        "error": 0,
+        "rejected": 0,
+        "ambiguous": 0,
+        "protected": 0,
+        "unverified": 0,
+        "not_attempted": 0,
+    }
+    manifest_decisions: list[dict] = []
+
+    def _record(sid, action, reason, source, status, move_status):
+        manifest_decisions.append(
+            {
+                "skill_id": sid,
+                "target_skill_id": sid,
+                "action": action,
+                "reason": reason,
+                "source": source,
+                "status": status,
+                "move_status": move_status,
+            }
+        )
+
+    # One final decision per skill is guaranteed by decide_actions.  Archive
+    # operations are the only filesystem mutation and only happen in apply mode.
+    for d in decisions:
+        sid = d["target_skill_id"]
+        action = d["action"]
+        reason = d["reason"]
+        source = d.get("source") or "coherence"
+        move_status = "not_attempted"
+        move_status_counts[move_status] += 1
+        if action == "skip":
+            print(f"  SKIP: {sid} — {reason}", flush=True)
+            skipped += 1
+            if "user-origin" in reason:
+                skipped_user += 1
+            _record(sid, action, reason, source, "skipped", move_status)
+            continue
+        if action == "archive":
+            if apply:
+                catalog_entry = select_catalog_entry(catalog, sid)
+                move_status, _ = _archive_skill(
+                    sid,
+                    skills_dirs,
+                    date,
+                    safe_git_move,
+                    catalog_entry=catalog_entry,
+                )
+                move_status_counts["not_attempted"] -= 1
+                move_status_counts.setdefault(move_status, 0)
+                move_status_counts[move_status] += 1
+                status = move_status
+                if move_status in ("moved", "exists"):
+                    applied += 1
+                    print(f"  ARCHIVE: {sid} — {move_status}", flush=True)
+                else:
+                    skipped += 1
+                    if move_status == "protected":
+                        skipped_user += 1
+                    print(f"  SKIP(archive {move_status}): {sid}", flush=True)
+            else:
+                archive_pending += 1
+                status = "not_attempted"
+                print(f"  PROPOSE: {sid} — archive (dry-run, aucune op fs)", flush=True)
+            _record(sid, action, reason, source, status, move_status)
+            continue
+        # merge / reference / pin / delete / recalibrate / fix remain proposals;
+        # no filesystem mutation is performed for them, even with --apply.
+        proposed += 1
+        print(f"  PROPOSE: {sid} — {action} (aucune op fs)", flush=True)
+        _record(sid, action, reason, source, "proposed", move_status)
+
+    manifest = {
+        "schema_version": 1,
+        "rc": 0,
+        "mode": "apply" if apply else "dry-run",
+        "dry_run": not apply,
+        "date": date,
+        "run_dir": str(out),
+        "coherence_count": len(coherence),
+        "catalog_count": len(catalog),
+        "applied": applied,
+        "proposed": proposed,
+        "skipped": skipped,
+        "archive_pending": archive_pending,
+        "decisions": manifest_decisions,
+        "move_status_counts": move_status_counts,
+        # Alias retained for report consumers that call these move counters.
+        "move_counts": dict(move_status_counts),
+        "archive_candidates_ttl": archive_ids,
+        "archive_candidates": archive_ids,
+        "skipped_user": skipped_user,
+        "run_provenance": _run_provenance(cfg.project_root, run_time),
+    }
+    # Missing targets are stale proposals and remain non-fatal; real apply
+    # refusals must reach the orchestrator.
+    curation_rc = (
+        1
+        if apply
+        and any(
+            move_status_counts.get(status, 0) > 0
+            for status in ("error", "rejected", "ambiguous", "unverified")
+        )
+        else 0
+    )
+    manifest["rc"] = curation_rc
+    manifest.update(
+        manifest_metadata(
+            manifest_decisions,
+            generated_at=run_time.isoformat().replace("+00:00", "Z"),
+            anchor=date,
+        )
+    )
+    out_path = out / f"skill-curate-{date}.json"
+    try:
+        from .writer import write_json_atomic
+
+        write_json_atomic(out_path, manifest)
+        print(
+            f"  manifest written: {out_path} "
+            f"(applied={applied} proposed={proposed} skipped={skipped} "
+            f"moves={move_status_counts})",
+            flush=True,
+        )
+    except OSError as exc:
+        print(f"  manifest write FAILED: {exc}", flush=True)
+        return 1
+    return curation_rc
+
+
 def _cmd_doctor(args, cfg) -> int:
     return doctor(cfg, config_loaded=getattr(args, "config", None) is not None)
 
@@ -458,6 +1160,236 @@ def _cmd_self_cost(args, cfg) -> int:
 
 
 # ------------------------------------------------------------------ parser
+
+
+_SUBCOMMANDS = (
+    (
+        "run",
+        "Aggregate OpenCode telemetry into weekly-summary-<date>.json (default)",
+        _cmd_run,
+        (
+            (
+                ("--top-sessions-limit",),
+                {"type": int, "help": "Override top_sessions_limit"},
+            ),
+            (
+                ("--include-subagents",),
+                {
+                    "dest": "include_subagents",
+                    "action": "store_true",
+                    "default": None,
+                },
+            ),
+            (
+                ("--no-subagents",),
+                {"dest": "include_subagents", "action": "store_false"},
+            ),
+            (
+                ("--fail-on-missing-telemetry",),
+                {
+                    "action": "store_true",
+                    "help": "Exit 1 as soon as a session read fails",
+                },
+            ),
+        ),
+    ),
+    (
+        "show-session",
+        "Render a session transcript (Partie 0 §3)",
+        _cmd_show_session,
+        (
+            (("session_id",), {}),
+            (
+                ("--include-children",),
+                {
+                    "action": "store_true",
+                    "help": "Include child sessions (subagents) via parent_id",
+                },
+            ),
+            (
+                ("--extract-dir",),
+                {
+                    "help": "Also write transcript-extract-<session_id>.md into this directory (Partie 3 §6.b)"
+                },
+            ),
+        ),
+    ),
+    (
+        "releases",
+        "Ecosystem watch + core changes (Partie 2)",
+        _cmd_releases,
+        (),
+    ),
+    (
+        "watch-context",
+        "Join weekly-ecosystem with project plugins/skills/commands/agents",
+        _cmd_watch_context,
+        (
+            (
+                ("--ecosystem",),
+                {"help": "Override the anchor-derived weekly-ecosystem-<date>.json input path"},
+            ),
+        ),
+    ),
+    (
+        "watch-distill",
+        "Deterministic ecosystem distill: fuse, screen, score, quota top-N fiches (étape 2.2)",
+        _cmd_watch_distill,
+        (),
+    ),
+    (
+        "watch-validate",
+        "Validate raw watch findings against the local dated watch context",
+        _cmd_watch_validate,
+        (),
+    ),
+    (
+        "insights",
+        "Deltas, alerts, maintenance rules R1-R4 (Partie 6)",
+        _cmd_insights,
+        (
+            (
+                ("--baseline-summary",),
+                {"help": "Previous summary used when no prior run exists (P1.1, v5.28)"},
+            ),
+        ),
+    ),
+    (
+        "report-prep",
+        "Render deterministic report sections (Partie 7a)",
+        _cmd_report_prep,
+        (),
+    ),
+    (
+        "report-assemble",
+        "Inject LLM blocks into the draft (Partie 7c)",
+        _cmd_report_assemble,
+        (),
+    ),
+    (
+        "harness",
+        "Step 5: scoped harness-eval lint → weekly-harness-digest-<date>.json",
+        _cmd_harness,
+        (),
+    ),
+    (
+        "harness-remediate",
+        "Deterministic, gated harness proposal dry-run or remediation",
+        _cmd_harness_remediate,
+        (
+            (
+                ("--proposal",),
+                {
+                    "required": True,
+                    "help": "JSON proposal file under output_dir",
+                },
+            ),
+            (
+                ("--mode",),
+                {
+                    "choices": ("dry-run", "apply"),
+                    "default": "dry-run",
+                    "help": "dry-run is the safe default; apply requires every gate",
+                },
+            ),
+        ),
+    ),
+    (
+        "report-blocks-draft",
+        "Deterministic section-4 blocks draft (v5.28, P5.1)",
+        _cmd_report_blocks_draft,
+        (),
+    ),
+    (
+        "audit-candidates",
+        "Partie 3 §2: deterministic audit-candidate selection from weekly-summary",
+        _cmd_audit_candidates,
+        (),
+    ),
+    (
+        "draft-candidates",
+        "Partie 4 §3: skill/command-candidate findings, capped, severity DESC",
+        _cmd_draft_candidates,
+        (),
+    ),
+    (
+        "commit-draft",
+        "Validate + commit an auto-drafted skill/command/agent (Partie 4 §7)",
+        _cmd_commit_draft,
+        (
+            (
+                ("--file",),
+                {
+                    "required": True,
+                    "help": "Absolute path to the SKILL.md, command or agent .md",
+                },
+            ),
+            (
+                ("--kind",),
+                {
+                    "choices": ("skill", "command", "fix", "agent"),
+                    "required": True,
+                },
+            ),
+        ),
+    ),
+    (
+        "doctor",
+        "Diagnose the installation (Partie 1 §12)",
+        _cmd_doctor,
+        (),
+    ),
+    (
+        "self-cost",
+        "Cost of the pipeline's own run session (Partie 1 §12)",
+        _cmd_self_cost,
+        (),
+    ),
+    (
+        "skill-curate",
+        "Curation/décroissance skills (R4 curation/GC + R8 TTL) — dry-run par défaut",
+        _cmd_skill_curate,
+        (
+            (
+                ("--coherence",),
+                {"help": "JSON: findings de cohérence (tag_action pertinents)"},
+            ),
+            (
+                ("--catalog",),
+                {"help": "JSON: catalogue de skills (skill_id, metadata.origin/ttl_policy)"},
+            ),
+            (
+                ("--usage",),
+                {
+                    "help": "JSON: usage_records pour TTL (fallback inter-run .watch-memory.jsonl si absent)"
+                },
+            ),
+            (
+                ("--runs-seen",),
+                {
+                    "type": int,
+                    "default": 0,
+                    "help": "Nombre de runs consécutifs observés",
+                },
+            ),
+            (
+                ("--stale-days",),
+                {
+                    "type": int,
+                    "default": 90,
+                    "help": "Seuil d'obsolescence last_loaded (jours)",
+                },
+            ),
+            (
+                ("--apply",),
+                {
+                    "action": "store_true",
+                    "help": "Exécute (sinon dry-run, imprime seulement)",
+                },
+            ),
+        ),
+    ),
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -509,159 +1441,13 @@ def build_parser() -> argparse.ArgumentParser:
         baseline_summary=None,
     )
 
-    p_run = sub.add_parser(
-        "run",
-        parents=[global_parent],
-        help="Aggregate OpenCode telemetry into weekly-summary-<date>.json (default)",
-    )
-    p_run.add_argument("--top-sessions-limit", type=int, help="Override top_sessions_limit")
-    p_run.add_argument(
-        "--include-subagents", dest="include_subagents", action="store_true", default=None
-    )
-    p_run.add_argument("--no-subagents", dest="include_subagents", action="store_false")
-    p_run.add_argument(
-        "--fail-on-missing-telemetry",
-        action="store_true",
-        help="Exit 1 as soon as a session read fails",
-    )
-    p_run.set_defaults(func=_cmd_run)
-
-    p_show = sub.add_parser(
-        "show-session", parents=[global_parent], help="Render a session transcript (Partie 0 §3)"
-    )
-    p_show.add_argument("session_id")
-    p_show.add_argument(
-        "--include-children",
-        action="store_true",
-        help="Include child sessions (subagents) via parent_id",
-    )
-    p_show.add_argument(
-        "--extract-dir",
-        help="Also write transcript-extract-<session_id>.md into this directory (Partie 3 §6.b)",
-    )
-    p_show.set_defaults(func=_cmd_show_session)
-
-    p_rel = sub.add_parser(
-        "releases", parents=[global_parent], help="Ecosystem watch + core changes (Partie 2)"
-    )
-    p_rel.set_defaults(func=_cmd_releases)
-
-    p_watch = sub.add_parser(
-        "watch-context",
-        parents=[global_parent],
-        help="Join weekly-ecosystem with project plugins/skills/commands/agents",
-    )
-    p_watch.add_argument(
-        "--ecosystem",
-        help="Override the anchor-derived weekly-ecosystem-<date>.json input path",
-    )
-    p_watch.set_defaults(func=_cmd_watch_context)
-
-    p_watch_distill = sub.add_parser(
-        "watch-distill",
-        parents=[global_parent],
-        help="Deterministic ecosystem distill: fuse, screen, score, quota top-N fiches (étape 2.2)",
-    )
-    p_watch_distill.set_defaults(func=_cmd_watch_distill)
-
-    p_watch_validate = sub.add_parser(
-        "watch-validate",
-        parents=[global_parent],
-        help="Validate raw watch findings against the local dated watch context",
-    )
-    p_watch_validate.set_defaults(func=_cmd_watch_validate)
-
-    p_ins = sub.add_parser(
-        "insights",
-        parents=[global_parent],
-        help="Deltas, alerts, maintenance rules R1-R4 (Partie 6)",
-    )
-    p_ins.add_argument(
-        "--baseline-summary",
-        help="Previous summary used when no prior run exists (P1.1, v5.28)",
-    )
-    p_ins.set_defaults(func=_cmd_insights)
-
-    p_prep = sub.add_parser(
-        "report-prep",
-        parents=[global_parent],
-        help="Render deterministic report sections (Partie 7a)",
-    )
-    p_prep.set_defaults(func=_cmd_report_prep)
-
-    p_asm = sub.add_parser(
-        "report-assemble",
-        parents=[global_parent],
-        help="Inject LLM blocks into the draft (Partie 7c)",
-    )
-    p_asm.set_defaults(func=_cmd_report_assemble)
-
-    p_harness = sub.add_parser(
-        "harness",
-        parents=[global_parent],
-        help="Step 5: scoped harness-eval lint → weekly-harness-digest-<date>.json",
-    )
-    p_harness.set_defaults(func=_cmd_harness)
-
-    p_harness_remediate = sub.add_parser(
-        "harness-remediate",
-        parents=[global_parent],
-        help="Deterministic, gated harness proposal dry-run or remediation",
-    )
-    p_harness_remediate.add_argument(
-        "--proposal", required=True, help="JSON proposal file under output_dir"
-    )
-    p_harness_remediate.add_argument(
-        "--mode",
-        choices=("dry-run", "apply"),
-        default="dry-run",
-        help="dry-run is the safe default; apply requires every gate",
-    )
-    p_harness_remediate.set_defaults(func=_cmd_harness_remediate)
-
-    p_blocks = sub.add_parser(
-        "report-blocks-draft",
-        parents=[global_parent],
-        help="Deterministic section-4 blocks draft (v5.28, P5.1)",
-    )
-    p_blocks.set_defaults(func=_cmd_report_blocks_draft)
-
-    p_ac = sub.add_parser(
-        "audit-candidates",
-        parents=[global_parent],
-        help="Partie 3 §2: deterministic audit-candidate selection from weekly-summary",
-    )
-    p_ac.set_defaults(func=_cmd_audit_candidates)
-
-    p_dc = sub.add_parser(
-        "draft-candidates",
-        parents=[global_parent],
-        help="Partie 4 §3: skill/command-candidate findings, capped, severity DESC",
-    )
-    p_dc.set_defaults(func=_cmd_draft_candidates)
-
-    p_cd = sub.add_parser(
-        "commit-draft",
-        parents=[global_parent],
-        help="Validate + commit an auto-drafted skill/command/agent (Partie 4 §7)",
-    )
-    p_cd.add_argument(
-        "--file", required=True, help="Absolute path to the SKILL.md, command or agent .md"
-    )
-    p_cd.add_argument("--kind", choices=("skill", "command", "fix", "agent"), required=True)
-    p_cd.set_defaults(func=_cmd_commit_draft)
-
-    p_doctor = sub.add_parser(
-        "doctor", parents=[global_parent], help="Diagnose the installation (Partie 1 §12)"
-    )
-    p_doctor.set_defaults(func=_cmd_doctor)
-
-    p_self = sub.add_parser(
-        "self-cost",
-        parents=[global_parent],
-        help="Cost of the pipeline's own run session (Partie 1 §12)",
-    )
-    p_self.set_defaults(func=_cmd_self_cost)
+    for name, help_text, func, arguments in _SUBCOMMANDS:
+        # Résolution tardive : les tests remplacent les handlers après import.
+        handler = globals()[func.__name__]
+        command_parser = sub.add_parser(name, parents=[global_parent], help=help_text)
+        for flags, options in arguments:
+            command_parser.add_argument(*flags, **options)
+        command_parser.set_defaults(func=handler)
 
     return parser
 

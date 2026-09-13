@@ -1,6 +1,5 @@
 ---
 description: Analyse le dernier digest harness-eval et traite ses propositions via la gate déterministe.
-agent: harness-remediator
 ---
 
 Charge le skill `harness-remediation` (source des règles et schémas), traite le digest

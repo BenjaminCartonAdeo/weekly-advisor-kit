@@ -23,6 +23,7 @@ from warnings import warn as _warn_user
 
 from .aggregator import _cap_warnings, aggregate, dedup_resumed_usages
 from .config import TelemetryConfig, apply_lookback_override
+from .curation import build_catalog_from_skills
 from .draft_targets import DRAFT_HARNESS_TARGETS, describe_draft_target, resolve_draft_targets
 from .harness_scope import (
     copy_scope_to_projection,
@@ -60,6 +61,63 @@ from .writer import write_json_atomic, write_summary
 EXIT_OK = 0
 EXIT_PARTIAL = 1
 EXIT_TOTAL_FAILURE = 2
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class RunProvenance:
+    """Stable identity attached to every run artefact.
+
+    ``start_time`` is the canonical wall-clock field.  ``run_started_at`` is
+    retained as a compatibility alias for consumers of the previous payload.
+    """
+
+    repository_path: str | None
+    branch: str | None
+    commit_sha: str | None
+    working_tree_dirty: bool | None
+    start_time: str
+    pipeline_version: str
+
+    def as_dict(self) -> dict[str, object]:
+        payload = dataclasses.asdict(self)
+        payload["run_started_at"] = self.start_time
+        return payload
+
+
+def _run_provenance(
+    project_root: Path | None, run_started_at: datetime | None = None
+) -> dict[str, object]:
+    """Collect stable run identity without making git a pipeline dependency."""
+    root = Path(project_root) if project_root else None
+    provenance = RunProvenance(
+        repository_path=str(root.resolve()) if root else None,
+        branch=None,
+        commit_sha=None,
+        working_tree_dirty=None,
+        start_time=(run_started_at or datetime.now().astimezone()).isoformat(),
+        pipeline_version=__import__("weekly_telemetry_aggregator").__version__,
+    )
+    result = provenance.as_dict()
+    if root is None or not (root / ".git").exists():
+        return result
+    try:
+
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", "-C", str(root), *args],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
+            ).stdout.strip()
+
+        result["branch"] = git("branch", "--show-current") or None
+        result["commit_sha"] = git("rev-parse", "HEAD") or None
+        result["working_tree_dirty"] = bool(git("status", "--porcelain"))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return result
+
 
 #: Sessions updated within this many minutes of run_time are still active (v5.18: < 10 min).
 ACTIVE_CUTOFF_MINUTES = 10
@@ -155,7 +213,7 @@ def _audit_record(meta, status: str) -> dict:
     title = " ".join((meta.title or "").split()).replace("|", "¦")
     if len(title) > 60:
         title = title[:60] + "..."
-    return {
+    record = {
         "session_id": meta.session_id,
         "title": title or None,
         "agent": meta.agent,
@@ -164,6 +222,13 @@ def _audit_record(meta, status: str) -> dict:
         "updated": str(meta.time_updated or ""),
         "status": status,
     }
+    # Providers may attach worker outcome metadata to session descriptors. Keep
+    # it in the audit trace; downstream artifacts must expose partial results.
+    for key in ("rc", "truncated", "worker_status"):
+        value = getattr(meta, key, None)
+        if value is not None:
+            record[key] = value
+    return record
 
 
 def build_usage(
@@ -209,6 +274,9 @@ def build_usage(
     try:
         steps = adapter.session_steps(meta.session_id, start_ms, end_ms)
         tool_calls, tool_arg_chars, skills = adapter.session_tools(
+            meta.session_id, start_ms, end_ms
+        )
+        tool_arg_fps, tool_result_fps = adapter.session_tool_fingerprints(
             meta.session_id, start_ms, end_ms
         )
         turns = adapter.session_user_turns(meta.session_id, start_ms, end_ms)
@@ -304,6 +372,8 @@ def build_usage(
             steps=steps,
             tool_calls=tool_calls,
             tool_arg_chars=tool_arg_chars,
+            tool_arg_fingerprints=tool_arg_fps,
+            tool_result_fingerprints=tool_result_fps,
             skills_loaded=skills,
             user_turns=turns,
             context_chars=context_chars,
@@ -413,6 +483,18 @@ def _build_selection(
         "excluded_unflushed": counts.get("unflushed", 0),
         "excluded_error": counts.get("error", 0),
         "resumed_duplicates": counts.get("resumed-duplicate", 0),
+        # Keep the complete worker/session disposition index separate from the
+        # bounded ``recent`` view; report consumers must not lose rc/truncation
+        # state when the display limit is small.
+        "worker_statuses": [
+            {
+                key: rec[key]
+                for key in ("session_id", "status", "rc", "truncated", "worker_status")
+                if key in rec
+            }
+            for rec in audit
+            if any(key in rec for key in ("rc", "truncated", "worker_status"))
+        ],
         "recent": recent,
     }
 
@@ -601,6 +683,7 @@ def run(
         include_subagents=cfg.include_subagents,
         skill_catalog=catalog_names,
         skill_catalog_entries=catalog_entries,
+        skill_catalog_snapshot=build_catalog_from_skills(cfg.project_root),
         warnings=warnings,
         known_parent_ids=all_ids,
         session_outlier_z=cfg.session_outlier_z,
@@ -661,6 +744,17 @@ def run(
     out_path = _abs(active.run_dir / f"weekly-summary-{date}.json")
     print("telemetry-aggregator: écriture du summary…", flush=True)
     write_summary(out_path, summary)
+    # Additive metadata keeps the established summary schema intact while making
+    # report/manifest provenance available to downstream steps.
+    summary_data = load_json(out_path) or {}
+    provenance = _run_provenance(cfg.project_root, run_time)
+    # Normalize legacy/provider payloads to canonical ``start_time`` while
+    # retaining the historical alias for downstream readers.
+    if "start_time" not in provenance and "run_started_at" in provenance:
+        provenance["start_time"] = provenance["run_started_at"]
+    provenance.setdefault("run_started_at", provenance.get("start_time"))
+    summary_data["run_provenance"] = provenance
+    write_json_atomic(out_path, summary_data)
 
     print(
         f"telemetry-aggregator: sessions={summary.totals.session_count} "

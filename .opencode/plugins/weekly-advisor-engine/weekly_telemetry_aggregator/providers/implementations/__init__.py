@@ -2,5 +2,5 @@
 
 Chaque module expose `PROVIDER_TYPE: str` et
 `build_provider(source_cfg, cfg) -> SessionProvider | None`
-(découverts automatiquement par `providers.registry`).
+(câblés explicitement dans `providers.registry`).
 """

@@ -132,14 +132,42 @@
 
 ## 5. Santé de l'environnement (harness + cohérence)
 
-{% if coherence_findings and coherence_findings.findings %}
+{% if coherence_items %}
 ### Cohérence de l'environnement (passe critique — agents/skills/commands)
 
-{% for f in coherence_findings.findings %}
+{% for f in coherence_items %}
 - **{{ f.tag|default(f.category) }}** {{ f.description }}{% if f.evidence_summary %} (preuve : {{ f.evidence_summary[:110] }}){% endif %} → {{ f.recommendation }}
 {% endfor %}
 
 {% endif %}
+{% if skill_curate %}
+{% set curation_detail_local = curation_detail if curation_detail is defined and curation_detail else skill_curate %}
+{% set curation_mode = curation_detail_local.mode|default(skill_curate.mode|default("apply"), true) %}
+{% set curation_dry_run = curation_detail_local.dry_run|default(skill_curate.dry_run|default(curation_mode == "dry-run"), true) %}
+#### Curation (WAVE 2.5 — {% if curation_dry_run %}dry-run — propositions{% else %}apply — appliquées{% endif %})
+
+- Déplacées (archives réellement déplacées vers `_archive/<date>/`, jamais supprimées) : **{{ skill_curate.applied }}**
+- Proposées (aucune opération fs{% if curation_dry_run %}, dry-run{% endif %}) : **{{ skill_curate.proposed }}**
+- Ignorées (origin=user ou introuvables) : **{{ skill_curate.skipped }}**
+
+Actions: {% if curation_detail_local.by_action is defined and curation_detail_local.by_action %}{% for action, count in curation_detail_local.by_action.items() %}`{{ action }}`={{ count }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}voir décisions ci-dessous{% endif %}
+
+{% for d in curation_detail_local.decisions|default([]) if d.status|default("") != "skipped" %}
+- `{{ d.action }}` `{{ d.skill_id }}` ({{ d.source }}) — {{ d.reason }}{% if d.status %} [{{ d.status }}]{% endif %}
+{% endfor %}
+{% for d in curation_detail_local.skipped_details|default([]) %}
+- `skip` `{{ d.skill_id }}` ({{ d.source|default("curation") }}) — {{ d.reason }} [{{ d.status|default("skipped") }}]
+{% endfor %}
+{% elif coherence_curation_signal %}
+#### ⚠ Curation (WAVE 2.5 — REQUIRED, non exécutée)
+
+Aucun manifeste `skill-curate-{{ date }}.json` trouvé bien que les findings de cohérence contiennent des actions de curation (**P0**). Exécuter `weekly_skill_curate --apply` puis regénérer le rapport.
+{% else %}
+#### Curation (WAVE 2.5)
+
+Rien à curate (aucun signal de curation dans les findings de cohérence).
+{% endif %}
+
 {% if digest %}
 - Inspection : {{ digest.inspection.summary.errors if digest.inspection.summary is defined else "n/a" }} erreurs, {{ digest.inspection.summary.warnings if digest.inspection.summary is defined else "n/a" }} warnings
 {% if harness_counts %}
@@ -253,11 +281,20 @@ Constats de maintenance (R1-R4) :
   - _(+{{ auto_commits|length - 10 }} autres sur la fenêtre — liste tronquée)_
 {% endif %}
 - **{{ pending_auto_commits }}** commits auto-rédigés en attente de revue (du plus vieux que {{ date }})
+{% if head_commit %}
+- HEAD au run : `{{ head_commit.hash }}` {{ head_commit.date }} {{ head_commit.subject }}
+{% endif %}
+{% if dirty_files %}
+- Fichiers dirty au run ({{ dirty_files|length }}) :{% for f in dirty_files[:30] %} `{{ f }}`{% if not loop.last %},{% endif %}{% endfor %}{% if dirty_files|length > 30 %} _(+{{ dirty_files|length - 30 }} autres)_ {% endif %}
+{% endif %}
 {% if summary.skills_targets %}
 - **Skills auto-rédigés et cibles** :{% for name, agents in summary.skills_targets.items() %} `{{ name }}` → {{ agents|join(", ") }}{% if not loop.last %} ;{% endif %}{{ "\n" }}{% endfor %}
 {% endif %}
 {% if audit_candidates and audit_candidates.unaudited %}
 - **Candidates d'audit non traitées** (plafond {{ audit_candidates.limit }}) : {{ audit_candidates.unaudited|map(attribute='session_id')|join(", ") }}
+{% endif %}
+{% if audit_worker_statuses %}
+- **Statuts workers** : {% for worker in audit_worker_statuses %}{{ worker.session_id }}={{ worker.worker_status or worker.status }}{% if worker.rc is defined and worker.rc != 0 %} (rc={{ worker.rc }}){% endif %}{% if worker.truncated %} (tronqué){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
 {% endif %}
 {% if warnings_grouped %}
 - Warnings pipeline ({{ summary.warnings|length }}) :

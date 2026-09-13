@@ -143,7 +143,7 @@ def render_session(
     la borne (comportement historique, non borné).
     """
     sources: list[SessionProvider] = (
-        list(providers) if isinstance(providers, (list, tuple)) else [providers]
+        list(providers) if isinstance(providers, list | tuple) else [providers]
     )
     provider = _select_provider(sources, session_id)
     canonical = _canonical_id(provider, session_id)

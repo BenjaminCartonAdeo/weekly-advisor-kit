@@ -119,10 +119,12 @@ def test_summary_to_dict_schema_v2_fields():
         title="Sujet",
         agent="docs",
         tools={"read": 1},
-        skills={"graphify": 1},
+        skills={"demo-skill": 1},
         user_turns=["/optimize x", "salut"],
     )
-    summary = aggregate([usage], period=period, generated_at=period.end, skill_catalog=["graphify"])
+    summary = aggregate(
+        [usage], period=period, generated_at=period.end, skill_catalog=["demo-skill"]
+    )
     data = summary_to_dict(summary)
 
     assert data["schema_version"] == 2
@@ -211,3 +213,25 @@ def test_summary_cost_estimates_round_trip():
 
     empty = aggregate([u], period=period, generated_at=period.end)  # cost_estimates=None
     assert "cost_estimates" not in summary_to_dict(empty)  # clé absente si None
+
+
+def test_summary_serializes_skill_catalog_snapshot():
+    from helpers import make_step, make_usage, tzutc
+
+    from weekly_telemetry_aggregator.aggregator import aggregate
+    from weekly_telemetry_aggregator.models import Period
+    from weekly_telemetry_aggregator.writer import summary_to_dict
+
+    period = Period(start=tzutc(2026, 8, 5), end=tzutc(2026, 8, 12))
+    u = make_usage("r", [make_step("r", tzutc(2026, 8, 6), cost=0.1)])
+    snapshot = [
+        {
+            "skill_id": "jira-to-code-audit",
+            "metadata": {"origin": "weekly-drafting", "ttl_policy": None, "usage": None},
+        }
+    ]
+    summary = aggregate(
+        [u], period=period, generated_at=period.end, skill_catalog_snapshot=snapshot
+    )
+    data = summary_to_dict(summary)
+    assert data["skill_catalog_entries"] == snapshot

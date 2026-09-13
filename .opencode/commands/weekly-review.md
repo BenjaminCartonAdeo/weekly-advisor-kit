@@ -6,52 +6,21 @@ agent: weekly-advisor
 
 # Revue hebdomadaire
 
-Lance la revue hebdomadaire complète de l'usage OpenCode, dans l'ordre figé de la
-spec `opencode-weekly-advisor` v6.1 : orchestration par waves parallèles de subagents,
-télémétrie, veille, audit qualitatif, veille critique, drafting, lint harness, insights,
-cohérence, rapport final.
-
-La procédure de référence (tableau des étapes : tools, sorties, détails, architecture DAG) est
-l'agent `weekly-advisor` (`.opencode/agents/weekly-advisor/weekly-advisor.md`).
-L'ancre est gérée par le plugin via `<output_dir>/anchor-last.txt` — aucun calcul manuel.
+Procédure canonique : agent `weekly-advisor` (`.opencode/agents/weekly-advisor/weekly-advisor.md`) — DAG, waves, contrats JOIN/RC, F6, fail-soft. Ce fichier est un wrapper thin, il ne duplique pas ces sections.
 
 ## Déroulement
 
-Orchestration par waves (design doc §2). La session principale agit comme coordinateur léger :
-gate (étape 0), dispatch WAVE 1 en parallèle (3 subagents de l'agent `weekly-advisor-worker`), JOIN (synthèse), WAVE 2 optionnelle, TAIL.
-Ordre figé des étapes (tokens d'outils) : `weekly_doctor`, `weekly_run`, `weekly_releases`, `weekly_watch_distill`,
+Ordre figé des tools (miroir du tableau de l'agent — contrat surface 6, ne pas réordonner) : `weekly_doctor`, `weekly_run`, `weekly_releases`, `weekly_watch_distill`,
 `weekly_watch_context`, `weekly_watch_validate`, `weekly_audit_candidates`, `weekly_show_session`, `weekly_harness`,
-`weekly_harness_remediate`, `weekly_draft_candidates`, `weekly_commit_draft`, `weekly_insights`,
+`weekly_harness_remediate`, `weekly_draft_candidates`, `weekly_commit_draft`, `weekly_insights`, `weekly_skill_curate`,
 `weekly_report_prep`, `weekly_report_blocks_draft`, `weekly_report_assemble`, `weekly_self_cost`.
 
-## Règles
+## Règles (rappel, détails dans l'agent)
 
-- Exit 2 (fatal) à une étape → stopper sans rapport ; un échec de tool n'arrête pas
-  le run (constater, signaler au rapport, continuer — exit 1 partiel)
-- Ne jamais réécrire les JSON produits par le CLI ; ne jamais modifier la config
-  moteur (`weekly-telemetry-config.json`) — overrides en paramètres des tools
-- Ne pas auditer au-delà de `audit_max_sessions` ; ne pas écrire plus de
-  `max_candidates_per_run` drafts
-- Terminer par : le chemin du rapport final (**rapport HTML**
-  `<project_root>/reports/html/weekly-report-latest.html` en premier, puis l'archive
-  `runs/current/weekly-report-<date>.md`) et les alertes les plus sévères
-- Garde-fous de coût : max 3 tours pour diagnostiquer un échec tool ; plugin stale
-  (ReferenceError) → constater, signaler, proposer le restart, **stopper le
-  diagnostic** ; choix ambigu (ex. fenêtre multi-semaines) → poser UNE seule
-  question, ne pas explorer le code du plugin
+- Coordinateur seul autorisé `task` ; plafonds : 3 workers T/V/H, puis K ≤ `audit_max_sessions` workers A, puis 3 workers D/I/C ; 10 min/worker, 1 passage/étape, ≤3 tours diagnostic.
+- F6 dispatch + contrats envelopes + RC JOIN : voir agent (single-source). Échec tool → warning + continuer, sauf rc=2 fatal → STOP sans rapport.
+- Fenêtre via override `lookback_days` (`N semaines` → N×7, `mois/30j` → 30, défaut config 7j) ; ancre glissante, rejou historique = `anchor` explicite. Config JSON jamais réécrite.
 
-## Fenêtre du run
+## Sortie
 
-La fenêtre se déduit du prompt et se passe en **override de run** (paramètre
-`lookback_days` sur `weekly_run` et `weekly_releases`) — la config JSON n'est
-jamais réécrite. **Ancre glissante (v6.0.n)** : sans override `anchor`, l'ancre
-est rafraîchie chaque jour (conservée dans la même journée pour la stabilité
-intra-run) — la fenêtre couvre donc toujours `[aujourd'hui - lookback, maintenant]`.
-Rejouer une fenêtre historique = passer `anchor` explicitement (ex. la date du
-run à rejouer).
-
-| Prompt utilisateur | `lookback_days` à passer |
-|---|---|
-| « N semaines » (1, 2, 3…) | `N × 7` (ex. « 3 semaines » → `21`) |
-| « le mois dernier » / « 30 jours » | `30` |
-| Autre ou absent | **défaut** : ne rien passer (config `lookback_days` s'applique, 7 j) — poser une question si ambigu |
+Terminer par le rapport HTML (`<project_root>/reports/html/weekly-report-latest.html`, puis archive `runs/current/weekly-report-<date>.md`), les alertes les plus sévères, et la dernière ligne `WEEKLY_REVIEW_RC=<rc_final>` (== `summary.exit` == `END ... exit=`).
