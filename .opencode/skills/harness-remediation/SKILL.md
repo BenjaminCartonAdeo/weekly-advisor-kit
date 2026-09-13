@@ -146,7 +146,7 @@ occurrence et une limite de taille.
 
 ## Traitement des findings actuels
 
-Les identifiants suivants restent **bloquants pour l'apply**. Ils peuvent seulement être
+Les identifiants suivants restent en warn-only pour l'apply avec `rc: 1` et un WARNING, le rapport est toujours écrit avec une section `<details id="security">` repliée, et l'exit 2 reste réservé aux cas non-sécu. Ils peuvent seulement être
 rapportés en `manual`/`propose` avec preuve du digest ; jamais auto-corrigés, ignorés ou
 transformés en autorisation :
 
@@ -161,4 +161,4 @@ security/no-credential-access
 ```
 
 Si aucune règle n'est autorisée dans `harness_auto_fix_rules`, toutes les propositions
-restent bloquées ou proposées ; c'est le comportement sûr par défaut.
+restent en warn-only (`manual`/`propose` avec `rc: 1` et un WARNING, rapport toujours écrit avec une section `<details id="security">` repliée, exit 2 réservé aux cas non-sécu) ; c'est le comportement sûr par défaut.
