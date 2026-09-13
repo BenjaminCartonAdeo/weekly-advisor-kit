@@ -1519,6 +1519,77 @@ def _blocking_security_findings(digest: object) -> list[dict]:
     ]
 
 
+_SECURITY_RULE_PARAPHRASE = {
+    "mcp-tool-poisoning": "Contenu outil non fiable — revue humaine avant usage.",
+    "unbounded-delegation": "Délégation trop large — restreindre le périmètre.",
+    "memory-write-unscoped": "Écriture mémoire hors périmètre — revue requise.",
+}
+
+
+def _security_rule_paraphrase(rule: object) -> str:
+    """Paraphrase générique d'une règle (jamais de verbatim de finding)."""
+    short = str(rule or "").strip().lower().removeprefix("security/")
+    return _SECURITY_RULE_PARAPHRASE.get(short, "Signal de sécurité — revue humaine requise.")
+
+
+def _render_security_section(security: dict | None) -> str:
+    """Section Sécurité repliée (MD) — counts/rules only, warn-only.
+
+    Entrées Task1 uniquement : ``security.{status,critical_count,
+    blocking_count,blocking_rules}`` (gates JSON). N'accepte jamais de
+    findings bruts : aucune procédure de finding n'est recopiée, chaque
+    règle est résumée en termes génériques (≤200 caractères, top-5 max).
+    Retourne un bloc ``<details id="security">`` replié par défaut.
+    """
+    # <!-- ponytail: counts-only — aucun finding brut, paraphrases génériques -->
+    status = "pass"
+    critical_count = 0
+    blocking_count = 0
+    blocking_rules: list[str] = []
+    if isinstance(security, dict):
+        raw_status = str(security.get("status") or "pass").strip().lower()
+        status = raw_status if raw_status in {"pass", "warn", "fail"} else "pass"
+        try:
+            critical_count = max(0, int(security.get("critical_count") or 0))
+        except (TypeError, ValueError):
+            critical_count = 0
+        try:
+            blocking_count = max(0, int(security.get("blocking_count") or 0))
+        except (TypeError, ValueError):
+            blocking_count = 0
+        raw_rules = security.get("blocking_rules") or []
+        if isinstance(raw_rules, list):
+            seen: set[str] = set()
+            ordered: list[str] = []
+            for r in raw_rules:
+                name = str(r or "").strip()
+                if not name or name in seen:
+                    continue
+                seen.add(name)
+                ordered.append(name if "/" in name else f"security/{name}")
+            blocking_rules = ordered[:5]
+    lines = [
+        '<details id="security">',
+        f"<summary>Sécurité — {status} · {critical_count} critical · {blocking_count} blocking</summary>",
+        "",
+    ]
+    if status == "pass" and critical_count == 0 and blocking_count == 0:
+        lines.append("Aucun finding security/critical ce run.")
+    else:
+        lines.append(f"- Statut : **{status}** (warn-only, rapport écrit).")
+        lines.append(
+            f"- Findings critical : **{critical_count}** · blocking : **{blocking_count}**."
+        )
+        if blocking_rules:
+            lines.append("- Règles bloquantes (top 5, intitulés seuls) :")
+            for rule in blocking_rules:
+                row = f"  - `{rule}` — {_security_rule_paraphrase(rule)}"
+                lines.append(row[:200])
+        lines.append("- Revue humaine requise — détails non affichés.")
+    lines.append("</details>")
+    return "\n".join(lines) + "\n"
+
+
 def _gate_status(provenance: dict[str, dict[str, object]]) -> dict[str, object]:
     """Machine-readable artifact gate; missing optional inputs remain explicit."""
     artifacts = list(provenance.values())
@@ -2213,6 +2284,8 @@ def report_assemble(
         warnings.append("bloc de constats absent — section 4 remplacée par un placeholder")
 
     final_text = text.replace(marker, replacement) + f"\n---\n*Statut section 4 : {status}*\n"
+    # Task2 : section Sécurité repliée (counts-only Task1, jamais de findings bruts).
+    final_text += "\n\n" + _render_security_section(security_gate)
     final_path = out / f"weekly-report-{date}.md"
     final_path.write_text(final_text, encoding="utf-8")
     if replacement is not None:

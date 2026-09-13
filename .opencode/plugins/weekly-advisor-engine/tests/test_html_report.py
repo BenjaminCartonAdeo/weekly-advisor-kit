@@ -606,3 +606,140 @@ def test_html_report_passthrough_best_effort_snapshot(tmp_path: Path):
     ).read_text(encoding="utf-8")
     assert "top_next_steps = ctx.get" in src
     assert "if top_next_steps is None" in src
+
+
+# ------------------------------------------------------------------ Task2 : section sécurité repliée (MD + HTML, counts-only)
+
+
+def _sec_gate_full() -> dict:
+    return {
+        "status": "warn",
+        "critical_count": 3,
+        "blocking_count": 7,
+        "blocking_rules": [
+            "security/mcp-tool-poisoning",
+            "security/unbounded-delegation",
+            "security/memory-write-unscoped",
+            "security/extra-a",
+            "security/extra-b",
+            "security/extra-c",
+            "security/extra-d",
+        ],
+    }
+
+
+def _sec_gate_ras() -> dict:
+    return {"status": "pass", "critical_count": 0, "blocking_count": 0, "blocking_rules": []}
+
+
+def _assert_security_collapsed(fragment: str, *, expect_rules: bool) -> None:
+    assert 'id="security"' in fragment
+    assert '<details id="security" open' not in fragment
+    assert '<details id="security"' in fragment
+    # replié par défaut : aucune variante open sur ce details
+    head = fragment.split('id="security"')[0].split("<details")[-1]
+    assert "open" not in head
+    if expect_rules:
+        assert "security/mcp-tool-poisoning" in fragment
+    # top-5 max : les 2 règles excédentaires ne doivent pas apparaître
+    assert "security/extra-c" not in fragment
+    assert "security/extra-d" not in fragment
+
+
+def test_security_section_ras_and_full(tmp_path: Path):
+    from weekly_telemetry_aggregator import html_report as hr
+    from weekly_telemetry_aggregator import report as rp
+
+    assert hasattr(rp, "_render_security_section"), "report._render_security_section absent"
+    assert hasattr(hr, "_render_security_section"), "html_report._render_security_section absent"
+
+    # --- RAS : pass, zéro finding ---
+    md_ras = rp._render_security_section(_sec_gate_ras())
+    html_ras = str(hr._render_security_section(_sec_gate_ras()))
+    assert "Aucun" in md_ras or "aucun" in md_ras.lower()
+    _assert_security_collapsed(md_ras, expect_rules=False)
+    _assert_security_collapsed(html_ras, expect_rules=False)
+
+    # --- FULL : warn, counts + rules only (jamais de verbatim de finding) ---
+    gate = _sec_gate_full()
+    md_full = rp._render_security_section(gate)
+    html_full = str(hr._render_security_section(gate))
+    for fragment in (md_full, html_full):
+        _assert_security_collapsed(fragment, expect_rules=True)
+        assert "3" in fragment and "7" in fragment
+        # paraphrases génériques ≤200 caractères par ligne de règle, pas de procédure
+        for line in fragment.splitlines():
+            if "security/" in line:
+                assert len(line) <= 200, f"paraphrase trop longue ({len(line)}): {line[:80]}"
+        lowered = fragment.lower()
+        assert "contournement" not in lowered
+        assert "bypass" not in lowered
+        # le message brut du finding ne doit jamais être recopié
+        assert "procédure secrète du finding" not in fragment
+
+    # --- Intégration HTML : render_html_report embarque la section repliée ---
+    ctx = _ctx()
+    ctx["gate_status"] = {"security": gate}
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx, quality_block=None)
+    assert dated is not None
+    html = dated.read_text(encoding="utf-8")
+    body = PAYLOAD_RE.sub("", html)
+    _assert_security_collapsed(body, expect_rules=True)
+    assert body.count('id="security"') == 1
+
+    # --- Intégration MD : report_assemble ajoute la section repliée ---
+    import json as _json
+
+    from weekly_telemetry_aggregator.config import TelemetryConfig as _Cfg
+    from weekly_telemetry_aggregator.report import report_assemble as _assemble
+    from weekly_telemetry_aggregator.report import report_prep as _prep
+    from weekly_telemetry_aggregator.run_state import resolve_active_run_dir as _resolve
+
+    cfg2 = _Cfg()
+    cfg2.project_root = tmp_path
+    cfg2.output_dir = tmp_path
+    cfg2.html_report_dir = ""
+    cfg2.opencode_db_path = "/nonexistent/opencode.db"
+    cfg2.project_root = tmp_path
+    cfg2.open_browser = False
+    run_iso = tzutc(2026, 8, 12).isoformat()
+    from helpers import make_step as _mk_step
+    from helpers import make_usage as _mk_usage
+
+    from weekly_telemetry_aggregator.aggregator import aggregate as _agg
+    from weekly_telemetry_aggregator.models import Period as _Period
+    from weekly_telemetry_aggregator.writer import summary_to_dict as _to_dict
+
+    _period = _Period(start=tzutc(2026, 8, 5), end=tzutc(2026, 8, 12))
+    _u = _mk_usage("r", [_mk_step("r", tzutc(2026, 8, 6, 10), cost=0.5)], title="S")
+    _data = _to_dict(_agg([_u], period=_period, generated_at=tzutc(2026, 8, 12)))
+    out = _resolve(tmp_path, DATE)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / f"weekly-summary-{DATE}.json").write_text(
+        _json.dumps(_data, ensure_ascii=False), encoding="utf-8"
+    )
+    _prep(cfg2, anchor=run_iso)
+    (out / f"weekly-harness-digest-{DATE}.json").write_text(
+        _json.dumps(
+            {
+                "findings": [],
+                "inspection": {
+                    "uncategorized": [
+                        {
+                            "path": ".opencode/a.md",
+                            "findings": [
+                                {"rule": "security/mcp-tool-poisoning", "severity": "warning"}
+                            ],
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, _warnings, rc = _assemble(cfg2, anchor=run_iso)
+    assert rc == 1
+    assert final_path is not None
+    md_text = final_path.read_text(encoding="utf-8")
+    _assert_security_collapsed(md_text, expect_rules=True)
+    assert md_text.count('id="security"') == 1
