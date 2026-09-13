@@ -553,6 +553,79 @@ def test_watch_validate_coerces_unknown_target_to_install_new(tmp_path: Path):
     assert data["validation"]["counts"]["downgraded"] == 1
 
 
+# ============================================================ warn-only sécu (epic-warn-only, cell-3)
+
+
+def _seed_report_assemble_cli(tmp_path: Path) -> Path:
+    """Summary + draft datés pour exercer `report-assemble` via le CLI."""
+    from helpers import make_step, make_usage
+
+    from weekly_telemetry_aggregator.aggregator import aggregate
+    from weekly_telemetry_aggregator.models import Period
+    from weekly_telemetry_aggregator.writer import summary_to_dict
+
+    period = Period(start=tzutc(2026, 8, 5), end=RUN_TIME)
+    usage = make_usage("r", [make_step("r", tzutc(2026, 8, 6, 10), cost=0.5)], title="S")
+    data = summary_to_dict(aggregate([usage], period=period, generated_at=RUN_TIME))
+    (tmp_path / "weekly-summary-2026-08-12.json").write_text(
+        json.dumps(data, ensure_ascii=False), encoding="utf-8"
+    )
+    conf = _write_config(tmp_path, tmp_path / "opencode.db")
+    assert main(["report-prep", "--config", str(conf), "--anchor", RUN_TIME.isoformat()]) == 0
+    return conf
+
+
+def test_report_assemble_cli_clean_writes_report_rc_zero(tmp_path: Path, capsys):
+    """Cas propre : autres gates vertes, aucun finding sécu → exit 0, rapport écrit."""
+    conf = _seed_report_assemble_cli(tmp_path)
+
+    rc = main(["report-assemble", "--config", str(conf), "--anchor", RUN_TIME.isoformat()])
+
+    assert rc == 0
+    assert active_run_file(tmp_path, "weekly-report-2026-08-12.md").exists()
+
+
+def test_report_assemble_cli_security_warn_only_rc_one(tmp_path: Path, capsys):
+    """Cas sécu : findings sécu + autres gates vertes → WARNING + exit 1, rapport écrit."""
+    conf = _seed_report_assemble_cli(tmp_path)
+    (tmp_path / "weekly-harness-digest-2026-08-12.json").write_text(
+        json.dumps({"findings": [{"rule": "security/mcp-tool-poisoning", "severity": "critical"}]}),
+        encoding="utf-8",
+    )
+
+    rc = main(["report-assemble", "--config", str(conf), "--anchor", RUN_TIME.isoformat()])
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "WARNING" in out
+    assert "warn-only" in out
+    assert active_run_file(tmp_path, "weekly-report-2026-08-12.md").exists()
+
+
+def test_report_assemble_cli_missing_draft_stays_rc_two(tmp_path: Path, capsys):
+    """Cas draft absent (non-sécu) → exit 2 conservé, aucun rapport écrit."""
+    from helpers import make_step, make_usage
+
+    from weekly_telemetry_aggregator.aggregator import aggregate
+    from weekly_telemetry_aggregator.models import Period
+    from weekly_telemetry_aggregator.writer import summary_to_dict
+
+    period = Period(start=tzutc(2026, 8, 5), end=RUN_TIME)
+    usage = make_usage("r", [make_step("r", tzutc(2026, 8, 6, 10), cost=0.5)], title="S")
+    data = summary_to_dict(aggregate([usage], period=period, generated_at=RUN_TIME))
+    (tmp_path / "weekly-summary-2026-08-12.json").write_text(
+        json.dumps(data, ensure_ascii=False), encoding="utf-8"
+    )
+    conf = _write_config(tmp_path, tmp_path / "opencode.db")
+
+    rc = main(["report-assemble", "--config", str(conf), "--anchor", RUN_TIME.isoformat()])
+
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "FATAL" in err
+    assert not active_run_file(tmp_path, "weekly-report-2026-08-12.md").exists()
+
+
 def test_watch_validate_memory_file_follows_config(tmp_path: Path):
     """Le fichier mémoire honore watch_distill.memory_file (relatif à output_dir)."""
     _seed_watch_inputs(tmp_path)
