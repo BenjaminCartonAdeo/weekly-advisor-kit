@@ -272,6 +272,6 @@ def test_validate_provider_signale_ecarts_precis():
     class _SansRien:
         pass
 
-    # 1 attribut harness + 11 méthodes du contrat.
-    assert len(validate_provider(_SansRien())) == 12
+    # 1 attribut harness + 12 méthodes du contrat.
+    assert len(validate_provider(_SansRien())) == 13
     assert validate_provider(FakeSessionProvider("x", [])) == []

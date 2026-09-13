@@ -88,6 +88,11 @@ class OpenCodeSessionProvider:
     ) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
         return self._adapter.session_tools(self._unwrap(session_id), start_ms, end_ms)
 
+    def session_tool_fingerprints(
+        self, session_id: str, start_ms: int, end_ms: int
+    ) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, int]]]:
+        return self._adapter.session_tool_fingerprints(self._unwrap(session_id), start_ms, end_ms)
+
     def session_user_turns(self, session_id: str, start_ms: int, end_ms: int) -> list[str]:
         return self._adapter.session_user_turns(self._unwrap(session_id), start_ms, end_ms)
 

@@ -34,23 +34,28 @@ from .util import parse_iso_ts
 from .util import read_text as _load_text
 
 
-def _git_log_raw(project_root: Path, *args: str) -> list[str]:
-    """Lines of `git log --grep=auto-rédigé, revue hebdo <args>`; [] on any failure."""
+def _git_output(project_root: Path, *args: str) -> list[str] | None:
+    """stdout lines of `git <args>`; None on any failure (missing repo, rc != 0, crash)."""
     if project_root is None or not (project_root / ".git").exists():
-        return []
+        return None
     try:
         proc = subprocess.run(
-            ["git", "-C", str(project_root), "log", "--grep=auto-rédigé, revue hebdo", *args],
+            ["git", "-C", str(project_root), *args],
             capture_output=True,
             encoding="utf-8",
             errors="replace",
             timeout=20,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return []
+        return None
     if proc.returncode != 0:
-        return []
+        return None
     return proc.stdout.splitlines()
+
+
+def _git_log_raw(project_root: Path, *args: str) -> list[str]:
+    """Lines of `git log --grep=auto-rédigé, revue hebdo <args>`; [] on any failure."""
+    return _git_output(project_root, "log", "--grep=auto-rédigé, revue hebdo", *args) or []
 
 
 def _git_log(project_root: Path, since_iso: str, until_iso: str | None = None) -> list[dict]:
@@ -85,21 +90,10 @@ def _pending_auto_commits(project_root: Path, cutoff_iso: str) -> int:
 
 def _head_commit(project_root: Path) -> dict | None:
     """HEAD au moment du run : {hash, date, subject} ; None hors git (reco §8 12/09)."""
-    if project_root is None or not (project_root / ".git").exists():
+    lines = _git_output(project_root, "log", "-1", "--format=%H|%ad|%s", "--date=short")
+    if not lines:
         return None
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(project_root), "log", "-1", "--format=%H|%ad|%s", "--date=short"],
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=20,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if proc.returncode != 0:
-        return None
-    parts = proc.stdout.strip().split("|", 2)
+    parts = lines[0].strip().split("|", 2)
     if len(parts) != 3:
         return None
     return {"hash": parts[0], "date": parts[1], "subject": parts[2]}
@@ -107,21 +101,7 @@ def _head_commit(project_root: Path) -> dict | None:
 
 def _dirty_files(project_root: Path, limit: int = 50) -> list[str]:
     """Lignes `git status --short` au moment du run (capées) ; [] hors git (reco §8 12/09)."""
-    if project_root is None or not (project_root / ".git").exists():
-        return []
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(project_root), "status", "--short"],
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=20,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    if proc.returncode != 0:
-        return []
-    return proc.stdout.splitlines()[:limit]
+    return (_git_output(project_root, "status", "--short") or [])[:limit]
 
 
 def _self_cost_value(cfg: TelemetryConfig) -> dict | None:

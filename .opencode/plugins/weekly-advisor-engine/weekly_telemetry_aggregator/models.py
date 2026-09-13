@@ -250,6 +250,8 @@ class WeeklySummary:
     skill_similar_pairs: list[SkillSimilarPair] = field(default_factory=list)
     skill_catalog_source: str = "filesystem"
     skill_catalog_count: int = 0
+    #: Snapshot autorité du catalogue (skill_id + metadata origin/ttl_policy/usage).
+    skill_catalog_entries: list[dict] = field(default_factory=list)
     skills_never_loaded: list[str] = field(default_factory=list)
     #: skills auto-rédigés → agents ciblés (metadata.target_agents, v5.30).
     skills_targets: dict[str, list[str]] = field(default_factory=dict)

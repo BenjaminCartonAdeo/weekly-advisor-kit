@@ -24,6 +24,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .util import parse_iso_ts
+
 # Actions de curation émises pour un finding dont le tag_action est pertinent.
 _CURATION_ACTIONS = {
     "archive",
@@ -64,22 +66,6 @@ def manifest_metadata(
         "summary": {"by_action": by_action},
         "skipped_details": skipped_details,
     }
-
-
-def _parse_iso(value: str | None) -> datetime | None:
-    """Parse une date ISO-8601 (gère le suffixe ``Z``). None si absent/illisible."""
-    if not value:
-        return None
-    text = str(value).strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt
 
 
 def _text_field(value: object) -> str | None:
@@ -147,7 +133,6 @@ def _signal_archive_ids(signal: object) -> list[str]:
 
 def normalize_curation_findings(
     coherence: object,
-    curation_signal: object | None = None,
 ) -> list[dict]:
     """Normalize coherence/R4 archive findings into individual actionable records.
 
@@ -157,9 +142,9 @@ def normalize_curation_findings(
     here gives the decision engine one source of truth and makes CLI/report output
     independent of the producer's shape.
     """
-    root_signal = curation_signal
+    root_signal: object | None = None
     if isinstance(coherence, Mapping):
-        root_signal = coherence.get("curation_signal", root_signal)
+        root_signal = coherence.get("curation_signal")
         raw_findings = coherence.get("findings") or []
     else:
         raw_findings = coherence or []
@@ -199,7 +184,6 @@ def normalize_curation_findings(
 def decide_actions(
     coherence_findings: list[dict] | Mapping[str, object],
     skill_catalog: list[dict],
-    curation_signal: object | None = None,
 ) -> list[dict]:
     """Emit one deterministic final decision per skill.
 
@@ -224,7 +208,7 @@ def decide_actions(
                 # ttl_policy=pin, then origin=user, always beats weaker rows.
                 catalog_index[sid] = entry
 
-    findings = normalize_curation_findings(coherence_findings, curation_signal)
+    findings = normalize_curation_findings(coherence_findings)
     grouped: dict[str, list[dict]] = {}
     for finding in findings:
         tag_action = finding.get("tag_action")
@@ -437,7 +421,7 @@ def ttl_archive_candidates(
         usage = rec.get("usage") or {}
         if not isinstance(usage, Mapping):
             usage = {}
-        last_loaded = _parse_iso(usage.get("last_loaded"))
+        last_loaded = parse_iso_ts(usage.get("last_loaded"))
         load_count = usage.get("load_count", 0) or 0
 
         stale = last_loaded is not None and (now - last_loaded).days > stale_days
@@ -511,13 +495,7 @@ def _memory_paths(
     if engine_dir is not None:
         paths.append(Path(engine_dir).expanduser() / ".watch-memory.jsonl")
 
-    unique: list[Path] = []
-    seen: set[Path] = set()
-    for path in paths:
-        if path not in seen:
-            seen.add(path)
-            unique.append(path)
-    return unique
+    return list(dict.fromkeys(paths))
 
 
 def _run_marker(obj: Mapping[str, Any]) -> str | None:
@@ -630,20 +608,15 @@ def read_carry(
     engine_dir: Path | None = None,
     output_dir: Path | None = None,
     memory_file: str | Path | None = None,
-    *,
-    watch_memory: str | Path | None = None,
 ) -> dict[str, Any]:
     """Portage inter-run best-effort pour TTL/décroissance (R8).
 
     Lit d'abord le fichier ``watch_distill.memory_file`` sous ``output_dir`` puis
     conserve le fallback historique ``.watch-memory.jsonl`` sous ``engine_dir``.
-    ``watch_memory`` est un alias explicite de ``memory_file``. Retourne
-    ``{"runs_seen": int, "usage": {skill_id: {last_loaded, load_count}}}``.
+    Retourne ``{"runs_seen": int, "usage": {skill_id: {last_loaded, load_count}}}``.
 
     Défensif: fichier absent ou illisible -> structure vide (``runs_seen=0``).
     """
-    if memory_file is None and watch_memory is not None:
-        memory_file = watch_memory
     selected: Path | None = None
     for candidate in _memory_paths(engine_dir, output_dir, memory_file):
         try:

@@ -71,6 +71,7 @@
     "command_usage": { "type": "array" },
     "skill_similar_pairs": { "type": "array" },
     "skill_catalog_count": { "type": "integer" },
+    "skill_catalog_entries": { "type": "array" },
     "skills_never_loaded": { "type": "array", "items": { "type": "string" } },
     "skills_targets": { "type": "object" },
     "user_prompt_repeats": { "type": "array" },

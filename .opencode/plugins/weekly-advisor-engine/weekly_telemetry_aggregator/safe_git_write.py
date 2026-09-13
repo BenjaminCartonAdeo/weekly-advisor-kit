@@ -75,7 +75,7 @@ def frontmatter_blocks(path: Path) -> tuple[dict, str, str | None]:
 
 
 def validate_skill_source(
-    path: Path, *, allow_legacy_metadata: bool = False
+    path: Path,
 ) -> tuple[bool, dict[str, str | None], str]:
     """Re-read and validate a source ``SKILL.md`` before a curation move.
 
@@ -107,20 +107,15 @@ def validate_skill_source(
         return False, metadata, "source SKILL.md malformed: name absent"
     if meta.get("name") != path.parent.name:
         return False, metadata, "source SKILL.md malformed: name does not match directory"
-    if not origin and allow_legacy_metadata:
-        origin = "weekly-background"
-        metadata["origin"] = origin
     if origin not in _SKILL_ORIGINS:
         return False, metadata, "source SKILL.md unverified: origin absent or invalid"
     if ttl_policy_raw not in _SKILL_TTL_POLICIES:
         return False, metadata, "source SKILL.md malformed: ttl_policy invalid"
-    if not (meta.get("description") or "").strip() and not allow_legacy_metadata:
+    if not (meta.get("description") or "").strip():
         return False, metadata, "source SKILL.md malformed: description absent"
     verification = (meta.get("verification") or "").strip()
     metadata["verification"] = verification or None
-    if not allow_legacy_metadata and (
-        not verification or verification.casefold() in {"none", "null", "unverified"}
-    ):
+    if not verification or verification.casefold() in {"none", "null", "unverified"}:
         return False, metadata, "source SKILL.md unverified: metadata.verification absent"
     return True, metadata, "source SKILL.md verified"
 

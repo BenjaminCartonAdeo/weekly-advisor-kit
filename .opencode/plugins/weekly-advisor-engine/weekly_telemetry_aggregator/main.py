@@ -23,6 +23,7 @@ from warnings import warn as _warn_user
 
 from .aggregator import _cap_warnings, aggregate, dedup_resumed_usages
 from .config import TelemetryConfig, apply_lookback_override
+from .curation import build_catalog_from_skills
 from .draft_targets import DRAFT_HARNESS_TARGETS, describe_draft_target, resolve_draft_targets
 from .harness_scope import (
     copy_scope_to_projection,
@@ -275,6 +276,9 @@ def build_usage(
         tool_calls, tool_arg_chars, skills = adapter.session_tools(
             meta.session_id, start_ms, end_ms
         )
+        tool_arg_fps, tool_result_fps = adapter.session_tool_fingerprints(
+            meta.session_id, start_ms, end_ms
+        )
         turns = adapter.session_user_turns(meta.session_id, start_ms, end_ms)
         context_chars = adapter.session_context_chars(meta.session_id, start_ms, end_ms)
         aggregates = adapter.session_aggregates(meta.session_id)
@@ -368,6 +372,8 @@ def build_usage(
             steps=steps,
             tool_calls=tool_calls,
             tool_arg_chars=tool_arg_chars,
+            tool_arg_fingerprints=tool_arg_fps,
+            tool_result_fingerprints=tool_result_fps,
             skills_loaded=skills,
             user_turns=turns,
             context_chars=context_chars,
@@ -677,6 +683,7 @@ def run(
         include_subagents=cfg.include_subagents,
         skill_catalog=catalog_names,
         skill_catalog_entries=catalog_entries,
+        skill_catalog_snapshot=build_catalog_from_skills(cfg.project_root),
         warnings=warnings,
         known_parent_ids=all_ids,
         session_outlier_z=cfg.session_outlier_z,

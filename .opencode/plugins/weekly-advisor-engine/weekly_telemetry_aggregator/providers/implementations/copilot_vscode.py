@@ -370,6 +370,12 @@ class CopilotVSCodeSessionProvider:
                 tool_arg_chars[name] = tool_arg_chars.get(name, 0) + arg_chars
         return tool_calls, tool_arg_chars, {}  # skills_loaded : sans objet hors CLI
 
+    def session_tool_fingerprints(
+        self, _session_id: str, _start_ms: int, _end_ms: int
+    ) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, int]]]:
+        """Payloads bruts non exposés par ce harnais : dicts vides."""
+        return {}, {}
+
     def session_user_turns(self, session_id: str, start_ms: int, end_ms: int) -> list[str]:
         entry = self._get(session_id)
         if entry is None:

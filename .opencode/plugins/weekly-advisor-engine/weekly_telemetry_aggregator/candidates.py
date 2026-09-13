@@ -182,24 +182,14 @@ def select_audit_candidates(
                 entry["reasons"].append(reason)
             status = dict(worker_status_by_id.get(session_id) or {})
             status.update(source or {})
-            _copy_worker_status(entry, status)
+            _merge_worker_status(entry, status)
             return
         index[session_id] = len(ordered)
         entry = {"session_id": session_id, "reasons": [reason]}
         status = dict(worker_status_by_id.get(session_id) or {})
         status.update(source or {})
-        _copy_worker_status(entry, status)
+        _merge_worker_status(entry, status)
         ordered.append(entry)
-
-    def _copy_worker_status(target: dict, source: dict | None) -> None:
-        """Keep worker outcome fields visible in candidate/report artifacts."""
-        if not source:
-            return
-        merged: dict = dict(target)
-        _merge_worker_status(merged, source)
-        for key in ("rc", "truncated", "worker_status", "status"):
-            if key in merged:
-                target[key] = merged[key]
 
     top = summary.get("top_sessions_by_cost", [])
     for s in top[: max(0, top_sessions_limit)]:

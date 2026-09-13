@@ -309,6 +309,9 @@ class FakeSessionProvider:
     def session_tools(self, session_id: str, start_ms: int, end_ms: int):
         return ({}, {}, {})
 
+    def session_tool_fingerprints(self, session_id: str, start_ms: int, end_ms: int):
+        return {}, {}
+
     def session_user_turns(self, session_id: str, start_ms: int, end_ms: int):
         return []
 

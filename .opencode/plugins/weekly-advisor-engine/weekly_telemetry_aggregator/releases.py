@@ -125,9 +125,6 @@ class _HttpClient:
         data = None if json is None else _dumps(json)
         return self._open(url, data, headers, self._timeout)
 
-    def close(self) -> None:  # aucune ressource persistante
-        return None
-
 
 def _get_json(client, url: str, *, params: dict | None = None, headers: dict | None = None):
     """GET JSON with retry/backoff on {429, 5xx} and network errors.
@@ -1097,11 +1094,6 @@ def run(
     )
     start = run_time - window
 
-    own_client = client is None
-    if own_client:
+    if client is None:
         client = _HttpClient(timeout=15)
-    try:
-        return _collect(cfg, client, start, run_time)
-    finally:
-        if own_client:
-            client.close()
+    return _collect(cfg, client, start, run_time)

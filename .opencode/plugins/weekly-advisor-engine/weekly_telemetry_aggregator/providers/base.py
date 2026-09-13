@@ -92,6 +92,15 @@ class SessionProvider(Protocol):
         """(tool_calls, tool_arg_chars, skills_loaded) dans la fenêtre."""
         ...
 
+    def session_tool_fingerprints(
+        self, session_id: str, start_ms: int, end_ms: int
+    ) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, int]]]:
+        """Empreintes (args, résultats) par outil dans la fenêtre.
+
+        Dicts vides quand le harnais n'expose pas les payloads bruts.
+        """
+        ...
+
     def session_user_turns(self, session_id: str, start_ms: int, end_ms: int) -> list[str]:
         """Textes des tours utilisateur dans la fenêtre."""
         ...
@@ -124,6 +133,7 @@ _CONTRACT_METHODS: tuple[str, ...] = (
     "has_telemetry_rows",
     "session_steps",
     "session_tools",
+    "session_tool_fingerprints",
     "session_user_turns",
     "session_context_chars",
     "session_aggregates",
@@ -137,7 +147,7 @@ def validate_provider(obj: object) -> list[str]:
     """Liste les écarts de `obj` au contrat `SessionProvider` (vide = conforme).
 
     Validation structurelle explicite : attribut `harness` présent et non vide,
-    chacune des 11 méthodes présente et appelable. Indépendante de
+    chacune des 12 méthodes présente et appelable. Indépendante de
     ``runtime_checkable`` — qui ne teste que la présence d'attributs, ni
     l'appelabilité utile, ni la sémantique des retours.
     """

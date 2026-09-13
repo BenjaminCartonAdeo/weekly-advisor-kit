@@ -283,6 +283,55 @@ def test_build_usage_read_failure_marks_failed():
     assert any(w.message == "session read failed: boom" for w in warnings)
 
 
+def test_build_usage_collects_tool_fingerprints():
+    class FingerprintAdapter:
+        name = "fake"
+
+        def session_steps(self, *a):
+            return [type("S", (), {"model": "m", "cost": 0.1})()]
+
+        def session_tools(self, *a):
+            return {}, {}, {}
+
+        def session_tool_fingerprints(self, *a):
+            return ({"bash": {"abc": 2}}, {"bash": {"def": 1}})
+
+        def session_user_turns(self, *a):
+            return []
+
+        def session_context_chars(self, *a):
+            return {}
+
+        def session_aggregates(self, *a):
+            return None
+
+    period = Period(start=RUN_TIME - timedelta(days=7), end=RUN_TIME)
+    warnings: list[WarningEntry] = []
+    usage, failed = build_usage(
+        type(
+            "M",
+            (),
+            {
+                "session_id": "s",
+                "time_updated": RUN_TIME - timedelta(hours=1),
+                "title": "T",
+                "directory": None,
+                "agent": None,
+                "parent_id": None,
+            },
+        )(),
+        FingerprintAdapter(),
+        period=period,
+        run_time=RUN_TIME,
+        cfg=_cfg(Path("/tmp"), Path("/x.db")),
+        warnings=warnings,
+    )
+    assert failed is False
+    assert usage is not None
+    assert usage.tool_arg_fingerprints == {"bash": {"abc": 2}}
+    assert usage.tool_result_fingerprints == {"bash": {"def": 1}}
+
+
 def test_run_partial_only_on_read_failure(tmp_path: Path, monkeypatch):
     import weekly_telemetry_aggregator.main as main_mod
 
