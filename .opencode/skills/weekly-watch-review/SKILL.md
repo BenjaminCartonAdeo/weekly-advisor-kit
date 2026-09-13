@@ -1,6 +1,6 @@
 ---
 name: weekly-watch-review
-description: Étape 3.5 — veille critique : croise fiches candidates, état local et findings coûteux pour des recommandations actionnables.
+description: "Étape 3.5 — veille critique : croise fiches candidates, état local et findings coûteux pour des recommandations actionnables."
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: pipeline-step
@@ -27,8 +27,10 @@ sur l'arbre `reports/`.
 Une fiche candidate porte exactement : `id, name, sources[], score {total, breakdown},
 security {verdict, reason}, summary (≤200 car.), signature {version, published_at},
 existing_state ∈ {absent, declared, observed, unknown}, market_match,
-local_relevance_hints[]`. Les items bloqués sécurité ne sont **jamais** dans ce
-fichier (garde amont — annexe du rapport final seulement).
+local_relevance_hints[]`. Les items filtrés sécurité ne sont jamais dans ce
+fichier (garde amont) : ils restent visibles en warn-only dans la section
+`<details id="security">` repliée du rapport final, qui est toujours écrit avec
+`rc: 1` et un WARNING, l'exit 2 restant réservé aux cas non-sécu.
 
 ### Fallback legacy (repli documenté)
 
@@ -157,7 +159,7 @@ tableau `findings`; ne jamais valider un payload inline, absent ou partiellement
 
 Si le raw manque, est illisible ou ne respecte pas cette forme, effectuer **one bounded
 retry** (`max_retry=1`, une seule recovery bornée, relecture ciblée du contexte
-disponible), puis arrêter la branche avec un warning bloquant pour cette étape. Ne pas
+disponible), puis arrêter la branche avec un signal bloquant non-sécu pour cette étape (exit 2 réservé à ce cas non-sécu ; un finding sécu reste en warn-only avec `rc: 1`, WARNING et rapport toujours écrit). Ne pas
 boucler, respawn, attendre indéfiniment ou inventer un finding pour permettre la
 validation. Le fichier final n'est pas écrit par ce skill : seul `watch-validate` peut
 le produire après cette gate. Une recovery réussie peut être signalée comme
@@ -174,12 +176,11 @@ reste nonblocking seulement si le raw/final observé est valide.
   l'absence d'un plugin à partir du seul texte d'une description
 - Dédupliquer par repo GitHub source ; privilégier les entrées « Official »/« Claimed »
   et les repos actifs
-- Les items bloqués sécurité sont exclus amont (annexe rapport seulement) — ne pas
+- Les items filtrés sécurité sont exclus amont mais restent visibles en warn-only dans la section `<details id="security">` repliée du rapport final, qui est toujours écrit — ne pas
   chercher à les réintroduire ; une fiche `suspicious` garde sa mention de risque
 - Les `install-new`/`improve-existing` restent des candidats à revoir — l'écriture
   d'outils externes n'est pas automatisée
-- Sécurité et hors-worktree : voir skill partagé `weekly-safety-guardrails` (external-permission-refusal, environment-change, IDs bloquants).
+- Sécurité et hors-worktree : voir skill partagé `weekly-safety-guardrails` (external-permission-refusal, environment-change, IDs sécurité en warn-only).
 - Aucun finding ne peut être inventé à partir d'un résumé, d'un nom de package ou d'une
   fiche absente de l'entrée effectivement lue ; les identifiants de sécurité critiques
-  (`mcp-tool-poisoning`, `unbounded-delegation`, `memory-write-unscoped`) restent
-  bloquants et ne sont jamais réintroduits par le review.
+  (`mcp-tool-poisoning`, `unbounded-delegation`, `memory-write-unscoped`) restent en warn-only avec `rc: 1` et un WARNING, le rapport est toujours écrit avec une section `<details id="security">` repliée, ne sont jamais réintroduits par le review, et l'exit 2 reste réservé aux cas non-sécu.

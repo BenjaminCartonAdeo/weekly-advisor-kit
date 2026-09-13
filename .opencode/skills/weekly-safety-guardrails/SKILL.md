@@ -1,6 +1,6 @@
 ---
 name: weekly-safety-guardrails
-description: Garde-fous partagés (refus external-directory, environment-change, retry borné, IDs sécurité bloquants) — jamais chargé seul.
+description: Garde-fous partagés (refus external-directory, environment-change, retry borné, IDs sécurité warn-only) — jamais chargé seul.
 metadata:
   ttl_policy: pin
   authored_by: opencode-weekly-advisor
@@ -29,6 +29,6 @@ Constat dont la cible est hors `project_root` ou non écrasable → `environment
 
 Entrée manquante, tronquée ou invalide → **one bounded retry** (`max_retry=1`, relecture ciblée des seules entrées disponibles), puis signaler l'échec (`blocked`/`manual` + warning) sans respawn loop, hang, attente indéfinie, ni finding/proposal inventé. Sans source lisible, aucun artefact n'est écrit.
 
-## IDs sécurité bloquants (non négociable)
+## IDs sécurité warn-only (non négociable)
 
-`mcp-tool-poisoning`, `unbounded-delegation`, `memory-write-unscoped` (et `security/*` en remédiation) : arrêt de l'action concernée + signalement au coordinateur. Aucune auto-correction, écriture ou délégation implicite. En harness, jamais d'apply auto sur `security/*` même avec `confidence=high`.
+`mcp-tool-poisoning`, `unbounded-delegation`, `memory-write-unscoped` (et `security/*` en remédiation) : l'action concernée s'arrête en warn-only avec `rc: 1` et un WARNING, le rapport est toujours écrit avec une section `<details id="security">` repliée, et l'exit 2 reste réservé aux fatalités non-sécu. Aucune auto-correction, écriture ou délégation implicite. En harness, jamais d'apply auto sur `security/*` même avec `confidence=high`.
