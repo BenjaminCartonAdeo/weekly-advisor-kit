@@ -306,7 +306,9 @@ def _parse_session_jsonl(path: Path) -> dict | None:
                     session_id = str(raw_id) if raw_id else None
                     creation_ms = _positive_ms(obj.get("creationDate"))
                     title = obj.get("customTitle")
-                    custom_title = title.strip() if isinstance(title, str) and title.strip() else None
+                    custom_title = (
+                        title.strip() if isinstance(title, str) and title.strip() else None
+                    )
                     raw_requests = obj.get("requests")
                     if isinstance(raw_requests, list):
                         requests.extend(r for r in raw_requests if isinstance(r, dict))
@@ -342,9 +344,7 @@ def _read_session_index(user_dir: Path) -> dict[str, dict]:
     if conn is None:
         return {}
     try:
-        row = conn.execute(
-            "SELECT value FROM ItemTable WHERE key=?", (_INDEX_KEY,)
-        ).fetchone()
+        row = conn.execute("SELECT value FROM ItemTable WHERE key=?", (_INDEX_KEY,)).fetchone()
     except sqlite3.Error:
         return {}
     finally:
@@ -447,7 +447,9 @@ def _tool_name_of(event: dict) -> str:
 
 def _load_transcript(
     ws_dir: Path, session_id: str
-) -> tuple[list[tuple[str, int | None]], list[tuple[str, int | None]], list[tuple[dict, int | None]]]:
+) -> tuple[
+    list[tuple[str, int | None]], list[tuple[str, int | None]], list[tuple[dict, int | None]]
+]:
     """Tours/outils depuis ``GitHub.copilot-chat/transcripts/<id>.jsonl`` ; vide si absent."""
     transcript = ws_dir / "GitHub.copilot-chat" / "transcripts" / f"{session_id}.jsonl"
     users: list[tuple[str, int | None]] = []
@@ -487,9 +489,14 @@ def _load_transcript(
             }
             tools.append((tool, ts_ms))
             pending.append(len(tools) - 1)
-        elif kind.endswith("complete") or kind.endswith("execution_end") or kind in (
-            "tool_end",
-            "tool_result",
+        elif (
+            kind.endswith("complete")
+            or kind.endswith("execution_end")
+            or kind
+            in (
+                "tool_end",
+                "tool_result",
+            )
         ):
             output = _event_text(event) or _tool_field(event, "result", "output")
             if pending:
@@ -508,7 +515,8 @@ def _collect_paths(obj: object, acc: list[str], depth: int = 0) -> None:
     if isinstance(obj, dict):
         for key, value in obj.items():
             if isinstance(key, str) and any(
-                token in key.lower() for token in ("uri", "path", "filename", "filepath", "resource")
+                token in key.lower()
+                for token in ("uri", "path", "filename", "filepath", "resource")
             ):
                 if isinstance(value, str) and value.strip():
                     converted = _folder_uri_to_path(value.strip())
@@ -758,20 +766,14 @@ class CopilotVSCodeSessionProvider:
         for session_id, info in index.items():
             idx_title = info.get("title")
             idx_title = (
-                idx_title.strip()
-                if isinstance(idx_title, str) and idx_title.strip()
-                else None
+                idx_title.strip() if isinstance(idx_title, str) and idx_title.strip() else None
             )
             last_msg = _positive_ms(info.get("lastMessageDate"))
             timing = info.get("timing")
             last_started = (
-                _positive_ms(timing.get("lastRequestStarted"))
-                if isinstance(timing, dict)
-                else None
+                _positive_ms(timing.get("lastRequestStarted")) if isinstance(timing, dict) else None
             )
-            best_last = max(
-                [ms for ms in (last_msg, last_started) if ms is not None], default=None
-            )
+            best_last = max([ms for ms in (last_msg, last_started) if ms is not None], default=None)
             is_empty = info.get("isEmpty") is True
             entry = self._sessions.get(session_id)
             if entry is None:
@@ -1044,23 +1046,13 @@ class CopilotVSCodeSessionProvider:
                     )
             return parts
         fallback_ts = entry.last_ms or entry.creation_ms
-        fallback_dt = (
-            datetime.fromtimestamp(fallback_ts / 1000, tz=UTC) if fallback_ts else None
-        )
+        fallback_dt = datetime.fromtimestamp(fallback_ts / 1000, tz=UTC) if fallback_ts else None
         for text, ts_ms in entry.transcript_user:
-            ts = (
-                datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
-                if ts_ms
-                else fallback_dt
-            )
+            ts = datetime.fromtimestamp(ts_ms / 1000, tz=UTC) if ts_ms else fallback_dt
             if text.strip() and ts is not None:
                 parts.append(PartRecord(ts=ts, kind="user", text=text[:_PART_TRUNCATE]))
         for tool, ts_ms in entry.transcript_tools:
-            ts = (
-                datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
-                if ts_ms
-                else fallback_dt
-            )
+            ts = datetime.fromtimestamp(ts_ms / 1000, tz=UTC) if ts_ms else fallback_dt
             if ts is None:
                 continue
             parts.append(
@@ -1075,11 +1067,7 @@ class CopilotVSCodeSessionProvider:
                 )
             )
         for text, ts_ms in entry.transcript_assistant:
-            ts = (
-                datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
-                if ts_ms
-                else fallback_dt
-            )
+            ts = datetime.fromtimestamp(ts_ms / 1000, tz=UTC) if ts_ms else fallback_dt
             if text.strip() and ts is not None:
                 parts.append(PartRecord(ts=ts, kind="assistant", text=text[:_PART_TRUNCATE]))
         if fallback_dt is not None:
