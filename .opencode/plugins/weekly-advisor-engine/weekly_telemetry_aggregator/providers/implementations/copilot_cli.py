@@ -150,10 +150,29 @@ def _num(value: object) -> float:
     return float(value) if isinstance(value, (int, float)) else 0.0
 
 
+def _coerce_multiplier(multiplier: object | None) -> float:
+    """Coerce `request_multiplier` (warn + 1.0 si illisible)."""
+    if multiplier is None:
+        return 1.0
+    try:
+        return float(multiplier)
+    except (TypeError, ValueError):
+        warnings.warn(
+            f"copilot-cli : request_multiplier illisible ({multiplier!r})",
+            stacklevel=5,
+        )
+        return 1.0
+
+
 def _parse_nano_cost(raw_json: object, multiplier: object | None) -> float:
-    """Parse `token_details_json.total_nano_aiu * request_multiplier / 1e11` → USD.
+    """Parse `token_details_json` → USD (× request_multiplier / 1e11).
 
     1 AIU = 1 crédit = $0.01, donc 1 USD = 1e11 nano-AIU.
+
+    Formats supportés :
+    - dict legacy ``{"total_nano_aiu": <nano>}`` ;
+    - tableau réel ``[{batchSize, costPerBatch, tokenCount, ...}, ...]`` avec
+      ``nano = Σ tokenCount × costPerBatch / batchSize``.
 
     Fail-soft : JSON illisible ou champ manquant → warn + 0.0.
     """
@@ -171,30 +190,58 @@ def _parse_nano_cost(raw_json: object, multiplier: object | None) -> float:
             stacklevel=4,
         )
         return 0.0
-    if not isinstance(data, dict):
-        return 0.0
-    raw_val = data.get("total_nano_aiu")
-    if raw_val is None:
-        return 0.0
-    try:
-        nano = float(raw_val)
-    except (TypeError, ValueError):
-        warnings.warn(
-            f"copilot-cli : total_nano_aiu non numérique ({raw_val!r})",
-            stacklevel=4,
-        )
-        return 0.0
-    mult = 1.0
-    if multiplier is not None:
+    mult = _coerce_multiplier(multiplier)
+    if isinstance(data, dict):
+        raw_val = data.get("total_nano_aiu")
+        if raw_val is None:
+            return 0.0
         try:
-            mult = float(multiplier)
+            nano = float(raw_val)
         except (TypeError, ValueError):
             warnings.warn(
-                f"copilot-cli : request_multiplier illisible ({multiplier!r})",
+                f"copilot-cli : total_nano_aiu non numérique ({raw_val!r})",
                 stacklevel=4,
             )
-            mult = 1.0
-    return nano * mult / 1e11
+            return 0.0
+        return nano * mult / 1e11
+    if isinstance(data, list):
+        nano_total = 0.0
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                batch = float(entry.get("batchSize"))
+                unit = float(entry.get("costPerBatch"))
+                count = float(entry.get("tokenCount"))
+            except (TypeError, ValueError):
+                continue
+            if not batch:
+                continue
+            nano_total += count * unit / batch
+        return nano_total * mult / 1e11
+    return 0.0
+
+
+def _event_cost(
+    total_nano: object | None, raw_json: object | None, multiplier: object | None
+) -> float:
+    """Coût USD d'un event : colonne `total_nano_aiu` prioritaire, fallback JSON.
+
+    Helper unique partagé par l'enrichissement batch (agrégats) et les
+    call-sites steps/parts, pour garantir Σ steps == aggregate.
+    Fail-soft : rien d'exploitable → warn (via sous-parsers) + 0.0.
+    """
+    if total_nano is not None:
+        try:
+            nano = float(total_nano)
+        except (TypeError, ValueError):
+            warnings.warn(
+                f"copilot-cli : total_nano_aiu non numérique ({total_nano!r})",
+                stacklevel=4,
+            )
+        else:
+            return nano * _coerce_multiplier(multiplier) / 1e11
+    return _parse_nano_cost(raw_json, multiplier)
 
 
 @dataclass(slots=True)
@@ -269,16 +316,20 @@ class CopilotCliSessionProvider:
             self._warn_optional(table)
         return present
 
-    def _nano_columns(self) -> tuple[bool, bool]:
-        """Colonnes nano présentes : (token_details_json, request_multiplier)."""
+    def _nano_columns(self) -> tuple[bool, bool, bool]:
+        """Colonnes nano présentes : (total_nano_aiu, token_details_json, request_multiplier)."""
         try:
             cols = {
                 r[1]
                 for r in self._conn.execute("PRAGMA table_info(assistant_usage_events)").fetchall()
             }
         except sqlite3.Error:
-            return False, False
-        return "token_details_json" in cols, "request_multiplier" in cols
+            return False, False, False
+        return (
+            "total_nano_aiu" in cols,
+            "token_details_json" in cols,
+            "request_multiplier" in cols,
+        )
 
     def _load_sessions(self) -> None:
         try:
@@ -358,13 +409,22 @@ class CopilotCliSessionProvider:
                         session.turn_count += int(row[1] or 0)
             except sqlite3.Error as exc:
                 warnings.warn(f"copilot-cli : turns illisibles ({exc})", stacklevel=2)
-        # --- coût nano (token_details_json.total_nano_aiu * request_multiplier / 1e11) ---
-        has_details, has_multiplier = self._nano_columns()
-        if has_details:
+        # --- coût nano (colonne total_nano_aiu prioritaire, fallback token_details_json) ---
+        has_total, has_details, has_multiplier = self._nano_columns()
+        if has_total or has_details:
             for i in range(0, len(ids), _BATCH_SIZE):
                 chunk = ids[i : i + _BATCH_SIZE]
                 placeholders = ",".join("?" for _ in chunk)
-                col_list = "token_details_json" + (", request_multiplier" if has_multiplier else "")
+                cols_sel = [
+                    c
+                    for c, present in (
+                        ("total_nano_aiu", has_total),
+                        ("token_details_json", has_details),
+                        ("request_multiplier", has_multiplier),
+                    )
+                    if present
+                ]
+                col_list = ", ".join(cols_sel)
                 try:
                     for row in self._conn.execute(
                         f"SELECT session_id, {col_list} FROM assistant_usage_events "
@@ -375,9 +435,10 @@ class CopilotCliSessionProvider:
                         session = self._sessions.get(sid)
                         if session is None:
                             continue
-                        raw_json = row[1]
-                        mult = row[2] if has_multiplier else None
-                        cost = _parse_nano_cost(raw_json, mult)
+                        raw_total = row["total_nano_aiu"] if has_total else None
+                        raw_json = row["token_details_json"] if has_details else None
+                        mult = row["request_multiplier"] if has_multiplier else None
+                        cost = _event_cost(raw_total, raw_json, mult)
                         if cost:
                             session.tokens["nano_cost"] = (
                                 session.tokens.get("nano_cost", 0.0) + cost
@@ -448,12 +509,14 @@ class CopilotCliSessionProvider:
         )
 
     def _windowed_events(self, session_id: str, start_ms: int, end_ms: int) -> list[sqlite3.Row]:
-        has_details, has_multiplier = self._nano_columns()
+        has_total, has_details, has_multiplier = self._nano_columns()
         extra = ""
+        if has_total:
+            extra += ", total_nano_aiu"
         if has_details:
             extra += ", token_details_json"
-            if has_multiplier:
-                extra += ", request_multiplier"
+        if has_multiplier and (has_total or has_details):
+            extra += ", request_multiplier"
         try:
             rows = self._conn.execute(
                 "SELECT model, input_tokens, output_tokens, cache_read_tokens, "
@@ -578,18 +641,19 @@ class CopilotCliSessionProvider:
         if entry is None:
             return []
         canonical = canonical_session_id(self.harness, entry.session_id)
-        has_details, has_multiplier = self._nano_columns()
+        has_total, has_details, has_multiplier = self._nano_columns()
         steps = []
         for row in self._windowed_events(entry.session_id, start_ms, end_ms):
             ts = _parse_ts(row["created_at"])
             if ts is None:
                 continue
             cost: float | None = None
-            if has_details:
+            if has_total or has_details:
                 with contextlib.suppress(KeyError, IndexError):
-                    raw_json = row["token_details_json"]
+                    raw_total = row["total_nano_aiu"] if has_total else None
+                    raw_json = row["token_details_json"] if has_details else None
                     mult = row["request_multiplier"] if has_multiplier else None
-                    cost = _parse_nano_cost(raw_json, mult)
+                    cost = _event_cost(raw_total, raw_json, mult)
             steps.append(
                 StepFinish(
                     session_id=canonical,
@@ -745,9 +809,13 @@ class CopilotCliSessionProvider:
             )
         # Coûts lifetime : un part `step-finish` par event d'usage, même modèle
         # que le lecteur OpenCode (`PartRecord(kind="step-finish", cost=...)`).
-        has_details, has_multiplier = self._nano_columns()
-        if has_details:
-            extra = ", token_details_json"
+        has_total, has_details, has_multiplier = self._nano_columns()
+        if has_total or has_details:
+            extra = ""
+            if has_total:
+                extra += ", total_nano_aiu"
+            if has_details:
+                extra += ", token_details_json"
             if has_multiplier:
                 extra += ", request_multiplier"
             try:
@@ -765,10 +833,13 @@ class CopilotCliSessionProvider:
                 if ts is None:
                     continue
                 with contextlib.suppress(KeyError, IndexError):
-                    raw_json = row["token_details_json"]
+                    raw_total = row["total_nano_aiu"] if has_total else None
+                    raw_json = row["token_details_json"] if has_details else None
                     mult = row["request_multiplier"] if has_multiplier else None
                     parts.append(
-                        PartRecord(ts=ts, kind="step-finish", cost=_parse_nano_cost(raw_json, mult))
+                        PartRecord(
+                            ts=ts, kind="step-finish", cost=_event_cost(raw_total, raw_json, mult)
+                        )
                     )
         parts.sort(key=lambda p: p.ts)
         return parts

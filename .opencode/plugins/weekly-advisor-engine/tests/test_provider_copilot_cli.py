@@ -15,6 +15,7 @@ from weekly_telemetry_aggregator.providers.implementations.copilot_cli import (
     HARNESS_COPILOT_CLI,
     PROVIDER_TYPE,
     CopilotCliSessionProvider,
+    _event_cost,
     _parse_nano_cost,
     build_provider,
     resolve_copilot_home,
@@ -627,3 +628,187 @@ def test_no_nano_columns_keeps_legacy_behavior(provider):
     cid = canonical_session_id(HARNESS_COPILOT_CLI, SID_FULL)
     assert all(s.cost is None for s in provider.session_steps(cid, 0, 2**63 - 1))
     assert [p for p in provider.session_parts(cid) if p.kind == "step-finish"] == []
+
+
+# --- coûts nano v2 : colonne total_nano_aiu + fallback tableau ------------------
+
+#: Batches de référence : 500M + 332338000 = 832338000 nano (ligne réelle 1).
+_ARRAY_REF = (
+    '[{"batchSize": 1000, "costPerBatch": 500000000, "tokenCount": 1000,'
+    ' "tokenType": "input", "model": "gpt-4o"},'
+    ' {"batchSize": 500, "costPerBatch": 332338000, "tokenCount": 500,'
+    ' "tokenType": "output", "model": "gpt-4o"}]'
+)
+#: Leurre à $1.0 pour prouver la priorité de la colonne sur l'array.
+_ARRAY_DECOY_1USD = (
+    '[{"batchSize": 1, "costPerBatch": 100000000000, "tokenCount": 1,'
+    ' "tokenType": "input", "model": "gpt-4o"}]'
+)
+_NANO_REF_USD = 832338000 / 1e11  # 0.00832338
+
+
+def _seed_mixed_nano_db(db: Path) -> None:
+    """DB 3 formes : colonne peuplée / NULL+array / dict legacy."""
+    conn = sqlite3.connect(str(db))
+    conn.executescript(
+        """
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY, cwd TEXT, repository TEXT, branch TEXT,
+            summary TEXT, created_at TEXT, updated_at TEXT
+        );
+        CREATE TABLE turns (
+            session_id TEXT, turn_index INTEGER, user_message TEXT,
+            assistant_response TEXT, timestamp TEXT UNIQUE
+        );
+        CREATE TABLE assistant_usage_events (
+            session_id TEXT, model TEXT NOT NULL, input_tokens REAL,
+            output_tokens REAL, cache_read_tokens REAL, cache_write_tokens REAL,
+            reasoning_tokens REAL, created_at TEXT,
+            total_nano_aiu INTEGER, token_details_json TEXT, request_multiplier REAL
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?)",
+        (SID_FULL, "/home/user/proj", None, "main", SUMMARY_FULL, _fmt(T0), _fmt(T2)),
+    )
+    conn.execute(
+        "INSERT INTO turns VALUES (?,?,?,?,?)",
+        (SID_FULL, 0, USER_MSG_1, ASSISTANT_1, _fmt(T1)),
+    )
+    conn.execute(
+        "INSERT INTO assistant_usage_events "
+        "(session_id, model, input_tokens, output_tokens, cache_read_tokens, "
+        "cache_write_tokens, reasoning_tokens, created_at, "
+        "total_nano_aiu, token_details_json, request_multiplier) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (SID_FULL, "gpt-4o", 1200, 340, 100, 20, 50, _fmt(T0), 832338000, _ARRAY_DECOY_1USD, 1.0),
+    )
+    conn.execute(
+        "INSERT INTO assistant_usage_events "
+        "(session_id, model, input_tokens, output_tokens, cache_read_tokens, "
+        "cache_write_tokens, reasoning_tokens, created_at, "
+        "total_nano_aiu, token_details_json, request_multiplier) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (SID_FULL, "gpt-4o", 500, 100, 0, 0, 10, _fmt(T1), None, _ARRAY_REF, 1.0),
+    )
+    conn.execute(
+        "INSERT INTO assistant_usage_events "
+        "(session_id, model, input_tokens, output_tokens, cache_read_tokens, "
+        "cache_write_tokens, reasoning_tokens, created_at, "
+        "total_nano_aiu, token_details_json, request_multiplier) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (SID_FULL, "gpt-4o", 100, 50, 0, 0, 0, _fmt(T2), None, '{"total_nano_aiu": 1e11}', 1.0),
+    )
+    conn.commit()
+    conn.close()
+
+
+@pytest.fixture()
+def mixed_nano_provider(tmp_path: Path) -> CopilotCliSessionProvider:
+    home = tmp_path / ".copilot"
+    home.mkdir()
+    _seed_mixed_nano_db(home / "session-store.db")
+    built = build_provider({"type": PROVIDER_TYPE, "copilot_home": str(home)}, TelemetryConfig())
+    assert built is not None
+    return built
+
+
+def test_parse_nano_cost_array_batches():
+    # Σ batches = 832338000 nano → $0.00832338.
+    assert _parse_nano_cost(_ARRAY_REF, 1.0) == pytest.approx(_NANO_REF_USD)
+    assert _parse_nano_cost(_ARRAY_REF, 2.0) == pytest.approx(_NANO_REF_USD * 2.0)
+
+
+def test_parse_nano_cost_array_fail_soft():
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        # Entrées invalides ignorées : batchSize 0, clés manquantes, non-dict.
+        assert (
+            _parse_nano_cost('[{"batchSize": 0, "costPerBatch": 5, "tokenCount": 5}]', 1.0) == 0.0
+        )
+        assert _parse_nano_cost('[{"nope": 1}, 42, null]', 1.0) == 0.0
+        assert _parse_nano_cost("[]", 1.0) == 0.0
+        assert _parse_nano_cost("[1, 2]", 1.0) == 0.0
+
+
+def test_event_cost_column_priority_over_array():
+    # Colonne 832338000 prioritaire sur l'array leurre à $1.0.
+    assert _event_cost(832338000, _ARRAY_DECOY_1USD, 1.0) == pytest.approx(_NANO_REF_USD)
+    assert _event_cost(1e11, None, 2.0) == pytest.approx(2.0)
+    assert _event_cost(None, _ARRAY_REF, 1.0) == pytest.approx(_NANO_REF_USD)
+    assert _event_cost(None, '{"total_nano_aiu": 1e11}', 1.0) == pytest.approx(1.0)
+    assert _event_cost(None, None, 1.0) == 0.0
+
+
+def test_mixed_nano_steps_priority_and_fallbacks(mixed_nano_provider):
+    cid = canonical_session_id(HARNESS_COPILOT_CLI, SID_FULL)
+    steps = mixed_nano_provider.session_steps(cid, 0, 2**63 - 1)
+    assert len(steps) == 3
+    assert steps[0].cost == pytest.approx(_NANO_REF_USD)  # colonne > array leurre
+    assert steps[1].cost == pytest.approx(_NANO_REF_USD)  # array → 832338000 nano
+    assert steps[2].cost == pytest.approx(1.0)  # dict legacy inchangé
+    agg = mixed_nano_provider.session_aggregates(cid)
+    assert agg is not None
+    assert agg["cost"] == pytest.approx(_NANO_REF_USD * 2 + 1.0)
+    assert sum(s.cost for s in steps if s.cost is not None) == pytest.approx(agg["cost"])
+
+
+def test_mixed_nano_parts_match_aggregates(mixed_nano_provider):
+    cid = canonical_session_id(HARNESS_COPILOT_CLI, SID_FULL)
+    parts = mixed_nano_provider.session_parts(cid)
+    finishes = [p for p in parts if p.kind == "step-finish"]
+    assert len(finishes) == 3
+    assert finishes[0].cost == pytest.approx(_NANO_REF_USD)
+    assert finishes[1].cost == pytest.approx(_NANO_REF_USD)
+    assert finishes[2].cost == pytest.approx(1.0)
+    agg = mixed_nano_provider.session_aggregates(cid)
+    assert agg is not None
+    assert sum(p.cost for p in finishes if p.cost is not None) == pytest.approx(agg["cost"])
+
+
+def test_total_only_db_without_details_column(tmp_path: Path):
+    """Colonne total_nano_aiu seule (sans token_details_json) : coût porté."""
+    home = tmp_path / ".copilot"
+    home.mkdir()
+    conn = sqlite3.connect(str(home / "session-store.db"))
+    conn.executescript(
+        """
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY, cwd TEXT, repository TEXT, branch TEXT,
+            summary TEXT, created_at TEXT, updated_at TEXT
+        );
+        CREATE TABLE turns (
+            session_id TEXT, turn_index INTEGER, user_message TEXT,
+            assistant_response TEXT, timestamp TEXT UNIQUE
+        );
+        CREATE TABLE assistant_usage_events (
+            session_id TEXT, model TEXT NOT NULL, input_tokens REAL,
+            output_tokens REAL, cache_read_tokens REAL, cache_write_tokens REAL,
+            reasoning_tokens REAL, created_at TEXT,
+            total_nano_aiu INTEGER, request_multiplier REAL
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?)",
+        (SID_FULL, "/home/user/proj", None, "main", SUMMARY_FULL, _fmt(T0), _fmt(T2)),
+    )
+    conn.execute(
+        "INSERT INTO assistant_usage_events VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (SID_FULL, "gpt-4o", 10, 5, 0, 0, 0, _fmt(T1), 832338000, 1.0),
+    )
+    conn.commit()
+    conn.close()
+    built = build_provider({"type": PROVIDER_TYPE, "copilot_home": str(home)}, TelemetryConfig())
+    assert built is not None
+    cid = canonical_session_id(HARNESS_COPILOT_CLI, SID_FULL)
+    steps = built.session_steps(cid, 0, 2**63 - 1)
+    assert len(steps) == 1
+    assert steps[0].cost == pytest.approx(_NANO_REF_USD)
+    agg = built.session_aggregates(cid)
+    assert agg is not None
+    assert agg["cost"] == pytest.approx(_NANO_REF_USD)
+    built.close()
