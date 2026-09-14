@@ -178,6 +178,8 @@ def test_resolve_copilot_home_priority(monkeypatch, tmp_path: Path):
 def test_resolve_copilot_home_auto_uses_default(monkeypatch, tmp_path: Path):
     monkeypatch.delenv("COPILOT_CONFIG_DIR", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # Windows lit %USERPROFILE% avant Path.home() : le neutraliser aussi.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     assert resolve_copilot_home({"copilot_home": "auto"}) == tmp_path / ".copilot"
 
 
