@@ -151,7 +151,9 @@ def _num(value: object) -> float:
 
 
 def _parse_nano_cost(raw_json: object, multiplier: object | None) -> float:
-    """Parse `token_details_json.total_nano_aiu * request_multiplier / 1e9` → USD.
+    """Parse `token_details_json.total_nano_aiu * request_multiplier / 1e11` → USD.
+
+    1 AIU = 1 crédit = $0.01, donc 1 USD = 1e11 nano-AIU.
 
     Fail-soft : JSON illisible ou champ manquant → warn + 0.0.
     """
@@ -192,7 +194,7 @@ def _parse_nano_cost(raw_json: object, multiplier: object | None) -> float:
                 stacklevel=4,
             )
             mult = 1.0
-    return nano * mult / 1e9
+    return nano * mult / 1e11
 
 
 @dataclass(slots=True)
@@ -266,6 +268,17 @@ class CopilotCliSessionProvider:
         if not present and optional:
             self._warn_optional(table)
         return present
+
+    def _nano_columns(self) -> tuple[bool, bool]:
+        """Colonnes nano présentes : (token_details_json, request_multiplier)."""
+        try:
+            cols = {
+                r[1]
+                for r in self._conn.execute("PRAGMA table_info(assistant_usage_events)").fetchall()
+            }
+        except sqlite3.Error:
+            return False, False
+        return "token_details_json" in cols, "request_multiplier" in cols
 
     def _load_sessions(self) -> None:
         try:
@@ -345,16 +358,9 @@ class CopilotCliSessionProvider:
                         session.turn_count += int(row[1] or 0)
             except sqlite3.Error as exc:
                 warnings.warn(f"copilot-cli : turns illisibles ({exc})", stacklevel=2)
-        # --- coût nano (token_details_json.total_nano_aiu * request_multiplier / 1e9) ---
-        try:
-            cols = {
-                r[1]
-                for r in self._conn.execute("PRAGMA table_info(assistant_usage_events)").fetchall()
-            }
-        except sqlite3.Error:
-            cols = set()
-        if "token_details_json" in cols:
-            has_multiplier = "request_multiplier" in cols
+        # --- coût nano (token_details_json.total_nano_aiu * request_multiplier / 1e11) ---
+        has_details, has_multiplier = self._nano_columns()
+        if has_details:
             for i in range(0, len(ids), _BATCH_SIZE):
                 chunk = ids[i : i + _BATCH_SIZE]
                 placeholders = ",".join("?" for _ in chunk)
@@ -442,10 +448,16 @@ class CopilotCliSessionProvider:
         )
 
     def _windowed_events(self, session_id: str, start_ms: int, end_ms: int) -> list[sqlite3.Row]:
+        has_details, has_multiplier = self._nano_columns()
+        extra = ""
+        if has_details:
+            extra += ", token_details_json"
+            if has_multiplier:
+                extra += ", request_multiplier"
         try:
             rows = self._conn.execute(
                 "SELECT model, input_tokens, output_tokens, cache_read_tokens, "
-                "cache_write_tokens, reasoning_tokens, created_at "
+                f"cache_write_tokens, reasoning_tokens, created_at{extra} "
                 "FROM assistant_usage_events WHERE session_id = ? ORDER BY created_at",
                 (session_id,),
             ).fetchall()
@@ -566,11 +578,18 @@ class CopilotCliSessionProvider:
         if entry is None:
             return []
         canonical = canonical_session_id(self.harness, entry.session_id)
+        has_details, has_multiplier = self._nano_columns()
         steps = []
         for row in self._windowed_events(entry.session_id, start_ms, end_ms):
             ts = _parse_ts(row["created_at"])
             if ts is None:
                 continue
+            cost: float | None = None
+            if has_details:
+                with contextlib.suppress(KeyError, IndexError):
+                    raw_json = row["token_details_json"]
+                    mult = row["request_multiplier"] if has_multiplier else None
+                    cost = _parse_nano_cost(raw_json, mult)
             steps.append(
                 StepFinish(
                     session_id=canonical,
@@ -581,7 +600,7 @@ class CopilotCliSessionProvider:
                     tokens_reasoning=_num(row["reasoning_tokens"]),
                     tokens_cache_read=_num(row["cache_read_tokens"]),
                     tokens_cache_write=_num(row["cache_write_tokens"]),
-                    cost=None,  # pas de coût persisté par le CLI
+                    cost=cost,
                     harness=self.harness,
                 )
             )
@@ -620,6 +639,12 @@ class CopilotCliSessionProvider:
             except sqlite3.Error:
                 pass
         return tool_calls, tool_arg_chars, {}  # skills : sans objet pour ce harnais
+
+    def session_tool_fingerprints(
+        self, _session_id: str, _start_ms: int, _end_ms: int
+    ) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, int]]]:
+        """Payloads bruts non exposés par ce harnais : dicts vides."""
+        return {}, {}
 
     def session_user_turns(self, session_id: str, start_ms: int, end_ms: int) -> list[str]:
         entry = self._get(session_id)
@@ -718,6 +743,33 @@ class CopilotCliSessionProvider:
                     tool_output=str(item.get("output") or "")[:2000] or None,
                 )
             )
+        # Coûts lifetime : un part `step-finish` par event d'usage, même modèle
+        # que le lecteur OpenCode (`PartRecord(kind="step-finish", cost=...)`).
+        has_details, has_multiplier = self._nano_columns()
+        if has_details:
+            extra = ", token_details_json"
+            if has_multiplier:
+                extra += ", request_multiplier"
+            try:
+                cost_rows = self._conn.execute(
+                    f"SELECT created_at{extra} FROM assistant_usage_events "  # noqa: S608
+                    "WHERE session_id = ? ORDER BY created_at",
+                    (entry.session_id,),
+                ).fetchall()
+            except sqlite3.Error:
+                cost_rows = []
+            for row in cost_rows:
+                ts = _parse_ts(row["created_at"])
+                if ts is None:
+                    ts = entry.updated or entry.created
+                if ts is None:
+                    continue
+                with contextlib.suppress(KeyError, IndexError):
+                    raw_json = row["token_details_json"]
+                    mult = row["request_multiplier"] if has_multiplier else None
+                    parts.append(
+                        PartRecord(ts=ts, kind="step-finish", cost=_parse_nano_cost(raw_json, mult))
+                    )
         parts.sort(key=lambda p: p.ts)
         return parts
 

@@ -15,6 +15,7 @@ from weekly_telemetry_aggregator.providers.implementations.copilot_cli import (
     HARNESS_COPILOT_CLI,
     PROVIDER_TYPE,
     CopilotCliSessionProvider,
+    _parse_nano_cost,
     build_provider,
     resolve_copilot_home,
 )
@@ -496,3 +497,131 @@ def test_corrupt_db_returns_none(tmp_path: Path):
         with pytest.raises(SchemaError):
             built.check_schema()
         built.close()
+
+
+# --- coûts nano (E1+E2+E3) --------------------------------------------------------
+
+
+def _seed_nano_db(db: Path) -> None:
+    """DB avec `token_details_json` + `request_multiplier` (branche nano couverte)."""
+    conn = sqlite3.connect(str(db))
+    conn.executescript(
+        """
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY, cwd TEXT, repository TEXT, branch TEXT,
+            summary TEXT, created_at TEXT, updated_at TEXT
+        );
+        CREATE TABLE turns (
+            session_id TEXT, turn_index INTEGER, user_message TEXT,
+            assistant_response TEXT, timestamp TEXT UNIQUE
+        );
+        CREATE TABLE assistant_usage_events (
+            session_id TEXT, model TEXT NOT NULL, input_tokens REAL,
+            output_tokens REAL, cache_read_tokens REAL, cache_write_tokens REAL,
+            reasoning_tokens REAL, created_at TEXT,
+            token_details_json TEXT, request_multiplier REAL
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?)",
+        (SID_FULL, "/home/user/proj", None, "main", SUMMARY_FULL, _fmt(T0), _fmt(T2)),
+    )
+    conn.execute(
+        "INSERT INTO turns VALUES (?,?,?,?,?)",
+        (SID_FULL, 0, USER_MSG_1, ASSISTANT_1, _fmt(T1)),
+    )
+    conn.execute(
+        "INSERT INTO assistant_usage_events "
+        "(session_id, model, input_tokens, output_tokens, cache_read_tokens, "
+        "cache_write_tokens, reasoning_tokens, created_at, "
+        "token_details_json, request_multiplier) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (SID_FULL, "gpt-4o", 1200, 340, 100, 20, 50, _fmt(T1), '{"total_nano_aiu": 1e11}', 1.0),
+    )
+    conn.execute(
+        "INSERT INTO assistant_usage_events "
+        "(session_id, model, input_tokens, output_tokens, cache_read_tokens, "
+        "cache_write_tokens, reasoning_tokens, created_at, "
+        "token_details_json, request_multiplier) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (
+            SID_FULL,
+            "gpt-4o",
+            500,
+            100,
+            0,
+            0,
+            10,
+            _fmt(T2),
+            '{"total_nano_aiu": 2.26095e15}',
+            1.0,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+@pytest.fixture()
+def nano_provider(tmp_path: Path) -> CopilotCliSessionProvider:
+    home = tmp_path / ".copilot"
+    home.mkdir()
+    _seed_nano_db(home / "session-store.db")
+    built = build_provider({"type": PROVIDER_TYPE, "copilot_home": str(home)}, TelemetryConfig())
+    assert built is not None
+    return built
+
+
+def test_parse_nano_cost_one_aiu_cent_is_one_dollar():
+    assert _parse_nano_cost('{"total_nano_aiu": 1e11}', 1.0) == pytest.approx(1.0)
+
+
+def test_parse_nano_cost_large_value():
+    # 2.26095e15 nano / 1e11 = $22609.50 (1 AIU = 1 crédit = $0.01).
+    assert _parse_nano_cost('{"total_nano_aiu": 2.26095e15}', 1.0) == pytest.approx(22609.5)
+
+
+def test_parse_nano_cost_applies_multiplier():
+    assert _parse_nano_cost('{"total_nano_aiu": 1e11}', 2.0) == pytest.approx(2.0)
+
+
+def test_parse_nano_cost_fail_soft():
+    import warnings
+
+    assert _parse_nano_cost(None, None) == 0.0
+    assert _parse_nano_cost("", 1.0) == 0.0
+    assert _parse_nano_cost("{}", 1.0) == 0.0
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        assert _parse_nano_cost("{invalid", 1.0) == 0.0
+        assert _parse_nano_cost('{"total_nano_aiu": "abc"}', 1.0) == 0.0
+        assert _parse_nano_cost('{"total_nano_aiu": 1e11}', "abc") == pytest.approx(1.0)
+
+
+def test_nano_steps_carry_cost_and_match_aggregates(nano_provider):
+    cid = canonical_session_id(HARNESS_COPILOT_CLI, SID_FULL)
+    steps = nano_provider.session_steps(cid, 0, 2**63 - 1)
+    assert len(steps) == 2
+    assert steps[0].cost == pytest.approx(1.0)
+    assert steps[1].cost == pytest.approx(22609.5)
+    agg = nano_provider.session_aggregates(cid)
+    assert agg is not None
+    assert agg["cost"] == pytest.approx(22610.5)
+    assert sum(s.cost for s in steps if s.cost is not None) == pytest.approx(agg["cost"])
+
+
+def test_nano_parts_contain_step_finish_with_cost(nano_provider):
+    cid = canonical_session_id(HARNESS_COPILOT_CLI, SID_FULL)
+    parts = nano_provider.session_parts(cid)
+    finishes = [p for p in parts if p.kind == "step-finish"]
+    assert len(finishes) == 2
+    assert finishes[0].cost == pytest.approx(1.0)
+    assert finishes[1].cost == pytest.approx(22609.5)
+    agg = nano_provider.session_aggregates(cid)
+    assert agg is not None
+    assert sum(p.cost for p in finishes if p.cost is not None) == pytest.approx(agg["cost"])
+
+
+def test_no_nano_columns_keeps_legacy_behavior(provider):
+    """Sans colonnes nano : steps à None, aucun part step-finish (inchangé)."""
+    cid = canonical_session_id(HARNESS_COPILOT_CLI, SID_FULL)
+    assert all(s.cost is None for s in provider.session_steps(cid, 0, 2**63 - 1))
+    assert [p for p in provider.session_parts(cid) if p.kind == "step-finish"] == []
