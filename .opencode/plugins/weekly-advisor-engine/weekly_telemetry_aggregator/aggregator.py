@@ -22,6 +22,7 @@ from .models import (
     CommandUsage,
     CostOutlier,
     DailyTotal,
+    HarnessUsage,
     ModelUsage,
     Period,
     SessionUsage,
@@ -35,6 +36,7 @@ from .models import (
     WarningEntry,
     WeeklySummary,
     round6,
+    split_canonical_session_id,
 )
 from .util import descendants_by_parent, robust_z, root_and_orphan_ids
 
@@ -375,6 +377,9 @@ def aggregate(
     model_agg: dict[str, dict] = defaultdict(
         lambda: {"sessions": set(), "tokens": 0, "cost": 0.0, "cache_read": 0.0, "fresh": 0.0}
     )
+    harness_agg: dict[str, dict] = defaultdict(
+        lambda: {"sessions": set(), "tokens": 0, "cost": 0.0, "cache_read": 0.0, "fresh": 0.0}
+    )
     top_sessions: list[TopSession] = []
     day_cost: dict[str, float] = defaultdict(float)
     day_tokens: dict[str, int] = defaultdict(int)
@@ -414,6 +419,13 @@ def aggregate(
             day_fresh[_bucket] += s.tokens_input
         has_children = include_subagents and any(c.session_id in children_ids for c in descendants)
         duration, active = session_duration(root)
+        harness = root.harness or split_canonical_session_id(root.session_id)[0] or ""
+        h_agg = harness_agg[harness]
+        h_agg["sessions"].add(root.session_id)
+        h_agg["tokens"] += tokens
+        h_agg["cost"] = round6(h_agg["cost"] + cost)
+        h_agg["cache_read"] += cache_read
+        h_agg["fresh"] += fresh
         context_chars: dict[str, int] = {"file": 0, "tool_result": 0, "text": 0, "reasoning": 0}
         for u in [root, *descendants]:
             for k in ("file", "tool_result", "text", "reasoning"):
@@ -434,6 +446,7 @@ def aggregate(
                 cache_read_tokens=cache_read,
                 cache_write_tokens=cache_write,
                 cache_efficiency=_cache_hit_rate(cache_read, fresh),
+                harness=harness,
                 context_composition={  # chars/4 estimation (spec §2, TokenScope pattern)
                     "file_tokens": _estimated_tokens(context_chars["file"]),
                     "tool_result_tokens": _estimated_tokens(context_chars["tool_result"]),
@@ -493,10 +506,21 @@ def aggregate(
         for key, agg in sorted(model_agg.items())
     ]
 
-    # ---- top sessions by cost: select top N, output ordered (cost DESC, session_id ASC) ----
-    selected = sorted(top_sessions, key=lambda s: (-s.cost_usd, s.session_id))[
-        : max(0, top_sessions_limit)
+    # ---- by_harness (miroir de by_model : sessions, tokens, cost) ----
+    by_harness = [
+        HarnessUsage(
+            harness=key,
+            session_count=len(agg["sessions"]),
+            total_tokens=agg["tokens"],
+            total_cost_usd=round6(agg["cost"]),
+            cache_hit_rate=_cache_hit_rate(agg["cache_read"], agg["fresh"]),
+        )
+        for key, agg in sorted(harness_agg.items())
     ]
+
+    # ---- top sessions by cost: select top N, output ordered (cost DESC, session_id ASC) ----
+    ordered_all = sorted(top_sessions, key=lambda s: (-s.cost_usd, s.session_id))
+    selected = ordered_all[: max(0, top_sessions_limit)]
 
     # ---- tool usage (roots + children, window only) ----
     tool_counts: dict[str, int] = defaultdict(int)
@@ -585,7 +609,9 @@ def aggregate(
         totals=totals,
         daily_totals=daily_totals,
         by_model=by_model,
+        by_harness=by_harness,
         top_sessions_by_cost=selected,
+        all_sessions=ordered_all,
         cost_outliers=cost_outliers,
         cost_outliers_state=cost_outliers_state,
         tool_usage=tool_usage,

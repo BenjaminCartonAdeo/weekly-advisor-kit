@@ -330,6 +330,7 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     <a href="#annex-e">E</a>
     <a href="#annex-f">F</a>
     <a href="#annex-g">G</a>
+    <a href="#annex-h">H</a>
   </div>
 </nav>
 <main>
@@ -517,6 +518,25 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     {% else %}
     <div class="callout warn">Répartition par modèle <b>non capturée dans ce run</b> (champ <code>models_top</code> absent du payload). Le coût total de {{ usd(total_cost) }} est réparti sur les 7 jours dans l'Exec ; aucun montant par modèle ne doit être inventé.</div>
     {% endif %}
+    {% set hb = (harness_breakdown if harness_breakdown is defined else ((summary or {}).get("by_harness") or [])) %}
+    <h3>Ventilation par harnais</h3>
+    {% if hb %}
+    <div class="chart-wrap"><table class="data">
+      <thead><tr><th>Harnais</th><th class="num">Sessions</th><th class="num">Tokens</th><th class="num">Coût ($)</th></tr></thead>
+      <tbody>
+        {% for h in hb %}
+        <tr>
+          <td>{{ h.get("harness") or "n/a" }}</td>
+          <td class="num">{{ h.get("session_count", "n/a") }}</td>
+          <td class="num">{{ compact(h.get("total_tokens")) }}</td>
+          <td class="num">{{ usd(h.get("total_cost_usd")) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}
+    <p class="muted">Ventilation par harnais non disponible (runs anciens sans <code>by_harness</code>).</p>
+    {% endif %}
     {% if cost_outliers or top_sessions %}
     <details class="disc">
       <summary><span class="count-pill">détails</span> &nbsp;outliers de coût &amp; sessions les plus coûteuses — déplier</summary>
@@ -533,11 +553,12 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
         {% if top_sessions %}
         <h4>Sessions les plus coûteuses</h4>
         <div class="chart-wrap"><table class="data">
-          <thead><tr><th>Session</th><th class="num">Coût ($)</th><th class="num">Tokens</th><th class="num">Durée</th><th class="num">Actif</th><th class="num">$/min actif</th><th class="num">Appels API</th></tr></thead>
+          <thead><tr><th>Session</th><th>Harnais</th><th class="num">Coût ($)</th><th class="num">Tokens</th><th class="num">Durée</th><th class="num">Actif</th><th class="num">$/min actif</th><th class="num">Appels API</th></tr></thead>
           <tbody>
             {% for s in top_sessions %}
             <tr>
               <td>{{ s.get("title_or_topic") or s.get("session_id") }}{% if outliers and s.get("session_id") in outliers %} <span class="badge badge-crit">OUTLIER</span>{% endif %}<br><code>{{ s.get("session_id") }}</code></td>
+              <td>{{ s.get("harness") or "n/a" }}</td>
               <td class="num">{{ usd(s.get("cost_usd")) }}</td>
               <td class="num">{{ compact(s.get("total_tokens")) }}</td>
               <td class="num">{{ compact(s.get("duration_seconds")) }}</td>
@@ -810,6 +831,30 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     </details>
     </div>
   </details>
+  <details class="annex" id="annex-h">
+    <summary>{{ secnum("H") }} Toutes les sessions</summary>
+    <div class="annex-body" id="annex-h-body">
+    {% set allss = (all_sessions if all_sessions is defined and all_sessions else ((summary or {}).get("all_sessions") or [])) %}
+    {% if allss %}
+    <p><input type="search" id="allsess-q" placeholder="Filtrer par titre / session…" aria-label="Filtrer les sessions">
+    <select id="allsess-h" aria-label="Filtrer par harnais"><option value="">Tous harnais</option>{% for h in (hb if hb is defined else []) %}<option value="{{ h.get('harness') or '' }}">{{ h.get("harness") or "n/a" }}</option>{% endfor %}</select></p>
+    <div class="chart-wrap"><table class="data" id="allsess-table">
+      <thead><tr><th>Session</th><th>Harnais</th><th class="num">Coût ($)</th><th class="num">Tokens</th><th>Titre</th></tr></thead>
+      <tbody>
+        {% for s in allss %}
+        <tr data-h="{{ s.get('harness') or '' }}" data-q="{{ (((s.get('title_or_topic') or s.get('session_id') or '')|string)[:80] ~ ' ' ~ (s.get('session_id') or ''))|lower|e }}">
+          <td><code>{{ s.get("session_id") }}</code></td>
+          <td>{{ s.get("harness") or "n/a" }}</td>
+          <td class="num">{{ usd(s.get("cost_usd")) }}</td>
+          <td class="num">{{ compact(s.get("total_tokens")) }}</td>
+          <td>{{ ((s.get("title_or_topic") or s.get("session_id") or "")|string)[:80] }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}<p class="muted">Annexe toutes sessions non disponible ce run.</p>{% endif %}
+    </div>
+  </details>
 </section>
 </main>
 <footer class="pagefoot">
@@ -844,6 +889,22 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
       } catch (e) { /* stockage indisponible */ }
     });
   });
+  // Filtre annexe H (toutes sessions) — texte + harnais sur attributs data-*
+  var fq = document.getElementById("allsess-q"), fh = document.getElementById("allsess-h"),
+      ft = document.getElementById("allsess-table");
+  if (fq && fh && ft) {
+    var frows = Array.prototype.slice.call(ft.querySelectorAll("tbody tr"));
+    var applyFilter = function () {
+      var needle = (fq.value || "").toLowerCase(), hv = fh.value || "";
+      frows.forEach(function (r) {
+        var okH = !hv || r.getAttribute("data-h") === hv;
+        var okQ = !needle || (r.getAttribute("data-q") || "").indexOf(needle) !== -1;
+        r.style.display = (okH && okQ) ? "" : "none";
+      });
+    };
+    fq.addEventListener("input", applyFilter);
+    fh.addEventListener("change", applyFilter);
+  }
   // TOC sticky active highlight via IntersectionObserver
   var links = Array.prototype.slice.call(document.querySelectorAll("#toc a"));
   var map = {};
