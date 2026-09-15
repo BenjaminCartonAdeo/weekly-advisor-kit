@@ -80,7 +80,7 @@ Toute conclusion doit être soutenue par le transcript effectivement lu. Sécuri
 ## Harnais d'origine
 
 Chaque session provient d'un harnais identifiable : ids canoniques
-`<harness>:<uuid>` (`claude-code:`, `opencode:`, `copilot-vscode:`).
+`<harness>:<uuid>` (`claude-code:`, `opencode:`, `copilot-cli:`).
 `show-session` accepte l'id canonique ET l'id brut (le brut est résolu vers la
 première source qui le possède) ; les titres Claude Code sont tronqués à
 100 caractères à la lecture.

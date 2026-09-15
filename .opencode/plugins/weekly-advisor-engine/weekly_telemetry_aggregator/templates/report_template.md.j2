@@ -62,6 +62,18 @@
 | {{ m.model }} | {{ m.session_count }} | {{ "{:,}".format(m.total_tokens) }} | {{ "%.4f"|format(m.total_cost_usd) }} |
 {% endfor %}
 
+### Ventilation par harnais
+
+{% if harness_breakdown %}
+| Harnais | Sessions | Tokens | Coût (\$) |
+|---------|----------|--------|-----------|
+{% for h in harness_breakdown %}
+| {{ h.harness or "n/a" }} | {{ h.session_count }} | {{ "{:,}".format(h.total_tokens) }} | {{ "%.4f"|format(h.total_cost_usd) }} |
+{% endfor %}
+{% else %}
+*Ventilation par harnais non disponible (runs anciens sans `by_harness`).*
+{% endif %}
+
 {% if summary.cost_outliers %}
 ### Outliers de coût (z-score robuste, seuil configuré)
 
@@ -76,7 +88,7 @@
 *Coût `reported_cost_usd_lifetime` : total `session` ∪ `session_v2` (**lifetime**) — à comparer au coût fenêtré ; écart > tolérance ⇒ warning cross-check (K7).*
 {% endif %}
 {% for s in top_sessions %}
-{% if s.session_id in outliers %}[OUTLIER] {% endif %}**{{ s.title_or_topic or s.session_id }}** (`{{ s.session_id }}`) — \${{ "%.4f"|format(s.cost_usd) }}, {{ "{:,}".format(s.total_tokens) }} tokens
+{% if s.session_id in outliers %}[OUTLIER] {% endif %}**{{ s.title_or_topic or s.session_id }}** (`{{ s.session_id }}`) — \${{ "%.4f"|format(s.cost_usd) }}, {{ "{:,}".format(s.total_tokens) }} tokens{{ (" · harnais `" ~ s.harness ~ "`") if s.harness else "" }}
   - durée {{ s.duration_seconds }}s / active {{ s.active_time_seconds }}s, coût/actif {{ "%.4f"|format(s.cost_per_active_minute) if s.cost_per_active_minute is not none else "n/a" }}\$/min
   - API calls {{ s.api_call_count }}, cache eff. {{ s.cache_efficiency if s.cache_efficiency is not none else "n/a" }}, sous-agents {{ "oui" if s.includes_subagents else "non" }}
 {% endfor %}
@@ -300,4 +312,14 @@ Constats de maintenance (R1-R4) :
 - Warnings pipeline ({{ summary.warnings|length }}) :
 {% for g in warnings_grouped %}
   - **×{{ g.count }}** {{ g.message }}{% if g.count > 1 %} — `{{ g.session_ids[:6]|join("`, `") }}{% if g.session_ids|length > 6 %}…{% endif %}`{% endif %}{{ "\n" }}{% endfor %}
+{% endif %}
+{% if all_sessions %}
+
+### Toutes les sessions (annexe)
+
+| Session | Harnais | Coût (\$) | Tokens | Titre |
+|---|---|---|---|---|
+{% for s in all_sessions %}
+| `{{ s.session_id }}` | {{ s.harness or "n/a" }} | {{ "%.4f"|format(s.cost_usd) }} | {{ "{:,}".format(s.total_tokens) }} | {{ ((s.title_or_topic or s.session_id)|string)[:80] }} |
+{% endfor %}
 {% endif %}

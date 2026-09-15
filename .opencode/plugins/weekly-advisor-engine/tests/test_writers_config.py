@@ -131,7 +131,9 @@ def test_summary_to_dict_schema_v2_fields():
     assert set(data) >= {
         "daily_totals",
         "by_model",
+        "by_harness",
         "top_sessions_by_cost",
+        "all_sessions",
         "cost_outliers",
         "tool_usage",
         "skill_usage",
@@ -160,6 +162,41 @@ def test_summary_to_dict_deterministic_order():
     # by_model sorted alphabetically
     models = [m["model"] for m in data["by_model"]]
     assert models == sorted(models)
+
+
+def test_summary_to_dict_by_harness_all_sessions():
+    """by_harness/all_sessions (vNext multi-harnais) : clés présentes, ordre
+    déterministe, harness propagé, round-trip JSON."""
+    period = Period(start=tzutc(2026, 8, 5), end=tzutc(2026, 8, 12))
+    a = make_usage("a", [make_step("a", period.start, cost=2.0)])
+    a.harness = "opencode"
+    b = make_usage("b", [make_step("b", period.start, cost=3.0)])
+    b.harness = "copilot-cli"
+    data = summary_to_dict(aggregate([a, b], period=period, generated_at=period.end))
+
+    assert isinstance(data["by_harness"], list)
+    assert isinstance(data["all_sessions"], list)
+    # by_harness trié alphabétiquement (miroir de by_model)
+    assert [h["harness"] for h in data["by_harness"]] == ["copilot-cli", "opencode"]
+    assert data["by_harness"][0]["total_cost_usd"] == 3.0
+    # harness propagé dans top_sessions_by_cost et all_sessions
+    assert data["top_sessions_by_cost"][0]["harness"] == "copilot-cli"
+    assert [s["session_id"] for s in data["all_sessions"]] == ["b", "a"]
+    assert all(s["harness"] for s in data["all_sessions"])
+    # round-trip JSON : les nouvelles clés survivent à sérialisation/ré-lecture
+    rt = json.loads(json.dumps(data))
+    assert rt["by_harness"] == data["by_harness"]
+    assert rt["all_sessions"] == data["all_sessions"]
+
+
+def test_summary_to_dict_empty_harness_backward_compat():
+    """Flux historique (harness='') : clés présentes, runs anciens toujours lisibles."""
+    period = Period(start=tzutc(2026, 8, 5), end=tzutc(2026, 8, 12))
+    u = make_usage("r", [make_step("r", period.start, cost=0.5)])
+    data = summary_to_dict(aggregate([u], period=period, generated_at=period.end))
+    assert data["top_sessions_by_cost"][0]["harness"] == ""
+    assert data["all_sessions"][0]["harness"] == ""
+    assert json.loads(json.dumps(data))["all_sessions"] == data["all_sessions"]
 
 
 def test_summary_to_dict_v528_new_fields():

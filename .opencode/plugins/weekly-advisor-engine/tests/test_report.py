@@ -2124,3 +2124,167 @@ def test_assemble_security_warn_only(tmp_path: Path):
     assert _coerce_rc("crash", default=0) == 0
     # _gate_status par défaut : security pass, autres gates inchangées
     assert _gate_status({})["security"]["status"] == "pass"
+
+
+# ------------------------------------------------- vNext multi-harnais (harness-breakdown)
+
+
+def _seed_harness_summary(tmp_path: Path) -> None:
+    """Summary enrichi by_harness/all_sessions avec harness propagé."""
+    _write_summary(tmp_path)
+    p = tmp_path / f"weekly-summary-{DATE}.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data["by_harness"] = [
+        {
+            "harness": "copilot-cli",
+            "session_count": 1,
+            "total_tokens": 300,
+            "total_cost_usd": 3.0,
+        },
+        {
+            "harness": "opencode",
+            "session_count": 1,
+            "total_tokens": 100,
+            "total_cost_usd": 0.5,
+        },
+    ]
+    big_title = "Gros chantier " + "x" * 100
+    data["top_sessions_by_cost"] = [
+        {
+            "session_id": "b",
+            "title_or_topic": big_title,
+            "harness": "copilot-cli",
+            "cost_usd": 3.0,
+            "total_tokens": 300,
+            "duration_seconds": 60,
+            "active_time_seconds": 30,
+            "cost_per_active_minute": 6.0,
+            "api_call_count": 5,
+            "includes_subagents": False,
+            "cache_efficiency": 0.5,
+        },
+    ]
+    data["all_sessions"] = data["top_sessions_by_cost"] + [
+        {
+            "session_id": "a",
+            "title_or_topic": "Petit fix",
+            "harness": "opencode",
+            "cost_usd": 0.5,
+            "total_tokens": 100,
+            "duration_seconds": 10,
+            "active_time_seconds": 5,
+            "cost_per_active_minute": 6.0,
+            "api_call_count": 2,
+            "includes_subagents": False,
+            "cache_efficiency": 0.1,
+        },
+    ]
+    p.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_report_context_exposes_harness_breakdown_and_all_sessions(tmp_path: Path):
+    from weekly_telemetry_aggregator.report import build_report_context
+
+    _seed_harness_summary(tmp_path)
+    ctx = build_report_context(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert ctx is not None
+    assert [h["harness"] for h in ctx["harness_breakdown"]] == ["copilot-cli", "opencode"]
+    assert ctx["harness_breakdown"][0]["total_cost_usd"] == 3.0
+    assert [s["session_id"] for s in ctx["all_sessions"]] == ["b", "a"]
+
+
+def test_report_context_tolerates_missing_harness_keys(tmp_path: Path):
+    """Runs anciens sans by_harness/all_sessions → listes vides, pas de crash."""
+    from weekly_telemetry_aggregator.report import _harness_breakdown, build_report_context
+
+    _write_summary(tmp_path)
+    p = tmp_path / f"weekly-summary-{DATE}.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data.pop("by_harness", None)
+    data.pop("all_sessions", None)
+    p.write_text(json.dumps(data), encoding="utf-8")
+    ctx = build_report_context(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert ctx is not None
+    assert ctx["harness_breakdown"] == []
+    assert ctx["all_sessions"] == []
+    # garde-fou unitaire : entrées malformées ignorées, tri (-coût, harnais)
+    assert _harness_breakdown({}) == []
+    assert _harness_breakdown({"by_harness": "nope"}) == []
+    assert _harness_breakdown({"by_harness": [{"harness": "z"}, None, "x"]}) == [
+        {"harness": "z", "session_count": 0, "total_tokens": 0, "total_cost_usd": 0.0}
+    ]
+
+
+def test_report_prep_renders_harness_breakdown_md(tmp_path: Path):
+    _seed_harness_summary(tmp_path)
+    draft, ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None
+    text = draft.read_text(encoding="utf-8")
+    assert "### Ventilation par harnais" in text
+    assert "copilot-cli" in text and "opencode" in text
+    assert "harnais `copilot-cli`" in text  # colonne harness du top sessions
+    assert "### Toutes les sessions (annexe)" in text
+    assert "`b`" in text and "`a`" in text
+    annex = text.split("### Toutes les sessions (annexe)")[1]
+    assert "x" * 100 not in annex  # titres d'annexe tronqués 80ch
+    assert "user_turns" not in text
+
+
+def test_report_prep_harness_fallback_without_keys(tmp_path: Path):
+    _write_summary(tmp_path)
+    p = tmp_path / f"weekly-summary-{DATE}.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data.pop("by_harness", None)
+    data.pop("all_sessions", None)
+    p.write_text(json.dumps(data), encoding="utf-8")
+    draft, ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None
+    text = draft.read_text(encoding="utf-8")
+    assert "Ventilation par harnais non disponible" in text
+    assert "Toutes les sessions (annexe)" not in text
+
+
+def test_report_gate_passes_without_harness_keys(tmp_path: Path):
+    """Pas de régression gate : summary sans by_harness/all_sessions reste pass."""
+    _write_summary(tmp_path)
+    p = tmp_path / f"weekly-summary-{DATE}.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data.pop("by_harness", None)
+    data.pop("all_sessions", None)
+    p.write_text(json.dumps(data), encoding="utf-8")
+    gate = validate_required_artifacts(tmp_path, DATE)
+    assert gate["status"] == "pass"
+    assert gate["required"][f"weekly-summary-{DATE}.json"]["status"] == "present"
+
+
+def test_html_renders_harness_filter_and_closed_annex(tmp_path: Path):
+    from weekly_telemetry_aggregator.html_report import render_html_report
+    from weekly_telemetry_aggregator.report import build_report_context
+
+    _seed_harness_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    cfg.html_report_dir = str(tmp_path / "html")
+    ctx = build_report_context(cfg, anchor=RUN.isoformat())
+    assert ctx is not None
+    path = render_html_report(cfg, anchor=RUN.isoformat(), ctx=ctx, quality_block=None)
+    assert path is not None and path.exists()
+    html = path.read_text(encoding="utf-8")
+    # colonne harness du top sessions + ventilation by_harness
+    assert "Ventilation par harnais" in html
+    assert "copilot-cli" in html and "opencode" in html
+    # annexe H fermée par défaut (jamais open), autonome zéro-CDN
+    assert '<details class="annex" id="annex-h">' in html
+    assert 'id="allsess-q"' in html and 'id="allsess-h"' in html
+    assert '<option value="copilot-cli">' in html
+    assert '<option value="opencode">' in html
+    assert "cdn" not in html.lower()
+    # titres de l'annexe H tronqués 80ch (le tableau top-sessions d'annexe B
+    # garde son rendu historique ; le payload JSON garde les données complètes)
+    annex_h = html.split('id="annex-h"')[1].split('<script type="application/json"')[0]
+    assert "x" * 100 not in annex_h
+    assert "<td>Gros chantier " + "x" * 66 + "</td>" in annex_h
+    # l'annexe affichée ne rend que des champs sûrs (pas de brut transcript) ;
+    # les clés agrégées du payload JSON embarqué ne sont pas du contenu brut
+    assert "user_turns" not in annex_h and "tool_arg" not in annex_h
+    # zéro-CDN : aucun script/link externe
+    assert "<script src=" not in html and '<link rel="stylesheet"' not in html
