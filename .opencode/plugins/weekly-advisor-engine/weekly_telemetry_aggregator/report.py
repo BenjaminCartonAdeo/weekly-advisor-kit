@@ -150,6 +150,46 @@ def _top_models(summary: dict, limit: int = 3) -> list[dict]:
     return top
 
 
+def _harness_breakdown(summary: dict) -> list[dict]:
+    """Ventilation sessions/tokens/coût par harnais (miroir de by_model).
+
+    Dérivé de `summary["by_harness"]`, tolérant aux clés absentes (runs
+    anciens) : entrées non-dict ignorées, champs manquants → 0, tri
+    (-coût, harnais). Jamais de levée sur summary malformé.
+    """
+    if not isinstance(summary, dict):
+        return []
+    raw = summary.get("by_harness", [])
+    if not isinstance(raw, list):
+        return []
+    rows = []
+    for h in raw:
+        if not isinstance(h, dict):
+            continue
+        try:
+            sessions = int(h.get("session_count", 0) or 0)
+        except (TypeError, ValueError):
+            sessions = 0
+        try:
+            tokens = int(h.get("total_tokens", 0) or 0)
+        except (TypeError, ValueError):
+            tokens = 0
+        try:
+            cost = float(h.get("total_cost_usd", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            cost = 0.0
+        rows.append(
+            {
+                "harness": h.get("harness", ""),
+                "session_count": sessions,
+                "total_tokens": tokens,
+                "total_cost_usd": cost,
+            }
+        )
+    rows.sort(key=lambda r: (-r["total_cost_usd"], r["harness"]))
+    return rows
+
+
 def _complete_daily(period: dict, daily: list[dict]) -> list[dict]:
     """Tous les jours de la fenêtre, zéro explicite (v5.30, 10).
 
@@ -1835,6 +1875,10 @@ def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> 
         "findings": findings,
         "models_top": _top_models(summary),
         "top_sessions": summary.get("top_sessions_by_cost", []),
+        "all_sessions": summary.get("all_sessions", [])
+        if isinstance(summary.get("all_sessions", []), list)
+        else [],
+        "harness_breakdown": _harness_breakdown(summary),
         "harness_ignored_rules": list(cfg.harness_ignored_rules),
         "harness_top_rules": [
             {

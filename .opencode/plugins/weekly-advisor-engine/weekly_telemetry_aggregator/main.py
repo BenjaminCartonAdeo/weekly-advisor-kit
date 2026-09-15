@@ -378,6 +378,7 @@ def build_usage(
             context_chars=context_chars,
             first_user_text=first_user,
             reported_cost_usd_lifetime=reported_cost,
+            harness=getattr(meta, "harness", "") or getattr(adapter, "harness", "") or "",
         ),
         False,
     )
