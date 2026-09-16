@@ -1,5 +1,5 @@
 ---
-description: "Résume le dernier rapport hebdomadaire du pipeline weekly-advisor (rapport HTML <project_root>/reports/html/weekly-report-latest.html, sinon l'archive runs/*/ la plus récente) — synthèse, alertes, constats, actions."
+description: "Résume le dernier rapport hebdo — HTML autonome en priorité, sinon l'archive la plus récente. Use when the latest weekly report has to be summarized."
 ---
 
 # Dernier rapport hebdomadaire

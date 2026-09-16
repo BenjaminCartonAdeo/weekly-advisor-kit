@@ -1,6 +1,6 @@
 ---
 name: weekly-advisor-worker
-description: Exécute une branche paramétrée du DAG weekly-advisor (briefing minimal-complet) et retourne un JSON strict : branch, rc, steps_done, warnings, artifacts, elapsed_s. Ne connaît ni les autres branches ni la logique de merge.
+description: "Exécute une branche du DAG orchestré à partir d'un briefing minimal-complet et renvoie un contrat JSON strict. Use when dispatched with a single branch briefing."
 mode: subagent
 permission:
   edit: allow
@@ -244,10 +244,6 @@ l'extrait est borné, tronqué ou illisible. L'envelope v1 obligatoire est :
 toujours des tableaux, et `rc` vaut seulement `0` ou `1`. Un extrait vide ne permet
 aucun finding inventé : écrire un résumé explicite et `findings: []`, puis conserver le
 warning dans l'artefact. Le worker vérifie cette forme avant son contrat de retour.
-
-### Transcript borné ou tronqué
-
-Règle canonique : skill `weekly-quality-audit` (§ retry et code retour). Rappel worker : **one bounded retry** (`max_retry=1`, ≤3 fenêtres `offset/limit`), jamais de respawn loop. `complete-enough` → envelope `rc: 0` + warning informatif `transcript-truncated:<session_id>` conservé ; partiel résiduel → envelope `rc: 1` + warning **exact** dans contrat ET artefact. Plafond worker 10 min : timeout = `rc=1` + warning.
 
 ### Entrées aval et sécurité
 

@@ -188,9 +188,19 @@ règles custom `.harness-eval/rules/portability.yaml`, ids `custom/portability/*
 
 **Comportement par artefact (honnête)** : `harness-eval skill-verify` n'inspecte que
 les dossiers **skills** (`SKILL.md` + fichiers frères). Pour une **command**, la gate
-est **skippée explicitement** — non applicable en harness-eval 7.10.1 — et le résultat
+est **skippée explicitement** — non applicable — et le résultat
   du tool affiche une note de skip visible (« Gate portabilité non applicable aux
 commands… ») : le commit part sans gate, jamais de silence ni de faux vert.
+
+**Règles custom partiellement inactives (moteur 7.15.0)** : deux des cinq règles de
+`.harness-eval/rules/portability.yaml` sont **skippées silencieusement** (message sur
+`stderr`, invisible en usage normal) — `custom/portability/frontmatter-minimal` (« regex
+exceeds 256 characters, skipping ») et `custom/portability/no-hardcoded-tool-names`
+(« regex looks prone to catastrophic backtracking, skipping »). Seules
+`multi-platform-invocation`, `project-relative-paths` et `self-contained-scripts`
+restent actives : la gate ne vérifie donc **plus** le frontmatter minimal ni les noms
+d'outils codés en dur. Ne pas modifier ce fichier de règles (contrainte AGENTS.md) ;
+relire la sortie `stderr` du scanner après toute montée de version.
 
 #### WAVE 2.5 — curation gated et manifeste dry-run
 

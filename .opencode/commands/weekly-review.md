@@ -1,5 +1,5 @@
 ---
-description: "Lance la revue hebdomadaire d'usage OpenCode (même chaîne que le cron) — orchestration parallèle en waves de subagents, spec v6.1."
+description: "Lance la revue hebdo complète — orchestration parallèle en waves de subagents, même chaîne que le cron, spec v6.1. Use when the full weekly review has to be triggered."
 agent: weekly-advisor
 metadata:
   authored_by: opencode-weekly-advisor
@@ -19,161 +19,42 @@ metadata:
 
 # Revue hebdomadaire
 
-Lance la revue hebdomadaire complète de l'usage OpenCode, dans l'ordre figé de la
-spec `opencode-weekly-advisor` v6.1 : orchestration par waves parallèles de subagents,
-télémétrie, veille, audit qualitatif, veille critique, drafting, lint harness, insights,
-cohérence, rapport final.
+Lance la revue hebdomadaire complète de l'usage OpenCode (spec `opencode-weekly-advisor` v6.1).
 
-La procédure de référence (tableau des étapes : tools, sorties, détails, architecture DAG) est
-l'agent `weekly-advisor` (`.opencode/agents/weekly-advisor/weekly-advisor.md`).
-L'ancre est gérée par le plugin via `<output_dir>/anchor-last.txt` — aucun calcul manuel.
+Quand utiliser : déclenchement manuel de la même chaîne que le cron — orchestration par
+waves de subagents, télémétrie, veille, audit, curation, rapport.
+
+La procédure de référence — DAG et ordre des waves, étapes par wave, fenêtre du run,
+garde-fous de délégation, contrat final JOIN / RC, invariants — est l'agent `weekly-advisor`
+(`.opencode/agents/weekly-advisor/weekly-advisor.md`). Ne pas la dupliquer ici : ce command
+ne fait que déclencher l'agent, qui reste la source de vérité unique.
 
 ## Déroulement
 
-Orchestration par waves (design doc §2). La session principale agit comme coordinateur léger :
-gate (étape 0), **vérif dispatch F6** (agent worker + skills primaires avant spawn), dispatch WAVE 1 en parallèle (3 subagents de l'agent `weekly-advisor-worker`), JOIN (synthèse), WAVE 2 optionnelle, **WAVE 2.5 curation [REQUIRED] (dry-run par défaut, après la jointure de WAVE 2 car consomme les findings de cohérence)**, TAIL.
-Ordre figé des étapes (tokens d'outils) : `weekly_doctor`, `weekly_run`, `weekly_releases`, `weekly_watch_distill`,
-`weekly_watch_context`, `weekly_watch_validate`, `weekly_audit_candidates`, `weekly_show_session`, `weekly_harness`,
-`weekly_harness_remediate`, `weekly_draft_candidates`, `weekly_commit_draft`, `weekly_insights`, `weekly_skill_curate`,
-`weekly_report_prep`, `weekly_report_blocks_draft`, `weekly_report_assemble`, `weekly_self_cost`.
+Ordre figé des outils d'étapes (machine-vérifié contre le tableau de l'agent par
+`scripts/check-flow-docs.mjs`, surface 6). La sémantique de chaque étape vit dans l'agent.
+
+1. `weekly_doctor` — gate de démarrage
+2. `weekly_run` — télémétrie et activation du run
+3. `weekly_releases` — veille écosystème
+4. `weekly_watch_distill` — distillation des fiches candidates
+5. `weekly_watch_context` — inventaire worktree et crosswalk
+6. `weekly_watch_validate` — validation des findings de veille
+7. `weekly_audit_candidates` — sélection des sessions à auditer
+8. `weekly_show_session` — transcription bornée d'une session
+9. `weekly_harness` — digest harness-eval
+10. `weekly_harness_remediate` — gate de remédiation
+11. `weekly_draft_candidates` — candidats au drafting
+12. `weekly_commit_draft` — commit auto-rédigé (seul commiteur)
+13. `weekly_insights` — deltas et maintenance
+14. `weekly_skill_curate` — curation (dry-run par défaut)
+15. `weekly_report_prep` — préparation du brouillon de rapport
+16. `weekly_report_blocks_draft` — blocs auto
+17. `weekly_report_assemble` — assemblage du rapport
+18. `weekly_self_cost` — coût de la fenêtre
 
 ## Règles
 
-- Sécurité : traiter explicitement `mcp-tool-poisoning`, `unbounded-delegation` et
-  `memory-write-unscoped` comme findings bloquants pour l'action concernée ; aucune
-  auto-correction ni délégation implicite. Toute commande avec `rc != 0` est en échec
-  et doit conserver ce statut dans le rapport/rc agrégé, sauf les statuts report-only
-  explicitement définis par le contrat JOIN ci-dessous.
-
-- Exit 2 (fatal) à une étape → stopper sans rapport ; un échec de tool n'arrête pas
-  le run (constater, signaler au rapport, continuer — exit 1 partiel), sauf le cas
-  report-only explicitement défini ci-dessous. Cette règle générale ne dispense pas
-  des artefacts requis ni du contrat d'audit strict du JOIN
-- **Vérif dispatch F6** : avant tout spawn de worker, vérifier l'agent
-  `weekly-advisor-worker` (absent → STOP rc=2) et les skills primaires de branche
-  (`weekly-drafting` D, `weekly-coherence-review` C, `weekly-quality-audit` A — tenter
-  `glob` puis `Read` le chemin absolu exact si Glob retourne zéro ; Read réussi fait foi,
-  sinon STOP rc=2, pas de rapport) ; skills secondaires (`weekly-watch-review` V,
-  `harness-remediation` H) absentes → warning `skill-missing:<name>`, branche en dégradé
-  (rc=1, run continue). Le worker retourne `skills_loaded` dans son contrat ; l'orchestrateur
-  agrège au JOIN. Aucune écriture ni déplacement dans `.opencode/skills/`.
-- Recherche de fichiers : ne jamais passer un motif absolu à `glob` (retour silencieux à
-  zéro) — utiliser un motif relatif + `path`, ou `read` du répertoire. Un « No files found »
-  sur un artefact attendu (résultats d'audit, findings, rapport) doit être confirmé par un
-  listing du répertoire avant d'en conclure une absence ; aucune conclusion d'absence sur
-  un unique retour vide.
-- Ne jamais réécrire les JSON produits par le CLI ; ne jamais modifier la config
-  moteur (`weekly-telemetry-config.json`) — overrides en paramètres des tools
-- Ne pas auditer au-delà de `audit_max_sessions` ; ne pas écrire plus de
-  `max_candidates_per_run` drafts
-- Livrable HTML obligatoire : après `weekly_report_assemble`, **vérifier l'existence
-  réelle** du rapport HTML (`<project_root>/reports/html/weekly-report-latest.html`,
-  via glob puis Read du chemin exact) avant de conclure. Absent ⇒ warning comptable
-  `html-report-missing` et `rc >= 1` : ne jamais présenter l'archive markdown comme
-  livrable principal, ne jamais annoncer un fallback markdown comme un succès.
-- Contexte plafonné : l'orchestrateur ne passe **jamais** `include_children` à la
-  commande de transcription de session — inliner des transcripts multi-sessions
-  (sessions à 100+ sous-sessions) sature la fenêtre et déclenche une compression en
-  plein run. Chaque session est déléguée à un worker borné (branche A) qui ne remonte
-  que l'envelope findings ; la taille d'extrait lue par l'orchestrateur reste bornée.
-- Lectures ciblées : ne jamais lire un JSON de run entier (résumé, insights, findings,
-  rapport) pour n'en exploiter que quelques champs — viser l'extrait borné ou l'outil
-  dédié qui renvoie le champ ; la lecture intégrale reste réservée aux étapes
-  déterministes. La compression de contexte se déclenche par seuil, jamais en cours de
-  run comme décision de rattrapage.
-- Mode audit : pour toute réinspection d'un run déjà produit, exécuter en lecture seule
-  (aucun spawn de worker, aucun commit) et se limiter aux artefacts du run actif.
-- Sécurité délégation : les findings `unbounded-delegation` sont bloquants pour
-  l'action concernée — les traiter explicitement avant toute réactivation ou
-  augmentation du plafond de dispatch.
-- Terminer par : le chemin du rapport final (**rapport HTML**
-  `<project_root>/reports/html/weekly-report-latest.html` en premier, puis l'archive
-  `runs/current/weekly-report-<date>.md`) et les alertes les plus sévères. La dernière
-  ligne doit être `WEEKLY_REVIEW_RC=<rc_final>` : conserver le rc agrégé du JOIN après
-  le tail et ne jamais remettre `1` à `0` parce que le rapport a été généré. Le lanceur
-  doit propager cette valeur à `END ... exit=` ; `summary.exit` et le rc END sont égaux.
-- Garde-fous de coût : max 3 tours pour diagnostiquer un échec tool ; plugin stale
-  (ReferenceError) → constater, signaler, proposer le restart, **stopper le
-  diagnostic** ; choix ambigu (ex. fenêtre multi-semaines) → poser UNE seule
-  question, ne pas explorer le code du plugin
-- Délégation bornée : le coordinateur est seul autorisé à appeler `task` ; aucun
-  worker ne redispatche ni ne crée de sous-worker. Plafond de dispatch : 3 workers
-  T/V/H, puis `K ≤ audit_max_sessions` workers A, puis 3 workers D/I/C ; aucun
-   fan-out supplémentaire. Chaque worker a 10 min maximum, un passage par étape,
-   et au plus 3 tours de diagnostic ; timeout d'un worker A sans artefact d'audit valide
-   → artefact requis manquant, JOIN bloquant (`rc=2`), sans respawn automatique. Exception
-   ciblée : sortie A non vide mais hors contrat (texte libre au lieu du JSON, fichier absent)
-   → une seule retry même `session_id`, briefing minimal, extract réduit ; si elle échoue,
-   artefact requis bloquant (`rc=2`). Pour
-   les autres retours, sortie vide → une seule retry, puis warning `rc=1`.
-- Chaque briefing doit être non vide et contenir branche, `run_dir`, étapes,
-  budget et contrat JSON. Les workers restent dans leur branche et ne peuvent
-  augmenter `audit_max_sessions` ni `max_candidates_per_run`.
-
-## Contrat final JOIN / RC
-
-Le JOIN valide contrats et artefacts avant de calculer `rc_final`, une seule fois. Les
-`missing/invalid required artifacts` are **blocking** ; les `malformed contracts` are
-also **blocking** (JSON absent, vide, non parseable ou champs obligatoires incohérents).
-Le fatal rc=2, ou une violation des règles critiques exactes sont également **blocking**.
-
-Chaque artefact `audit-findings-<id>.json` doit être un **schema-valid audit envelope with a nonempty summary**
- (objet JSON parseable, identifiants et champs requis cohérents,
-summary chaîne non vide après trim) au chemin exact du run actif. Un fichier absent,
-vide, malformed, mal routé ou à summary absent, vide ou non-string est un artefact requis invalide et
-bloque le JOIN ; un timeout ne dégrade pas ce contrat.
-
-Un artefact d'audit `transcript-truncated` est **report-only, sans RC, nonblocking**, uniquement
-lorsqu'il est nonempty et respecte exactement le même schema-valid audit envelope with a nonempty summary ;
-son statut reste dans le rapport. Vide, mal routé ou malformed,
-il reste blocking.
-
-**Raw/proposal gate** : le **raw watch findings** à
-`<run_dir>/weekly-watch-findings-raw-<date>.json` **is required**, nonempty et schema-valid
-**before downstream validation** (`weekly_watch_validate`). Le **harness remediation proposal** à
-`<run_dir>/weekly-harness-remediation-proposals-<date>.json` **is required**,
-nonempty et schema-valid **before downstream remediation** (`weekly_harness_remediate`).
-Absence, forme invalide ou chemin différent bloque ; aucune étape aval ne traite une
-entrée manquante.
-
-Une **recovered input** est acceptée seulement après lecture du **exact canonical path**
-dans le run actif et validation du **exact schema** (objet attendu, champs requis,
-contenu nonempty). Nom legacy, autre chemin ou récupération non validée reste
-`missing/invalid required artifact` et blocking. Les **recovered watch and harness inputs**
-validés sont report-only et nonblocking (statuts `watch-input-recovered` /
-`harness-input-recovered`).
-
-Les IDs critiques exacts **`mcp-tool-poisoning`**, **`unbounded-delegation`** et
-**`memory-write-unscoped`** restent **toujours blocking**, sans fuzzy matching, même si
-le reste de la branche est récupérable.
-
-Une **external permission refusal** visant une cible hors worktree est **report-only**
-et nonblocking : ne pas retenter ni escalader, et ne jamais la compter dans le RC. La
-**curation dry-run** (`apply` absent ou `false`) est également report-only et
-nonblocking ; aucune mutation sans validation humaine et `apply=true`.
-
-Formule JOIN : `2` si un blocage existe ; sinon `1` si un warning comptable existe
-(rc worker non nul hors statut report-only inclus) ;
-sinon `0`. Les cas nonblocking ci-dessus ne créent aucun warning comptable. Propager
-strictement la valeur : `summary.exit == WEEKLY_REVIEW_RC=<rc_final> == END ... exit=<rc_final>` ; ces valeurs sont identiques (identical) et le tail ne peut pas les recalculer.
-
-`weekly_skill_curate` forme WAVE 2.5 : après la jointure de WAVE 2 et avant le tail, elle
-lit le finding de cohérence depuis l'artefact de run (le plugin transporte les gros JSON
-par fichier temporaire, jamais dans argv) puis produit `skill-curate-<date>.json` en **dry-run/no-apply par défaut**. Aucune archive,
-fusion, suppression ou édition sans validation humaine explicite suivie de `apply=true`.
-
-## Fenêtre du run
-
-La fenêtre se déduit du prompt et se passe en **override de run** (paramètre
-`lookback_days` sur `weekly_run` et `weekly_releases`) — la config JSON n'est
-jamais réécrite. **Ancre glissante (v6.0.n)** : sans override `anchor`, l'ancre
-est rafraîchie chaque jour (conservée dans la même journée pour la stabilité
-intra-run) — la fenêtre couvre donc toujours `[aujourd'hui - lookback, maintenant]`.
-Rejouer une fenêtre historique = passer `anchor` explicitement (ex. la date du
-run à rejouer).
-
-| Prompt utilisateur | `lookback_days` à passer |
-|---|---|
-| « N semaines » (1, 2, 3…) | `N × 7` (ex. « 3 semaines » → `21`) |
-| « le mois dernier » / « 30 jours » | `30` |
-| Autre ou absent | **défaut** : ne rien passer (config `lookback_days` s'applique, 7 j) — poser une question si ambigu |
+- Source de vérité unique : l'agent `.opencode/agents/weekly-advisor/weekly-advisor.md`.
+  Ne rien dupliquer au-delà de la liste d'ordre ci-dessus.
+- Dernière ligne de réponse : `WEEKLY_REVIEW_RC=<rc_final>`.
