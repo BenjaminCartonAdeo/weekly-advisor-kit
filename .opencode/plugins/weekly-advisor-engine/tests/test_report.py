@@ -217,6 +217,40 @@ def test_report_assemble_partial_audit_still_writes_report_rc_one(tmp_path: Path
     assert "audit" in text.casefold() or "partiel" in text.casefold() or len(text) > 0
 
 
+def test_report_assemble_blocking_restores_current_to_previous_run(tmp_path: Path):
+    """Bascule tardive : STOP sans rapport (rc=2) → current restauré sur le run précédent."""
+    from weekly_telemetry_aggregator.run_state import activate_run
+
+    first = activate_run(tmp_path, DATE, RUN)
+    second = activate_run(tmp_path, DATE, RUN)
+    out = second.run_dir
+    period = Period(start=tzutc(2026, 8, 5), end=RUN)
+    u = make_usage("r", [make_step("r", tzutc(2026, 8, 6, 10), cost=0.5)], title="S")
+    data = summary_to_dict(aggregate([u], period=period, generated_at=RUN))
+    (out / f"weekly-summary-{DATE}.json").write_text(
+        json.dumps(data, ensure_ascii=False), encoding="utf-8"
+    )
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (out / f"weekly-timings-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "branches": {
+                    "I": {
+                        "artifacts": [f"weekly-insights-{DATE}.json"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is None
+    assert rc == 2
+    assert (tmp_path / "runs" / "current").resolve() == first.run_dir.resolve()
+    assert any("restauré" in warning for warning in warnings)
+
+
 def test_applicable_summary_rc_accepts_valid_transcript_truncation(tmp_path: Path):
     _write_summary(tmp_path)
     summary_path = tmp_path / f"weekly-summary-{DATE}.json"

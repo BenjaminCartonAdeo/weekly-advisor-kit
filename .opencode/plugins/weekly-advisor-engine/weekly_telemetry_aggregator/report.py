@@ -26,7 +26,7 @@ from .config import TelemetryConfig
 from .harness_scope import harness_digest_problems
 from .html_report import open_html_report, render_html_report
 from .insights import flatten_harness_findings
-from .run_state import active_run_meta, resolve_active_run_dir
+from .run_state import active_run_meta, resolve_active_run_dir, rollback_current_link
 from .util import iso as _iso
 from .util import load_json as _load_json
 from .util import parse_anchor as _parse_anchor
@@ -2167,6 +2167,24 @@ def validate_llm_blocks(text: str, findings: dict | None, insights: dict | None)
 
 
 def report_assemble(
+    cfg: TelemetryConfig, *, anchor: str | None = None
+) -> tuple[Path | None, list[str], int]:
+    """Inject the LLM blocks file into the draft → final report.
+
+    Bascule tardive : si aucun rapport n'est écrit (gate bloquante, rc>=2),
+    l'alias ``runs/current`` est restauré sur le run précédent — il désigne
+    toujours le dernier run avec un livrable, jamais un run vide.
+    """
+    path, warnings, rc = _report_assemble_inner(cfg, anchor=anchor)
+    if path is None and rc >= 2 and rollback_current_link(cfg.output_dir):
+        warnings = [
+            *warnings,
+            "alias runs/current restauré sur le run précédent (aucun rapport écrit)",
+        ]
+    return path, warnings, rc
+
+
+def _report_assemble_inner(
     cfg: TelemetryConfig, *, anchor: str | None = None
 ) -> tuple[Path | None, list[str], int]:
     """Inject the LLM blocks file into the draft → final report."""

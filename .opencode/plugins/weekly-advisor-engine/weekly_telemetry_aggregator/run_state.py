@@ -4,13 +4,18 @@ Each run writes every artifact under ``<output_dir>/runs/<run_id>/`` with
 ``run_id = <anchor-date>-<uuid-hex-8>`` — two runs can never overwrite each
 other, even when they share the same anchor date.  A small state file
 (``<output_dir>/run_state.json``) records the active run; ``runs/current`` is a
-best-effort symlink to it so agents and docs keep a stable path.  Commands that
-resolve a date with no run state fall back to ``output_dir`` itself (legacy
-mode: tests, manual CLI debugging) — production always activates a run first.
+best-effort alias so agents and docs keep a stable path.  It points at the
+active run during execution (workers write via ``runs/current/``), but a run
+that ends WITHOUT a report (blocking gate, rc=2) restores it onto the previous
+run — ``current`` always designates the latest run with a deliverable.
+Commands that resolve a date with no run state fall back to ``output_dir``
+itself (legacy mode: tests, manual CLI debugging) — production always
+activates a run first.
 """
 
 from __future__ import annotations
 
+import os
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
@@ -29,7 +34,8 @@ _WARNED_REAL_CURRENT = False  # warning "current réel" : une seule fois par pro
 _LAYOUT_README = """# reports/ — layout du pipeline `weekly-advisor`
 
 - `runs/<date>-<uuid8>/` — artefacts complets de chaque run (source de vérité)
-- `runs/current/` — alias symlink vers le run actif (signal cron/CI)
+- `runs/current/` — alias vers le run en cours, restauré sur le dernier run
+  avec rapport si le run échoue sans livrable (signal cron/CI)
 - `<project_root>/reports/html/` — **rapport HTML pour l'utilisateur**
   (chemin par défaut, config `html_report_dir` pour le changer, `""` pour désactiver)
 - `run_state.json` / `previous_run.json` / `anchor-last.txt` — état du pipeline (ne pas éditer)
@@ -61,6 +67,9 @@ def activate_run(output_dir: Path, date: str, run_time: datetime) -> ActiveRun:
     run_dir.mkdir(parents=True, exist_ok=False)  # uuid ⇒ never pre-exists
     #: alias matérialisé IMMÉDIatement à la naissance du run dir (v6.2) —
     #: les artefacts intermédiaires résolvent `runs/current` dès la première écriture.
+    #: la cible précédente est mémorisée : un run qui échoue SANS rapport
+    #: (gate bloquante, rc=2) y restaurera l'alias via rollback_current_link.
+    previous_target = _read_current_target(output_dir)
     _update_current_link(output_dir, run_dir)
     state = {
         "schema_version": STATE_SCHEMA_VERSION,
@@ -71,6 +80,8 @@ def activate_run(output_dir: Path, date: str, run_time: datetime) -> ActiveRun:
         #: heure réelle de création du run dir (v6.0.l) — created_at reste l'ancre.
         "activated_at": datetime.now(UTC).isoformat(),
     }
+    if previous_target is not None:
+        state["previous_run_dir"] = str(previous_target)
     _write_ok(output_dir / RUN_STATE_FILE, state)
     _migrate_legacy_root(output_dir, run_dir)
     _ensure_layout_readme(output_dir)
@@ -130,6 +141,55 @@ def _write_ok(path: Path, data: dict) -> None:
     l'état corrompu basculerait tous les artefacts suivants en fallback legacy.
     """
     write_json_atomic(path, data)
+
+
+def rollback_current_link(output_dir: Path) -> bool:
+    """Re-pointe ``runs/current`` vers le run précédent ; True si restauré.
+
+    Appelé par les chemins d'échec SANS rapport (gate bloquante, rc=2) :
+    l'alias ne doit jamais désigner un run sans livrable — cron/CI et agents
+    continuent de voir le dernier run avec un rapport. Best-effort : False si
+    aucun run précédent connu, disparu, ou alias non restauré (ex. entrée
+    réelle — voir ``_update_current_link``).
+    """
+    state = load_json(Path(output_dir) / RUN_STATE_FILE)
+    if not isinstance(state, dict):
+        return False
+    prev = state.get("previous_run_dir")
+    if not isinstance(prev, str) or not prev:
+        return False  # premier run : rien vers quoi restaurer
+    prev_dir = Path(prev)
+    if not prev_dir.is_dir():
+        return False
+    _update_current_link(Path(output_dir), prev_dir)
+    link = Path(output_dir) / RUNS_DIR / CURRENT_SYMLINK
+    try:
+        restored = link.is_symlink() and link.resolve() == prev_dir.resolve()
+    except OSError:
+        restored = False
+    if not restored:
+        return False
+    print(
+        f"run_state: run sans rapport — {RUNS_DIR}/{CURRENT_SYMLINK} restauré "
+        f"sur le run précédent ({prev_dir.name})",
+        flush=True,
+    )
+    return True
+
+
+def _read_current_target(output_dir: Path) -> Path | None:
+    """Cible absolue de l'alias ``runs/current`` ; None si absent ou non-lien."""
+    link = Path(output_dir) / RUNS_DIR / CURRENT_SYMLINK
+    try:
+        if not link.is_symlink():
+            return None
+        raw = os.readlink(link)
+    except OSError:
+        return None
+    target = Path(raw)
+    if not target.is_absolute():
+        target = link.parent / raw
+    return Path(os.path.normpath(str(target)))
 
 
 def _update_current_link(output_dir: Path, run_dir: Path) -> None:

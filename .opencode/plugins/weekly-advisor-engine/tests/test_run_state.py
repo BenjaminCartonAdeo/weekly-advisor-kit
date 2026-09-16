@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from weekly_telemetry_aggregator.run_state import (
     activate_run,
     active_run_meta,
     resolve_active_run_dir,
+    rollback_current_link,
 )
 
 RUN_DATE = "2026-08-16"
@@ -237,3 +239,41 @@ def test_baseline_survives_consecutive_activations(tmp_path):
         assert not (
             tmp_path / "runs" / active.run_id / "legacy" / "weekly-harness-baseline.json"
         ).exists()
+
+
+def test_activate_records_previous_run_dir(tmp_path):
+    """2e activate : l'état mémorise la cible précédente de l'alias."""
+    first = activate_run(tmp_path, RUN_DATE, RUN_TIME)
+    second = activate_run(tmp_path, RUN_DATE, RUN_TIME.replace(hour=11))
+    state = json.loads((tmp_path / RUN_STATE_FILE).read_text(encoding="utf-8"))
+    assert Path(state["previous_run_dir"]).resolve() == first.run_dir.resolve()
+    assert (tmp_path / "runs" / "current").resolve() == second.run_dir.resolve()
+
+
+def test_first_activate_records_no_previous_run_dir(tmp_path):
+    activate_run(tmp_path, RUN_DATE, RUN_TIME)
+    state = json.loads((tmp_path / RUN_STATE_FILE).read_text(encoding="utf-8"))
+    assert "previous_run_dir" not in state
+
+
+def test_rollback_restores_current_to_previous_run(tmp_path, capsys):
+    first = activate_run(tmp_path, RUN_DATE, RUN_TIME)
+    activate_run(tmp_path, RUN_DATE, RUN_TIME.replace(hour=11))
+    assert rollback_current_link(tmp_path) is True
+    assert (tmp_path / "runs" / "current").resolve() == first.run_dir.resolve()
+    assert "restauré" in capsys.readouterr().out
+
+
+def test_rollback_without_previous_run_returns_false_and_keeps_alias(tmp_path):
+    active = activate_run(tmp_path, RUN_DATE, RUN_TIME)
+    assert rollback_current_link(tmp_path) is False
+    assert (tmp_path / "runs" / "current").resolve() == active.run_dir.resolve()
+
+
+def test_rollback_when_previous_run_dir_vanished(tmp_path):
+    """Run précédent purgé : pas de restauration vers un répertoire fantôme."""
+    first = activate_run(tmp_path, RUN_DATE, RUN_TIME)
+    second = activate_run(tmp_path, RUN_DATE, RUN_TIME.replace(hour=11))
+    shutil.rmtree(first.run_dir)
+    assert rollback_current_link(tmp_path) is False
+    assert (tmp_path / "runs" / "current").resolve() == second.run_dir.resolve()
