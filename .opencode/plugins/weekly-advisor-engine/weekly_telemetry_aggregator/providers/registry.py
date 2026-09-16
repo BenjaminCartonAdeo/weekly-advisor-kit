@@ -13,7 +13,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from .base import SessionProvider, validate_provider
-from .implementations import claude_code, copilot_cli, copilot_vscode, opencode
+from .implementations import claude_code, copilot_cli, opencode
 
 if TYPE_CHECKING:
     from ..config import TelemetryConfig
@@ -26,7 +26,6 @@ ProviderFactory = Callable[[dict, "TelemetryConfig"], SessionProvider | None]
 _BUILTIN_FACTORIES: dict[str, ProviderFactory] = {
     opencode.PROVIDER_TYPE: opencode.build_provider,
     claude_code.PROVIDER_TYPE: claude_code.build_provider,
-    copilot_vscode.PROVIDER_TYPE: copilot_vscode.build_provider,
     copilot_cli.PROVIDER_TYPE: copilot_cli.build_provider,
 }
 
