@@ -193,8 +193,13 @@ outil MCP concerné ne doit être autorisé implicitement. Tout résultat de com
   briefing absent ou vide interdit le spawn (jamais de délégation implicite).
 - Le coordinateur ne relance pas un worker pour une sortie vide plus d'une fois :
   pour un retour non requis, une retry unique puis `rc=1` et warning ; pour un worker A,
-  l'absence d'un audit envelope valide reste un artefact requis **blocking**. Une sortie
-  non vide mais hors contrat est tronquée au JOIN, sans nouveau spawn.
+  l'absence d'un audit envelope valide reste un artefact requis **blocking**. Exception
+  ciblée (cas 2026-09-16 `ses_f6ed`) : une sortie non vide mais hors contrat d'un worker A
+  (texte libre type graphify au lieu du JSON, fichier absent au chemin canonique) donne
+  droit à **une seule retry** — même `session_id`, briefing minimal, extract réduit par
+  fenêtres bornées. Si la retry échoue, l'artefact reste **blocking** (rc=2).
+  Une sortie non vide mais hors contrat est tronquée au JOIN, sans nouveau spawn au-delà
+  de cette retry unique.
 - Les plafonds moteur restent la source de vérité : `audit_max_sessions` limite
   les audits et `max_candidates_per_run` limite les drafts. Aucun worker ne peut
   les augmenter via son prompt ou un override local.
