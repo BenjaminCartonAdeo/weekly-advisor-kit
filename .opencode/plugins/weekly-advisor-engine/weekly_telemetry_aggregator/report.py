@@ -862,6 +862,25 @@ def _audit_envelope_valid(value: object, session_id: str) -> bool:
     )
 
 
+def _audit_envelope_reason(value: object, session_id: str) -> str:
+    """Return a stable machine-readable cause for an invalid audit envelope."""
+    if not isinstance(value, Mapping):
+        return "not-mapping"
+    if not _valid_schema_version(value.get("schema_version"), 1):
+        return "bad-schema-version"
+    if value.get("session_id") != session_id:
+        return "sid-mismatch"
+    if not _nonempty_text(value.get("summary")):
+        return "empty-summary"
+    if not isinstance(value.get("findings"), list):
+        return "bad-findings"
+    if _coerce_rc(value.get("rc"), default=None) not in {0, 1}:
+        return "bad-rc"
+    if not isinstance(value.get("warnings"), list):
+        return "bad-warnings"
+    return "ok"
+
+
 def _audit_declaration_values(record: object) -> list[str]:
     """Return structured audit artifact declarations without parsing text."""
     if not isinstance(record, Mapping):
@@ -1452,16 +1471,25 @@ def validate_required_artifacts(
         path = out / filename if filename is not None else out / raw_declaration
         sid = match.group(1) if match else ""
         data, state = _json_file_state(path) if match else (None, "ill_readable")
-        valid = bool(
-            match and _canonical_audit_path(out, sid) == path and _audit_envelope_valid(data, sid)
-        )
+        path_ok = bool(match and _canonical_audit_path(out, sid) == path)
+        envelope_reason = _audit_envelope_reason(data, sid) if path_ok and state == "present" else "ok"
+        valid = bool(path_ok and envelope_reason == "ok")
+        if not path_ok:
+            reason = "path-mismatch"
+        elif state == "absent":
+            reason = "absent"
+        elif state != "present":
+            reason = "ill-readable"
+        else:
+            reason = envelope_reason
         dynamic_required[key] = {
             "path": str(path),
             "present": valid,
             "status": "present" if valid else ("absent" if state == "absent" else "ill_readable"),
             "required": True,
-            "path_valid": bool(match and _canonical_audit_path(out, sid) == path),
+            "path_valid": path_ok,
             "schema_valid": valid,
+            "reason": reason,
             "applicable": True,
         }
     required.update(dynamic_required)

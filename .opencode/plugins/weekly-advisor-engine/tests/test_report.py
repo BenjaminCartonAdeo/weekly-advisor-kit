@@ -14,6 +14,8 @@ from weekly_telemetry_aggregator.main import RunProvenance
 from weekly_telemetry_aggregator.models import Period
 from weekly_telemetry_aggregator.report import (
     _BLOCKING_SECURITY_RULES,
+    _audit_envelope_reason,
+    _audit_envelope_valid,
     _coerce_rc,
     _coherence_has_curation_signal,
     _critical_security_findings,
@@ -2288,3 +2290,36 @@ def test_html_renders_harness_filter_and_closed_annex(tmp_path: Path):
     assert "user_turns" not in annex_h and "tool_arg" not in annex_h
     # zéro-CDN : aucun script/link externe
     assert "<script src=" not in html and '<link rel="stylesheet"' not in html
+
+
+def _valid_audit_envelope(sid: str = "ses_f6ed03e11ffetdQstFHu2pb7B5") -> dict:
+    return {
+        "schema_version": 1,
+        "session_id": sid,
+        "summary": "ok",
+        "findings": [],
+        "warnings": [],
+        "rc": 0,
+    }
+
+
+def test_audit_envelope_valid_accepts_minimal_contract():
+    assert _audit_envelope_valid(_valid_audit_envelope(), "ses_f6ed03e11ffetdQstFHu2pb7B5") is True
+    assert _audit_envelope_reason(_valid_audit_envelope(), "ses_f6ed03e11ffetdQstFHu2pb7B5") == "ok"
+
+
+def test_audit_envelope_rejects_graphify_text_out_of_contract():
+    """Cas 2026-09-16 : worker A retourne du texte graphify au lieu du JSON."""
+    assert _audit_envelope_valid("graphify: community nodes ...", "ses_f6ed03e11ffetdQstFHu2pb7B5") is False
+    assert _audit_envelope_reason("graphify: community nodes ...", "ses_f6ed03e11ffetdQstFHu2pb7B5") == "not-mapping"
+
+
+def test_audit_envelope_rejects_empty_summary_and_sid_mismatch():
+    bad_summary = _valid_audit_envelope()
+    bad_summary["summary"] = "   "
+    assert _audit_envelope_valid(bad_summary, "ses_f6ed03e11ffetdQstFHu2pb7B5") is False
+    assert _audit_envelope_reason(bad_summary, "ses_f6ed03e11ffetdQstFHu2pb7B5") == "empty-summary"
+
+    bad_sid = _valid_audit_envelope(sid="ses_other")
+    assert _audit_envelope_valid(bad_sid, "ses_f6ed03e11ffetdQstFHu2pb7B5") is False
+    assert _audit_envelope_reason(bad_sid, "ses_f6ed03e11ffetdQstFHu2pb7B5") == "sid-mismatch"
