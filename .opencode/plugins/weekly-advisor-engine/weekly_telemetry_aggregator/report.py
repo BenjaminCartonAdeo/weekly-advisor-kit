@@ -26,7 +26,12 @@ from .config import TelemetryConfig
 from .harness_scope import harness_digest_problems
 from .html_report import open_html_report, render_html_report
 from .insights import flatten_harness_findings
-from .run_state import active_run_meta, resolve_active_run_dir, rollback_current_link
+from .run_state import (
+    active_run_meta,
+    record_resilience_event,
+    resolve_active_run_dir,
+    rollback_current_link,
+)
 from .util import iso as _iso
 from .util import load_json as _load_json
 from .util import parse_anchor as _parse_anchor
@@ -860,6 +865,21 @@ def _audit_envelope_valid(value: object, session_id: str) -> bool:
         and rc in {0, 1}
         and isinstance(value.get("warnings"), list)
     )
+
+
+#: Miroir des retours non-ok de ``_audit_envelope_reason`` ci-dessous — tout
+#: nouveau motif de rejet doit être ajouté ici (comptage résilience Task 6).
+_AUDIT_ENVELOPE_REASONS = frozenset(
+    {
+        "not-mapping",
+        "bad-schema-version",
+        "sid-mismatch",
+        "empty-summary",
+        "bad-findings",
+        "bad-rc",
+        "bad-warnings",
+    }
+)
 
 
 def _audit_envelope_reason(value: object, session_id: str) -> str:
@@ -2216,6 +2236,15 @@ def _report_assemble_inner(
         dynamic_audit_artifacts=_audit_artifact_declarations(timings),
     )
     if artifact_gate["status"] != "pass":
+        for key, entry in artifact_gate["required"].items():
+            if (
+                key.startswith("audit-findings-")
+                and isinstance(entry, Mapping)
+                and entry.get("reason") in _AUDIT_ENVELOPE_REASONS
+            ):
+                #: Rejet hors contrat (Task 1) — compté une fois par assemble,
+                #: chemins partiel comme bloquant (observabilité Task 6).
+                record_resilience_event(cfg.output_dir, "audit_envelope_reject")
         missing = [
             (key, entry)
             for key, entry in artifact_gate["required"].items()
@@ -2243,6 +2272,7 @@ def _report_assemble_inner(
             )
         # JOIN partiel : seuls des audits dynamiques manquent — rapport écrit
         # avec mention explicite (rc>=1), jamais de STOP sans rapport.
+        record_resilience_event(cfg.output_dir, "audit_partial_fallback")
         warnings.append(
             "⚠ JOIN partiel : audit(s) manquant(s) — "
             + ", ".join(missing_audit)

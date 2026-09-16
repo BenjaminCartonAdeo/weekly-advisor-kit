@@ -19,6 +19,7 @@ from weekly_telemetry_aggregator.run_state import (
     _write_ok,
     activate_run,
     active_run_meta,
+    record_resilience_event,
     resolve_active_run_dir,
     rollback_current_link,
 )
@@ -277,3 +278,32 @@ def test_rollback_when_previous_run_dir_vanished(tmp_path):
     shutil.rmtree(first.run_dir)
     assert rollback_current_link(tmp_path) is False
     assert (tmp_path / "runs" / "current").resolve() == second.run_dir.resolve()
+
+
+def test_record_resilience_event_increments_and_persists(tmp_path):
+    activate_run(tmp_path, RUN_DATE, RUN_TIME)
+    assert record_resilience_event(tmp_path, "audit_envelope_reject") == 1
+    assert record_resilience_event(tmp_path, "audit_envelope_reject") == 2
+    assert record_resilience_event(tmp_path, "current_rollback") == 1
+    state = json.loads((tmp_path / RUN_STATE_FILE).read_text(encoding="utf-8"))
+    assert state["resilience"] == {"audit_envelope_reject": 2, "current_rollback": 1}
+
+
+def test_record_resilience_event_unknown_raises(tmp_path):
+    activate_run(tmp_path, RUN_DATE, RUN_TIME)
+    with pytest.raises(ValueError, match="inconnu"):
+        record_resilience_event(tmp_path, "nope")
+
+
+def test_record_resilience_event_without_state_is_noop(tmp_path):
+    """Mode legacy (pas de run_state.json) : 0, aucun fichier créé."""
+    assert record_resilience_event(tmp_path, "current_rollback") == 0
+    assert not (tmp_path / RUN_STATE_FILE).exists()
+
+
+def test_rollback_records_current_rollback_event(tmp_path, capsys):
+    activate_run(tmp_path, RUN_DATE, RUN_TIME)
+    activate_run(tmp_path, RUN_DATE, RUN_TIME.replace(hour=11))
+    assert rollback_current_link(tmp_path) is True
+    state = json.loads((tmp_path / RUN_STATE_FILE).read_text(encoding="utf-8"))
+    assert state["resilience"] == {"current_rollback": 1}

@@ -251,6 +251,71 @@ def test_report_assemble_blocking_restores_current_to_previous_run(tmp_path: Pat
     assert any("restauré" in warning for warning in warnings)
 
 
+def _activate_two_runs_and_prep(tmp_path: Path):
+    """2 runs activés + summary/timings/draft dans le 2e ; retourne (cfg, out)."""
+    from weekly_telemetry_aggregator.run_state import activate_run
+
+    activate_run(tmp_path, DATE, RUN)
+    second = activate_run(tmp_path, DATE, RUN)
+    out = second.run_dir
+    period = Period(start=tzutc(2026, 8, 5), end=RUN)
+    u = make_usage("r", [make_step("r", tzutc(2026, 8, 6, 10), cost=0.5)], title="S")
+    data = summary_to_dict(aggregate([u], period=period, generated_at=RUN))
+    (out / f"weekly-summary-{DATE}.json").write_text(
+        json.dumps(data, ensure_ascii=False), encoding="utf-8"
+    )
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    return cfg, out
+
+
+def _declare_audits(out: Path, artifacts: list[str]) -> None:
+    (out / f"weekly-timings-{DATE}.json").write_text(
+        json.dumps({"branches": {"A": {"artifacts": artifacts}}}), encoding="utf-8"
+    )
+
+
+def _read_resilience(tmp_path: Path) -> dict:
+    return json.loads((tmp_path / "run_state.json").read_text(encoding="utf-8")).get(
+        "resilience", {}
+    )
+
+
+def test_report_assemble_partial_audit_records_fallback_event(tmp_path: Path):
+    """JOIN partiel (audit absent) → resilience.audit_partial_fallback == 1."""
+    cfg, out = _activate_two_runs_and_prep(tmp_path)
+    _declare_audits(out, ["audit-findings-ses_missing.json"])
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 1
+    assert _read_resilience(tmp_path).get("audit_partial_fallback") == 1
+
+
+def test_report_assemble_envelope_reject_records_event(tmp_path: Path):
+    """Audit hors contrat (sid-mismatch) → envelope_reject + fallback comptés."""
+    cfg, out = _activate_two_runs_and_prep(tmp_path)
+    _declare_audits(out, ["audit-findings-ses_bad.json"])
+    (out / "audit-findings-ses_bad.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session_id": "ses_other",
+                "summary": "résumé non vide",
+                "findings": [],
+                "rc": 0,
+                "warnings": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 1
+    resilience = _read_resilience(tmp_path)
+    assert resilience.get("audit_envelope_reject") == 1
+    assert resilience.get("audit_partial_fallback") == 1
+
+
 def test_applicable_summary_rc_accepts_valid_transcript_truncation(tmp_path: Path):
     _write_summary(tmp_path)
     summary_path = tmp_path / f"weekly-summary-{DATE}.json"

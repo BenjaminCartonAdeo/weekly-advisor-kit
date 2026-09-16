@@ -29,6 +29,16 @@ RUNS_DIR = "runs"
 RUN_STATE_FILE = "run_state.json"
 CURRENT_SYMLINK = "current"
 STATE_SCHEMA_VERSION = 1
+#: Événements de résilience comptés dans ``run_state.json`` (clé ``resilience``) —
+#: observabilité cron/CI des chemins Tasks 1/4/5. Un run qui finit SANS rapport
+#: n'écrit ni summary ni gates : l'état est le seul artefact garanti.
+RESILIENCE_EVENTS = frozenset(
+    {
+        "audit_envelope_reject",  # audit hors contrat rejeté par la gate (Task 1)
+        "audit_partial_fallback",  # JOIN partiel : rapport écrit sans audits (Task 4)
+        "current_rollback",  # alias current restauré sur le run précédent (Task 5)
+    }
+)
 _WARNED_REAL_CURRENT = False  # warning "current réel" : une seule fois par process
 
 _LAYOUT_README = """# reports/ — layout du pipeline `weekly-advisor`
@@ -143,6 +153,33 @@ def _write_ok(path: Path, data: dict) -> None:
     write_json_atomic(path, data)
 
 
+def record_resilience_event(output_dir: Path, event: str) -> int:
+    """Incrémente le compteur ``resilience.<event>`` du run actif ; retourne la valeur.
+
+    Best-effort : 0 si aucun état actif (mode legacy, debug CLI) — le pipeline
+    ne doit jamais échouer sur de l'observabilité ; ValueError si événement
+    inconnu (typo appelant, détection au dev/test). Le retry borné Task3 est
+    côté agent (briefing), invisible au moteur — non compté ici.
+    """
+    if event not in RESILIENCE_EVENTS:
+        raise ValueError(f"événement résilience inconnu : {event!r}")
+    state_path = Path(output_dir) / RUN_STATE_FILE
+    state = load_json(state_path)
+    if not isinstance(state, dict) or not state.get("run_dir"):
+        return 0
+    counters = state.get("resilience")
+    if not isinstance(counters, dict):
+        counters = {}
+        state["resilience"] = counters
+    new_value = int(counters.get(event, 0) or 0) + 1
+    counters[event] = new_value
+    try:
+        _write_ok(state_path, state)
+    except OSError:
+        return 0
+    return new_value
+
+
 def rollback_current_link(output_dir: Path) -> bool:
     """Re-pointe ``runs/current`` vers le run précédent ; True si restauré.
 
@@ -169,6 +206,7 @@ def rollback_current_link(output_dir: Path) -> bool:
         restored = False
     if not restored:
         return False
+    record_resilience_event(Path(output_dir), "current_rollback")
     print(
         f"run_state: run sans rapport — {RUNS_DIR}/{CURRENT_SYMLINK} restauré "
         f"sur le run précédent ({prev_dir.name})",
