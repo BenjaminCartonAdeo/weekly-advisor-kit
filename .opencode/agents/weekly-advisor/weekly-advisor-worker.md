@@ -141,11 +141,20 @@ est tronqué/partiel (signal de troncation ou taille > ~150 Ko) : (a) **une seul
    valeur `message`) dans le contrat ET dans `warnings` du fichier, comme fait
    informatif. Sinon, si la sortie reste partielle, conserver ce même warning avec
    `rc=1`. Une recovery réussie n'est donc jamais artificiellement marquée `rc=1`.
- 4. Retourner le contrat standard (branch=`A`, artifacts=[`audit-findings-<session_id>.json`]).
-    Même après un refus `external-directory` hors worktree, écrire un envelope valide
-    avec `summary` non-vide, `findings: []`, `rc: 0` et le warning structuré
-    `{status: "report-only", report_only: true, category: "external-permission-refusal"}`
-    dans `warnings`.
+  4. Retourner le contrat standard (branch=`A`, artifacts=[`audit-findings-<session_id>.json`]).
+     Même après un refus `external-directory` hors worktree, écrire un envelope valide
+     avec `summary` non-vide, `findings: []`, `rc: 0` et le warning structuré
+     `{status: "report-only", report_only: true, category: "external-permission-refusal"}`
+     dans `warnings`.
+
+**Anti-hors-contrat (cas 2026-09-16 `ses_f6ed`)** : ne charger QUE le skill
+`weekly-quality-audit`. Ne jamais charger `graphify` ni aucun skill lourd dans un
+worker A : toute analyse texte libre hors enveloppe est ignorée et tronquée par
+l'orchestrateur, et un fichier manquant bloque le JOIN. Règle d'écriture :
+d'abord écrire `audit-findings-<session_id>.json` (enveloppe v1 valide, `summary`
+non-vide), ensuite seulement retourner le contrat. Si l'extrait dépasse ~150 Ko,
+ne pas le relire en entier : travailler par fenêtres bornées (`offset/limit`,
+`max_retry=1`, ≤3 tours) puis écrire l'enveloppe avec `transcript-truncated:<session_id>`.
 
 **Isolation** : un worker A ne lit QUE sa session ; il ne consolide pas, ne lit pas les
 autres `audit-findings-*.json`, ne touche pas aux autres branches. La consolidation
