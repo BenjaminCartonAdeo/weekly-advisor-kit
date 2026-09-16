@@ -1473,7 +1473,9 @@ def validate_required_artifacts(
         data, state = _json_file_state(path) if match else (None, "ill_readable")
         path_ok = bool(match and _canonical_audit_path(out, sid) == path)
         envelope_reason = _audit_envelope_reason(data, sid) if path_ok and state == "present" else "ok"
-        valid = bool(path_ok and envelope_reason == "ok")
+        # Un artefact absent/illisible n'est jamais valide : sans le `state ==
+        # "present"`, un audit manquant passait la gate en `present` (run 16/09).
+        valid = bool(path_ok and state == "present" and envelope_reason == "ok")
         if not path_ok:
             reason = "path-mismatch"
         elif state == "absent":
@@ -2197,19 +2199,38 @@ def report_assemble(
     )
     if artifact_gate["status"] != "pass":
         missing = [
-            entry["path"]
-            for entry in artifact_gate["required"].values()
+            (key, entry)
+            for key, entry in artifact_gate["required"].items()
             if entry["status"] != "present"
         ]
-        return (
-            None,
-            [
-                "artefact requis manquant ou illisible — "
-                + ", ".join(missing)
-                + " (relancer weekly_run)"
-            ],
-            2,
+        missing_other = [
+            entry["path"]
+            for key, entry in missing
+            if not key.startswith("audit-findings-")
+        ]
+        missing_audit = [
+            f"{key} ({entry.get('reason', 'absent')})"
+            for key, entry in missing
+            if key.startswith("audit-findings-")
+        ]
+        if missing_other:
+            return (
+                None,
+                [
+                    "artefact requis manquant ou illisible — "
+                    + ", ".join(missing_other + missing_audit)
+                    + " (relancer weekly_run)"
+                ],
+                2,
+            )
+        # JOIN partiel : seuls des audits dynamiques manquent — rapport écrit
+        # avec mention explicite (rc>=1), jamais de STOP sans rapport.
+        warnings.append(
+            "⚠ JOIN partiel : audit(s) manquant(s) — "
+            + ", ".join(missing_audit)
+            + " — rapport généré sans ces sessions (relancer le worker ciblé)"
         )
+        rc = max(rc, 1)
 
     summary_for_rc = _load_json(out / f"weekly-summary-{date}.json")
     rc = applicable_summary_rc(
@@ -2220,6 +2241,10 @@ def report_assemble(
         project_root=cfg.project_root,
         fallback_rc=0,
     )
+    # JOIN partiel (voir gate ci-dessus) : le rapport reste marqué partiel
+    # même si les warnings restants sont non-bloquants (rc remonterait à 0).
+    if any("JOIN partiel" in w for w in warnings):
+        rc = max(rc, 1)
 
     # Phase 4 (gate déterministe) : WAVE 2.5 REQUIRED. Si les findings de cohérence
     # portent des actions de curation mais le manifeste skill-curate est absent ->

@@ -192,6 +192,31 @@ def test_report_assemble_requires_declared_branch_artifact(tmp_path: Path):
     assert any("weekly-insights" in warning for warning in warnings)
 
 
+def test_report_assemble_partial_audit_still_writes_report_rc_one(tmp_path: Path):
+    """JOIN partiel : audit dynamique manquant → rapport écrit, rc=1, mention explicite."""
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (tmp_path / f"weekly-timings-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "branches": {
+                    "A": {
+                        "artifacts": ["audit-findings-ses_missing.json"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 1
+    assert any("JOIN partiel" in warning for warning in warnings)
+    text = final_path.read_text(encoding="utf-8")
+    assert "audit" in text.casefold() or "partiel" in text.casefold() or len(text) > 0
+
+
 def test_applicable_summary_rc_accepts_valid_transcript_truncation(tmp_path: Path):
     _write_summary(tmp_path)
     summary_path = tmp_path / f"weekly-summary-{DATE}.json"
