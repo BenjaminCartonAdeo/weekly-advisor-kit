@@ -16,6 +16,7 @@ import pytest
 
 from weekly_telemetry_aggregator.run_state import (
     RUN_STATE_FILE,
+    _canonical,
     _write_ok,
     activate_run,
     active_run_meta,
@@ -68,7 +69,7 @@ def test_current_symlink_points_to_active_run(tmp_path):
     active = activate_run(tmp_path, RUN_DATE, RUN_TIME)
     link = tmp_path / "runs" / "current"
     assert link.is_symlink()
-    assert link.resolve() == active.run_dir.resolve()
+    assert _canonical(link) == _canonical(active.run_dir)
 
 
 def test_alias_repoints_when_new_run_created(tmp_path):
@@ -76,8 +77,8 @@ def test_alias_repoints_when_new_run_created(tmp_path):
     first = activate_run(tmp_path, RUN_DATE, RUN_TIME)
     second = activate_run(tmp_path, RUN_DATE, RUN_TIME.replace(hour=11))
     link = tmp_path / "runs" / "current"
-    assert link.resolve() == second.run_dir.resolve()
-    assert link.resolve() != first.run_dir.resolve()
+    assert _canonical(link) == _canonical(second.run_dir)
+    assert _canonical(link) != _canonical(first.run_dir)
     assert [p.name for p in (tmp_path / "runs").iterdir() if ".tmp" in p.name] == []
 
 
@@ -93,7 +94,7 @@ def test_alias_repairs_broken_preexisting_symlink(tmp_path):
     assert link.is_symlink() and not link.exists()
 
     active = activate_run(tmp_path, RUN_DATE, RUN_TIME)
-    assert link.resolve() == active.run_dir.resolve()
+    assert _canonical(link) == _canonical(active.run_dir)
 
 
 def test_alias_replaces_stale_symlink_pointing_elsewhere(tmp_path):
@@ -104,7 +105,7 @@ def test_alias_replaces_stale_symlink_pointing_elsewhere(tmp_path):
     (runs / "current").symlink_to(stale)
 
     active = activate_run(tmp_path, RUN_DATE, RUN_TIME)
-    assert (runs / "current").resolve() == active.run_dir.resolve()
+    assert _canonical(runs / "current") == _canonical(active.run_dir)
 
 
 def test_alias_fallback_when_replace_denied(tmp_path, monkeypatch):
@@ -113,7 +114,7 @@ def test_alias_fallback_when_replace_denied(tmp_path, monkeypatch):
     quand même, sans résidu .tmp."""
     first = activate_run(tmp_path, RUN_DATE, RUN_TIME)
     link = tmp_path / "runs" / "current"
-    assert link.resolve() == first.run_dir.resolve()
+    assert _canonical(link) == _canonical(first.run_dir)
 
     real_replace = Path.replace
 
@@ -124,8 +125,8 @@ def test_alias_fallback_when_replace_denied(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "replace", windows_denied_replace)
     second = activate_run(tmp_path, RUN_DATE, RUN_TIME.replace(hour=11))
-    assert link.resolve() == second.run_dir.resolve()
-    assert link.resolve() != first.run_dir.resolve()
+    assert _canonical(link) == _canonical(second.run_dir)
+    assert _canonical(link) != _canonical(first.run_dir)
     assert [p.name for p in (tmp_path / "runs").iterdir() if ".tmp" in p.name] == []
 
 
@@ -247,8 +248,8 @@ def test_activate_records_previous_run_dir(tmp_path):
     first = activate_run(tmp_path, RUN_DATE, RUN_TIME)
     second = activate_run(tmp_path, RUN_DATE, RUN_TIME.replace(hour=11))
     state = json.loads((tmp_path / RUN_STATE_FILE).read_text(encoding="utf-8"))
-    assert Path(state["previous_run_dir"]).resolve() == first.run_dir.resolve()
-    assert (tmp_path / "runs" / "current").resolve() == second.run_dir.resolve()
+    assert _canonical(Path(state["previous_run_dir"])) == _canonical(first.run_dir)
+    assert _canonical(tmp_path / "runs" / "current") == _canonical(second.run_dir)
 
 
 def test_first_activate_records_no_previous_run_dir(tmp_path):
@@ -261,14 +262,14 @@ def test_rollback_restores_current_to_previous_run(tmp_path, capsys):
     first = activate_run(tmp_path, RUN_DATE, RUN_TIME)
     activate_run(tmp_path, RUN_DATE, RUN_TIME.replace(hour=11))
     assert rollback_current_link(tmp_path) is True
-    assert (tmp_path / "runs" / "current").resolve() == first.run_dir.resolve()
+    assert _canonical(tmp_path / "runs" / "current") == _canonical(first.run_dir)
     assert "restauré" in capsys.readouterr().out
 
 
 def test_rollback_without_previous_run_returns_false_and_keeps_alias(tmp_path):
     active = activate_run(tmp_path, RUN_DATE, RUN_TIME)
     assert rollback_current_link(tmp_path) is False
-    assert (tmp_path / "runs" / "current").resolve() == active.run_dir.resolve()
+    assert _canonical(tmp_path / "runs" / "current") == _canonical(active.run_dir)
 
 
 def test_rollback_when_previous_run_dir_vanished(tmp_path):
@@ -277,7 +278,7 @@ def test_rollback_when_previous_run_dir_vanished(tmp_path):
     second = activate_run(tmp_path, RUN_DATE, RUN_TIME.replace(hour=11))
     shutil.rmtree(first.run_dir)
     assert rollback_current_link(tmp_path) is False
-    assert (tmp_path / "runs" / "current").resolve() == second.run_dir.resolve()
+    assert _canonical(tmp_path / "runs" / "current") == _canonical(second.run_dir)
 
 
 def test_record_resilience_event_increments_and_persists(tmp_path):

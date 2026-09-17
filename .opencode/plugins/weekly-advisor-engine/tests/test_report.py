@@ -26,6 +26,7 @@ from weekly_telemetry_aggregator.report import (
     report_prep,
     validate_required_artifacts,
 )
+from weekly_telemetry_aggregator.run_state import _canonical
 from weekly_telemetry_aggregator.writer import summary_to_dict
 
 RUN = tzutc(2026, 8, 12)
@@ -247,7 +248,7 @@ def test_report_assemble_blocking_restores_current_to_previous_run(tmp_path: Pat
     final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
     assert final_path is None
     assert rc == 2
-    assert (tmp_path / "runs" / "current").resolve() == first.run_dir.resolve()
+    assert _canonical(tmp_path / "runs" / "current") == _canonical(first.run_dir)
     assert any("restauré" in warning for warning in warnings)
 
 

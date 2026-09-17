@@ -39,6 +39,35 @@ RESILIENCE_EVENTS = frozenset(
         "current_rollback",  # alias current restauré sur le run précédent (Task 5)
     }
 )
+
+
+def _strip_extended_prefix(s: str) -> str:
+    """Retire le préfixe Windows ``\\?\\`` / ``//?/`` (extended-length path).
+
+    Sur Windows, ``Path.resolve()`` peut retourner ``//?/C:/...`` tandis que
+    ``Path('C:/...').resolve()`` reste ``C:/...`` — la comparaison d'égalité
+    échoue alors qu'il s'agit du même fichier. Le strip rend les deux formes
+    canoniques avant toute comparaison ou sérialisation ``previous_run_dir``.
+    """
+    if s.startswith("\\\\?\\"):
+        return s[4:]
+    if s.startswith("//?/"):
+        return s[4:]
+    return s
+
+
+def _canonical(p: Path) -> Path:
+    """Chemin canonique portable : resolve + strip extended + normcase Windows."""
+    try:
+        r = p.resolve()
+    except OSError:
+        r = p.absolute()
+    s = _strip_extended_prefix(str(r))
+    if os.name == "nt":
+        s = os.path.normcase(os.path.normpath(s))
+    return Path(s)
+
+
 _WARNED_REAL_CURRENT = False  # warning "current réel" : une seule fois par process
 
 _LAYOUT_README = """# reports/ — layout du pipeline `weekly-advisor`
@@ -91,7 +120,7 @@ def activate_run(output_dir: Path, date: str, run_time: datetime) -> ActiveRun:
         "activated_at": datetime.now(UTC).isoformat(),
     }
     if previous_target is not None:
-        state["previous_run_dir"] = str(previous_target)
+        state["previous_run_dir"] = _strip_extended_prefix(str(previous_target))
     _write_ok(output_dir / RUN_STATE_FILE, state)
     _migrate_legacy_root(output_dir, run_dir)
     _ensure_layout_readme(output_dir)
@@ -201,7 +230,7 @@ def rollback_current_link(output_dir: Path) -> bool:
     _update_current_link(Path(output_dir), prev_dir)
     link = Path(output_dir) / RUNS_DIR / CURRENT_SYMLINK
     try:
-        restored = link.is_symlink() and link.resolve() == prev_dir.resolve()
+        restored = link.is_symlink() and _canonical(link) == _canonical(prev_dir)
     except OSError:
         restored = False
     if not restored:
@@ -225,7 +254,7 @@ def _read_current_target(output_dir: Path) -> Path | None:
     except OSError:
         return None
     target = raw if raw.is_absolute() else link.parent / raw
-    return Path(os.path.normpath(str(target)))
+    return Path(_strip_extended_prefix(os.path.normpath(str(target))))
 
 
 def _update_current_link(output_dir: Path, run_dir: Path) -> None:
