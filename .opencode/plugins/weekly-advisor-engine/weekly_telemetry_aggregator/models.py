@@ -127,6 +127,15 @@ class ModelUsage:
 
 
 @dataclass(slots=True)
+class HarnessUsage:
+    harness: str
+    session_count: int = 0
+    total_tokens: int = 0
+    total_cost_usd: float = 0.0
+    cache_hit_rate: float | None = None
+
+
+@dataclass(slots=True)
 class TopSession:
     session_id: str
     title_or_topic: str | None = None
@@ -144,6 +153,8 @@ class TopSession:
     cache_write_tokens: int = 0
     cache_efficiency: float | None = None
     context_composition: dict[str, int] = field(default_factory=dict)
+    #: harnais d'origine (multi-harnais) — "" pour le flux historique / ids bruts.
+    harness: str = ""
 
 
 @dataclass(slots=True)
@@ -240,7 +251,11 @@ class WeeklySummary:
     totals: Totals = field(default_factory=Totals)
     daily_totals: list[DailyTotal] = field(default_factory=list)
     by_model: list[ModelUsage] = field(default_factory=list)
+    #: ventilation par harnais (miroir de by_model) — vide pour les anciens runs.
+    by_harness: list[HarnessUsage] = field(default_factory=list)
     top_sessions_by_cost: list[TopSession] = field(default_factory=list)
+    #: toutes les racines comptées triées (-cost_usd, session_id) — vide si non calculé.
+    all_sessions: list[TopSession] = field(default_factory=list)
     cost_outliers: list[CostOutlier] = field(default_factory=list)
     #: "computed" | "skipped:small-sample" | "no-data" (v5.28, machine-readable).
     cost_outliers_state: str = "computed"

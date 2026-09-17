@@ -103,11 +103,11 @@ résolu par **override config > détection par marqueurs > défaut**.
 |---|---|---|
 | `.claude/` | Claude Code | `.claude/skills` |
 | `.opencode/` | OpenCode | `.opencode/skills` |
-| `.github/prompts/` **ou** `.github/skills/` | Copilot VS Code | `.github/prompts`, `.github/skills` |
+| `.github/prompts/` **ou** `.github/skills/` | Copilot CLI | `.github/prompts`, `.github/skills` |
 | `.agents/` | Codex | `.agents` |
 
 - **Priorité en cas de marqueurs multiples** (le premier gagne) : `claude-code > opencode >
-  copilot-vscode > codex`.
+  copilot-cli > codex`.
 - **Aucun marqueur → défaut OpenCode + avertissement explicite**.
 - **Override config** : liste de harnais (→ override) ; liste vide (→ mode « legacy », toutes les
   cibles connues) ; clé absente ou invalide (→ détection automatique).

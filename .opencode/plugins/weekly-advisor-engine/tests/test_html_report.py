@@ -420,7 +420,7 @@ def test_html_exec_fold_open_snapshot(tmp_path: Path):
 
 
 def test_html_annexes_collapsed_sessionStorage_snapshot(tmp_path: Path):
-    """Snapshot annexes : 7 détails collapsed par défaut, JS sessionStorage wa-details-state-v2."""
+    """Snapshot annexes : 8 détails collapsed par défaut, JS sessionStorage wa-details-state-v2."""
     dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=_ctx(), quality_block=None)
     html = dated.read_text(encoding="utf-8")
     tpl = (
@@ -429,13 +429,22 @@ def test_html_annexes_collapsed_sessionStorage_snapshot(tmp_path: Path):
         / "templates"
         / "report_template.html.j2"
     ).read_text(encoding="utf-8")
-    # 7 annexes A-G dans le template, toutes sans open
-    assert tpl.count('<details class="annex"') == 7
+    # 8 annexes A-H dans le template, toutes sans open
+    assert tpl.count('<details class="annex"') == 8
     assert '<details class="annex" open' not in tpl
-    # rendu idem : 7 collapsed
-    assert html.count('<details class="annex"') == 7
+    # rendu idem : 8 collapsed
+    assert html.count('<details class="annex"') == 8
     assert html.count('<details class="annex" open') == 0
-    for annex_id in ("annex-a", "annex-b", "annex-c", "annex-d", "annex-e", "annex-f", "annex-g"):
+    for annex_id in (
+        "annex-a",
+        "annex-b",
+        "annex-c",
+        "annex-d",
+        "annex-e",
+        "annex-f",
+        "annex-g",
+        "annex-h",
+    ):
         assert f'id="{annex_id}"' in html
     # sessionStorage : clé + restore + persist
     assert "wa-details-state-v2" in html

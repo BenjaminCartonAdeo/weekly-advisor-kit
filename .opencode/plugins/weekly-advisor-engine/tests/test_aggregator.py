@@ -536,3 +536,51 @@ def test_aggregate_preserves_deterministic_tool_fingerprints():
     summary = aggregate([usage], period=_period(), generated_at=_period().end)
     assert summary.tool_argument_fingerprints == {"task": {"a": 2, "b": 1}}
     assert summary.tool_result_fingerprints == {"task": {"same": 3}}
+
+
+def test_by_harness_sums_match_totals():
+    """Σ by_harness (sessions/tokens/cost) == totaux du résumé."""
+    period = _period()
+    a = make_usage("a", [make_step("a", period.start, cost=1.0)])
+    a.harness = "opencode"
+    b = make_usage("b", [make_step("b", period.start, cost=2.0)])
+    b.harness = "claude-code"
+    c = make_usage("c", [make_step("c", period.start, cost=3.0)])
+    c.harness = "opencode"
+    summary = aggregate([a, b, c], period=period, generated_at=period.end)
+    by_h = {h.harness: h for h in summary.by_harness}
+    assert set(by_h) == {"opencode", "claude-code"}
+    assert sum(h.session_count for h in summary.by_harness) == summary.totals.session_count
+    assert sum(h.total_tokens for h in summary.by_harness) == summary.totals.total_tokens
+    assert round(sum(h.total_cost_usd for h in summary.by_harness), 6) == round(
+        summary.totals.total_cost_usd, 6
+    )
+    assert by_h["opencode"].session_count == 2
+    assert by_h["claude-code"].session_count == 1
+    assert by_h["opencode"].total_cost_usd == 4.0
+
+
+def test_top_session_inherits_usage_harness():
+    """Le harness du SessionUsage (ou du préfixe canonique) propage vers TopSession."""
+    period = _period()
+    a = make_usage("opencode:ses_a", [make_step("opencode:ses_a", period.start, cost=1.0)])
+    a.harness = "opencode"
+    b = make_usage("claude-code:ses_b", [make_step("claude-code:ses_b", period.start, cost=2.0)])
+    # b.harness vide → repli sur le préfixe canonique de session_id
+    summary = aggregate([a, b], period=period, generated_at=period.end, top_sessions_limit=2)
+    by_id = {s.session_id: s for s in summary.top_sessions_by_cost}
+    assert by_id["opencode:ses_a"].harness == "opencode"
+    assert by_id["claude-code:ses_b"].harness == "claude-code"
+    assert {s.harness for s in summary.all_sessions} == {"opencode", "claude-code"}
+
+
+def test_all_sessions_sorted_by_cost_desc_then_id():
+    """all_sessions = racines comptées triées (-cost_usd, session_id)."""
+    period = _period()
+    a = make_usage("a", [make_step("a", period.start, cost=2.0)])
+    b = make_usage("b", [make_step("b", period.start, cost=3.0)])
+    c = make_usage("c", [make_step("c", period.start, cost=2.0)])
+    summary = aggregate([a, b, c], period=period, generated_at=period.end, top_sessions_limit=1)
+    assert [s.session_id for s in summary.all_sessions] == ["b", "a", "c"]
+    assert [s.session_id for s in summary.top_sessions_by_cost] == ["b"]  # top N restreint
+    assert len(summary.all_sessions) == summary.totals.session_count == 3

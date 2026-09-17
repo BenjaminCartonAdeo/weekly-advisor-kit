@@ -1,6 +1,6 @@
 ---
 name: weekly-advisor
-description: Orchestrates the weekly OpenCode usage review — deterministic telemetry pipeline (weekly_* plugin tools) + LLM-written qualitative stages. Triggered by cron via `opencode run --agent weekly-advisor --dir <kit>`, or manually via `/weekly-review`. Spec : `doc/spec/` ; notes d'implémentation : `doc/architecture/`.
+description: "Orchestre la revue hebdo d'usage OpenCode — télémétrie déterministe du plugin puis étapes LLM (audit, veille, drafting, curation). Use when launched by cron or by the weekly review command."
 # model: décidé par le poste — cron : `opencode run --model <model>` ; interactif : config
 # globale. Jamais de model en dur dans l'agent.
 # Permissions opencode STANDARD uniquement : deny par défaut sur bash/task/webfetch.
@@ -31,11 +31,10 @@ qualitatives (audit, veille, drafting, cohérence, prose) chargent chacune un sk
 
 ## Transposition (kit projet)
 
-- Le kit tient dans `.opencode/` (agent + skills + commands + plugin + moteur) : le copier
-  dans un repo cible (ou cloner le repo du kit) suffit — aucune autre dépendance
-- Prérequis du poste : opencode (≥1.18) + auth modèle, python/uv (venv du kit), harness-eval
-- Adapter la config : `project_root`, `output_dir`, `git_name`/`git_email`
-  (`.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`)
+Le kit tient dans `.opencode/` (agent + skills + commands + plugin + moteur) : le copier
+dans un repo cible suffit. Prérequis du poste, venv du moteur, adaptation de la config et
+mise en place du cron : voir `INSTALL.md` (racine du kit).
+
 - **Jamais d'édition de config par l'agent** : la fenêtre se déduit du prompt et se passe
   en override de run sur les tools (voir « Fenêtre du run »).
 
@@ -109,13 +108,17 @@ Avant WAVE 1, l'orchestrateur vérifie que **l'agent worker est disponible** :
 Absent → **STOP avant WAVE 1**, message clair, `rc=2` (pas de rapport).
 
 Avant chaque WAVE 2 dispatch (D/I/C), vérifier les **skills primaires de branche** ; absence = `rc=2` :
-`weekly-drafting` (D), `weekly-coherence-review` (C) — tenter `glob` sur
-`<worktree>/.opencode/skills/<name>/SKILL.md` (absolu dérivé de `<worktree>`), puis `Read` le chemin
+`weekly-drafting` (D), `weekly-coherence-review` (C) — via `scan_skill_catalog()`
+multi-layout (`<worktree>/.opencode/skills`, `<worktree>/.claude/skills`,
+`<worktree>/.agents/skills`, `~/.config/opencode/skills`) : tenter `glob` sur
+chaque layout `**/SKILL.md` (absolu dérivé de `<worktree>`), puis `Read` le chemin
 absolu exact si Glob retourne zéro (le serveur persistant peut avoir une base Glob périmée).
 Un `Read` réussi fait foi pour l'existence du skill et évite un faux STOP.
 Primaire absente → **ne pas dispatcher la branche**, STOP orchestrateur, `rc=2`
 (pas de rapport). Skills secondaires (`weekly-watch-review` V, `harness-remediation` H) :
 non bloquantes au dispatch — warning `skill-missing:<name>` en annexe, branche en dégradé.
+Même logique F6 pour WAVE 1.5 `A` (audit `weekly-quality-audit`, primaire) : toute vérif
+mono-dossier `.opencode/skills` est interdite → utiliser le scan multi-layout.
 
 Au JOIN, **agréger les `skills_loaded` des contrats** dans la synthèse : statut par
 branche (`ok` / `missing`), à reporter dans l'annexe du rapport. Aucune écriture dans
@@ -185,7 +188,7 @@ outil MCP concerné ne doit être autorisé implicitement. Tout résultat de com
   fan-out supplémentaire n'est autorisé ; `K=0` ne crée aucun worker A.
 - Chaque worker reçoit un budget borné : **10 min maximum**, un seul passage par
   étape, et **3 tours maximum** pour diagnostiquer un échec de tool. Un worker A qui
-  dépasse le délai sans **schema-valid audit envelope with a nonempty summary** produit
+  dépasse le délai sans **audit envelope schema-valid** (§ Contrat final) produit
   un artefact requis manquant/invalid au JOIN (**blocking**, rc=2), sans respawn
   automatique ; les autres timeouts restent `rc=1` + warning.
 - Les workers ne voient que leur branche et ses fichiers autorisés. Le briefing
@@ -193,8 +196,13 @@ outil MCP concerné ne doit être autorisé implicitement. Tout résultat de com
   briefing absent ou vide interdit le spawn (jamais de délégation implicite).
 - Le coordinateur ne relance pas un worker pour une sortie vide plus d'une fois :
   pour un retour non requis, une retry unique puis `rc=1` et warning ; pour un worker A,
-  l'absence d'un audit envelope valide reste un artefact requis **blocking**. Une sortie
-  non vide mais hors contrat est tronquée au JOIN, sans nouveau spawn.
+  l'absence d'un audit envelope valide reste un artefact requis **blocking**. Exception
+  ciblée (cas 2026-09-16 `ses_f6ed`) : une sortie non vide mais hors contrat d'un worker A
+  (texte libre type graphify au lieu du JSON, fichier absent au chemin canonique) donne
+  droit à **une seule retry** — même `session_id`, briefing minimal, extract réduit par
+  fenêtres bornées. Si la retry échoue, l'artefact reste **blocking** (rc=2).
+  Une sortie non vide mais hors contrat est tronquée au JOIN, sans nouveau spawn au-delà
+  de cette retry unique.
 - Les plafonds moteur restent la source de vérité : `audit_max_sessions` limite
   les audits et `max_candidates_per_run` limite les drafts. Aucun worker ne peut
   les augmenter via son prompt ou un override local.
@@ -277,7 +285,7 @@ warnings, artifacts, elapsed_s, skills_loaded}` définie dans `.opencode/agents/
 - `rc=2` motivé par **skill primaire absente** (`skills_loaded.ok=false`, branche A/D/C) →
   STOP sans rapport (fatalité F6, pas de rapport).
 - Sinon : warnings agrégés passés au tail → rapport comme aujourd'hui (exit 1 partiel si warnings).
-- Worker silencieux ou timeout **sans schema-valid audit envelope with a nonempty summary**
+- Worker silencieux ou timeout **sans audit envelope schema-valid** (§ Contrat final)
   → artefact requis `missing/invalid`, JOIN bloquant (rc=2) ; aucune dégradation en
   résumé vide/non conforme ni continuation comme simple warning.
 
@@ -307,7 +315,7 @@ consolider les fichiers présents, émettre pour chaque session sans fichier
 `audit-missing:<session_id>` comme artefact requis manquant (**blocking**, rc=2), **ne pas attendre
 les retours workers tardifs** (ignorés, pas de re-consolidation). Briefing de
 chaque worker A : **plafond 10 min** — à l'échéance, écrire un
-**schema-valid audit envelope with a nonempty summary** ; si ce fichier requis ne
+**audit envelope schema-valid** (§ Contrat final) ; si ce fichier requis ne
 peut pas être produit, le JOIN le marque `missing/invalid` et bloquant au lieu
 d'accepter un résumé invalide. Le worker retourne ensuite le contrat pour diagnostic.
 puis **consolide** en `weekly-quality-findings-<date>.json` — **aucun re-LLM par session**
@@ -347,7 +355,7 @@ seule fois. Il ne déduit jamais un succès d'un fichier absent, vide ou illisib
   malformed, mal routé ou à summary absent, vide ou non-string est un artefact requis invalide et donc
   **blocking** ; un timeout ne permet pas de dégrader ce contrat.
 - Un artefact d'audit `transcript-truncated` est accepté **sans RC, nonblocking** uniquement
-  lorsqu'il est nonempty et respecte exactement le même schema-valid audit envelope with a nonempty summary.
+  lorsqu'il est nonempty et respecte exactement le même **audit envelope schema-valid** (§ Contrat final).
   Son statut reste visible dans le rapport ; un fichier
   `transcript-truncated` vide, mal routé ou malformed reste un artefact
   manquant/invalide et est donc **blocking**.
@@ -431,3 +439,16 @@ Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sa
   `weekly-timings-<date>.json`, `weekly-audit-candidates-<date>.json`, `audit-findings-<id>.json`
   (workers A), `weekly-quality-findings-<date>.json` (consolidation), `<output_dir>/runs/current/extracts/`,
   drafts skills/commands via `weekly_commit_draft`, `weekly-report-blocks-<date>.md`
+- **Livrable HTML obligatoire** : après `weekly_report_assemble`, vérifier l'existence
+  réelle du rapport (`<project_root>/reports/html/weekly-report-latest.html`, glob puis
+  Read du chemin exact) avant de conclure. Absent → warning comptable `html-report-missing`
+  et `rc >= 1` ; ne jamais présenter l'archive markdown comme livrable principal, ni
+  annoncer l'archive markdown comme un succès.
+- **Contexte plafonné** : ne jamais passer `include_children` à la transcription de
+  session — inliner des transcripts multi-sessions sature la fenêtre et déclenche une
+  compaction en plein run. Chaque session est déléguée à un worker borné (branche A) qui
+  ne remonte que l'envelope findings ; la taille d'extrait lue par l'orchestrateur reste
+  bornée. Ne jamais lire un JSON de run entier pour n'en exploiter que quelques champs :
+  viser l'extrait borné ou l'outil dédié.
+- **Mode audit** : pour toute réinspection d'un run déjà produit, exécuter en lecture
+  seule (aucun spawn de worker, aucun commit) et se limiter aux artefacts du run actif.

@@ -14,6 +14,8 @@ from weekly_telemetry_aggregator.main import RunProvenance
 from weekly_telemetry_aggregator.models import Period
 from weekly_telemetry_aggregator.report import (
     _BLOCKING_SECURITY_RULES,
+    _audit_envelope_reason,
+    _audit_envelope_valid,
     _coerce_rc,
     _coherence_has_curation_signal,
     _critical_security_findings,
@@ -24,6 +26,7 @@ from weekly_telemetry_aggregator.report import (
     report_prep,
     validate_required_artifacts,
 )
+from weekly_telemetry_aggregator.run_state import _canonical
 from weekly_telemetry_aggregator.writer import summary_to_dict
 
 RUN = tzutc(2026, 8, 12)
@@ -188,6 +191,130 @@ def test_report_assemble_requires_declared_branch_artifact(tmp_path: Path):
     assert final_path is None
     assert rc == 2
     assert any("weekly-insights" in warning for warning in warnings)
+
+
+def test_report_assemble_partial_audit_still_writes_report_rc_one(tmp_path: Path):
+    """JOIN partiel : audit dynamique manquant → rapport écrit, rc=1, mention explicite."""
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (tmp_path / f"weekly-timings-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "branches": {
+                    "A": {
+                        "artifacts": ["audit-findings-ses_missing.json"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 1
+    assert any("JOIN partiel" in warning for warning in warnings)
+    text = final_path.read_text(encoding="utf-8")
+    assert "audit" in text.casefold() or "partiel" in text.casefold() or len(text) > 0
+
+
+def test_report_assemble_blocking_restores_current_to_previous_run(tmp_path: Path):
+    """Bascule tardive : STOP sans rapport (rc=2) → current restauré sur le run précédent."""
+    from weekly_telemetry_aggregator.run_state import activate_run
+
+    first = activate_run(tmp_path, DATE, RUN)
+    second = activate_run(tmp_path, DATE, RUN)
+    out = second.run_dir
+    period = Period(start=tzutc(2026, 8, 5), end=RUN)
+    u = make_usage("r", [make_step("r", tzutc(2026, 8, 6, 10), cost=0.5)], title="S")
+    data = summary_to_dict(aggregate([u], period=period, generated_at=RUN))
+    (out / f"weekly-summary-{DATE}.json").write_text(
+        json.dumps(data, ensure_ascii=False), encoding="utf-8"
+    )
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (out / f"weekly-timings-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "branches": {
+                    "I": {
+                        "artifacts": [f"weekly-insights-{DATE}.json"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is None
+    assert rc == 2
+    assert _canonical(tmp_path / "runs" / "current") == _canonical(first.run_dir)
+    assert any("restauré" in warning for warning in warnings)
+
+
+def _activate_two_runs_and_prep(tmp_path: Path):
+    """2 runs activés + summary/timings/draft dans le 2e ; retourne (cfg, out)."""
+    from weekly_telemetry_aggregator.run_state import activate_run
+
+    activate_run(tmp_path, DATE, RUN)
+    second = activate_run(tmp_path, DATE, RUN)
+    out = second.run_dir
+    period = Period(start=tzutc(2026, 8, 5), end=RUN)
+    u = make_usage("r", [make_step("r", tzutc(2026, 8, 6, 10), cost=0.5)], title="S")
+    data = summary_to_dict(aggregate([u], period=period, generated_at=RUN))
+    (out / f"weekly-summary-{DATE}.json").write_text(
+        json.dumps(data, ensure_ascii=False), encoding="utf-8"
+    )
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    return cfg, out
+
+
+def _declare_audits(out: Path, artifacts: list[str]) -> None:
+    (out / f"weekly-timings-{DATE}.json").write_text(
+        json.dumps({"branches": {"A": {"artifacts": artifacts}}}), encoding="utf-8"
+    )
+
+
+def _read_resilience(tmp_path: Path) -> dict:
+    return json.loads((tmp_path / "run_state.json").read_text(encoding="utf-8")).get(
+        "resilience", {}
+    )
+
+
+def test_report_assemble_partial_audit_records_fallback_event(tmp_path: Path):
+    """JOIN partiel (audit absent) → resilience.audit_partial_fallback == 1."""
+    cfg, out = _activate_two_runs_and_prep(tmp_path)
+    _declare_audits(out, ["audit-findings-ses_missing.json"])
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 1
+    assert _read_resilience(tmp_path).get("audit_partial_fallback") == 1
+
+
+def test_report_assemble_envelope_reject_records_event(tmp_path: Path):
+    """Audit hors contrat (sid-mismatch) → envelope_reject + fallback comptés."""
+    cfg, out = _activate_two_runs_and_prep(tmp_path)
+    _declare_audits(out, ["audit-findings-ses_bad.json"])
+    (out / "audit-findings-ses_bad.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session_id": "ses_other",
+                "summary": "résumé non vide",
+                "findings": [],
+                "rc": 0,
+                "warnings": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 1
+    resilience = _read_resilience(tmp_path)
+    assert resilience.get("audit_envelope_reject") == 1
+    assert resilience.get("audit_partial_fallback") == 1
 
 
 def test_applicable_summary_rc_accepts_valid_transcript_truncation(tmp_path: Path):
@@ -2124,3 +2251,206 @@ def test_assemble_security_warn_only(tmp_path: Path):
     assert _coerce_rc("crash", default=0) == 0
     # _gate_status par défaut : security pass, autres gates inchangées
     assert _gate_status({})["security"]["status"] == "pass"
+
+
+# ------------------------------------------------- vNext multi-harnais (harness-breakdown)
+
+
+def _seed_harness_summary(tmp_path: Path) -> None:
+    """Summary enrichi by_harness/all_sessions avec harness propagé."""
+    _write_summary(tmp_path)
+    p = tmp_path / f"weekly-summary-{DATE}.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data["by_harness"] = [
+        {
+            "harness": "copilot-cli",
+            "session_count": 1,
+            "total_tokens": 300,
+            "total_cost_usd": 3.0,
+        },
+        {
+            "harness": "opencode",
+            "session_count": 1,
+            "total_tokens": 100,
+            "total_cost_usd": 0.5,
+        },
+    ]
+    big_title = "Gros chantier " + "x" * 100
+    data["top_sessions_by_cost"] = [
+        {
+            "session_id": "b",
+            "title_or_topic": big_title,
+            "harness": "copilot-cli",
+            "cost_usd": 3.0,
+            "total_tokens": 300,
+            "duration_seconds": 60,
+            "active_time_seconds": 30,
+            "cost_per_active_minute": 6.0,
+            "api_call_count": 5,
+            "includes_subagents": False,
+            "cache_efficiency": 0.5,
+        },
+    ]
+    data["all_sessions"] = data["top_sessions_by_cost"] + [
+        {
+            "session_id": "a",
+            "title_or_topic": "Petit fix",
+            "harness": "opencode",
+            "cost_usd": 0.5,
+            "total_tokens": 100,
+            "duration_seconds": 10,
+            "active_time_seconds": 5,
+            "cost_per_active_minute": 6.0,
+            "api_call_count": 2,
+            "includes_subagents": False,
+            "cache_efficiency": 0.1,
+        },
+    ]
+    p.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_report_context_exposes_harness_breakdown_and_all_sessions(tmp_path: Path):
+    from weekly_telemetry_aggregator.report import build_report_context
+
+    _seed_harness_summary(tmp_path)
+    ctx = build_report_context(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert ctx is not None
+    assert [h["harness"] for h in ctx["harness_breakdown"]] == ["copilot-cli", "opencode"]
+    assert ctx["harness_breakdown"][0]["total_cost_usd"] == 3.0
+    assert [s["session_id"] for s in ctx["all_sessions"]] == ["b", "a"]
+
+
+def test_report_context_tolerates_missing_harness_keys(tmp_path: Path):
+    """Runs anciens sans by_harness/all_sessions → listes vides, pas de crash."""
+    from weekly_telemetry_aggregator.report import _harness_breakdown, build_report_context
+
+    _write_summary(tmp_path)
+    p = tmp_path / f"weekly-summary-{DATE}.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data.pop("by_harness", None)
+    data.pop("all_sessions", None)
+    p.write_text(json.dumps(data), encoding="utf-8")
+    ctx = build_report_context(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert ctx is not None
+    assert ctx["harness_breakdown"] == []
+    assert ctx["all_sessions"] == []
+    # garde-fou unitaire : entrées malformées ignorées, tri (-coût, harnais)
+    assert _harness_breakdown({}) == []
+    assert _harness_breakdown({"by_harness": "nope"}) == []
+    assert _harness_breakdown({"by_harness": [{"harness": "z"}, None, "x"]}) == [
+        {"harness": "z", "session_count": 0, "total_tokens": 0, "total_cost_usd": 0.0}
+    ]
+
+
+def test_report_prep_renders_harness_breakdown_md(tmp_path: Path):
+    _seed_harness_summary(tmp_path)
+    draft, ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None
+    text = draft.read_text(encoding="utf-8")
+    assert "### Ventilation par harnais" in text
+    assert "copilot-cli" in text and "opencode" in text
+    assert "harnais `copilot-cli`" in text  # colonne harness du top sessions
+    assert "### Toutes les sessions (annexe)" in text
+    assert "`b`" in text and "`a`" in text
+    annex = text.split("### Toutes les sessions (annexe)")[1]
+    assert "x" * 100 not in annex  # titres d'annexe tronqués 80ch
+    assert "user_turns" not in text
+
+
+def test_report_prep_harness_fallback_without_keys(tmp_path: Path):
+    _write_summary(tmp_path)
+    p = tmp_path / f"weekly-summary-{DATE}.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data.pop("by_harness", None)
+    data.pop("all_sessions", None)
+    p.write_text(json.dumps(data), encoding="utf-8")
+    draft, ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None
+    text = draft.read_text(encoding="utf-8")
+    assert "Ventilation par harnais non disponible" in text
+    assert "Toutes les sessions (annexe)" not in text
+
+
+def test_report_gate_passes_without_harness_keys(tmp_path: Path):
+    """Pas de régression gate : summary sans by_harness/all_sessions reste pass."""
+    _write_summary(tmp_path)
+    p = tmp_path / f"weekly-summary-{DATE}.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data.pop("by_harness", None)
+    data.pop("all_sessions", None)
+    p.write_text(json.dumps(data), encoding="utf-8")
+    gate = validate_required_artifacts(tmp_path, DATE)
+    assert gate["status"] == "pass"
+    assert gate["required"][f"weekly-summary-{DATE}.json"]["status"] == "present"
+
+
+def test_html_renders_harness_filter_and_closed_annex(tmp_path: Path):
+    from weekly_telemetry_aggregator.html_report import render_html_report
+    from weekly_telemetry_aggregator.report import build_report_context
+
+    _seed_harness_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    cfg.html_report_dir = str(tmp_path / "html")
+    ctx = build_report_context(cfg, anchor=RUN.isoformat())
+    assert ctx is not None
+    path = render_html_report(cfg, anchor=RUN.isoformat(), ctx=ctx, quality_block=None)
+    assert path is not None and path.exists()
+    html = path.read_text(encoding="utf-8")
+    # colonne harness du top sessions + ventilation by_harness
+    assert "Ventilation par harnais" in html
+    assert "copilot-cli" in html and "opencode" in html
+    # annexe H fermée par défaut (jamais open), autonome zéro-CDN
+    assert '<details class="annex" id="annex-h">' in html
+    assert 'id="allsess-q"' in html and 'id="allsess-h"' in html
+    assert '<option value="copilot-cli">' in html
+    assert '<option value="opencode">' in html
+    assert "cdn" not in html.lower()
+    # titres de l'annexe H tronqués 80ch (le tableau top-sessions d'annexe B
+    # garde son rendu historique ; le payload JSON garde les données complètes)
+    annex_h = html.split('id="annex-h"')[1].split('<script type="application/json"')[0]
+    assert "x" * 100 not in annex_h
+    assert "<td>Gros chantier " + "x" * 66 + "</td>" in annex_h
+    # l'annexe affichée ne rend que des champs sûrs (pas de brut transcript) ;
+    # les clés agrégées du payload JSON embarqué ne sont pas du contenu brut
+    assert "user_turns" not in annex_h and "tool_arg" not in annex_h
+    # zéro-CDN : aucun script/link externe
+    assert "<script src=" not in html and '<link rel="stylesheet"' not in html
+
+
+def _valid_audit_envelope(sid: str = "ses_f6ed03e11ffetdQstFHu2pb7B5") -> dict:
+    return {
+        "schema_version": 1,
+        "session_id": sid,
+        "summary": "ok",
+        "findings": [],
+        "warnings": [],
+        "rc": 0,
+    }
+
+
+def test_audit_envelope_valid_accepts_minimal_contract():
+    assert _audit_envelope_valid(_valid_audit_envelope(), "ses_f6ed03e11ffetdQstFHu2pb7B5") is True
+    assert _audit_envelope_reason(_valid_audit_envelope(), "ses_f6ed03e11ffetdQstFHu2pb7B5") == "ok"
+
+
+def test_audit_envelope_rejects_graphify_text_out_of_contract():
+    """Cas 2026-09-16 : worker A retourne du texte graphify au lieu du JSON."""
+    assert (
+        _audit_envelope_valid("graphify: community nodes ...", "ses_f6ed03e11ffetdQstFHu2pb7B5")
+        is False
+    )
+    assert (
+        _audit_envelope_reason("graphify: community nodes ...", "ses_f6ed03e11ffetdQstFHu2pb7B5")
+        == "not-mapping"
+    )
+
+
+def test_audit_envelope_rejects_empty_summary_and_sid_mismatch():
+    bad_summary = _valid_audit_envelope()
+    bad_summary["summary"] = "   "
+    assert _audit_envelope_valid(bad_summary, "ses_f6ed03e11ffetdQstFHu2pb7B5") is False
+    assert _audit_envelope_reason(bad_summary, "ses_f6ed03e11ffetdQstFHu2pb7B5") == "empty-summary"
+
+    bad_sid = _valid_audit_envelope(sid="ses_other")
+    assert _audit_envelope_valid(bad_sid, "ses_f6ed03e11ffetdQstFHu2pb7B5") is False
+    assert _audit_envelope_reason(bad_sid, "ses_f6ed03e11ffetdQstFHu2pb7B5") == "sid-mismatch"

@@ -1,6 +1,6 @@
 ---
 name: weekly-report-prose
-description: Étape 7b — bloc prose du rapport sous contrat anti-hallucination (zéro chiffre, sources closes).
+description: "Rédige le bloc « Constats qualitatifs » du rapport sous contrat anti-hallucination (sources closes). Use when high/medium findings exist."
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: pipeline-step

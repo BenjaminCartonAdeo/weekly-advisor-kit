@@ -1,6 +1,6 @@
 ---
 name: weekly-coherence-review
-description: Étape 6.5 — passe critique de cohérence entre la surface déclarative (`.opencode` par défaut) et l'usage réel (lecture seule).
+description: "Détecte en lecture seule les écarts entre la surface déclarative et l'usage réel observé. Use when running the coherence pass before curation."
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: pipeline-step

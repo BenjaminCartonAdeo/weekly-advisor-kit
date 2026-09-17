@@ -1,6 +1,6 @@
 ---
 name: harness-remediation
-description: "Étape 5.5 — propositions de correction bornées issues du digest harness-eval (dry-run par défaut, aucun commit automatique)."
+description: "Transforme le digest harness-eval en propositions bornées, dry-run par défaut, jamais de commit automatique. Use when a dated harness digest exists."
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: pipeline-step
@@ -121,7 +121,7 @@ l'exact-match de `old_text`, jamais sur `line`.
 
 `apply` n'est admissible que pour une correction mécanique, un remplacement exact et
 une règle explicitement présente dans `harness_auto_fix_rules`. Le tool impose en plus
-la cible résolue sous le périmètre scanné (`.opencode/AGENTS.md` exact, si ce fichier optionnel existe, ou `.opencode/{skills,commands,agents,plugins}/`, selon la surface)
+la cible résolue sous le périmètre scanné (le fichier d'instructions du harnais à la racine du projet s'il existe, ou le dossier des skills, commands, agents et plugins de la surface, selon la surface)
 (hors `plugins/weekly-advisor-engine/` — le moteur n'est jamais une cible), une seule
 occurrence et une limite de taille.
 

@@ -1,6 +1,6 @@
 ---
 name: weekly-drafting
-description: Étape 4 — auto-drafting de skills/commands depuis les transcripts (cible harnais unique, contenu universel, gate de portabilité avant commit).
+description: "Généralise un pattern coûteux d'une session en skill ou command portable, commit via la gate de portabilité. Use when the draft-candidate list is non-empty."
 ---
 
 # Weekly Drafting — étape 4
@@ -50,7 +50,7 @@ Le drafting écrit dans LE harnais cible du projet (décision mono-cible), jamai
 |---|---|
 | claude-code | .claude/skills |
 | opencode | .opencode/skills |
-| copilot-vscode | .github/prompts · .github/skills |
+| copilot-cli | .github/prompts · .github/skills |
 | codex | .agents |
 
 - Résolution approuvée : `resolve_draft_targets(project_root, config)` renvoie le mode,
@@ -118,17 +118,15 @@ Règles de génération NON NÉGOCIABLES :
 
 Format skill (agentskills.io) — même gabarit que le bloc `metadata` canonique ci-dessus (§ Contenu universel, champs + mint `skill_id` identiques) :
 
-```yaml
+```markdown
 ---
 name: string            # == nom du dossier (requis)
 description: string     # une ligne, déclenche le chargement à la demande (requis)
 metadata: {voir bloc canonique ci-dessus — ne pas diverger}
 ---
-# <Nom>
-## Quand utiliser
-## Comment invoquer l'artefact généré (multi-plateforme)
-## Procédure
-## Points d'attention
+
+corps : titre du skill, puis les sections « Quand utiliser », « Comment invoquer
+l'artefact généré (multi-plateforme) », « Procédure », « Points d'attention ».
 ```
 
 Format command :
@@ -152,8 +150,11 @@ chaque commit (règles custom portability du kit) :
 - binaire harness-eval absent ⇒ gate ignorée (fail-soft, non bloquant) ; le doctor du kit
   signale déjà cette absence.
 
-Limite connue (moteur 7.10.1) : couverture **skills seulement** — commands et agents ne
-sont pas inspectés par ces règles ; ne pas compenser par un lint maison.
+Limite connue (moteur 7.15.0) : couverture **skills seulement** — commands et agents ne
+sont pas inspectés par ces règles ; ne pas compenser par un lint maison. Sur ce moteur,
+les règles custom `frontmatter-minimal` et `no-hardcoded-tool-names` sont **skippées**
+(regex trop longue, backtracking catastrophique) : ne pas en déduire que le frontmatter
+minimal et les noms d'outils sont validés.
 
 ## Public cible (question obligatoire : QUI utilisera ce skill ?)
 

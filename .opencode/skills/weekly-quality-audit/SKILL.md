@@ -1,6 +1,6 @@
 ---
 name: weekly-quality-audit
-description: Étape 3 — audit qualitatif des sessions coûteuses (paraphrase stricte, findings liés à la commande lanceuse).
+description: "Audite une session transcrite — paraphrase stricte, findings rattachés à la commande lanceuse. Use when a transcript extract has to be audited."
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: pipeline-step
@@ -80,7 +80,7 @@ Toute conclusion doit être soutenue par le transcript effectivement lu. Sécuri
 ## Harnais d'origine
 
 Chaque session provient d'un harnais identifiable : ids canoniques
-`<harness>:<uuid>` (`claude-code:`, `opencode:`, `copilot-vscode:`).
+`<harness>:<uuid>` (`claude-code:`, `opencode:`, `copilot-cli:`).
 `show-session` accepte l'id canonique ET l'id brut (le brut est résolu vers la
 première source qui le possède) ; les titres Claude Code sont tronqués à
 100 caractères à la lecture.

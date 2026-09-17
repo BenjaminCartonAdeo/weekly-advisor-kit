@@ -51,7 +51,6 @@ interface PreflightResult {
 
 function preflight(root: string): PreflightResult {
   const engine = path.join(root, ...ENGINE_REL)
-  console.log(`[weekly_preflight] diag=${JSON.stringify({ cwd: process.cwd(), worktree: root, engine, entry: import.meta.url })}`)
   const engineOk = fs.existsSync(engine) && fs.statSync(engine).isDirectory()
   let pythonOk = false
   let configOk = false

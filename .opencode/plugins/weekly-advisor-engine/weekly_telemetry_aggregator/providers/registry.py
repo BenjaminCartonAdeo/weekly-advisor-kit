@@ -1,6 +1,6 @@
 """Registre explicite des providers de sessions — table fail-soft.
 
-Les trois modules de `providers/implementations/` y sont câblés
+Les modules de `providers/implementations/` y sont câblés
 explicitement : chacun expose `PROVIDER_TYPE: str` et une factory
 `build_provider(source_cfg, cfg) -> SessionProvider | None`. Type inconnu ou
 source indisponible (factory → None) → avertissement + skip, jamais de crash.
@@ -13,7 +13,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from .base import SessionProvider, validate_provider
-from .implementations import claude_code, copilot_vscode, opencode
+from .implementations import claude_code, copilot_cli, opencode
 
 if TYPE_CHECKING:
     from ..config import TelemetryConfig
@@ -26,12 +26,12 @@ ProviderFactory = Callable[[dict, "TelemetryConfig"], SessionProvider | None]
 _BUILTIN_FACTORIES: dict[str, ProviderFactory] = {
     opencode.PROVIDER_TYPE: opencode.build_provider,
     claude_code.PROVIDER_TYPE: claude_code.build_provider,
-    copilot_vscode.PROVIDER_TYPE: copilot_vscode.build_provider,
+    copilot_cli.PROVIDER_TYPE: copilot_cli.build_provider,
 }
 
 
 def discover_provider_factories() -> dict[str, ProviderFactory]:
-    """Retourne une copie de la table explicite des trois factories connues."""
+    """Retourne une copie de la table explicite des factories connues."""
     return dict(_BUILTIN_FACTORIES)
 
 

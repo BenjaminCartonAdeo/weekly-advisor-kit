@@ -114,7 +114,6 @@ Le moteur lit les sessions de plusieurs harnais via un Protocol
 `SessionProvider` (identifiant de harnais + méthodes de lecture). Le registre
 (`providers/registry.py`) câble explicitement les implémentations
 (`opencode.py` — base SQLite ; `claude_code.py` — transcripts JSONL ;
-`copilot_vscode.py` — stockage de chat) et `build_providers` est fail-soft :
 une source indisponible est ignorée avec un avertissement. Les identifiants de
 session sont canoniques et namespacés (`<harnais>:<id>`) ; la déduplication
 entre sources d'un même harnais applique « première source gagne ». Codex n'est
@@ -134,8 +133,8 @@ jamais additionné au coût facturé.
 disponible. Le drafting est mono-cible : le harnais cible est résolu par override
 de configuration, sinon par marqueurs du worktree
 (`.claude` → claude-code, `.opencode` → opencode, `.github/prompts|skills` →
-copilot-vscode, `.agents` → codex), avec priorité
-claude-code > opencode > copilot-vscode > codex, sinon défaut OpenCode +
+copilot-cli, `.agents` → codex), avec priorité
+claude-code > opencode > copilot-cli > codex, sinon défaut OpenCode +
 avertissement.
 
 ## Contrôle déclaratif et remédiation

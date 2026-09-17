@@ -54,7 +54,7 @@ Fichier : `.opencode/plugins/weekly-advisor-engine/weekly-telemetry-config.json`
 | `open_browser` | Ouverture automatique du rapport HTML dans le navigateur après l'assemble — mettre `false`, ou poser la variable d'environnement `WEEKLY_NO_BROWSER=1` pour un cron headless | `true` |
 | `kit_root` | (optionnel) Worktree du kit pour la synchro best-effort des drafts auto-rédigés (`commit-draft`, v6.0.l) | absent → désactivé |
 | `harness_include` | Profil et globs allowlistés pour l'étape `harness` (projection étendue au harnais détecté) | `advisory` (policy + documentation) |
-| `session_sources` | Sources de sessions actives (liste d'objets `{type, ...}` : `opencode`, `claude-code`, `copilot-vscode`) ; clé extra `cost_rate_usd_per_mtok` = surcharge du taux d'estimation. **Codex n'est jamais une source de sessions** : cible de drafting seule (`.agents/`) | `[{"type": "opencode"}]` |
+| `session_sources` | Sources de sessions actives (liste d'objets `{type, ...}` : `opencode`, `claude-code`, `copilot-cli`) ; clé extra `cost_rate_usd_per_mtok` = surcharge du taux d'estimation. **Codex n'est jamais une source de sessions** : cible de drafting seule (`.agents/`) | `[{"type": "opencode"}]` |
 | `draft_targets` | Cible de drafting mono-cible : liste de harnais (override), `[]` (legacy toutes cibles), absent/invalide (détection auto par marqueurs) | détection auto |
 | `harness_auto_fix_rules` | Règles explicitement autorisées pour l'application automatique | `[]` (aucune) |
 | `harness_auto_fix_max_files` | Nombre maximum de fichiers modifiés par remédiation | `1` |
@@ -156,7 +156,7 @@ digest (`harness_include.unscoped_files`) au lieu d'être scanné silencieusemen
 
 **Placement mono-cible** : chaque projet est rattaché à **un** harnais de drafting,
 résolu par détection de marqueurs au `project_root` (priorité `claude-code` >
-`opencode` > `copilot-vscode` > `codex`), surchargeable par `draft_targets` (`[]` =
+`opencode` > `copilot-cli` > `codex`), surchargeable par `draft_targets` (`[]` =
 mode legacy). Aucun marqueur → défaut `opencode` + warning du doctor (exit 1).
 
 Choisissez explicitement votre harnais cible dans `draft_targets` si vous ne voulez
@@ -166,13 +166,13 @@ pas dépendre de la détection automatique. Exemple pour forcer OpenCode :
 "draft_targets": ["opencode"]
 ```
 
-Valeurs possibles : `claude-code`, `opencode`, `copilot-vscode`, `codex`.
+Valeurs possibles : `claude-code`, `opencode`, `copilot-cli`, `codex`.
 
 | Marqueur projet | Harnais | Cibles de projection des drafts |
 |---|---|---|
 | `.claude/` | claude-code | `.claude/skills` |
 | `.opencode/` | opencode | `.opencode/skills` |
-| `.github/prompts/` ou `.github/skills/` | copilot-vscode | `.github/prompts`, `.github/skills` |
+| `.github/prompts/` ou `.github/skills/` | copilot-cli | `.github/prompts`, `.github/skills` |
 | `.agents/` | codex | `.agents` |
 
 **Zéro symlink** : la projection étape 5 et les artefacts générés sont de vraies
@@ -188,9 +188,19 @@ règles custom `.harness-eval/rules/portability.yaml`, ids `custom/portability/*
 
 **Comportement par artefact (honnête)** : `harness-eval skill-verify` n'inspecte que
 les dossiers **skills** (`SKILL.md` + fichiers frères). Pour une **command**, la gate
-est **skippée explicitement** — non applicable en harness-eval 7.10.1 — et le résultat
+est **skippée explicitement** — non applicable — et le résultat
   du tool affiche une note de skip visible (« Gate portabilité non applicable aux
 commands… ») : le commit part sans gate, jamais de silence ni de faux vert.
+
+**Règles custom partiellement inactives (moteur 7.15.0)** : deux des cinq règles de
+`.harness-eval/rules/portability.yaml` sont **skippées silencieusement** (message sur
+`stderr`, invisible en usage normal) — `custom/portability/frontmatter-minimal` (« regex
+exceeds 256 characters, skipping ») et `custom/portability/no-hardcoded-tool-names`
+(« regex looks prone to catastrophic backtracking, skipping »). Seules
+`multi-platform-invocation`, `project-relative-paths` et `self-contained-scripts`
+restent actives : la gate ne vérifie donc **plus** le frontmatter minimal ni les noms
+d'outils codés en dur. Ne pas modifier ce fichier de règles (contrainte AGENTS.md) ;
+relire la sortie `stderr` du scanner après toute montée de version.
 
 #### WAVE 2.5 — curation gated et manifeste dry-run
 

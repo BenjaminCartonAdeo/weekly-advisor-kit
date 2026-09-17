@@ -224,7 +224,10 @@ def compute(
     baseline_costs, baseline_days = [], 0
     for s in recent_summaries[1:]:
         for d in s.get("daily_totals", []):
-            baseline_costs.append(float(d.get("cost_usd", 0.0)))
+            cost = float(d.get("cost_usd", 0.0))
+            if cost == 0:
+                continue
+            baseline_costs.append(cost)
             baseline_days += 1
     if baseline_costs:
         baseline_list = baseline_costs

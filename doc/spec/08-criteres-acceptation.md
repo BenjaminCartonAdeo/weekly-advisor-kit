@@ -31,7 +31,7 @@ présente spécification. Chaque critère est **testable par un humain**.
 - [ ] C2. Chaque constat porte catégorie, sévérité, preuve **paraphrasée** (pas de citation
       verbatim), type de recommandation.
 - [ ] C3. Le drafting cible **un harnais** résolu par (override > marqueurs > défaut), priorité
-      claude-code > opencode > copilot-vscode > codex.
+      claude-code > opencode > copilot-cli > codex.
 - [ ] C4. Au plus 3 documents générés par run ; un chevauchement détecté ne crée **jamais** de
       doublon (constat manuel).
 - [ ] C5. Chaque document respecte les 5 règles de portabilité ; un document avec frontmatter
