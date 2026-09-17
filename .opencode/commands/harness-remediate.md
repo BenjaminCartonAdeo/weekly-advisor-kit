@@ -1,5 +1,5 @@
 ---
-description: Analyse le dernier digest harness-eval et traite ses propositions via la gate déterministe.
+description: "Traite le dernier digest harness-eval via la gate déterministe — propositions bornées, aucune application aveugle. Use when a harness digest has to be processed."
 ---
 
 Charge le skill `harness-remediation` (source des règles et schémas), traite le digest

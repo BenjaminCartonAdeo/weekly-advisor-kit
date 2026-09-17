@@ -4,13 +4,18 @@ Each run writes every artifact under ``<output_dir>/runs/<run_id>/`` with
 ``run_id = <anchor-date>-<uuid-hex-8>`` — two runs can never overwrite each
 other, even when they share the same anchor date.  A small state file
 (``<output_dir>/run_state.json``) records the active run; ``runs/current`` is a
-best-effort symlink to it so agents and docs keep a stable path.  Commands that
-resolve a date with no run state fall back to ``output_dir`` itself (legacy
-mode: tests, manual CLI debugging) — production always activates a run first.
+best-effort alias so agents and docs keep a stable path.  It points at the
+active run during execution (workers write via ``runs/current/``), but a run
+that ends WITHOUT a report (blocking gate, rc=2) restores it onto the previous
+run — ``current`` always designates the latest run with a deliverable.
+Commands that resolve a date with no run state fall back to ``output_dir``
+itself (legacy mode: tests, manual CLI debugging) — production always
+activates a run first.
 """
 
 from __future__ import annotations
 
+import os
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
@@ -24,12 +29,52 @@ RUNS_DIR = "runs"
 RUN_STATE_FILE = "run_state.json"
 CURRENT_SYMLINK = "current"
 STATE_SCHEMA_VERSION = 1
+#: Événements de résilience comptés dans ``run_state.json`` (clé ``resilience``) —
+#: observabilité cron/CI des chemins Tasks 1/4/5. Un run qui finit SANS rapport
+#: n'écrit ni summary ni gates : l'état est le seul artefact garanti.
+RESILIENCE_EVENTS = frozenset(
+    {
+        "audit_envelope_reject",  # audit hors contrat rejeté par la gate (Task 1)
+        "audit_partial_fallback",  # JOIN partiel : rapport écrit sans audits (Task 4)
+        "current_rollback",  # alias current restauré sur le run précédent (Task 5)
+    }
+)
+
+
+def _strip_extended_prefix(s: str) -> str:
+    """Retire le préfixe Windows ``\\?\\`` / ``//?/`` (extended-length path).
+
+    Sur Windows, ``Path.resolve()`` peut retourner ``//?/C:/...`` tandis que
+    ``Path('C:/...').resolve()`` reste ``C:/...`` — la comparaison d'égalité
+    échoue alors qu'il s'agit du même fichier. Le strip rend les deux formes
+    canoniques avant toute comparaison ou sérialisation ``previous_run_dir``.
+    """
+    if s.startswith("\\\\?\\"):
+        return s[4:]
+    if s.startswith("//?/"):
+        return s[4:]
+    return s
+
+
+def _canonical(p: Path) -> Path:
+    """Chemin canonique portable : resolve + strip extended + normcase Windows."""
+    try:
+        r = p.resolve()
+    except OSError:
+        r = p.absolute()
+    s = _strip_extended_prefix(str(r))
+    if os.name == "nt":
+        s = os.path.normcase(os.path.normpath(s))
+    return Path(s)
+
+
 _WARNED_REAL_CURRENT = False  # warning "current réel" : une seule fois par process
 
 _LAYOUT_README = """# reports/ — layout du pipeline `weekly-advisor`
 
 - `runs/<date>-<uuid8>/` — artefacts complets de chaque run (source de vérité)
-- `runs/current/` — alias symlink vers le run actif (signal cron/CI)
+- `runs/current/` — alias vers le run en cours, restauré sur le dernier run
+  avec rapport si le run échoue sans livrable (signal cron/CI)
 - `<project_root>/reports/html/` — **rapport HTML pour l'utilisateur**
   (chemin par défaut, config `html_report_dir` pour le changer, `""` pour désactiver)
 - `run_state.json` / `previous_run.json` / `anchor-last.txt` — état du pipeline (ne pas éditer)
@@ -61,6 +106,9 @@ def activate_run(output_dir: Path, date: str, run_time: datetime) -> ActiveRun:
     run_dir.mkdir(parents=True, exist_ok=False)  # uuid ⇒ never pre-exists
     #: alias matérialisé IMMÉDIatement à la naissance du run dir (v6.2) —
     #: les artefacts intermédiaires résolvent `runs/current` dès la première écriture.
+    #: la cible précédente est mémorisée : un run qui échoue SANS rapport
+    #: (gate bloquante, rc=2) y restaurera l'alias via rollback_current_link.
+    previous_target = _read_current_target(output_dir)
     _update_current_link(output_dir, run_dir)
     state = {
         "schema_version": STATE_SCHEMA_VERSION,
@@ -71,6 +119,8 @@ def activate_run(output_dir: Path, date: str, run_time: datetime) -> ActiveRun:
         #: heure réelle de création du run dir (v6.0.l) — created_at reste l'ancre.
         "activated_at": datetime.now(UTC).isoformat(),
     }
+    if previous_target is not None:
+        state["previous_run_dir"] = _strip_extended_prefix(str(previous_target))
     _write_ok(output_dir / RUN_STATE_FILE, state)
     _migrate_legacy_root(output_dir, run_dir)
     _ensure_layout_readme(output_dir)
@@ -130,6 +180,81 @@ def _write_ok(path: Path, data: dict) -> None:
     l'état corrompu basculerait tous les artefacts suivants en fallback legacy.
     """
     write_json_atomic(path, data)
+
+
+def record_resilience_event(output_dir: Path, event: str) -> int:
+    """Incrémente le compteur ``resilience.<event>`` du run actif ; retourne la valeur.
+
+    Best-effort : 0 si aucun état actif (mode legacy, debug CLI) — le pipeline
+    ne doit jamais échouer sur de l'observabilité ; ValueError si événement
+    inconnu (typo appelant, détection au dev/test). Le retry borné Task3 est
+    côté agent (briefing), invisible au moteur — non compté ici.
+    """
+    if event not in RESILIENCE_EVENTS:
+        raise ValueError(f"événement résilience inconnu : {event!r}")
+    state_path = Path(output_dir) / RUN_STATE_FILE
+    state = load_json(state_path)
+    if not isinstance(state, dict) or not state.get("run_dir"):
+        return 0
+    counters = state.get("resilience")
+    if not isinstance(counters, dict):
+        counters = {}
+        state["resilience"] = counters
+    new_value = int(counters.get(event, 0) or 0) + 1
+    counters[event] = new_value
+    try:
+        _write_ok(state_path, state)
+    except OSError:
+        return 0
+    return new_value
+
+
+def rollback_current_link(output_dir: Path) -> bool:
+    """Re-pointe ``runs/current`` vers le run précédent ; True si restauré.
+
+    Appelé par les chemins d'échec SANS rapport (gate bloquante, rc=2) :
+    l'alias ne doit jamais désigner un run sans livrable — cron/CI et agents
+    continuent de voir le dernier run avec un rapport. Best-effort : False si
+    aucun run précédent connu, disparu, ou alias non restauré (ex. entrée
+    réelle — voir ``_update_current_link``).
+    """
+    state = load_json(Path(output_dir) / RUN_STATE_FILE)
+    if not isinstance(state, dict):
+        return False
+    prev = state.get("previous_run_dir")
+    if not isinstance(prev, str) or not prev:
+        return False  # premier run : rien vers quoi restaurer
+    prev_dir = Path(prev)
+    if not prev_dir.is_dir():
+        return False
+    _update_current_link(Path(output_dir), prev_dir)
+    link = Path(output_dir) / RUNS_DIR / CURRENT_SYMLINK
+    try:
+        restored = link.is_symlink() and _canonical(link) == _canonical(prev_dir)
+    except OSError:
+        restored = False
+    if not restored:
+        return False
+    record_resilience_event(Path(output_dir), "current_rollback")
+    print(
+        f"run_state: run sans rapport — {RUNS_DIR}/{CURRENT_SYMLINK} restauré "
+        f"sur le run précédent ({prev_dir.name})",
+        flush=True,
+    )
+    return True
+
+
+def _read_current_target(output_dir: Path) -> Path | None:
+    """Cible absolue de l'alias ``runs/current`` ; None si absent ou non-lien."""
+    link = Path(output_dir) / RUNS_DIR / CURRENT_SYMLINK
+    try:
+        if not link.is_symlink():
+            return None
+        raw = link.readlink()
+    except OSError:
+        return None
+    target = raw if raw.is_absolute() else link.parent / raw
+    return Path(_strip_extended_prefix(os.path.normpath(str(target))))
 
 
 def _update_current_link(output_dir: Path, run_dir: Path) -> None:

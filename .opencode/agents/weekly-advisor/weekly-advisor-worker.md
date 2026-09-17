@@ -1,6 +1,6 @@
 ---
 name: weekly-advisor-worker
-description: Exécute une branche paramétrée du DAG weekly-advisor (briefing minimal-complet) et retourne un JSON strict : branch, rc, steps_done, warnings, artifacts, elapsed_s. Ne connaît ni les autres branches ni la logique de merge.
+description: "Exécute une branche du DAG orchestré à partir d'un briefing minimal-complet et renvoie un contrat JSON strict. Use when dispatched with a single branch briefing."
 mode: subagent
 permission:
   edit: allow
@@ -72,8 +72,12 @@ L'orchestrateur gère la synthèse en join (§5 design) : signale la latence, co
 ## Pre-flight skills (F6)
 
 **Avant tout step de branche**, vérifier la présence des skills requises par SA branche
-(glob `skills/<name>/SKILL.md` sous le worktree, lecture seule, jamais de chargement
-implicite) :
+via le catalogue réel `scan_skill_catalog()` (multi-layout, lecture seule, jamais de
+chargement implicite) — ce sont les mêmes racines que le moteur (`_skill_dirs()` :
+`<project_root>/.opencode/skills`, `<project_root>/.claude/skills`,
+`<project_root>/.agents/skills`, `~/.config/opencode/skills`, plus layouts
+déclarés). Un simple `glob` sous `skills/` seul est incomplet (a causé `ses_f56a`
+→ audit rc=2 `missing weekly-quality-audit` malgré skill présent dans `.agents/`).
 
 | Branche | Skill(s) requise(s) | Rôle |
 |---|---|---|
@@ -141,11 +145,20 @@ est tronqué/partiel (signal de troncation ou taille > ~150 Ko) : (a) **une seul
    valeur `message`) dans le contrat ET dans `warnings` du fichier, comme fait
    informatif. Sinon, si la sortie reste partielle, conserver ce même warning avec
    `rc=1`. Une recovery réussie n'est donc jamais artificiellement marquée `rc=1`.
- 4. Retourner le contrat standard (branch=`A`, artifacts=[`audit-findings-<session_id>.json`]).
-    Même après un refus `external-directory` hors worktree, écrire un envelope valide
-    avec `summary` non-vide, `findings: []`, `rc: 0` et le warning structuré
-    `{status: "report-only", report_only: true, category: "external-permission-refusal"}`
-    dans `warnings`.
+  4. Retourner le contrat standard (branch=`A`, artifacts=[`audit-findings-<session_id>.json`]).
+     Même après un refus `external-directory` hors worktree, écrire un envelope valide
+     avec `summary` non-vide, `findings: []`, `rc: 0` et le warning structuré
+     `{status: "report-only", report_only: true, category: "external-permission-refusal"}`
+     dans `warnings`.
+
+**Anti-hors-contrat (cas 2026-09-16 `ses_f6ed`)** : ne charger QUE le skill
+`weekly-quality-audit`. Ne jamais charger `graphify` ni aucun skill lourd dans un
+worker A : toute analyse texte libre hors enveloppe est ignorée et tronquée par
+l'orchestrateur, et un fichier manquant bloque le JOIN. Règle d'écriture :
+d'abord écrire `audit-findings-<session_id>.json` (enveloppe v1 valide, `summary`
+non-vide), ensuite seulement retourner le contrat. Si l'extrait dépasse ~150 Ko,
+ne pas le relire en entier : travailler par fenêtres bornées (`offset/limit`,
+`max_retry=1`, ≤3 tours) puis écrire l'enveloppe avec `transcript-truncated:<session_id>`.
 
 **Isolation** : un worker A ne lit QUE sa session ; il ne consolide pas, ne lit pas les
 autres `audit-findings-*.json`, ne touche pas aux autres branches. La consolidation
@@ -235,10 +248,6 @@ l'extrait est borné, tronqué ou illisible. L'envelope v1 obligatoire est :
 toujours des tableaux, et `rc` vaut seulement `0` ou `1`. Un extrait vide ne permet
 aucun finding inventé : écrire un résumé explicite et `findings: []`, puis conserver le
 warning dans l'artefact. Le worker vérifie cette forme avant son contrat de retour.
-
-### Transcript borné ou tronqué
-
-Règle canonique : skill `weekly-quality-audit` (§ retry et code retour). Rappel worker : **one bounded retry** (`max_retry=1`, ≤3 fenêtres `offset/limit`), jamais de respawn loop. `complete-enough` → envelope `rc: 0` + warning informatif `transcript-truncated:<session_id>` conservé ; partiel résiduel → envelope `rc: 1` + warning **exact** dans contrat ET artefact. Plafond worker 10 min : timeout = `rc=1` + warning.
 
 ### Entrées aval et sécurité
 

@@ -14,6 +14,8 @@ from weekly_telemetry_aggregator.main import RunProvenance
 from weekly_telemetry_aggregator.models import Period
 from weekly_telemetry_aggregator.report import (
     _BLOCKING_SECURITY_RULES,
+    _audit_envelope_reason,
+    _audit_envelope_valid,
     _coerce_rc,
     _coherence_has_curation_signal,
     _critical_security_findings,
@@ -24,6 +26,7 @@ from weekly_telemetry_aggregator.report import (
     report_prep,
     validate_required_artifacts,
 )
+from weekly_telemetry_aggregator.run_state import _canonical
 from weekly_telemetry_aggregator.writer import summary_to_dict
 
 RUN = tzutc(2026, 8, 12)
@@ -188,6 +191,130 @@ def test_report_assemble_requires_declared_branch_artifact(tmp_path: Path):
     assert final_path is None
     assert rc == 2
     assert any("weekly-insights" in warning for warning in warnings)
+
+
+def test_report_assemble_partial_audit_still_writes_report_rc_one(tmp_path: Path):
+    """JOIN partiel : audit dynamique manquant → rapport écrit, rc=1, mention explicite."""
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (tmp_path / f"weekly-timings-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "branches": {
+                    "A": {
+                        "artifacts": ["audit-findings-ses_missing.json"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 1
+    assert any("JOIN partiel" in warning for warning in warnings)
+    text = final_path.read_text(encoding="utf-8")
+    assert "audit" in text.casefold() or "partiel" in text.casefold() or len(text) > 0
+
+
+def test_report_assemble_blocking_restores_current_to_previous_run(tmp_path: Path):
+    """Bascule tardive : STOP sans rapport (rc=2) → current restauré sur le run précédent."""
+    from weekly_telemetry_aggregator.run_state import activate_run
+
+    first = activate_run(tmp_path, DATE, RUN)
+    second = activate_run(tmp_path, DATE, RUN)
+    out = second.run_dir
+    period = Period(start=tzutc(2026, 8, 5), end=RUN)
+    u = make_usage("r", [make_step("r", tzutc(2026, 8, 6, 10), cost=0.5)], title="S")
+    data = summary_to_dict(aggregate([u], period=period, generated_at=RUN))
+    (out / f"weekly-summary-{DATE}.json").write_text(
+        json.dumps(data, ensure_ascii=False), encoding="utf-8"
+    )
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    (out / f"weekly-timings-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "branches": {
+                    "I": {
+                        "artifacts": [f"weekly-insights-{DATE}.json"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is None
+    assert rc == 2
+    assert _canonical(tmp_path / "runs" / "current") == _canonical(first.run_dir)
+    assert any("restauré" in warning for warning in warnings)
+
+
+def _activate_two_runs_and_prep(tmp_path: Path):
+    """2 runs activés + summary/timings/draft dans le 2e ; retourne (cfg, out)."""
+    from weekly_telemetry_aggregator.run_state import activate_run
+
+    activate_run(tmp_path, DATE, RUN)
+    second = activate_run(tmp_path, DATE, RUN)
+    out = second.run_dir
+    period = Period(start=tzutc(2026, 8, 5), end=RUN)
+    u = make_usage("r", [make_step("r", tzutc(2026, 8, 6, 10), cost=0.5)], title="S")
+    data = summary_to_dict(aggregate([u], period=period, generated_at=RUN))
+    (out / f"weekly-summary-{DATE}.json").write_text(
+        json.dumps(data, ensure_ascii=False), encoding="utf-8"
+    )
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    return cfg, out
+
+
+def _declare_audits(out: Path, artifacts: list[str]) -> None:
+    (out / f"weekly-timings-{DATE}.json").write_text(
+        json.dumps({"branches": {"A": {"artifacts": artifacts}}}), encoding="utf-8"
+    )
+
+
+def _read_resilience(tmp_path: Path) -> dict:
+    return json.loads((tmp_path / "run_state.json").read_text(encoding="utf-8")).get(
+        "resilience", {}
+    )
+
+
+def test_report_assemble_partial_audit_records_fallback_event(tmp_path: Path):
+    """JOIN partiel (audit absent) → resilience.audit_partial_fallback == 1."""
+    cfg, out = _activate_two_runs_and_prep(tmp_path)
+    _declare_audits(out, ["audit-findings-ses_missing.json"])
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 1
+    assert _read_resilience(tmp_path).get("audit_partial_fallback") == 1
+
+
+def test_report_assemble_envelope_reject_records_event(tmp_path: Path):
+    """Audit hors contrat (sid-mismatch) → envelope_reject + fallback comptés."""
+    cfg, out = _activate_two_runs_and_prep(tmp_path)
+    _declare_audits(out, ["audit-findings-ses_bad.json"])
+    (out / "audit-findings-ses_bad.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session_id": "ses_other",
+                "summary": "résumé non vide",
+                "findings": [],
+                "rc": 0,
+                "warnings": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    assert rc == 1
+    resilience = _read_resilience(tmp_path)
+    assert resilience.get("audit_envelope_reject") == 1
+    assert resilience.get("audit_partial_fallback") == 1
 
 
 def test_applicable_summary_rc_accepts_valid_transcript_truncation(tmp_path: Path):
@@ -2288,3 +2415,42 @@ def test_html_renders_harness_filter_and_closed_annex(tmp_path: Path):
     assert "user_turns" not in annex_h and "tool_arg" not in annex_h
     # zéro-CDN : aucun script/link externe
     assert "<script src=" not in html and '<link rel="stylesheet"' not in html
+
+
+def _valid_audit_envelope(sid: str = "ses_f6ed03e11ffetdQstFHu2pb7B5") -> dict:
+    return {
+        "schema_version": 1,
+        "session_id": sid,
+        "summary": "ok",
+        "findings": [],
+        "warnings": [],
+        "rc": 0,
+    }
+
+
+def test_audit_envelope_valid_accepts_minimal_contract():
+    assert _audit_envelope_valid(_valid_audit_envelope(), "ses_f6ed03e11ffetdQstFHu2pb7B5") is True
+    assert _audit_envelope_reason(_valid_audit_envelope(), "ses_f6ed03e11ffetdQstFHu2pb7B5") == "ok"
+
+
+def test_audit_envelope_rejects_graphify_text_out_of_contract():
+    """Cas 2026-09-16 : worker A retourne du texte graphify au lieu du JSON."""
+    assert (
+        _audit_envelope_valid("graphify: community nodes ...", "ses_f6ed03e11ffetdQstFHu2pb7B5")
+        is False
+    )
+    assert (
+        _audit_envelope_reason("graphify: community nodes ...", "ses_f6ed03e11ffetdQstFHu2pb7B5")
+        == "not-mapping"
+    )
+
+
+def test_audit_envelope_rejects_empty_summary_and_sid_mismatch():
+    bad_summary = _valid_audit_envelope()
+    bad_summary["summary"] = "   "
+    assert _audit_envelope_valid(bad_summary, "ses_f6ed03e11ffetdQstFHu2pb7B5") is False
+    assert _audit_envelope_reason(bad_summary, "ses_f6ed03e11ffetdQstFHu2pb7B5") == "empty-summary"
+
+    bad_sid = _valid_audit_envelope(sid="ses_other")
+    assert _audit_envelope_valid(bad_sid, "ses_f6ed03e11ffetdQstFHu2pb7B5") is False
+    assert _audit_envelope_reason(bad_sid, "ses_f6ed03e11ffetdQstFHu2pb7B5") == "sid-mismatch"

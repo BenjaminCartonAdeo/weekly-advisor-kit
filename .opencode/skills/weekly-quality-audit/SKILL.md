@@ -1,6 +1,6 @@
 ---
 name: weekly-quality-audit
-description: Étape 3 — audit qualitatif des sessions coûteuses (paraphrase stricte, findings liés à la commande lanceuse).
+description: "Audite une session transcrite — paraphrase stricte, findings rattachés à la commande lanceuse. Use when a transcript extract has to be audited."
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: pipeline-step

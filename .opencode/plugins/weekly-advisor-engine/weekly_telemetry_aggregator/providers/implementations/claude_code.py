@@ -3,13 +3,16 @@
 Layout : ``<projects_dir>/<cwd-mungé>/<sessionId>.jsonl`` — un fichier = une
 session ; le munging du répertoire projet (séparateurs/points → tirets) n'est
 JAMAIS inversé : les sous-répertoires sont listés exhaustivement. Chaque ligne
-est un objet ``{type: user|assistant, sessionId, timestamp ISO, cwd,
-message:{role, model, content[], usage{...}}}`` ; les lignes illisibles ou non
-conversationnelles sont ignorées avec au plus UN avertissement par fichier.
+est un objet ``{type: user|assistant|cost-state, sessionId, timestamp ISO, cwd,
+message:{role, model, content[], usage{...}}}`` pour ``user|assistant`` et
+``{type: cost-state, totalCostUSD}`` pour les coûts ; les lignes illisibles ou
+non conversationnelles (hors ``cost-state``) sont ignorées avec au plus UN
+avertissement par fichier.
 
-Claude Code ne journalise aucun prix ni agrégat vie-telle-enregistrée :
-``cost`` est toujours None (l'estimation downstream s'applique via
-``main.py``/taux par défaut) et ``session_aggregates`` renvoie None.
+Claude Code journalise le coût réel dans les lignes ``type: cost-state``
+(``totalCostUSD``) : ``cost`` reflète ce total (max par session) et
+``session_aggregates`` expose ``{"cost": total}`` ; à défaut l'estimation
+downstream (``main.py``/taux par défaut) s'applique.
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ...models import StepFinish, canonical_session_id
+from ...models import StepFinish, canonical_session_id, round6
 from ...sqlite_reader import PartRecord, SchemaError
 from ..base import HarnessSession
 
@@ -59,6 +62,7 @@ class _JsonlSession:
 
     session_id: str
     lines: list[_Line] = field(default_factory=list)
+    cost: float | None = None
 
     @property
     def first_ms(self) -> int:
@@ -164,6 +168,7 @@ def _model_key(message: object) -> str:
 def _load_sessions(projects_dir: Path) -> dict[str, _JsonlSession]:
     """Scan fail-soft `<projects_dir>/*/<sid>.jsonl` ; ids depuis lignes sinon stem."""
     sessions: dict[str, _JsonlSession] = {}
+    costs: dict[str, float] = {}
     for path in sorted(projects_dir.glob("*/*.jsonl")):
         broken = 0
         lines: list[_Line] = []
@@ -175,7 +180,23 @@ def _load_sessions(projects_dir: Path) -> dict[str, _JsonlSession]:
                 except json.JSONDecodeError:
                     broken += 1
                     continue
-                if not isinstance(entry, dict) or entry.get("type") not in ("user", "assistant"):
+                if not isinstance(entry, dict):
+                    continue
+                etype = entry.get("type")
+                if etype == "cost-state":
+                    raw_cost = entry.get("totalCostUSD")
+                    if isinstance(raw_cost, int | float) and raw_cost >= 0:
+                        cost_sid = (
+                            entry.get("sessionId")
+                            if isinstance(entry.get("sessionId"), str) and entry["sessionId"]
+                            else (session_id or path.stem)
+                        )
+                        prev = costs.get(cost_sid)
+                        val = float(raw_cost)
+                        if prev is None or val > prev:
+                            costs[cost_sid] = val
+                    continue
+                if etype not in ("user", "assistant"):
                     continue
                 ts = _parse_ts(entry.get("timestamp"))
                 if ts is None:
@@ -197,6 +218,13 @@ def _load_sessions(projects_dir: Path) -> dict[str, _JsonlSession]:
             else:  # même sessionId vu sous plusieurs répertoires : fusion chronologique
                 existing.lines.extend(lines)
                 existing.lines.sort(key=lambda ln: ln.ms)
+        elif sid in costs and sid not in sessions:
+            # session avec seul cost-state (sans tours) : pas de session exposée
+            pass
+    for sid, val in costs.items():
+        sess = sessions.get(sid)
+        if sess is not None:
+            sess.cost = val if sess.cost is None or val > sess.cost else sess.cost
     return sessions
 
 
@@ -241,7 +269,7 @@ class ClaudeCodeSessionProvider:
             model_key=model_key,
             agent=None,
             directory=session.directory,
-            cost=None,  # aucun prix journalisé par Claude Code
+            cost=session.cost,
             tokens_input=sum(t[0] for t in tokens),
             tokens_output=sum(t[1] for t in tokens),
             tokens_reasoning=sum(t[2] for t in tokens),
@@ -279,6 +307,18 @@ class ClaudeCodeSessionProvider:
         session = self._get(session_id)
         if session is None:
             return []
+        session_total_tokens: float | None = None
+        per_token_cost: float | None = None
+        if session.cost is not None:
+            total = 0.0
+            for line in session.lines:
+                tok = _usage_tokens(line.entry.get("message"))
+                if tok is not None:
+                    tin, tout, treas, _, _ = tok
+                    total += float(tin + tout + treas)
+            if total > 0:
+                session_total_tokens = total
+                per_token_cost = float(session.cost) / total
         steps: list[StepFinish] = []
         for line in _windowed(session.lines, start_ms, end_ms):
             message = line.entry.get("message")
@@ -287,6 +327,9 @@ class ClaudeCodeSessionProvider:
             if (tokens := _usage_tokens(message)) is None:
                 continue
             tin, tout, treas, tread, twrite = tokens
+            step_cost: float | None = None
+            if per_token_cost is not None and session_total_tokens is not None:
+                step_cost = round6(per_token_cost * float(tin + tout + treas))
             steps.append(
                 StepFinish(
                     session_id=canonical_session_id(self.harness, session.session_id),
@@ -297,7 +340,7 @@ class ClaudeCodeSessionProvider:
                     tokens_reasoning=treas,
                     tokens_cache_read=tread,
                     tokens_cache_write=twrite,
-                    cost=None,  # estimation downstream (taux par défaut), jamais ici
+                    cost=step_cost,
                     harness=self.harness,
                 )
             )
@@ -358,8 +401,10 @@ class ClaudeCodeSessionProvider:
         return counts
 
     def session_aggregates(self, session_id: str) -> dict | None:
-        self._get(session_id)  # tolérance id brut/canonique
-        return None  # aucun agrégat vie-telle-enregistrée dans les JSONL
+        sess = self._get(session_id)  # tolérance id brut/canonique
+        if sess is None or sess.cost is None:
+            return None
+        return {"cost": sess.cost}
 
     def session_parts(self, session_id: str) -> list[PartRecord]:
         session = self._get(session_id)

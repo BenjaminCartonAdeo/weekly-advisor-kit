@@ -1,6 +1,6 @@
 ---
 name: weekly-safety-guardrails
-description: Garde-fous partagés (refus external-directory, environment-change, retry borné, IDs sécurité warn-only) — jamais chargé seul.
+description: "Garde-fous partagés : refus external-directory, environment-change, retry borné, sécurité en warn-only. Never load standalone. Use when referenced by a branch skill."
 metadata:
   ttl_policy: pin
   authored_by: opencode-weekly-advisor

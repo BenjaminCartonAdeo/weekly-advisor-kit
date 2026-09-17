@@ -26,7 +26,12 @@ from .config import TelemetryConfig
 from .harness_scope import harness_digest_problems
 from .html_report import open_html_report, render_html_report
 from .insights import flatten_harness_findings
-from .run_state import active_run_meta, resolve_active_run_dir
+from .run_state import (
+    active_run_meta,
+    record_resilience_event,
+    resolve_active_run_dir,
+    rollback_current_link,
+)
 from .util import iso as _iso
 from .util import load_json as _load_json
 from .util import parse_anchor as _parse_anchor
@@ -862,6 +867,40 @@ def _audit_envelope_valid(value: object, session_id: str) -> bool:
     )
 
 
+#: Miroir des retours non-ok de ``_audit_envelope_reason`` ci-dessous — tout
+#: nouveau motif de rejet doit être ajouté ici (comptage résilience Task 6).
+_AUDIT_ENVELOPE_REASONS = frozenset(
+    {
+        "not-mapping",
+        "bad-schema-version",
+        "sid-mismatch",
+        "empty-summary",
+        "bad-findings",
+        "bad-rc",
+        "bad-warnings",
+    }
+)
+
+
+def _audit_envelope_reason(value: object, session_id: str) -> str:
+    """Return a stable machine-readable cause for an invalid audit envelope."""
+    if not isinstance(value, Mapping):
+        return "not-mapping"
+    if not _valid_schema_version(value.get("schema_version"), 1):
+        return "bad-schema-version"
+    if value.get("session_id") != session_id:
+        return "sid-mismatch"
+    if not _nonempty_text(value.get("summary")):
+        return "empty-summary"
+    if not isinstance(value.get("findings"), list):
+        return "bad-findings"
+    if _coerce_rc(value.get("rc"), default=None) not in {0, 1}:
+        return "bad-rc"
+    if not isinstance(value.get("warnings"), list):
+        return "bad-warnings"
+    return "ok"
+
+
 def _audit_declaration_values(record: object) -> list[str]:
     """Return structured audit artifact declarations without parsing text."""
     if not isinstance(record, Mapping):
@@ -1452,16 +1491,29 @@ def validate_required_artifacts(
         path = out / filename if filename is not None else out / raw_declaration
         sid = match.group(1) if match else ""
         data, state = _json_file_state(path) if match else (None, "ill_readable")
-        valid = bool(
-            match and _canonical_audit_path(out, sid) == path and _audit_envelope_valid(data, sid)
+        path_ok = bool(match and _canonical_audit_path(out, sid) == path)
+        envelope_reason = (
+            _audit_envelope_reason(data, sid) if path_ok and state == "present" else "ok"
         )
+        # Un artefact absent/illisible n'est jamais valide : sans le `state ==
+        # "present"`, un audit manquant passait la gate en `present` (run 16/09).
+        valid = bool(path_ok and state == "present" and envelope_reason == "ok")
+        if not path_ok:
+            reason = "path-mismatch"
+        elif state == "absent":
+            reason = "absent"
+        elif state != "present":
+            reason = "ill-readable"
+        else:
+            reason = envelope_reason
         dynamic_required[key] = {
             "path": str(path),
             "present": valid,
             "status": "present" if valid else ("absent" if state == "absent" else "ill_readable"),
             "required": True,
-            "path_valid": bool(match and _canonical_audit_path(out, sid) == path),
+            "path_valid": path_ok,
             "schema_valid": valid,
+            "reason": reason,
             "applicable": True,
         }
     required.update(dynamic_required)
@@ -2139,6 +2191,24 @@ def validate_llm_blocks(text: str, findings: dict | None, insights: dict | None)
 def report_assemble(
     cfg: TelemetryConfig, *, anchor: str | None = None
 ) -> tuple[Path | None, list[str], int]:
+    """Inject the LLM blocks file into the draft → final report.
+
+    Bascule tardive : si aucun rapport n'est écrit (gate bloquante, rc>=2),
+    l'alias ``runs/current`` est restauré sur le run précédent — il désigne
+    toujours le dernier run avec un livrable, jamais un run vide.
+    """
+    path, warnings, rc = _report_assemble_inner(cfg, anchor=anchor)
+    if path is None and rc >= 2 and rollback_current_link(cfg.output_dir):
+        warnings = [
+            *warnings,
+            "alias runs/current restauré sur le run précédent (aucun rapport écrit)",
+        ]
+    return path, warnings, rc
+
+
+def _report_assemble_inner(
+    cfg: TelemetryConfig, *, anchor: str | None = None
+) -> tuple[Path | None, list[str], int]:
     """Inject the LLM blocks file into the draft → final report."""
     run_time = _parse_anchor(anchor)
     date = run_time.strftime("%Y-%m-%d")
@@ -2168,20 +2238,47 @@ def report_assemble(
         dynamic_audit_artifacts=_audit_artifact_declarations(timings),
     )
     if artifact_gate["status"] != "pass":
+        for key, entry in artifact_gate["required"].items():
+            if (
+                key.startswith("audit-findings-")
+                and isinstance(entry, Mapping)
+                and entry.get("reason") in _AUDIT_ENVELOPE_REASONS
+            ):
+                #: Rejet hors contrat (Task 1) — compté une fois par assemble,
+                #: chemins partiel comme bloquant (observabilité Task 6).
+                record_resilience_event(cfg.output_dir, "audit_envelope_reject")
         missing = [
-            entry["path"]
-            for entry in artifact_gate["required"].values()
+            (key, entry)
+            for key, entry in artifact_gate["required"].items()
             if entry["status"] != "present"
         ]
-        return (
-            None,
-            [
-                "artefact requis manquant ou illisible — "
-                + ", ".join(missing)
-                + " (relancer weekly_run)"
-            ],
-            2,
+        missing_other = [
+            entry["path"] for key, entry in missing if not key.startswith("audit-findings-")
+        ]
+        missing_audit = [
+            f"{key} ({entry.get('reason', 'absent')})"
+            for key, entry in missing
+            if key.startswith("audit-findings-")
+        ]
+        if missing_other:
+            return (
+                None,
+                [
+                    "artefact requis manquant ou illisible — "
+                    + ", ".join(missing_other + missing_audit)
+                    + " (relancer weekly_run)"
+                ],
+                2,
+            )
+        # JOIN partiel : seuls des audits dynamiques manquent — rapport écrit
+        # avec mention explicite (rc>=1), jamais de STOP sans rapport.
+        record_resilience_event(cfg.output_dir, "audit_partial_fallback")
+        warnings.append(
+            "⚠ JOIN partiel : audit(s) manquant(s) — "
+            + ", ".join(missing_audit)
+            + " — rapport généré sans ces sessions (relancer le worker ciblé)"
         )
+        rc = max(rc, 1)
 
     summary_for_rc = _load_json(out / f"weekly-summary-{date}.json")
     rc = applicable_summary_rc(
@@ -2192,6 +2289,10 @@ def report_assemble(
         project_root=cfg.project_root,
         fallback_rc=0,
     )
+    # JOIN partiel (voir gate ci-dessus) : le rapport reste marqué partiel
+    # même si les warnings restants sont non-bloquants (rc remonterait à 0).
+    if any("JOIN partiel" in w for w in warnings):
+        rc = max(rc, 1)
 
     # Phase 4 (gate déterministe) : WAVE 2.5 REQUIRED. Si les findings de cohérence
     # portent des actions de curation mais le manifeste skill-curate est absent ->

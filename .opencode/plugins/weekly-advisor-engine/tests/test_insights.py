@@ -731,7 +731,7 @@ def test_daily_spike_z_capped_when_mad_zero():
         + [
             {
                 "date": f"2026-08-{d:02d}",
-                "cost_usd": 0.0,
+                "cost_usd": 0.1,
                 "total_tokens": 100,
                 "cache_hit_rate": 0.9,
             }
@@ -740,7 +740,7 @@ def test_daily_spike_z_capped_when_mad_zero():
         + [
             {
                 "date": f"2026-08-{d:02d}",
-                "cost_usd": 0.0,
+                "cost_usd": 0.1,
                 "total_tokens": 100,
                 "cache_hit_rate": 0.9,
             }
@@ -753,7 +753,7 @@ def test_daily_spike_z_capped_when_mad_zero():
         generated_at="2026-08-01T00:00:00Z",
     )
     prev["daily_totals"] = [
-        {"date": f"2026-07-{d:02d}", "cost_usd": 0.0, "total_tokens": 100, "cache_hit_rate": 0.9}
+        {"date": f"2026-07-{d:02d}", "cost_usd": 0.1, "total_tokens": 100, "cache_hit_rate": 0.9}
         for d in range(1, 32)
     ]
     out = compute(

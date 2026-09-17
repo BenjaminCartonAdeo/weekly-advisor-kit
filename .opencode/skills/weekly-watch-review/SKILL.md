@@ -1,6 +1,6 @@
 ---
 name: weekly-watch-review
-description: "Étape 3.5 — veille critique : croise fiches candidates, état local et findings coûteux pour des recommandations actionnables."
+description: "Croise fiches de veille, état local et findings coûteux en recommandations install/improve/ignore. Use when enriched watch candidates are available."
 metadata:
   authored_by: opencode-weekly-advisor
   skill_class: pipeline-step
@@ -15,6 +15,13 @@ ces fiches avec l'état réel du projet et les problèmes mesurés du run.
 Tous les artefacts du run vivent dans le répertoire du run actif : **utiliser le
 chemin absolu retourné par le tool précédent** ; jamais de Glob depuis la racine
 sur l'arbre `reports/`.
+
+## 0. Objectif
+
+Croiser **problèmes mesurés** × **fiches marché** × **existant local** pour proposer
+des recommandations qui réduisent la consommation de tokens ou améliorent l'expérience.
+Ne pas se limiter au diff : un outil du marché MIEUX fait que l'existant n'est pas
+« nouveau » — c'est un `improve-existing`, à repérer quand même.
 
 ## 1. Entrées
 
@@ -131,14 +138,7 @@ un id dans `previously_recommended` ou `recurrents` exige une justification renf
   `install-new`, `repair-existing`) selon l'état prouvé par le contexte ; le brut LLM
   reste limité aux trois catégories ci-dessus.
 
-## 5. Objectif
-
-Croiser **problèmes mesurés** × **fiches marché** × **existant local** pour proposer
-des recommandations qui réduisent la consommation de tokens ou améliorent l'expérience.
-Ne pas se limiter au diff : un outil du marché MIEUX fait que l'existant n'est pas
-« nouveau » — c'est un `improve-existing`, à repérer quand même.
-
-## 6. Sortie de l'étape
+## 5. Sortie de l'étape
 
 Le skill écrit uniquement le brouillon LLM dans `weekly-watch-findings-raw-<date>.json`,
 à côté des artefacts du run actif (répertoire du chemin absolu retourné par le
@@ -166,7 +166,7 @@ le produire après cette gate. Une recovery réussie peut être signalée comme
 `{status: "recovered", source: "watch", artifact: "weekly-watch-findings"}` ; elle
 reste nonblocking seulement si le raw/final observé est valide.
 
-## 7. Sécurité (non négociable)
+## 6. Sécurité (non négociable)
 
 - **Jamais d'installation automatique d'outils externes** — les candidats sont remontés,
   l'humain décide
