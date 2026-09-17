@@ -506,7 +506,11 @@ def test_corrupt_db_returns_none(tmp_path: Path):
 
 
 def _seed_nano_db(db: Path) -> None:
-    """DB avec `token_details_json` + `request_multiplier` (branche nano couverte)."""
+    """DB avec `token_details_json` + `request_multiplier` (branche nano couverte).
+
+    La 2e ligne porte `request_multiplier = 15.0` : les coûts attendus ($1.0 /
+    $22609.5) prouvent que le multiplier est ignoré de bout en bout.
+    """
     conn = sqlite3.connect(str(db))
     conn.executescript(
         """
@@ -556,7 +560,7 @@ def _seed_nano_db(db: Path) -> None:
             10,
             _fmt(T2),
             '{"total_nano_aiu": 2.26095e15}',
-            1.0,
+            15.0,
         ),
     )
     conn.commit()
@@ -574,32 +578,47 @@ def nano_provider(tmp_path: Path) -> CopilotCliSessionProvider:
 
 
 def test_parse_nano_cost_one_aiu_cent_is_one_dollar():
-    assert _parse_nano_cost('{"total_nano_aiu": 1e11}', 1.0) == pytest.approx(1.0)
+    assert _parse_nano_cost('{"total_nano_aiu": 1e11}') == pytest.approx(1.0)
 
 
 def test_parse_nano_cost_large_value():
     # 2.26095e15 nano / 1e11 = $22609.50 (1 AIU = 1 crédit = $0.01).
-    assert _parse_nano_cost('{"total_nano_aiu": 2.26095e15}', 1.0) == pytest.approx(22609.5)
+    assert _parse_nano_cost('{"total_nano_aiu": 2.26095e15}') == pytest.approx(22609.5)
 
 
-def test_parse_nano_cost_applies_multiplier():
-    assert _parse_nano_cost('{"total_nano_aiu": 1e11}', 2.0) == pytest.approx(2.0)
+def test_parse_nano_cost_ignores_request_multiplier():
+    """Régression : `request_multiplier` ne doit JAMAIS multiplier le nano-AIU.
+
+    Sur données réelles (base macOS, session 1286283f), `Σ colonne` ==
+    `Σ JSON` pour tous les events alors que `request_multiplier` monte à 15.0 :
+    le nano-AIU est le montant facturé final. L'ancien `× multiplier` gonflait
+    le total ×10 ($54.17 → $543.17).
+    """
+    from weekly_telemetry_aggregator.providers.implementations.copilot_cli import (
+        _event_cost,
+    )
+
+    # colonne présente : le multiplier ne doit pas intervenir
+    assert _event_cost(1e11, None) == pytest.approx(1.0)
+    assert _event_cost(1e11, '{"total_nano_aiu": 1e11}') == pytest.approx(1.0)
+    # fallback JSON seul
+    assert _event_cost(None, '{"total_nano_aiu": 15e11}') == pytest.approx(15.0)
 
 
 def test_parse_nano_cost_fail_soft():
     import warnings
 
-    assert _parse_nano_cost(None, None) == 0.0
-    assert _parse_nano_cost("", 1.0) == 0.0
-    assert _parse_nano_cost("{}", 1.0) == 0.0
+    assert _parse_nano_cost(None) == 0.0
+    assert _parse_nano_cost("") == 0.0
+    assert _parse_nano_cost("{}") == 0.0
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        assert _parse_nano_cost("{invalid", 1.0) == 0.0
-        assert _parse_nano_cost('{"total_nano_aiu": "abc"}', 1.0) == 0.0
-        assert _parse_nano_cost('{"total_nano_aiu": 1e11}', "abc") == pytest.approx(1.0)
+        assert _parse_nano_cost("{invalid") == 0.0
+        assert _parse_nano_cost('{"total_nano_aiu": "abc"}') == 0.0
 
 
 def test_nano_steps_carry_cost_and_match_aggregates(nano_provider):
+    """Coûts = nano-AIU brut, `request_multiplier` (15.0 sur la 2e ligne) ignoré."""
     cid = canonical_session_id(HARNESS_COPILOT_CLI, SID_FULL)
     steps = nano_provider.session_steps(cid, 0, 2**63 - 1)
     assert len(steps) == 2
@@ -682,7 +701,7 @@ def _seed_mixed_nano_db(db: Path) -> None:
         "cache_write_tokens, reasoning_tokens, created_at, "
         "total_nano_aiu, token_details_json, request_multiplier) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (SID_FULL, "gpt-4o", 1200, 340, 100, 20, 50, _fmt(T0), 832338000, _ARRAY_DECOY_1USD, 1.0),
+        (SID_FULL, "gpt-4o", 1200, 340, 100, 20, 50, _fmt(T0), 832338000, _ARRAY_DECOY_1USD, 15.0),
     )
     conn.execute(
         "INSERT INTO assistant_usage_events "
@@ -716,8 +735,7 @@ def mixed_nano_provider(tmp_path: Path) -> CopilotCliSessionProvider:
 
 def test_parse_nano_cost_array_batches():
     # Σ batches = 832338000 nano → $0.00832338.
-    assert _parse_nano_cost(_ARRAY_REF, 1.0) == pytest.approx(_NANO_REF_USD)
-    assert _parse_nano_cost(_ARRAY_REF, 2.0) == pytest.approx(_NANO_REF_USD * 2.0)
+    assert _parse_nano_cost(_ARRAY_REF) == pytest.approx(_NANO_REF_USD)
 
 
 def test_parse_nano_cost_array_fail_soft():
@@ -726,24 +744,23 @@ def test_parse_nano_cost_array_fail_soft():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         # Entrées invalides ignorées : batchSize 0, clés manquantes, non-dict.
-        assert (
-            _parse_nano_cost('[{"batchSize": 0, "costPerBatch": 5, "tokenCount": 5}]', 1.0) == 0.0
-        )
-        assert _parse_nano_cost('[{"nope": 1}, 42, null]', 1.0) == 0.0
-        assert _parse_nano_cost("[]", 1.0) == 0.0
-        assert _parse_nano_cost("[1, 2]", 1.0) == 0.0
+        assert _parse_nano_cost('[{"batchSize": 0, "costPerBatch": 5, "tokenCount": 5}]') == 0.0
+        assert _parse_nano_cost('[{"nope": 1}, 42, null]') == 0.0
+        assert _parse_nano_cost("[]") == 0.0
+        assert _parse_nano_cost("[1, 2]") == 0.0
 
 
 def test_event_cost_column_priority_over_array():
     # Colonne 832338000 prioritaire sur l'array leurre à $1.0.
-    assert _event_cost(832338000, _ARRAY_DECOY_1USD, 1.0) == pytest.approx(_NANO_REF_USD)
-    assert _event_cost(1e11, None, 2.0) == pytest.approx(2.0)
-    assert _event_cost(None, _ARRAY_REF, 1.0) == pytest.approx(_NANO_REF_USD)
-    assert _event_cost(None, '{"total_nano_aiu": 1e11}', 1.0) == pytest.approx(1.0)
-    assert _event_cost(None, None, 1.0) == 0.0
+    assert _event_cost(832338000, _ARRAY_DECOY_1USD) == pytest.approx(_NANO_REF_USD)
+    assert _event_cost(1e11, None) == pytest.approx(1.0)
+    assert _event_cost(None, _ARRAY_REF) == pytest.approx(_NANO_REF_USD)
+    assert _event_cost(None, '{"total_nano_aiu": 1e11}') == pytest.approx(1.0)
+    assert _event_cost(None, None) == 0.0
 
 
 def test_mixed_nano_steps_priority_and_fallbacks(mixed_nano_provider):
+    """Priorité colonne > array, et `request_multiplier` (15.0) jamais appliqué."""
     cid = canonical_session_id(HARNESS_COPILOT_CLI, SID_FULL)
     steps = mixed_nano_provider.session_steps(cid, 0, 2**63 - 1)
     assert len(steps) == 3
