@@ -221,12 +221,10 @@ def _read_current_target(output_dir: Path) -> Path | None:
     try:
         if not link.is_symlink():
             return None
-        raw = os.readlink(link)
+        raw = link.readlink()
     except OSError:
         return None
-    target = Path(raw)
-    if not target.is_absolute():
-        target = link.parent / raw
+    target = raw if raw.is_absolute() else link.parent / raw
     return Path(os.path.normpath(str(target)))
 
 

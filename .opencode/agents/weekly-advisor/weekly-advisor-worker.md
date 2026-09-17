@@ -72,8 +72,12 @@ L'orchestrateur gère la synthèse en join (§5 design) : signale la latence, co
 ## Pre-flight skills (F6)
 
 **Avant tout step de branche**, vérifier la présence des skills requises par SA branche
-(glob `skills/<name>/SKILL.md` sous le worktree, lecture seule, jamais de chargement
-implicite) :
+via le catalogue réel `scan_skill_catalog()` (multi-layout, lecture seule, jamais de
+chargement implicite) — ce sont les mêmes racines que le moteur (`_skill_dirs()` :
+`<project_root>/.opencode/skills`, `<project_root>/.claude/skills`,
+`<project_root>/.agents/skills`, `~/.config/opencode/skills`, plus layouts
+déclarés). Un simple `glob` sous `skills/` seul est incomplet (a causé `ses_f56a`
+→ audit rc=2 `missing weekly-quality-audit` malgré skill présent dans `.agents/`).
 
 | Branche | Skill(s) requise(s) | Rôle |
 |---|---|---|

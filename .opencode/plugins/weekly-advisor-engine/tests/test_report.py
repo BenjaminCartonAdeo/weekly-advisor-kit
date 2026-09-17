@@ -2434,8 +2434,14 @@ def test_audit_envelope_valid_accepts_minimal_contract():
 
 def test_audit_envelope_rejects_graphify_text_out_of_contract():
     """Cas 2026-09-16 : worker A retourne du texte graphify au lieu du JSON."""
-    assert _audit_envelope_valid("graphify: community nodes ...", "ses_f6ed03e11ffetdQstFHu2pb7B5") is False
-    assert _audit_envelope_reason("graphify: community nodes ...", "ses_f6ed03e11ffetdQstFHu2pb7B5") == "not-mapping"
+    assert (
+        _audit_envelope_valid("graphify: community nodes ...", "ses_f6ed03e11ffetdQstFHu2pb7B5")
+        is False
+    )
+    assert (
+        _audit_envelope_reason("graphify: community nodes ...", "ses_f6ed03e11ffetdQstFHu2pb7B5")
+        == "not-mapping"
+    )
 
 
 def test_audit_envelope_rejects_empty_summary_and_sid_mismatch():

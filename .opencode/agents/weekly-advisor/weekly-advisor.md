@@ -108,13 +108,17 @@ Avant WAVE 1, l'orchestrateur vérifie que **l'agent worker est disponible** :
 Absent → **STOP avant WAVE 1**, message clair, `rc=2` (pas de rapport).
 
 Avant chaque WAVE 2 dispatch (D/I/C), vérifier les **skills primaires de branche** ; absence = `rc=2` :
-`weekly-drafting` (D), `weekly-coherence-review` (C) — tenter `glob` sur
-`<worktree>/.opencode/skills/<name>/SKILL.md` (absolu dérivé de `<worktree>`), puis `Read` le chemin
+`weekly-drafting` (D), `weekly-coherence-review` (C) — via `scan_skill_catalog()`
+multi-layout (`<worktree>/.opencode/skills`, `<worktree>/.claude/skills`,
+`<worktree>/.agents/skills`, `~/.config/opencode/skills`) : tenter `glob` sur
+chaque layout `**/SKILL.md` (absolu dérivé de `<worktree>`), puis `Read` le chemin
 absolu exact si Glob retourne zéro (le serveur persistant peut avoir une base Glob périmée).
 Un `Read` réussi fait foi pour l'existence du skill et évite un faux STOP.
 Primaire absente → **ne pas dispatcher la branche**, STOP orchestrateur, `rc=2`
 (pas de rapport). Skills secondaires (`weekly-watch-review` V, `harness-remediation` H) :
 non bloquantes au dispatch — warning `skill-missing:<name>` en annexe, branche en dégradé.
+Même logique F6 pour WAVE 1.5 `A` (audit `weekly-quality-audit`, primaire) : toute vérif
+mono-dossier `.opencode/skills` est interdite → utiliser le scan multi-layout.
 
 Au JOIN, **agréger les `skills_loaded` des contrats** dans la synthèse : statut par
 branche (`ok` / `missing`), à reporter dans l'annexe du rapport. Aucune écriture dans

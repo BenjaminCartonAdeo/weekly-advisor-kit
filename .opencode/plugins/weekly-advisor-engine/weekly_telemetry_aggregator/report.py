@@ -1492,7 +1492,9 @@ def validate_required_artifacts(
         sid = match.group(1) if match else ""
         data, state = _json_file_state(path) if match else (None, "ill_readable")
         path_ok = bool(match and _canonical_audit_path(out, sid) == path)
-        envelope_reason = _audit_envelope_reason(data, sid) if path_ok and state == "present" else "ok"
+        envelope_reason = (
+            _audit_envelope_reason(data, sid) if path_ok and state == "present" else "ok"
+        )
         # Un artefact absent/illisible n'est jamais valide : sans le `state ==
         # "present"`, un audit manquant passait la gate en `present` (run 16/09).
         valid = bool(path_ok and state == "present" and envelope_reason == "ok")
@@ -2251,9 +2253,7 @@ def _report_assemble_inner(
             if entry["status"] != "present"
         ]
         missing_other = [
-            entry["path"]
-            for key, entry in missing
-            if not key.startswith("audit-findings-")
+            entry["path"] for key, entry in missing if not key.startswith("audit-findings-")
         ]
         missing_audit = [
             f"{key} ({entry.get('reason', 'absent')})"

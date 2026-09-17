@@ -868,6 +868,31 @@ def doctor(
     if _fields:
         problems.append(_placeholder_message(_fields))
 
+    # ses_f55 : session_sources avec type inconnu (ex. copilot-app) passait en
+    # warning fail-soft côté registry → coût 0.0 malgré tokens → alertes fausses.
+    # Doctor doit être strict : type inconnu = PROBLEM rc2, pas un warning muet.
+    try:
+        from .providers.registry import discover_provider_factories as _discover_factories
+
+        _supported = set(_discover_factories().keys())
+        _unknown: list[str] = []
+        for _src in cfg.session_sources:
+            if not isinstance(_src, dict):
+                _unknown.append(repr(_src))
+                continue
+            if _src.get("enabled", True) is False:
+                continue
+            _t = _src.get("type")
+            if not isinstance(_t, str) or _t not in _supported:
+                _unknown.append(repr(_t))
+        if _unknown:
+            problems.append(
+                f"session_sources contient des types inconnus {sorted(set(_unknown))}"
+                f" — types supportés: {sorted(_supported)} — corriger weekly-telemetry-config.json"
+            )
+    except Exception:  # pragma: no cover - diagnostic best-effort
+        pass
+
     # Garde-fou : un output_dir résolu sous .opencode/plugins/ signale un run
     # lancé avec cwd = moteur du plugin — les artefacts (reports/, baselines)
     # finissent dans le dépôt du plugin au lieu du projet audité (observé 24/08).
