@@ -499,6 +499,26 @@ def dedup_resumed_usages(
     return kept, records
 
 
+def compute_cost_outliers_state(
+    n_roots: int, outlier_min_sessions: int, all_warnings: list[WarningEntry]
+) -> str:
+    """État de fiabilité des cost_outliers selon la taille d'échantillon (+ warning si petit)."""
+    if n_roots == 0:
+        return "no-data"
+    if n_roots < OUTLIER_MIN_ROOTS:
+        all_warnings.append(
+            WarningEntry(
+                session_id=None,
+                message=f"sample trop petit ({n_roots} sessions < {OUTLIER_MIN_ROOTS}), cost_outliers peu fiables",
+            )
+        )
+        return "skipped:small-sample"
+    if n_roots < outlier_min_sessions:
+        # K6: MAD robuste sur log-cost — fiable dès 5 racines (état dédié).
+        return "computed:small-sample"
+    return "computed"
+
+
 def aggregate(
     usages: list[SessionUsage],
     *,
@@ -653,21 +673,7 @@ def aggregate(
         min_cost=session_outlier_min_cost_usd,
     )
     n_roots = len(roots)
-    if n_roots == 0:
-        cost_outliers_state = "no-data"
-    elif n_roots < OUTLIER_MIN_ROOTS:
-        cost_outliers_state = "skipped:small-sample"
-        all_warnings.append(
-            WarningEntry(
-                session_id=None,
-                message=f"sample trop petit ({n_roots} sessions < {OUTLIER_MIN_ROOTS}), cost_outliers peu fiables",
-            )
-        )
-    elif n_roots < outlier_min_sessions:
-        # K6: MAD robuste sur log-cost — fiable dès 5 racines (état dédié).
-        cost_outliers_state = "computed:small-sample"
-    else:
-        cost_outliers_state = "computed"
+    cost_outliers_state = compute_cost_outliers_state(n_roots, outlier_min_sessions, all_warnings)
 
     # ---- by_model (normalized provider/model keys) ----
     by_model = [

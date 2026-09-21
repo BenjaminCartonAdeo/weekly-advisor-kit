@@ -180,7 +180,117 @@ def _daily_spike_alerts(
     return alerts
 
 
+def _budget_spike_alerts(
+    *,
+    current_cost: float | None,
+    recent_summaries: list[dict],
+    run_time: datetime,
+    current_summary: dict,
+    current_cache: float | None,
+    wow: float | None,
+    insights_cfg: InsightsConfig,
+) -> tuple[list[dict], int]:
+    """Alertes seuils budgets/spike/cache/WoW (extrait de compute L262-318, CCN-16).
+
+    Renvoie (alertes, spike_baseline_days) — les jours de baseline restent
+    exposés dans la sortie compute.
+    """
+    alerts: list[dict] = []
+    if current_cost is not None and current_cost > insights_cfg.weekly_budget_usd:
+        alerts.append(
+            {
+                "rule": "weekly_budget_usd",
+                "threshold": insights_cfg.weekly_budget_usd,
+                "observed": round(current_cost, 4),
+                "over_by": round(current_cost - insights_cfg.weekly_budget_usd, 4),
+                "severity": "high",
+                "recommended_action": (
+                    "budget hebdo dépassé — cibler les sessions top-coût "
+                    "(context-bloat, loops swarm silent-empty)"
+                ),
+            }
+        )
+
+    month_cost = _month_cost(recent_summaries, run_time)
+    if month_cost > insights_cfg.monthly_budget_usd:
+        alerts.append(
+            {
+                "rule": "monthly_budget_usd",
+                "threshold": insights_cfg.monthly_budget_usd,
+                "observed": round(month_cost, 4),
+                "over_by": round(month_cost - insights_cfg.monthly_budget_usd, 4),
+                "severity": "high",
+                "recommended_action": (
+                    "budget mensuel dépassé — cibler les sessions top-coût "
+                    "(context-bloat : relectures répétées ; loops swarm silent-empty)"
+                ),
+            }
+        )
+
+    baseline_costs, baseline_days = _spike_baseline(recent_summaries)
+    alerts.extend(
+        _daily_spike_alerts(current_summary, baseline_costs, insights_cfg.daily_spike_z_min)
+    )
+
+    if current_cache is not None and current_cache < insights_cfg.cache_hit_rate_min:
+        alerts.append(
+            {
+                "rule": "cache_hit_rate_min",
+                "threshold": insights_cfg.cache_hit_rate_min,
+                "observed": current_cache,
+                "severity": "medium",
+            }
+        )
+
+    if wow is not None and wow > insights_cfg.cost_wow_pct_max:
+        alerts.append(
+            {
+                "rule": "cost_wow_pct_max",
+                "threshold": insights_cfg.cost_wow_pct_max,
+                "observed": wow,
+                "severity": "medium",
+            }
+        )
+    return alerts, baseline_days
+
+
 # ------------------------------------------------------------------ pure compute
+
+
+def _agent_loop_findings(
+    current_summary: dict,
+    *,
+    loop_min_repeats: int,
+    loop_task_min_repeats: int,
+    ignored_findings: list[str],
+) -> list[dict]:
+    """Findings agent-loop : outil répété avec la même empreinte (extrait de compute, CCN-4)."""
+    findings: list[dict] = []
+    # F5: fingerprints are additive, so old summaries simply produce no finding.
+    arg_fingerprints = current_summary.get("tool_argument_fingerprints", {})
+    result_fingerprints = current_summary.get("tool_result_fingerprints", {})
+    for tool in sorted(set(arg_fingerprints) | set(result_fingerprints)):
+        arg_repeats = max((int(v) for v in (arg_fingerprints.get(tool) or {}).values()), default=0)
+        result_repeats = max(
+            (int(v) for v in (result_fingerprints.get(tool) or {}).values()), default=0
+        )
+        threshold = loop_task_min_repeats if tool == "task" else loop_min_repeats
+        repeats = max(arg_repeats, result_repeats)
+        if repeats < threshold or _ignored(ignored_findings, "agent-loop", tool):
+            continue
+        findings.append(
+            {
+                "session_id": None,
+                "category": "agent-loop",
+                "severity": "medium",
+                "description": f"outil '{tool}' répété avec la même empreinte ({repeats} occurrences)",
+                "evidence_summary": f"tool={tool}; repeats={repeats}; threshold={threshold}",
+                "recommendation": "inspecter les résultats et borner les re-spawns/lectures répétées",
+                "recommendation_type": "agent-loop",
+                "impact_order_of_magnitude": "medium",
+            }
+        )
+    return findings
 
 
 def compute(
@@ -258,64 +368,16 @@ def compute(
             "digest harness absent — lint_violations_delta_by_rule à null, règle sautée"
         )
 
-    # ---- alerts ----
-    alerts: list[dict] = []
-    if current_cost is not None and current_cost > insights_cfg.weekly_budget_usd:
-        alerts.append(
-            {
-                "rule": "weekly_budget_usd",
-                "threshold": insights_cfg.weekly_budget_usd,
-                "observed": round(current_cost, 4),
-                "over_by": round(current_cost - insights_cfg.weekly_budget_usd, 4),
-                "severity": "high",
-                "recommended_action": (
-                    "budget hebdo dépassé — cibler les sessions top-coût "
-                    "(context-bloat, loops swarm silent-empty)"
-                ),
-            }
-        )
-
-    month_cost = _month_cost(recent_summaries, run_time)
-    if month_cost > insights_cfg.monthly_budget_usd:
-        alerts.append(
-            {
-                "rule": "monthly_budget_usd",
-                "threshold": insights_cfg.monthly_budget_usd,
-                "observed": round(month_cost, 4),
-                "over_by": round(month_cost - insights_cfg.monthly_budget_usd, 4),
-                "severity": "high",
-                "recommended_action": (
-                    "budget mensuel dépassé — cibler les sessions top-coût "
-                    "(context-bloat : relectures répétées ; loops swarm silent-empty)"
-                ),
-            }
-        )
-
-    baseline_costs, baseline_days = _spike_baseline(recent_summaries)
-    alerts.extend(
-        _daily_spike_alerts(current_summary, baseline_costs, insights_cfg.daily_spike_z_min)
+    # ---- alerts (seuils budgets/spike/cache/WoW) ----
+    alerts, baseline_days = _budget_spike_alerts(
+        current_cost=current_cost,
+        recent_summaries=recent_summaries,
+        run_time=run_time,
+        current_summary=current_summary,
+        current_cache=current_cache,
+        wow=deltas["cost_wow_pct"],
+        insights_cfg=insights_cfg,
     )
-
-    if current_cache is not None and current_cache < insights_cfg.cache_hit_rate_min:
-        alerts.append(
-            {
-                "rule": "cache_hit_rate_min",
-                "threshold": insights_cfg.cache_hit_rate_min,
-                "observed": current_cache,
-                "severity": "medium",
-            }
-        )
-
-    wow = deltas["cost_wow_pct"]
-    if wow is not None and wow > insights_cfg.cost_wow_pct_max:
-        alerts.append(
-            {
-                "rule": "cost_wow_pct_max",
-                "threshold": insights_cfg.cost_wow_pct_max,
-                "observed": wow,
-                "severity": "medium",
-            }
-        )
 
     lint_total = _digest_violations(current_digest, harness_ignored_rules or [])
     if (
@@ -357,31 +419,12 @@ def compute(
             )
 
     # ---- maintenance R1-R4 (findings initialisés avant l'alerte cache K8) ----
-    findings: list[dict] = []
-    # F5: fingerprints are additive, so old summaries simply produce no finding.
-    arg_fingerprints = current_summary.get("tool_argument_fingerprints", {})
-    result_fingerprints = current_summary.get("tool_result_fingerprints", {})
-    for tool in sorted(set(arg_fingerprints) | set(result_fingerprints)):
-        arg_repeats = max((int(v) for v in (arg_fingerprints.get(tool) or {}).values()), default=0)
-        result_repeats = max(
-            (int(v) for v in (result_fingerprints.get(tool) or {}).values()), default=0
-        )
-        threshold = loop_task_min_repeats if tool == "task" else loop_min_repeats
-        repeats = max(arg_repeats, result_repeats)
-        if repeats < threshold or _ignored(ignored_findings, "agent-loop", tool):
-            continue
-        findings.append(
-            {
-                "session_id": None,
-                "category": "agent-loop",
-                "severity": "medium",
-                "description": f"outil '{tool}' répété avec la même empreinte ({repeats} occurrences)",
-                "evidence_summary": f"tool={tool}; repeats={repeats}; threshold={threshold}",
-                "recommendation": "inspecter les résultats et borner les re-spawns/lectures répétées",
-                "recommendation_type": "agent-loop",
-                "impact_order_of_magnitude": "medium",
-            }
-        )
+    findings = _agent_loop_findings(
+        current_summary,
+        loop_min_repeats=loop_min_repeats,
+        loop_task_min_repeats=loop_task_min_repeats,
+        ignored_findings=ignored_findings,
+    )
     # Observation-only architecture/config drift.  This intentionally emits a
     # report finding, not an alert that can block CI or trigger curation/apply.
     current_arch = _architecture_observation(current_summary)
@@ -745,6 +788,22 @@ def _artifacts_before(output_dir: Path, pattern: str, current_date: str) -> list
     return sorted(found)
 
 
+def _fallback_previous_artifact(
+    output_dir: Path, pattern: str, exclude_dir: Path | None = None
+) -> dict | None:
+    """Repli même-date hors run courant (back-to-back runs, tests, reruns — extrait de _discover_previous, CCN-3)."""
+    eligible = []
+    for path in _pattern_paths(output_dir, pattern):
+        if exclude_dir is not None and path.parent == exclude_dir:
+            continue
+        m = re.search(r"(\d{4}-\d{2}-\d{2})\.json$", path.name)
+        if m:
+            eligible.append((m.group(1), path))
+    if not eligible:
+        return None
+    return _load(sorted(eligible)[-1][1])
+
+
 def _discover_previous(
     pattern: str, current_date: str, output_dir: Path, exclude_dir: Path | None = None
 ) -> dict | None:
@@ -758,16 +817,7 @@ def _discover_previous(
     found = _artifacts_before(output_dir, pattern, current_date)
     if found:
         return _load(found[-1][1])
-    eligible = []
-    for path in _pattern_paths(output_dir, pattern):
-        if exclude_dir is not None and path.parent == exclude_dir:
-            continue
-        m = re.search(r"(\d{4}-\d{2}-\d{2})\.json$", path.name)
-        if m:
-            eligible.append((m.group(1), path))
-    if not eligible:
-        return None
-    return _load(sorted(eligible)[-1][1])
+    return _fallback_previous_artifact(output_dir, pattern, exclude_dir)
 
 
 def run(

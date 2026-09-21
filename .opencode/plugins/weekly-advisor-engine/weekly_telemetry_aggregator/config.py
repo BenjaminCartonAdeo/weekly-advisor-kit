@@ -258,6 +258,23 @@ def load_config(path: str | Path | None = None) -> TelemetryConfig:
     return TelemetryConfig()
 
 
+def _validated_int(value: object, minimum: int) -> int | None:
+    """Entier validé (bool exclu) >= minimum, sinon None."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= minimum:
+        return value
+    return None
+
+
+def _parse_int_map(section: dict, valid_keys: set[str], minimum: int) -> dict[str, int]:
+    """Sous-ensemble validé d'une section dict {clé: entier >= minimum}."""
+    parsed: dict[str, int] = {}
+    for key in valid_keys:
+        validated = _validated_int(section.get(key), minimum)
+        if validated is not None:
+            parsed[key] = validated
+    return parsed
+
+
 def _parse_harness_include(raw: dict, cfg: TelemetryConfig) -> None:
     include_raw = raw.get("harness_include")
     harness_include = cfg.harness_include
@@ -268,25 +285,31 @@ def _parse_harness_include(raw: dict, cfg: TelemetryConfig) -> None:
         profiles[harness_include.default_profile] = [str(x) for x in include_raw]
         harness_include = replace(harness_include, profiles=profiles)
     elif isinstance(include_raw, dict):
-        profile = include_raw.get("default_profile")
-        if isinstance(profile, str) and profile:
-            harness_include = replace(harness_include, default_profile=profile)
-        profiles = include_raw.get("profiles")
-        if isinstance(profiles, dict):
-            merged = dict(harness_include.profiles)
-            for name, patterns in profiles.items():
-                if isinstance(name, str) and isinstance(patterns, list):
-                    merged[name] = [str(x) for x in patterns]
-            harness_include = replace(harness_include, profiles=merged)
-        patterns = include_raw.get("patterns")
-        if isinstance(patterns, list):
-            merged = dict(harness_include.profiles)
-            merged[harness_include.default_profile] = [str(x) for x in patterns]
-            harness_include = replace(harness_include, profiles=merged)
-        excludes = include_raw.get("exclude_patterns", include_raw.get("excludes"))
-        if isinstance(excludes, list):
-            harness_include = replace(harness_include, exclude_patterns=[str(x) for x in excludes])
+        harness_include = _parse_harness_include_dict(include_raw, harness_include)
     cfg.harness_include = harness_include
+
+
+def _parse_harness_include_dict(include_raw: dict, harness_include: HarnessIncludeConfig) -> HarnessIncludeConfig:
+    """Branche dict de harness_include : profils + patterns + exclusions."""
+    profile = include_raw.get("default_profile")
+    if isinstance(profile, str) and profile:
+        harness_include = replace(harness_include, default_profile=profile)
+    profiles = include_raw.get("profiles")
+    if isinstance(profiles, dict):
+        merged = dict(harness_include.profiles)
+        for name, patterns in profiles.items():
+            if isinstance(name, str) and isinstance(patterns, list):
+                merged[name] = [str(x) for x in patterns]
+        harness_include = replace(harness_include, profiles=merged)
+    patterns = include_raw.get("patterns")
+    if isinstance(patterns, list):
+        merged = dict(harness_include.profiles)
+        merged[harness_include.default_profile] = [str(x) for x in patterns]
+        harness_include = replace(harness_include, profiles=merged)
+    excludes = include_raw.get("exclude_patterns", include_raw.get("excludes"))
+    if isinstance(excludes, list):
+        harness_include = replace(harness_include, exclude_patterns=[str(x) for x in excludes])
+    return harness_include
 
 
 def _parse_session_sources(raw: dict, cfg: TelemetryConfig) -> None:
@@ -307,6 +330,21 @@ def _parse_session_sources(raw: dict, cfg: TelemetryConfig) -> None:
         cfg.session_sources = parsed_sources
 
 
+def _validate_draft_target_names(names: list[str], known: set[str]) -> list[str]:
+    """Filtre + déduplique les noms de harnais, warning sur inconnus."""
+    valid: list[str] = []
+    for name in names:
+        if name not in known:
+            warnings.warn(
+                f"draft_targets : valeur inconnue {name!r} ignorée "
+                f"— harnais connus : {sorted(known)}",
+                stacklevel=4,
+            )
+        elif name not in valid:
+            valid.append(name)
+    return valid
+
+
 def _parse_draft_targets(raw: dict, cfg: TelemetryConfig) -> None:
     dt_raw = raw.get("draft_targets")
     if dt_raw is None:
@@ -316,17 +354,7 @@ def _parse_draft_targets(raw: dict, cfg: TelemetryConfig) -> None:
             cfg.draft_targets = replace(cfg.draft_targets, mode=MODE_LEGACY, targets=[])
             return
         names = [x.strip() for x in dt_raw if isinstance(x, str)]
-        known = set(DRAFT_TARGET_PRIORITY)
-        valid: list[str] = []
-        for name in names:
-            if name not in known:
-                warnings.warn(
-                    f"draft_targets : valeur inconnue {name!r} ignorée "
-                    f"— harnais connus : {sorted(known)}",
-                    stacklevel=3,
-                )
-            elif name not in valid:
-                valid.append(name)
+        valid = _validate_draft_target_names(names, set(DRAFT_TARGET_PRIORITY))
         if valid:
             cfg.draft_targets = replace(cfg.draft_targets, mode="override", targets=valid)
         else:
@@ -339,23 +367,32 @@ def _parse_draft_targets(raw: dict, cfg: TelemetryConfig) -> None:
     )
 
 
+def _parse_watch_entry(entry: dict) -> dict | None:
+    """Une entrée watch brute → dict normalisé, None si invalide."""
+    if not entry.get("name"):
+        return None
+    watch_entry = {"type": str(entry.get("type", "repo")), "name": str(entry.get("name", ""))}
+    if watch_entry["type"] == "radar":
+        if entry.get("tool"):
+            watch_entry["tool"] = str(entry["tool"])
+        if entry.get("rss_fallback"):
+            watch_entry["rss_fallback"] = str(entry["rss_fallback"])
+        window_days = _validated_int(entry.get("window_days"), 1)
+        if window_days is not None:
+            watch_entry["window_days"] = window_days
+    return watch_entry
+
+
 def _parse_watch(raw: dict, cfg: TelemetryConfig) -> None:
     cfg.release_keywords = [str(x) for x in raw.get("release_keywords", cfg.release_keywords)]
     cfg.watch_repos = [str(x) for x in raw.get("watch_repos", cfg.watch_repos)]
     cfg.watch = []
     for entry in raw.get("watch", []):
-        if not isinstance(entry, dict) or not entry.get("name"):
+        if not isinstance(entry, dict):
             continue
-        watch_entry = {"type": str(entry.get("type", "repo")), "name": str(entry.get("name", ""))}
-        if watch_entry["type"] == "radar":
-            if entry.get("tool"):
-                watch_entry["tool"] = str(entry["tool"])
-            if entry.get("rss_fallback"):
-                watch_entry["rss_fallback"] = str(entry["rss_fallback"])
-            window_days = entry.get("window_days")
-            if isinstance(window_days, int) and not isinstance(window_days, bool) and window_days >= 1:
-                watch_entry["window_days"] = window_days
-        cfg.watch.append(watch_entry)
+        parsed = _parse_watch_entry(entry)
+        if parsed is not None:
+            cfg.watch.append(parsed)
     for repo in cfg.watch_repos:
         if not any(w["name"] == repo for w in cfg.watch):
             cfg.watch.append({"type": "repo", "name": repo})
@@ -419,29 +456,28 @@ def _parse_watch_distill(raw: dict, cfg: TelemetryConfig) -> None:
     wd_cfg = cfg.watch_distill
     if isinstance(wds.get("enabled"), bool):
         wd_cfg = replace(wd_cfg, enabled=wds["enabled"])
-    top_n = wds.get("top_n")
-    if isinstance(top_n, int) and not isinstance(top_n, bool) and top_n >= 1:
+    top_n = _validated_int(wds.get("top_n"), 1)
+    if top_n is not None:
         wd_cfg = replace(wd_cfg, top_n=top_n)
     quotas_raw = wds.get("quotas")
     if isinstance(quotas_raw, dict):
-        for cat in WATCH_QUOTAS:
-            value = quotas_raw.get(cat)
-            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-                wd_cfg = replace(wd_cfg, quotas={**wd_cfg.quotas, cat: value})
+        wd_cfg = replace(
+            wd_cfg, quotas={**wd_cfg.quotas, **_parse_int_map(quotas_raw, set(WATCH_QUOTAS), 0)}
+        )
     weights_raw = wds.get("weights")
     if isinstance(weights_raw, dict):
-        for key in WATCH_DEFAULT_WEIGHTS:
-            value = weights_raw.get(key)
-            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-                wd_cfg = replace(wd_cfg, weights={**wd_cfg.weights, key: value})
+        wd_cfg = replace(
+            wd_cfg,
+            weights={**wd_cfg.weights, **_parse_int_map(weights_raw, set(WATCH_DEFAULT_WEIGHTS), 0)},
+        )
     memory_file = wds.get("memory_file")
     if isinstance(memory_file, str) and memory_file.strip():
         wd_cfg = replace(wd_cfg, memory_file=memory_file)
-    retention_weeks = wds.get("retention_weeks")
-    if isinstance(retention_weeks, int) and not isinstance(retention_weeks, bool) and retention_weeks >= 1:
+    retention_weeks = _validated_int(wds.get("retention_weeks"), 1)
+    if retention_weeks is not None:
         wd_cfg = replace(wd_cfg, retention_weeks=retention_weeks)
-    min_candidates = wds.get("min_candidates")
-    if isinstance(min_candidates, int) and not isinstance(min_candidates, bool) and min_candidates >= 0:
+    min_candidates = _validated_int(wds.get("min_candidates"), 0)
+    if min_candidates is not None:
         wd_cfg = replace(wd_cfg, min_candidates=min_candidates)
     cfg.watch_distill = wd_cfg
 

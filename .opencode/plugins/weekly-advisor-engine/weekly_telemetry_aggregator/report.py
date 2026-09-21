@@ -2227,6 +2227,32 @@ def report_assemble(
     return path, warnings, rc
 
 
+def _record_audit_envelope_rejects(cfg: TelemetryConfig, artifact_gate: dict) -> None:
+    """Comptabilise les rejets d'enveloppe audit hors contrat (extrait de _report_assemble_inner, CCN-3)."""
+    for key, entry in artifact_gate["required"].items():
+        if (
+            key.startswith("audit-findings-")
+            and isinstance(entry, Mapping)
+            and entry.get("reason") in _AUDIT_ENVELOPE_REASONS
+        ):
+            #: Rejet hors contrat (Task 1) — compté une fois par assemble,
+            #: chemins partiel comme bloquant (observabilité Task 6).
+            record_resilience_event(cfg.output_dir, "audit_envelope_reject")
+
+
+def _split_missing_artifacts(missing: list[tuple[str, dict]]) -> tuple[list[str], list[str]]:
+    """Sépare les artefacts manquants : autres chemins vs audits dynamiques (extrait de _report_assemble_inner, CCN-2)."""
+    missing_other = [
+        entry["path"] for key, entry in missing if not key.startswith("audit-findings-")
+    ]
+    missing_audit = [
+        f"{key} ({entry.get('reason', 'absent')})"
+        for key, entry in missing
+        if key.startswith("audit-findings-")
+    ]
+    return missing_other, missing_audit
+
+
 def _report_assemble_inner(
     cfg: TelemetryConfig, *, anchor: str | None = None
 ) -> tuple[Path | None, list[str], int]:
@@ -2259,28 +2285,13 @@ def _report_assemble_inner(
         dynamic_audit_artifacts=_audit_artifact_declarations(timings),
     )
     if artifact_gate["status"] != "pass":
-        for key, entry in artifact_gate["required"].items():
-            if (
-                key.startswith("audit-findings-")
-                and isinstance(entry, Mapping)
-                and entry.get("reason") in _AUDIT_ENVELOPE_REASONS
-            ):
-                #: Rejet hors contrat (Task 1) — compté une fois par assemble,
-                #: chemins partiel comme bloquant (observabilité Task 6).
-                record_resilience_event(cfg.output_dir, "audit_envelope_reject")
+        _record_audit_envelope_rejects(cfg, artifact_gate)
         missing = [
             (key, entry)
             for key, entry in artifact_gate["required"].items()
             if entry["status"] != "present"
         ]
-        missing_other = [
-            entry["path"] for key, entry in missing if not key.startswith("audit-findings-")
-        ]
-        missing_audit = [
-            f"{key} ({entry.get('reason', 'absent')})"
-            for key, entry in missing
-            if key.startswith("audit-findings-")
-        ]
+        missing_other, missing_audit = _split_missing_artifacts(missing)
         if missing_other:
             return (
                 None,
