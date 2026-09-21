@@ -8,8 +8,15 @@
 - **Sessions** : {{ summary.totals.session_count }} comptées (racines){{ (" — " ~ summary.selection.window_touched ~ " touchées dans la fenêtre, audit §1") if summary.selection.window_touched else "" }}
 - **Coût** : **\${{ "%.4f"|format(summary.totals.total_cost_usd) }}** · {{ "{:,}".format(summary.totals.total_tokens) }} tokens · cache hit {{ summary.totals.cache_hit_rate if summary.totals.cache_hit_rate is not none else "n/a" }}{{ (" (delta " ~ "%.4f"|format(insights.deltas.cache_hit_rate_delta) ~ ")") if insights and insights.deltas and insights.deltas.cache_hit_rate_delta is not none else "" }}
 - **Alertes** : {{ insights.alerts|length if insights and insights.alerts else 0 }}{{ (" — " ~ insights.alerts|map(attribute='rule')|join(", ")) if insights and insights.alerts else "" }}
-- **Veille** : {{ ecosystem.new_items|length if ecosystem and ecosystem.new_items else 0 }} nouveautés{{ (" · repos suivis : " ~ ecosystem.watch_repos|join(", ")) if ecosystem and ecosystem.watch_repos else "" }}
 - **Lint harness** : {{ ("`" ~ harness_top_rules[0].rule ~ "` — " ~ harness_top_rules[0].count ~ " violation(s)") if digest and harness_top_rules else "non exécuté / page absente" }}
+{% set syn_audit = (audit_candidates if audit_candidates is defined and audit_candidates else none) %}
+{% set syn_dirty = (dirty_files if dirty_files is defined else []) %}
+{% set syn_pend = (pending_auto_commits if pending_auto_commits is defined else none) %}
+{% set syn_curate = (skill_curate if skill_curate is defined and skill_curate else none) %}
+{% if syn_audit %}- **Couverture d'audit** : {{ syn_audit.audited|length }} session(s) auditée(s) · {{ syn_audit.unaudited|length }} candidate(s) non traitée(s) (cap d'audit K = {{ syn_audit.limit }}){{ "\n" }}{% endif %}
+{% if syn_pend is not none or syn_dirty %}- **Friction dépôt** : {{ syn_pend if syn_pend is not none else "n/a" }} commit(s) auto-rédigé(s) en attente de revue · {{ syn_dirty|length }} fichier(s) dirty au run{{ "\n" }}{% endif %}
+{% if syn_curate %}- **Curation skills** : {{ syn_curate.applied }} appliquée(s) / {{ syn_curate.proposed }} proposée(s) / {{ syn_curate.skipped }} ignorée(s){{ " — dry-run, aucune opération fs" if syn_curate.dry_run else "" }}{{ "\n" }}{% endif %}
+{% if self_cost is defined and self_cost is not none %}- **Self-cost pipeline** : \${{ "%.4f"|format(self_cost) }}{{ (" · {:,.0f} tokens".format(self_cost_tokens)) if self_cost_tokens is defined and self_cost_tokens else "" }}{{ " · mesuré à l'assemblage" if self_cost_phase is defined and self_cost_phase == "assemble" else "" }}{{ "\n" }}{% endif %}
 
 ## 1. Vue d'ensemble
 
@@ -27,7 +34,10 @@
 {% else %}
 - Cost outliers : **non calculés** (état `{{ cost_outliers_state }}` — sample ou données insuffisants)
 {% endif %}
-- Warnings pipeline : {{ summary.warnings|length }}
+{% set wg_sum = (warnings_grouped if warnings_grouped is defined else []) %}
+{% set wg_top = (wg_sum|map(attribute="count")|max) if wg_sum else 0 %}
+{% set wg_occ = (warnings_occurrences if warnings_occurrences is defined else (summary.warnings|length)) %}
+- Warnings pipeline : {{ wg_sum|length }} entité(s) groupée(s) sur {{ wg_occ }} occurrence(s){{ " — multiplicateur dominant ×" ~ wg_top if wg_top > 1 else "" }}
 
 {% if summary.selection and summary.selection.window_touched %}
 ### Audit de sélection — pourquoi ce compte ?
@@ -103,6 +113,8 @@
 {% for t in summary.tool_usage %}
 | {{ t.tool }} | {{ t.call_count }} | {{ t.estimated_input_tokens }} |
 {% endfor %}
+
+> ⚠ **`Appels` ≠ `repeats` du §7 — divergence assumée.** `Appels` est le **total des appels** sur la fenêtre. Le `repeats` des constats *agent-loop* (§7, preuve `tool=…; repeats=…; threshold=…`) est la taille du **plus gros bucket d'empreintes d'arguments identiques** pour l'outil (`summary.tool_argument_fingerprints`) : les deux chiffres sont censés diverger et l'écart n'est pas une erreur de décompte. Le canal « résultat identique » (`summary.tool_result_fingerprints`) n'entre pas dans ce calcul : il est vide par construction depuis le filtre boilerplate et le détecteur ne le lit plus.
 {% else %}
 *Aucune activité outil mesurée sur la fenêtre.*
 {% endif %}
@@ -148,7 +160,7 @@
 ### Cohérence de l'environnement (passe critique — agents/skills/commands)
 
 {% for f in coherence_items %}
-- **{{ f.tag|default(f.category) }}** {{ f.description }}{% if f.evidence_summary %} (preuve : {{ f.evidence_summary[:110] }}){% endif %} → {{ f.recommendation }}
+- {% if f.subject %}**`{{ f.subject }}`** {% endif %}**{{ f.tag|default(f.category) }}** {{ f.description }}{% if f.evidence_short %} (preuve : {{ f.evidence_short }}){% endif %} → {{ f.recommendation }}{{ " **×" ~ f.dup ~ "**" if f.dup > 1 else "" }}
 {% endfor %}
 
 {% endif %}
@@ -162,11 +174,8 @@
 - Proposées (aucune opération fs{% if curation_dry_run %}, dry-run{% endif %}) : **{{ skill_curate.proposed }}**
 - Ignorées (origin=user ou introuvables) : **{{ skill_curate.skipped }}**
 
-Actions: {% if curation_detail_local.by_action is defined and curation_detail_local.by_action %}{% for action, count in curation_detail_local.by_action.items() %}`{{ action }}`={{ count }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}voir décisions ci-dessous{% endif %}
-
-{% for d in curation_detail_local.decisions|default([]) if d.status|default("") != "skipped" %}
-- `{{ d.action }}` `{{ d.skill_id }}` ({{ d.source }}) — {{ d.reason }}{% if d.status %} [{{ d.status }}]{% endif %}
-{% endfor %}
+Actions: {% if curation_detail_local.by_action is defined and curation_detail_local.by_action %}{% for action, count in curation_detail_local.by_action.items() %}`{{ action }}`={{ count }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}voir décisions ci-dessous{% endif %}{{ "\n" }}
+{% for d in curation_detail_local.decisions|default([]) if d.status|default("") != "skipped" %}- `{{ d.action }}` `{{ d.skill_id }}` ({{ d.source }}) — {{ d.reason }}{% if d.status %} [{{ d.status }}]{% endif %}{{ "\n" }}{% endfor %}
 {% for d in curation_detail_local.skipped_details|default([]) %}
 - `skip` `{{ d.skill_id }}` ({{ d.source|default("curation") }}) — {{ d.reason }} [{{ d.status|default("skipped") }}]
 {% endfor %}
@@ -185,28 +194,22 @@ Rien à curate (aucun signal de curation dans les findings de cohérence).
 {% if harness_counts %}
 - Périmètre : {{ harness_counts.files_scanned if harness_counts.files_scanned is not none else "n/a" }} fichier(s), {{ harness_counts.components_scanned if harness_counts.components_scanned is not none else "n/a" }} composant(s) inspecté(s) ; findings bruts {{ harness_counts.findings_raw if harness_counts.findings_raw is not none else "n/a" }}, uniques {{ harness_counts.findings_unique if harness_counts.findings_unique is not none else "n/a" }}
 {% endif %}
-{% if harness_scope and harness_scope.unscoped_files %}
-- ⚠ Surfaces `.opencode/` hors allowlist non scannées : {{ harness_scope.unscoped_files|length }} fichier(s), aperçu : {{ harness_scope.unscoped_files[:10]|join(", ") }}{% if harness_scope.unscoped_files|length > 10 %} (+{{ harness_scope.unscoped_files|length - 10 }}){% endif %}{{ "\n" }}
-{% endif %}
+{% if harness_scope and harness_scope.unscoped_files %}- ⚠ Surfaces `.opencode/` hors allowlist non scannées : {{ harness_scope.unscoped_files|length }} fichier(s), aperçu : {{ harness_scope.unscoped_files[:10]|join(", ") }}{% if harness_scope.unscoped_files|length > 10 %} (+{{ harness_scope.unscoped_files|length - 10 }}){% endif %}{{ "\n" }}{% endif %}
 {% if harness_remediation and harness_remediation.summary %}
 - Remédiation harness : {{ harness_remediation.summary.applied }} appliquée(s), {{ harness_remediation.summary.proposed }} proposée(s), {{ harness_remediation.summary.manual }} manuelle(s), {{ harness_remediation.summary.blocked }} bloquée(s), {{ harness_remediation.summary.rolled_back }} annulée(s)
-{% if harness_remediation.postcheck and harness_remediation.postcheck.status != "not_run" %}
-  - Post-check : {{ harness_remediation.postcheck.status }}{% if harness_remediation.postcheck.reason %} — {{ harness_remediation.postcheck.reason }}{% endif %}{{ "\n" }}
-{% endif %}
+{% if harness_remediation.postcheck and harness_remediation.postcheck.status != "not_run" %}  - Post-check : {{ harness_remediation.postcheck.status }}{% if harness_remediation.postcheck.reason %} — {{ harness_remediation.postcheck.reason }}{% endif %}{{ "\n" }}{% endif %}
 {% endif %}
 {% if harness_top_rules %}
 Top règles violées :
-{% for r in harness_top_rules %}
-  - `{{ r.rule }}` — {{ r.count }} violation(s){% if r.delta is not none %} (Δ{% if r.delta >= 0 %}+{% endif %}{{ r.delta }} vs run précédent){% endif %}
-{% endfor %}
+{% for r in harness_top_rules %}  - `{{ r.rule }}` — {{ r.count }} violation(s){% if r.delta is not none %} (Δ{% if r.delta >= 0 %}+{% endif %}{{ r.delta }} vs run précédent){% endif %}{{ "\n" }}{% endfor %}
 {% endif %}
 {% if harness_ignored_rules %}
 Règles exclues du top (config `harness_ignored_rules`) : {{ harness_ignored_rules|join(", ") }} — bruit structurel non compté.
 {% endif %}
-{% if harness_budget %}
-- Budget tokens : **{{ "{:,}".format(harness_budget.total_tokens) }}** (always-loaded {{ "{:,}".format(harness_budget.always_loaded) }} / on-demand {{ "{:,}".format(harness_budget.on_demand) }}, ratio {{ harness_budget.always_loaded_ratio }}) — plus lourd : `{{ harness_budget.heaviest }}`
+{% if harness_budget and harness_budget.always_loaded %}
+- Budget tokens : **{{ "{:,}".format(harness_budget.total_tokens or 0) }}** (always-loaded {{ "{:,}".format(harness_budget.always_loaded or 0) }} / on-demand {{ "{:,}".format(harness_budget.on_demand or 0) }}, ratio {{ harness_budget.always_loaded_ratio }}) — plus lourd : `{{ harness_budget.heaviest }}`
 {% endif %}
-{% if harness_triggers %}
+{% if harness_triggers and harness_triggers.skill_count %}
 - Triggers : {{ harness_triggers.skill_count }} skills, {{ harness_triggers.overlaps|length }} chevauchement(s)
 {% endif %}
 {% if harness_dependencies %}
@@ -221,33 +224,46 @@ Règles exclues du top (config `harness_ignored_rules`) : {{ harness_ignored_rul
 {% if watch_findings and watch_findings.findings %}
 ### Recommandations (regard critique — à revoir, jamais d'installation automatique)
 
-{% for f in watch_findings.findings %}
-- **[{{ f.severity|upper }}] {{ f.category }}** — {{ f.description }}{% if f.evidence_summary %} (preuve : {{ f.evidence_summary[:120] }}){% endif %} → {{ f.recommendation }}
+{% set wgroups = (watch_groups if watch_groups is defined else []) %}
+{% for g in wgroups %}
+{% set fam_label = ("**[" ~ (g.severity|upper) ~ "] " ~ g.category ~ "**") if g.severity else ("**" ~ g.category ~ "**") %}
+{% set fam_count = (" ×" ~ g.count) if g.severity else (" ×" ~ g.count ~ " — sévérités " ~ g.severity_mix) %}
+{% set fam_extra = (" (" ~ g.distinct ~ " distinct" ~ ("s" if g.distinct > 1 else "") ~ ")") if g.distinct != g.count else "" %}
+- {{ fam_label }}{{ fam_count }}{{ fam_extra }}
+{% for f in g.members %}
+  - **[{{ f.severity|upper }}]** {{ f.description }}{% if f.evidence_short %} (preuve : {{ f.evidence_short }}){% endif %} → {{ f.recommendation }}{{ " **×" ~ f.dup ~ "**" if f.dup > 1 else "" }}
+{% endfor %}
 {% endfor %}
 
 {% endif %}
 {% if ecosystem %}
-- Nouveautés détectées : {{ ecosystem.new_items|length }}
+{% set eco_limit = 5 %}
+{% set eco_all = (ecosystem.new_items or []) %}
+{% set eco_shown = eco_all[:eco_limit] %}
+- Nouveautés détectées : {{ eco_all|length }}{{ "" if not eco_shown else (" — " ~ eco_shown|length ~ " listée(s) ci-dessous" ~ (" (échantillon, +" ~ (eco_all|length - eco_shown|length) ~ " autres non listées)" if eco_all|length > eco_shown|length else " (liste exhaustive)")) }}
 {% if ecosystem.watch_repos %}
 - Sources suivies (watch) : {{ ecosystem.watch_repos|join(", ") }}{% if ecosystem.watch and ecosystem.watch|length > ecosystem.watch_repos|length %} + {{ ecosystem.watch|map(attribute='name')|reject('in', ecosystem.watch_repos)|join(", ") }}{% endif %}{{ "\n" }}
 {% if watch_warned %}
   - ⚠ Source GitHub indisponible ce run (réseau / accès repo requis) — activité non vérifiée.
 {% elif watch_items %}
 {% for item in watch_items %}
-  - **{{ item.name }}** ({{ item.category }}) — {{ item.description[:120] }} [{{ item.found_via|join(", ") }}]
+  - **{{ item.name }}** ({{ item.category }}) — {{ item.description_short or item.description }} [{{ item.found_via|join(", ") }}]
 {% endfor %}
 {% else %}
   - _Aucune activité sur la fenêtre (dernier push hors période)._
 {% endif %}
 {% endif %}
-{% for item in ecosystem.new_items[:5] %}
-- **{{ item.name }}** (`{{ item.category }}`) — {{ item.description[:120] }} [{{ item.found_via|join(", ") }}]
+{% for item in eco_shown %}
+- **{{ item.name }}** (`{{ item.category }}`) — {{ item.description_short or item.description }} [{{ item.found_via|join(", ") }}]
 {% endfor %}
 {% if ecosystem.core_changes %}
+{% set eco_core_shown = ecosystem.core_changes[:eco_limit] %}
 Évolutions du cœur :
-{% for c in ecosystem.core_changes[:5] %}
-- v{{ c.version }} ({{ c.date }}) — {{ c.summary[:200] }} `{{ c.relevance_flag }}`
+{% for c in eco_core_shown %}
+- {{ c.version_label|default(c.version) }} ({{ c.date }}) — {{ c.summary_short or c.summary }} `{{ c.relevance_flag }}`
 {% endfor %}
+{% if ecosystem.core_changes|length > eco_core_shown|length %}- _(+{{ ecosystem.core_changes|length - eco_core_shown|length }} autres évolutions non listées)_
+{% endif %}
 {% endif %}
 {% elif not watch_findings or not watch_findings.findings %}
 *Veille non réalisée ce run.*
@@ -267,24 +283,52 @@ Règles exclues du top (config `harness_ignored_rules`) : {{ harness_ignored_rul
 - **Baseline** : first-run — aucun run précédent exploitable, les deltas WoW ne sont pas calculés ce run.
 {% endif %}
 
-{% if insights.maintenance.findings %}
-Constats de maintenance (R1-R4) :
-{% for f in insights.maintenance.findings %}
-- **[{{ f.severity|upper }}]** {{ f.description }} → {{ f.recommendation }}{% if f.evidence_summary %} — preuve : {{ f.evidence_summary[:120] }}{% endif %}{{ "\n" }}{% endfor %}
+{% if maint_sorted %}
+Constats de maintenance (R1-R4) — dans les preuves `agent-loop`, `repeats` = taille du plus gros bucket d'arguments identiques (pas un total d'appels, cf. §3) :
+{% for f in maint_sorted %}- **[{{ f.severity|upper }}]**{% if f.category %} [{{ f.category }}]{% endif %}{% if f.subject %} `{{ f.subject }}`{% endif %} {{ f.description }} → {{ f.recommendation }}{% if f.evidence_short %} — preuve : {{ f.evidence_short }}{% endif %}{% if f.dup > 1 %} **×{{ f.dup }}**{% endif %}{{ "\n" }}{% endfor %}
 {% else %}
 *Aucun constat de maintenance.*
 {% endif %}
 {% else %}
 *Insights non générés ce run.*
 {% endif %}
+{% set drf = (drafting if drafting is defined and drafting else none) %}
+{% if drf and drf.candidates %}
+### Drafting — candidats de l'étape 4
+
+Cible du run : `{{ drafting_project_root if drafting_project_root else "project_root non déclaré" }}`. Le rapport **nomme** les cibles hors périmètre (D5) — il n'en crée pas de seconde instance et n'écrit aucun fichier.
+{% for r in drf.candidates %}
+  - `{{ r.recommendation_type }}`{{ " [" ~ r.severity|upper ~ "]" if r.severity else "" }}{{ " — action `" ~ r.action ~ "`" if r.action else "" }}{{ " (`" ~ r.skill_id ~ "`)" if r.skill_id else "" }} : {{ r.description_short }}{{ " → cible `" ~ r.target ~ "` — **hors périmètre du projet**" if r.in_scope is sameas false else (" → cible **non résolue** (session absente de la summary du run)" if r.in_scope is none else "") }}{{ "\n" }}
+{%- endfor %}
+{% if drf.out_of_scope_count %}
+- **Hors périmètre** : {{ drf.out_of_scope_count }} candidat(s) sur {{ drf.candidates|length }} visent {{ drf.out_of_scope_targets|join(", ") }} — le travail de ces sessions n'est pas projetable ici ; le rattacher au projet (`draft_targets`) est une décision humaine.
+{% endif %}
+{% if drf.unknown_scope_count %}
+- **Cible non résolue** : {{ drf.unknown_scope_count }} candidat(s) dont la session ne figure pas dans la summary du run — ni comptés dans le projet, ni comme hors périmètre. Le chemin du dépôt n'est une donnée d'aucun artefact du run : le nommer est une décision humaine.
+{% endif %}
+{% elif draft_candidates is defined and draft_candidates %}
+### Drafting — aucune cible
+
+`weekly-draft-candidates-{{ date }}.json` existe mais ne contient aucun candidat.
+{% endif %}
 
 ## 8. Annexes
 
-- Artefacts : `weekly-summary-{{ date }}.json`, `weekly-insights-{{ date }}.json`, `weekly-harness-digest-{{ date }}.json`, `weekly-ecosystem-{{ date }}.json`
+{% set ra = (run_artifacts if run_artifacts is defined else []) %}
+{% set ra_shown = run_artifacts_shown if run_artifacts_shown is defined else ra|length %}
+{% if ra %}- Artefacts du run ({{ run_artifacts_total|default(ra|length) }}) : {% for a in ra[:ra_shown] %}`{{ a.name }}`{{ " _(" ~ a.status ~ ")_" if a.status != "present" else (" _(requis)_" if a.required else "") }}{% if not loop.last %}, {% endif %}{%- endfor %}{% if run_artifacts_total|default(ra|length) > ra_shown %}, +{{ run_artifacts_total|default(ra|length) - ra_shown }} autres (liste tronquée){% endif %}{{ "\n" }}
+{% else %}- Artefacts du run : aucun fichier dans le répertoire du run.{{ "\n" }}
+{% endif %}
 {% if run_dir %}
 - Répertoire du run : `{{ run_dir }}/` (alias stable `runs/current/`)
 {% endif %}
-- Coût propre du pipeline (self-cost) : {{ "%.4f"|format(self_cost) if self_cost is not none else "non mesurable" }} ${% if self_cost is not none and self_cost == 0 %} (coût nul — modèle gratuit ou session non retrouvée){% endif %}{% if self_cost_tokens %}, {{ "{:,}".format(self_cost_tokens) }} tokens, {{ self_cost_api_calls }} appels API{% endif %}
+{% set sc_tokens_v = self_cost_tokens if self_cost_tokens is defined else none %}
+{% set sc_calls_v = self_cost_api_calls if self_cost_api_calls is defined else "n/a" %}
+{% set sc_cost_v = "%.4f"|format(self_cost) if self_cost is not none else "non mesurable" %}
+{% set sc_zero_v = " (coût nul — modèle gratuit ou session non retrouvée)" if self_cost is not none and self_cost == 0 else "" %}
+{% set sc_tail_v = (", {:,.0f} tokens, {} appels API".format(sc_tokens_v, sc_calls_v)) if sc_tokens_v else "" %}
+{% set sc_phase_v = " · mesuré à l'assemblage" if self_cost_phase is defined and self_cost_phase == "assemble" and self_cost is not none else "" %}
+- Coût propre du pipeline (self-cost) : {{ sc_cost_v }} ${{ sc_zero_v }}{{ sc_tail_v }}{{ sc_phase_v }}
 - Commits auto-rédigés sur la fenêtre : {{ auto_commits|length }}
 {% for c in auto_commits[:10] %}
   - `{{ c.hash }}` {{ c.date }} {{ c.subject }}
@@ -292,26 +336,38 @@ Constats de maintenance (R1-R4) :
 {% if auto_commits|length > 10 %}
   - _(+{{ auto_commits|length - 10 }} autres sur la fenêtre — liste tronquée)_
 {% endif %}
-- **{{ pending_auto_commits }}** commits auto-rédigés en attente de revue (du plus vieux que {{ date }})
+- **{{ pending_auto_commits }}** commits auto-rédigés en attente de revue (antérieurs au {{ date }})
 {% if head_commit %}
 - HEAD au run : `{{ head_commit.hash }}` {{ head_commit.date }} {{ head_commit.subject }}
 {% endif %}
 {% if dirty_files %}
-- Fichiers dirty au run ({{ dirty_files|length }}) :{% for f in dirty_files[:30] %} `{{ f }}`{% if not loop.last %},{% endif %}{% endfor %}{% if dirty_files|length > 30 %} _(+{{ dirty_files|length - 30 }} autres)_ {% endif %}
+- Fichiers dirty au run ({{ dirty_files|length }}) :
+{% for f in dirty_files[:8] %}
+  - `{{ f }}`
+{% endfor %}
+{% if dirty_files|length > 8 %}
+  - _(+{{ dirty_files|length - 8 }} autres)_
+{% endif %}
 {% endif %}
 {% if summary.skills_targets %}
 - **Skills auto-rédigés et cibles** :{% for name, agents in summary.skills_targets.items() %} `{{ name }}` → {{ agents|join(", ") }}{% if not loop.last %} ;{% endif %}{{ "\n" }}{% endfor %}
 {% endif %}
 {% if audit_candidates and audit_candidates.unaudited %}
-- **Candidates d'audit non traitées** (plafond {{ audit_candidates.limit }}) : {{ audit_candidates.unaudited|map(attribute='session_id')|join(", ") }}
+- **Candidates d'audit non traitées** (cap d'audit K = {{ audit_candidates.limit }} ; K = nombre de sessions auditées, pas un plafond sur cette liste) :
+{% for item in audit_candidates.unaudited[:8] %}
+  - `{{ item.session_id }}`
+{% endfor %}
+{% if audit_candidates.unaudited|length > 8 %}
+  - _(+{{ audit_candidates.unaudited|length - 8 }} autres)_
+{% endif %}
 {% endif %}
 {% if audit_worker_statuses %}
 - **Statuts workers** : {% for worker in audit_worker_statuses %}{{ worker.session_id }}={{ worker.worker_status or worker.status }}{% if worker.rc is defined and worker.rc != 0 %} (rc={{ worker.rc }}){% endif %}{% if worker.truncated %} (tronqué){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
 {% endif %}
 {% if warnings_grouped %}
-- Warnings pipeline ({{ summary.warnings|length }}) :
+- Warnings pipeline ({{ wg_occ }}) :
 {% for g in warnings_grouped %}
-  - **×{{ g.count }}** {{ g.message }}{% if g.count > 1 %} — `{{ g.session_ids[:6]|join("`, `") }}{% if g.session_ids|length > 6 %}…{% endif %}`{% endif %}{{ "\n" }}{% endfor %}
+  - **×{{ g.count }}** {{ g.message }}{% if g.count > 1 and g.session_ids %} — `{{ g.session_ids[:6]|join("`, `") }}{% if g.session_ids|length > 6 %}…{% endif %}`{% endif %}{{ "\n" }}{% endfor %}
 {% endif %}
 {% if all_sessions %}
 
@@ -320,6 +376,6 @@ Constats de maintenance (R1-R4) :
 | Session | Harnais | Coût (\$) | Tokens | Titre |
 |---|---|---|---|---|
 {% for s in all_sessions %}
-| `{{ s.session_id }}` | {{ s.harness or "n/a" }} | {{ "%.4f"|format(s.cost_usd) }} | {{ "{:,}".format(s.total_tokens) }} | {{ ((s.title_or_topic or s.session_id)|string)[:80] }} |
+| `{{ s.session_id }}` | {{ s.harness or "n/a" }} | {{ "%.4f"|format(s.cost_usd) }} | {{ "{:,}".format(s.total_tokens) }} | {{ s.title_short or (s.title_or_topic or s.session_id)|string }} |
 {% endfor %}
 {% endif %}

@@ -3,10 +3,11 @@
 ## 8.1 Déterminisme et reproductibilité
 - Pour un même jeu d'entrées (mêmes sources, mêmes seuils) et une **même ancre**, une revue
   produit des sorties **identiques** : chaque liste a un tri total documenté, les montants sont
-  arrondis, les divisions par zéro → `null`, les avertissements sont plafonnés.
+  arrondis (`round6`), les divisions par zéro → `null`, les avertissements sont plafonnés.
 - La **reprise d'une ancre** (rejouer la même fenêtre) couvre exactement la même fenêtre : un
   re-run du même jour écrase la sortie du jour (fenêtre identique), jamais purgée entre jours
   différents.
+- Les nouvelles sorties sont déterministes : empreinte prompts répétés par bucket `|` stable (`-count, session_id`), classifications triées par `session_id`, findings règles triés par `id`, distributions triées par `-count, key`, `debug-rule` lecture seule sans réseau.
 
 ## 8.2 Ancre et fenêtrage
 - Toutes les étapes d'un même run partagent la **même ancre** : la fenêtre dérivée est identique

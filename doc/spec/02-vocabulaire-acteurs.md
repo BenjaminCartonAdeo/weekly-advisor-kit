@@ -21,6 +21,10 @@
 | **Digest** | Extraction bornée d'une sortie volumineuse, destinée à alimenter une étape suivante sans excès de volume. |
 | **Observation d'architecture** | Projection **en lecture seule** de faits d'environnement (compteurs d'états déclaré/observé/absent/inconnu, disponibilité et validité de la configuration, compteurs d'inventaire, périmètre de harnais). Elle n'infère aucune intention, ne propose ni n'applique aucun changement ; utilisée pour détecter une dérive d'architecture/configuration. |
 | **Vue de configuration** | Regroupement thématique **en lecture seule** de la configuration (sources, stockage, coûts, curation), dérivé de la configuration persistée. Une vue ne modifie jamais la configuration ; la forme persistée (plate) reste inchangée, rétro-compatible, aucune migration imposée. |
+| **Empreinte de prompt (fingerprint P3)** | Empreinte déterministe d'un tour utilisateur : filtrage bruit + normalisation (`CODE`/`STR`/`PATH`/`NUM`, stop-list, ponctuation) puis 4 premiers tokens triés joints par `\|` ; bucket map O(n). |
+| **Classification de session (P6)** | Quadruplet déterministe sans LLM par session : `intent`, `spec_driven`, `production_review` (gap 30 s), `prompt_maturity` grades A–F. |
+| **Règle d'audit déclarative (P1)** | Fichier `.md` versionné en `rules/` : frontmatter YAML + sections + blocs `detect {scan/match/aggregate/check}` et `test` ; DSL AST whitelisté ; produit un `finding` uniforme. |
+| **Playground `debug-rule` (P2)** | Commande read-only `debug-rule {evaluate|fields|distributions}` : REPL déterministe sur le résumé courant, catalogue typé + distributions, sans réseau ni écriture. |
 
 ---
 

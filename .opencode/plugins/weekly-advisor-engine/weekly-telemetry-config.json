@@ -81,6 +81,7 @@
     "lint_violations_max": 10,
     "never_loaded_runs_threshold": 4,
     "cache_write_zero_runs": 2,
+    "session_cost_cap": 0.5,
     "lint_coverage_min": 0.7
   },
   "watch_repos": [],

@@ -27,12 +27,13 @@ de génération.
 - **Usage des commands** : command, invocations, sessions d'utilisation (tri alphabétique).
 - **Paires de skills similaires** : paire, similarité (≥ 0,8 ; top 5).
 - **Catalogue de skills** : taille du catalogue, skills jamais chargés.
-- **Prompts répétés** : aperçu normalisé (80 premiers caractères), compte (≥ 3), session, longueur
-  moyenne (plafonné à 20).
+- **Prompts répétés** : empreinte déterministe (filtre bruit, normalisation `CODE`/`STR`/`PATH`/`NUM`, stop-list, 4 tokens triés joints par `|`, bucket O(n)), aperçu canonique (plus court ≥20, label 80), compte ≥3, sessions/harnais distincts, taux d'annulation, tours de correction moyens, first/last seen, ≤5 exemples, brouillon de skill markdown, gain estimé (répétitions ×2 min) ; tri -count/session_id ; plafonné à 20 ; artefacts et enfants exclus.
+- **Classifications de session (P6)** : par session `session_id`, `intent` (planning > debug > review > explore > implementation), `spec_driven {is_spec, preuves[]}`, `cost_usd`, `production_review {review_pct, measured, reviewed, warning}` (gap >30 s, `review-unmeasurable:<harness>` agrégé), `prompt_maturity {score 0–100, grade A–F, dimensions 5×0–20}` ; tri `session_id`, bloc additif.
+- **Règles d'audit déclaratives (P1)** : registre `rules/*.md` + DSL `scan/match/aggregate/check` (AST whitelisté) ; finding uniforme `{id,severity,group,occurrences,description{{pct}},suggestion,examples,details}` trié par `id` ; `extends` avec `+` merge key-wise ; playground `debug-rule` read-only (`evaluate <rule-id|expression>`, `fields` catalogue typé + arités, `distributions` top N/min-max/sample_size).
 - **Totaux sous-agents** : nombre d'enfants, coût, par type d'agent.
 - **Coûts estimés** : par session sans coût enregistré (tokens × taux du harnais) ; clé absente si
-  rien à estimer.
-- **Avertissements** : session concernée (ou aucune), message (plafonné à 50).
+   rien à estimer.
+- **Avertissements** : session concernée (ou aucune), message (plafonné à 50, agrégé par harnais pour `review-unmeasurable`).
 
 ## 7.2 Écosystème (C2)
 

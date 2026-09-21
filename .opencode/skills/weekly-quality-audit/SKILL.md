@@ -34,12 +34,11 @@ Sélection déterministe en amont (aucun choix de session ici), examen LLM des t
 
 ## Contrat de sortie worker (strict)
 
-<!-- ponytail: le worker envelope est minimal ; le JOIN reste déterministe. -->
-
 Le worker A écrit un fichier par session (`audit-findings-<session_id>.json`) avant la
 consolidation déterministe. Chaque fichier doit respecter l'envelope JSON v1 suivante,
 y compris pour un transcript borné, tronqué ou illisible :
 
+<!-- envelope-example: audit-findings (miroir doc/architecture/schemas/audit-findings.schema.json) -->
 ```json
 {
   "schema_version": 1,
@@ -63,8 +62,9 @@ deviné : ne jamais inventer un finding. Le JOIN ne répare ni ne réécrit l'en
 
 - Détecter la troncature ou la lecture partielle ; lire seulement des fenêtres bornées
   `offset/limit`, jamais un export intégral non borné.
-- Autoriser **une seule retry bornée** (`max_retry=1`, au plus trois fenêtres de
-  diagnostic). Aucun hang, respawn loop ou nouvelle sous-tâche après cette tentative.
+- Retry unique via le skill partagé `weekly-safety-guardrails` (`max_retry=1`, au plus
+  trois fenêtres de diagnostic). Aucun hang, respawn loop ou nouvelle sous-tâche après
+  cette tentative.
 - Si la sortie récupérée est **complete-enough**, c'est-à-dire suffisante pour justifier
   chaque finding, produire l'envelope avec `rc: 0` : une recovery réussie ne doit pas
   faire passer le cron en `rc=1`. Si une troncature avait été détectée, conserver
@@ -130,7 +130,26 @@ identifiable dans le frontmatter/description du skill.
 | `skill-improvement` | Skill existant dont l'usage est défaillant (frontmatter/description mal calibré) — boucle raffinement R7 |
 | `model-mismatch` | Modèle surdimensionné pour la tâche (coût/min actif anormal) |
 | `command-improvement` | Session coûteuse lancée par une commande existante → garde-fous manquants |
+| `non-spec-driven` | Session coûteuse (`session_classifications.cost_usd` élevé) sans preuve spec-driven (`spec_driven: false`) → recommander un cadrage amont |
+| `code-non-relu` | Édits jamais relus (`production_review_measured > 0`, `production_review_pct == 0`) → recommander une relecture systématique |
+| `low-maturity-prompt` | Prompt de faible maturité (`prompt_maturity_grade: F`) → recommander une hygiène de prompting |
 | `environment-change` | Constat dont la cible est hors `project_root` ou non écrasable (report-only) |
+
+### Catégories alimentées par `session_classifications` (P6, déterministe)
+
+Le bloc `session_classifications` du summary fournit un signal par session (aucun
+choix LLM) : `non-spec-driven`, `code-non-relu` et `low-maturity-prompt` sont
+priorisés par `audit-candidates` et ne doivent être émis qu'avec les
+`recommendation_type` existants :
+
+| Catégorie | `recommendation_type` |
+|---|---|
+| `non-spec-driven` | `prompting-habit` (cadrage amont : spec/PRD avant implémentation) |
+| `code-non-relu` | `prompting-habit` (relecture systématique après édit) |
+| `low-maturity-prompt` | `prompting-habit` (hygiène de prompting : spécificité/contexte/contrainte/vérifiabilité) |
+
+Ces constats n'ajoutent pas de catégorie de recommandation : ils réutilisent
+`prompting-habit` pour rester dans l'échelle de drafting existante.
 
 ## Schéma du fichier findings (JSON strict, archive)
 

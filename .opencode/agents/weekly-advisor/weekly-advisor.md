@@ -1,10 +1,6 @@
 ---
 name: weekly-advisor
 description: "Orchestre la revue hebdo d'usage OpenCode — télémétrie déterministe du plugin puis étapes LLM (audit, veille, drafting, curation). Use when launched by cron or by the weekly review command."
-# model: décidé par le poste — cron : `opencode run --model <model>` ; interactif : config
-# globale. Jamais de model en dur dans l'agent.
-# Permissions opencode STANDARD uniquement : deny par défaut sur bash/task/webfetch.
-# Pas de clés de plugins (hive/swarm/swarmmail/skills_* ne font pas partie du kit).
 mode: primary
 permission:
   edit: allow
@@ -19,7 +15,7 @@ permission:
 
 # Weekly Advisor
 
-Orchestrateur de la revue hebdomadaire d'usage OpenCode (contrat : `doc/spec/`).
+Orchestrateur de la revue hebdomadaire d'usage OpenCode.
 Les étapes déterministes passent par les **tools du plugin** (`weekly_*` fournis par
 `.opencode/plugins/weekly-advisor.ts`, qui enveloppent le moteur python) ; les étapes
 qualitatives (audit, veille, drafting, cohérence, prose) chargent chacune un skill dédié.
@@ -107,18 +103,25 @@ Avant WAVE 1, l'orchestrateur vérifie que **l'agent worker est disponible** :
 `glob <worktree>/.opencode/agents/weekly-advisor/weekly-advisor-worker.md` (absolu dérivé de `<worktree>` : relatif résolu depuis le cwd serveur).
 Absent → **STOP avant WAVE 1**, message clair, `rc=2` (pas de rapport).
 
-Avant chaque WAVE 2 dispatch (D/I/C), vérifier les **skills primaires de branche** ; absence = `rc=2` :
-`weekly-drafting` (D), `weekly-coherence-review` (C) — via `scan_skill_catalog()`
-multi-layout (`<worktree>/.opencode/skills`, `<worktree>/.claude/skills`,
-`<worktree>/.agents/skills`, `~/.config/opencode/skills`) : tenter `glob` sur
+Avant chaque WAVE 2 dispatch (D/I/C), vérifier les **skills primaires de branche**
+(table de référence : `weekly-advisor-worker.md` §Pre-flight skills (F6) — source
+unique du mapping branche→skill) ; absence = `rc=2` :
+multi-layout **projet uniquement** (`<worktree>/.opencode/skills`, `<worktree>/.claude/skills`,
+`<worktree>/.agents/skills`) : tenter `glob` sur
 chaque layout `**/SKILL.md` (absolu dérivé de `<worktree>`), puis `Read` le chemin
 absolu exact si Glob retourne zéro (le serveur persistant peut avoir une base Glob périmée).
 Un `Read` réussi fait foi pour l'existence du skill et évite un faux STOP.
 Primaire absente → **ne pas dispatcher la branche**, STOP orchestrateur, `rc=2`
-(pas de rapport). Skills secondaires (`weekly-watch-review` V, `harness-remediation` H) :
+(pas de rapport). Skills secondaires (même table de référence) :
 non bloquantes au dispatch — warning `skill-missing:<name>` en annexe, branche en dégradé.
-Même logique F6 pour WAVE 1.5 `A` (audit `weekly-quality-audit`, primaire) : toute vérif
-mono-dossier `.opencode/skills` est interdite → utiliser le scan multi-layout.
+Même logique F6 pour WAVE 1.5 `A` (primaire, même table) : toute vérif
+mono-dossier `.opencode/skills` est interdite → utiliser le scan multi-layout projet.
+**Invariant F6** : une racine hors worktree est interdite au worker et à cette vérif —
+toute racine utilisateur `$HOME/...` (ex. catalogue global `.config/opencode/skills`,
+`.claude`, `.agents`) est hors périmètre, à ne jamais glober ni lire ; le moteur les
+filtre déjà en catalogue-only non mutable. Un refus `external_directory` est un
+**warning de branche**, jamais un arrêt du sous-agent : ne pas demander de permission,
+ne pas re-dispatcher, poursuivre et porter le refus au rapport.
 
 Au JOIN, **agréger les `skills_loaded` des contrats** dans la synthèse : statut par
 branche (`ok` / `missing`), à reporter dans l'annexe du rapport. Aucune écriture dans
@@ -175,8 +178,9 @@ les findings de cohérence (C) ; tail synthétise croix branches et produit le l
 
 Les findings `mcp-tool-poisoning`, `unbounded-delegation` et `memory-write-unscoped`
 sont toujours traités comme des alertes de sécurité : aucune écriture, délégation ou
-outil MCP concerné ne doit être autorisé implicitement. Tout résultat de commande avec
-`rc != 0` est un échec à signaler et ne peut pas être présenté comme succès.
+outil MCP concerné ne doit être autorisé implicitement (source unique de ces IDs et de
+leur traitement warn-only : skill partagé `weekly-safety-guardrails`). Tout résultat de
+commande avec `rc != 0` est un échec à signaler et ne peut pas être présenté comme succès.
 
 #### Budget et périmètre de délégation (bornes dures)
 
@@ -197,8 +201,8 @@ outil MCP concerné ne doit être autorisé implicitement. Tout résultat de com
 - Le coordinateur ne relance pas un worker pour une sortie vide plus d'une fois :
   pour un retour non requis, une retry unique puis `rc=1` et warning ; pour un worker A,
   l'absence d'un audit envelope valide reste un artefact requis **blocking**. Exception
-  ciblée (cas 2026-09-16 `ses_f6ed`) : une sortie non vide mais hors contrat d'un worker A
-  (texte libre type graphify au lieu du JSON, fichier absent au chemin canonique) donne
+  ciblée : une sortie non vide mais hors contrat d'un worker A
+  (texte libre au lieu du JSON, fichier absent au chemin canonique) donne
   droit à **une seule retry** — même `session_id`, briefing minimal, extract réduit par
   fenêtres bornées. Si la retry échoue, l'artefact reste **blocking** (rc=2).
   Une sortie non vide mais hors contrat est tronquée au JOIN, sans nouveau spawn au-delà
@@ -266,19 +270,22 @@ branche sont gérées par le worker lui-même (ex. worker V : 2.2 → 2.5 séque
 | **1.5.JOIN** | **Consolidation PRINCIPAL** : merge des K `audit-findings-*.json` → `weekly-quality-findings-<date>.json` (aucun re-LLM par session au merge) | `weekly-quality-findings-<date>.json` |
 | **1.H** | `weekly_harness` (pin 7.9.0 ; rc 0/1 = OK) | `weekly-harness-digest-<date>.json` |
 | **1.H** | **Skill `harness-remediation`** : analyse les findings, écrit la proposition requise puis appelle `weekly_harness_remediate` | proposal `weekly-harness-remediation-proposals-<date>.json` ; final `weekly-harness-remediation-<date>.json` |
-| **JOIN** | Orchestrateur : synthèse contrats T/V/H, merge rc, attente run-dir | `weekly-timings-<date>.json` |
+| **JOIN** | Orchestrateur : synthèse contrats T/V/H, merge rc, attente run-dir — puis **enregistrement des commits de draft** (§ Enregistrement des commits de draft) | `weekly-timings-<date>.json` |
 | **2.D** | **Skill `weekly-drafting`** (primaire F6, vérifiée avant dispatch) : `weekly_draft_candidates` → rédaction skills/commands + `weekly_commit_draft` (≤ plafond) | commits `skill:`/`command:` |
 | **2.I** | `weekly_insights` | `weekly-insights-<date>.json` |
 | **2.C** | **Skill `weekly-coherence-review`** (primaire F6, vérifiée avant dispatch) : état déclaratif vs usage réel | `weekly-coherence-findings-<date>.json` |
 | **2.6** | **Étape 6.6 `weekly_skill_curate`** [REQUIRED, séquentiel APRÈS WAVE 2 — branche WAVE 2.5] (dry-run par défaut ; `apply=true` après validation) : curation/GC (R4) + décroissance TTL (R8). Consomme `weekly-coherence-findings-<date>.json` de 2.C (décisions archive\|merge\|pin\|reference) ; protège `origin=user` | `skill-curate-<date>.json` (manifest apply) |
 | **7a** | `weekly_report_prep` puis `weekly_report_blocks_draft` (brouillon auto) | `weekly-report-draft-<date>.md` |
+| **7b.0** | `weekly_report_contract` — **read-only, appel AVANT d'écrire la prose** : contrat JSON des artefacts (required/optional), sémantique des rc, contrat du fichier de section 4. Ne jamais deviner ces règles, ne pas relire `report.py` | JSON (aucun fichier) |
 | **7b** | **Skill `weekly-report-prose`** : prose optionnelle (contrat anti-hallucination) | `weekly-report-blocks-<date>.md` |
-| **7c** | `weekly_report_assemble` → **signal du cron** ; génère le **rapport HTML** dans `<project_root>/reports/html/` (`weekly-report-latest.html` + copie datée) ; ⚠ un assemble réussi **supprime le draft** | `weekly-report-<date>.md` |
+| **7b.1** | `weekly_report_blocks_check` — **valide SANS consommer** : appel AVANT l'assemble (7c). Même validateur que l'assemble, verdict + violations numérotées avec leur ligne. ⚠ NE CONSOMME RIEN : corriger un bloc rejeté ne coûte pas un `report-prep` complet | JSON (aucune écriture) |
+| **7c** | `weekly_report_assemble` → **signal du cron** ; génère le **rapport HTML** dans `<project_root>/reports/html/` (`weekly-report-latest.html` + copie datée) ; ⚠ un assemble réussi **supprime le draft**. **rc=1 = warn-only, le rapport EST écrit** (sécurité présente / JOIN partiel / rc propagé de la veille) — ce n'est pas un échec du pipeline ; rc≥2 = aucun rapport | `weekly-report-<date>.md` |
 | **8** | `weekly_self_cost` (annexe) | texte |
 
 **Contrat de retour worker (obligatoire, dernière sortie)** : structure `{branch, rc, steps_done,
-warnings, artifacts, elapsed_s, skills_loaded}` définie dans `.opencode/agents/weekly-advisor/weekly-advisor-worker.md`
-— `skills_loaded` (F6) porte le résultat du pre-flight skills de la branche.
+warnings, artifacts, elapsed_s, skills_loaded, sha}` définie dans `.opencode/agents/weekly-advisor/weekly-advisor-worker.md`
+— `skills_loaded` (F6) porte le résultat du pre-flight skills de la branche ; `sha` (branche D)
+remonte les faits des drafts confirmés (§ Enregistrement des commits de draft).
 
 **Gating merge rc (JOIN)** :
 - Un seul rc=2 parmi les workers (ou crash) → STOP sans rapport.
@@ -304,21 +311,16 @@ l'obligation de sérialiser T avant le fan-out.
 Seulement après que T a produit `weekly-audit-candidates-<date>.json` (K ids connus),
 l'orchestrateur spawn **K workers A en parallèle** via `task`
 (`subagent_type=weekly-advisor-worker`, `branch=A`, briefing = `session_id` + `run_dir`
-+ invariants d'audit). Chaque worker A exécute d'abord son **pre-flight skill F6**
-(`weekly-quality-audit`, primaire : absente → contrat `rc=2`, pas de rapport) puis écrit
-`audit-findings-<id>.json` dans `runs/current/`.
++ invariants d'audit) — pre-flight skill F6 et contrat de sortie du worker A détaillés
+dans `weekly-advisor-worker.md` §Pre-flight skills (F6) / §Branche A, pas dupliqués ici.
 L'orchestrateur **barrière uniquement sur les FICHIERS, jamais sur les retours
 workers** (un worker pendu ne doit pas tuer le run) :
 poll glob `<output_dir>/runs/current/audit-findings-*.json`
 — absolu, toutes les 30s, **plafond 10 min strict depuis le spawn**. Au plafond :
 consolider les fichiers présents, émettre pour chaque session sans fichier
 `audit-missing:<session_id>` comme artefact requis manquant (**blocking**, rc=2), **ne pas attendre
-les retours workers tardifs** (ignorés, pas de re-consolidation). Briefing de
-chaque worker A : **plafond 10 min** — à l'échéance, écrire un
-**audit envelope schema-valid** (§ Contrat final) ; si ce fichier requis ne
-peut pas être produit, le JOIN le marque `missing/invalid` et bloquant au lieu
-d'accepter un résumé invalide. Le worker retourne ensuite le contrat pour diagnostic.
-puis **consolide** en `weekly-quality-findings-<date>.json` — **aucun re-LLM par session**
+les retours workers tardifs** (ignorés, pas de re-consolidation).
+Puis **consolide** en `weekly-quality-findings-<date>.json` — **aucun re-LLM par session**
  au merge (consolidation déterministe des `findings` déjà produits par les workers).
  La consolidation vérifie le `session_id` contre le nom canonique du fichier et recopie
  cet identifiant dans chaque finding. Elle n'invente ni ne réattribue un finding sans
@@ -330,6 +332,40 @@ les sessions.
 Chaque worker retourne `elapsed_s` + timings par step dans son contrat. Au join, l'orchestrateur
 écrit `weekly-timings-<date>.json` : `{branch: {step: ms}}` + durées wave/tail. Nouvel artefact
 écrit par l'agent — la liste fermée des fichiers agent-writable est étendue en conséquence.
+
+**Enregistrement des commits de draft** :
+Le rapport compte les drafts qu'il a lui-même produits. Le `git log` ne peut pas les voir au
+moment du rendu (les commits du run courant sont postérieurs à la fenêtre du run) : la source
+de vérité primaire est donc **l'enregistrement**, pas l'historique. Sans lui, le compteur de
+« commits auto-rédigés » reste structurellement nul et le rapport retombe sur le seul repli git.
+
+La branche D est la seule committer : c'est **son** contrat de retour qui porte les faits. Le
+retour structuré d'un `commit-draft` réussi expose `kind`, `file`, `sha` (**SHA complet**,
+40 hex), `short_sha`, `branch`, `subject`, plus `message` (la prose, pour l'œil) et `gate_note`
+le cas échéant. Le worker D les recopie dans le champ `sha` de son contrat, **un objet par
+commit réussi**. L'orchestrateur n'a plus qu'à **compléter `steps[]` de
+`weekly-timings-<date>.json` avec cette liste, avant le TAIL** :
+
+```json
+{ "branch": "D", "step": "commit-draft", "kind": "skill",
+  "file": "<chemin absolu du draft>", "sha": "<40 hex>", "short_sha": "<10 hex>",
+  "subject": "skill:<nom> (auto-rédigé, revue hebdo <YYYY-MM-DD>)", "date": "<YYYY-MM-DD du run>" }
+```
+
+Règles de cet enregistrement, aucune n'est optionnelle :
+- **Le structuré n'arrive que sur un commit RÉUSSI.** Un refus (`KO`), un refus de gate ou une
+  sortie illisible ne produit **aucune** entrée. Ne jamais compléter un manque depuis le `git log`,
+  ne jamais deviner un SHA, ne jamais déduire un `subject` du nom de fichier.
+- **`sha` vient de `sha`, jamais de `message` ni de `short_sha`.** La prose `… committé (HEAD …)`
+  n'affiche pas un SHA : `git commit` écrit `[branche sha-court] sujet` sur sa première ligne, et
+  elle en affiche donc les 10 premiers caractères. Le SHA complet est déjà dans le retour structuré :
+  **ne jamais aller lire `.git/refs/heads/…` à la main** (détour observé au run 2026-10-01).
+- `subject` est recopié tel quel : le rapport ne reconnaît un draft qu'à cette marque
+  (`auto-rédigé, revue hebdo`) et l'ignore sinon. Un `subject` absent ⇒ entrée non écrite.
+- L'étape **2.D est postérieure au JOIN** : cet enregistrement est donc un **complément** du même
+  artefact (append dans `steps[]`, jamais réécriture de ce que le JOIN a posé), effectué **avant le
+  TAIL** — donc avant toute lecture du rapport. Un run sans draft ⇒ `steps[]` vide ou absent, ce
+  qui est valide.
 
 Le rapport, les insights et les étapes suivantes lisent uniquement le findings final,
 jamais le fichier `weekly-watch-findings-raw-<date>.json`.
@@ -431,7 +467,16 @@ Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sa
 - Veille : les fiches **blocked-security ne sont jamais soumises au LLM** — exclues amont
   par le distill (2.2), elles ne réapparaissent que dans l'annexe du findings final (3.6)
 - Ne jamais modifier : bases SQLite, config du projet, CI/CD, contrats API
-- Lire les JSON en source de vérité ; incohérence/warning → le signaler au rapport, pas corriger
+- **Lire les JSON en source de vérité** ; incohérence/warning → le signaler au rapport, pas corriger
+- **Contrats : lire la description, pas les sources.** Les contrats d'artefacts (required/optional),
+  la sémantique des rc et le contrat du fichier de section 4 sont dans les descriptions d'outils et
+  dans `weekly_report_contract`. Ne PAS relire `report.py` par tranches pour les reconstruire
+  (10 lectures de slicing sur le run 2026-10-01) ni deviner les tags `[F:` / `[A:` / `[M:`,
+  les seuils (60 lignes, 40 mots) ou la couverture `high`.
+- **rc=1 n'est pas un échec.** Une branche qui rend rc=1 a produit son livrable ; c'est une
+  dégradation à nommer dans le rapport (gate summary, sécurité warn-only, JOIN partiel, HTML
+  best-effort), pas un STOP et pas un chiffre à masquer. Seul `rc >= 2` signifie « rien n'a été
+  produit ». Ne jamais annoncer un résultat de branche sans mentionner son rc s'il vaut 1.
 - Commit auto : uniquement drafting via `weekly_commit_draft` (scoped au fichier, identité config,
   jamais de secrets, jamais pendant rebase/merge) — rollback = `git revert --no-edit` (humain)
 - Fichiers écrits par l'agent : findings bruts `weekly-watch-findings-raw-<date>.json`, propositions
@@ -452,3 +497,8 @@ Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sa
   viser l'extrait borné ou l'outil dédié.
 - **Mode audit** : pour toute réinspection d'un run déjà produit, exécuter en lecture
   seule (aucun spawn de worker, aucun commit) et se limiter aux artefacts du run actif.
+
+## Notes historiques
+
+- 2026-09-16 `ses_f6ed` : sortie worker A non vide mais hors contrat → motive
+  l'exception retry unique (§ Budget et périmètre de délégation).

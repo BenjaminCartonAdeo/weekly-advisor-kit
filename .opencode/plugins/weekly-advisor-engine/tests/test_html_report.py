@@ -515,6 +515,88 @@ def test_html_next_steps_grouped_snapshot(tmp_path: Path):
     assert "Prochaines actions" not in html2
 
 
+def test_html_never_renders_markdown_code_ticks(tmp_path: Path):
+    """Le HTML n'interprète pas le Markdown : plus un délimiteur de code en clair.
+
+    Régression observée : le HTML affichait « Corriger `weekly-report-prose` — 3
+    violation(s) » (next-steps) et la description d'une nouveauté écosystème — les
+    backticks fuyaient tels quels, en clair. Le HTML consomme donc les jumeaux
+    `text_plain` / `description_plain` (calculés par `report.py`), le markdown
+    garde les siens.
+
+    L'îlot JSON `weekly-payload` reproduit le ctx tel quel : il est une donnée,
+    jamais rendu comme du Markdown, donc hors comptage.
+    """
+    ctx = _ctx()
+    ctx["top_next_steps"] = [
+        {
+            "actor": "Toi",
+            "source": "harness",
+            "rule": "weekly-report-prose",
+            "severity": "high",
+            "text": "Corriger `weekly-report-prose` — 3 violation(s)",
+            "text_plain": "Corriger weekly-report-prose — 3 violation(s)",
+            "count": 3,
+        }
+    ]
+    ctx["ecosystem"] = {
+        "new_items": [
+            {
+                "name": "acme/widget",
+                "category": "lib",
+                "description": "Corriger `render` dans la barre — version 1.2.3",
+                "description_short": "Corriger `render` dans la barre — version 1.2.3",
+                "description_plain": "Corriger render dans la barre — version 1.2.3",
+                "found_via": ["watch:acme/widget"],
+            }
+        ]
+    }
+
+    html = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=ctx, quality_block=None).read_text(
+        encoding="utf-8"
+    )
+    body = PAYLOAD_RE.sub("", html)
+
+    assert "`" not in body
+    # les MOTS restent là : on a ôté la ponctuation Markdown, pas le texte
+    assert "Corriger weekly-report-prose — 3 violation(s)" in body
+    assert "Corriger render dans la barre — version 1.2.3" in body
+    # ... et l'échappement tient toujours (autoescape actif)
+    assert "&lt;" not in body or "<script" in body
+
+
+def test_templates_carry_no_prose_slice_limit():
+    """(b) Les deux coupes de PROSE retirées ne doivent pas revenir dans un `.j2`.
+
+    `evidence_summary[:180]` (annexe F) coupait la preuve en plein mot ;
+    `title_or_topic|string)[:80]` (annexe sessions) coupait un titre en plein mot
+    alors que le jumeau markdown ne le fait pas. La troncature de prose a une
+    source unique : `report.truncate_text`, appelé dans le ctx.
+
+    Les `[:N]` qui SUBSISTENT sont légitimes et ne sont pas visés ici : nombre
+    d'éléments rendus (`auto_commits[:10]`, `dirty_files[:8]`,
+    `session_ids[:6]`, …) et date ISO (`start`/`end`[:10]) — cf. `rg '\\[:[0-9]+\\]'`
+    sur les deux gabarits, dont le relevé est dans le rapport de cellule.
+    """
+    tpl_dir = Path(__file__).resolve().parents[1] / "weekly_telemetry_aggregator" / "templates"
+    for name in ("report_template.html.j2", "report_template.md.j2"):
+        src = (tpl_dir / name).read_text(encoding="utf-8")
+        assert "evidence_summary[:" not in src, name
+        assert "evidence_short[:" not in src, name
+        assert "description_short[:" not in src, name
+        assert "description_plain[:" not in src, name
+        assert "|string)[:80]" not in src, name
+        assert "|string)[:" not in src, name
+    # le chemin de repli de l'annexe F lit bien le champ PROJETÉ (troncature unique)
+    html_src = (tpl_dir / "report_template.html.j2").read_text(encoding="utf-8")
+    assert "<dt>Preuve</dt><dd>{{ f.evidence_short }}</dd>" in html_src
+    # l'annexe sessions ne tronque plus le titre (jumeau markdown l. 379)
+    assert (
+        '{{ s.get("title_short") or ((s.get("title_or_topic") or s.get("session_id") or ""))|string }}'
+        in html_src
+    )
+
+
 def test_html_next_steps_tag_tri_order_snapshot(tmp_path: Path):
     """Snapshot tag tri : sévérité > source > count > règle > acteur (déterministe) — passthrough HTML préserve l'ordre report.py."""
     # html_report est best-effort : il préserve l'ordre fourni (tri déjà fait côté report.py). On vérifie le passthrough.
@@ -752,3 +834,93 @@ def test_security_section_ras_and_full(tmp_path: Path):
     md_text = final_path.read_text(encoding="utf-8")
     _assert_security_collapsed(md_text, expect_rules=True)
     assert md_text.count('id="security"') == 1
+
+
+# --------------------------------------------------------------------------- C10
+def test_quality_block_backticks_become_code_tags(tmp_path: Path):
+    """C10/R2 : `` `foo` `` → `<code>foo</code>` au lieu d'un backtick brut.
+
+    Le seul convertisseur md→HTML du dépôt est `_render_quality_block` : il
+    échappait puis transformait les badges, mais laissait les backticks tels
+    quels — un constat citant un nom de fichier s'affichait avec des accents
+    graves dans le HTML.
+    """
+    block = "Le fichier `report.py` et la règle `no-eval` sont en cause."
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=_ctx(), quality_block=block)
+    html = dated.read_text(encoding="utf-8")
+    card = html.split('class="quality-cards"')[1]
+    assert "<code>report.py</code>" in card
+    assert "<code>no-eval</code>" in card
+    assert "`" not in card
+
+
+def test_quality_block_code_span_content_is_still_escaped(tmp_path: Path):
+    """C10 : `escape()` reste l'UNIQUE sanitisation — un code span n'est pas un sauf-fou.
+
+    Motif : les backticks sont traités AVANT `escape()` ; une implémentation naïve
+    réinjecterait le contenu du segment sans l'échapper. Un `` `<img onerror>` ``
+    deviendrait alors un nœud vivant.
+    """
+    block = "Voir `<img src=x onerror=alert(1)>` et `<script>alert(2)</script>`."
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=_ctx(), quality_block=block)
+    html = dated.read_text(encoding="utf-8")
+    assert "<img src=x" not in html
+    assert "<script>alert(2)" not in html
+    assert "<code>&lt;img src=x onerror=alert(1)&gt;</code>" in html
+    assert "<code>&lt;script&gt;alert(2)&lt;/script&gt;</code>" in html
+
+
+def test_quality_block_code_span_does_not_swallow_badges_or_bands(tmp_path: Path):
+    """C10 : une balise HORS backticks reste un badge, une bande reste résolue."""
+    block = "Le [N:3 findings] porte sur [F:ses_1#loop] et le code `plan.md`."
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=_ctx(), quality_block=block)
+    html = dated.read_text(encoding="utf-8")
+    assert "<code>plan.md</code>" in html
+    assert '<span class="tag tag-f">F:ses_1#loop</span>' in html
+    assert "3 findings" in html
+    assert "[N:" not in html
+    assert "[F:" not in html
+
+
+def test_quality_block_unpaired_backtick_is_left_inert(tmp_path: Path):
+    """C10 : un backtick orphelin n'ouvre aucune balise (aucune paire ⇒ aucun `<code>`)."""
+    block = "un ` backtick seul"
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=_ctx(), quality_block=block)
+    html = dated.read_text(encoding="utf-8")
+    card = html.split('class="quality-cards"')[1]
+    assert "<code>" not in card
+    assert "un ` backtick seul" in card
+
+
+def test_quality_block_markdown_headings_become_real_headings(tmp_path: Path):
+    """C10 : les `###` du brouillon AUTO ne fuient plus dans le HTML.
+
+    Motif : `report_blocks_draft` émet volontairement des `###` (ses `###` ne
+    sont pas validés par `validate_llm_blocks`) ; ils s'imprimaient littéralement
+    dans le HTML, sans hiérarchie.
+    """
+    block = "### Alertes\n\n- **[HIGH]** `weekly_budget_usd` dépassé\n\n### Constats\n\nTexte."
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=_ctx(), quality_block=block)
+    html = dated.read_text(encoding="utf-8")
+    assert "<h5>Alertes</h5>" in html
+    assert "<h5>Constats</h5>" in html
+    assert "###" not in html
+
+
+def test_quality_block_deep_heading_capped_at_h6(tmp_path: Path):
+    """C10 : `######` reste un `<h6>` — jamais un `<h7>` invalide."""
+    block = "###### profondeur\n\nTexte."
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=_ctx(), quality_block=block)
+    html = dated.read_text(encoding="utf-8")
+    assert "<h6>profondeur</h6>" in html
+    assert "<h7" not in html
+
+
+def test_quality_block_hash_inside_line_is_not_a_heading(tmp_path: Path):
+    """C10 : `issue #42` n'est pas un titre (le `#` n'est suivi d'aucun espace)."""
+    block = "L'issue #42 est bloquée par un `<script>`."
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=_ctx(), quality_block=block)
+    html = dated.read_text(encoding="utf-8")
+    assert "<h" not in html.split("quality-cards")[1][:400]
+    assert "issue #42" in html
+    assert "<code>&lt;script&gt;</code>" in html

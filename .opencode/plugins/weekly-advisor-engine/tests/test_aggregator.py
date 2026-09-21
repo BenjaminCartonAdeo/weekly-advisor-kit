@@ -8,11 +8,14 @@ from helpers import make_step, make_usage, tzutc
 
 from weekly_telemetry_aggregator.aggregator import (
     OUTLIER_MIN_ROOTS,
+    _cap_warnings,
     aggregate,
     dedup_resumed_usages,
     resume_fingerprint,
 )
 from weekly_telemetry_aggregator.models import (
+    MAX_WARNING_SESSION_SAMPLE,
+    MAX_WARNINGS,
     Period,
     SkillCatalogEntry,
     WarningEntry,
@@ -21,6 +24,33 @@ from weekly_telemetry_aggregator.models import (
 
 def _period():
     return Period(start=tzutc(2026, 8, 5, 0, 0), end=tzutc(2026, 8, 12, 0, 0))
+
+
+def test_review_unmeasurable_warning_aggregated_per_harness():
+    """Dé-bruitage P6.3 : un seul warning par harnais, pas un par session."""
+    period = _period()
+    usages = []
+    for i in range(4):
+        u = make_usage(
+            f"ses_oc_{i}", [make_step(f"ses_oc_{i}", period.start, cost=0.1)], tools={"edit": 1}
+        )
+        u.harness = "opencode"
+        usages.append(u)
+    for i in range(2):
+        u = make_usage(
+            f"ses_cc_{i}", [make_step(f"ses_cc_{i}", period.start, cost=0.1)], tools={"write": 1}
+        )
+        u.harness = "claude-code"
+        usages.append(u)
+
+    summary = aggregate(usages, period=period, generated_at=period.end)
+
+    review_warnings = [w for w in summary.warnings if w.message.startswith("review-unmeasurable")]
+    assert len(review_warnings) == 2
+    assert [w.message for w in review_warnings] == [
+        "review-unmeasurable:claude-code (2 sessions)",
+        "review-unmeasurable:opencode (4 sessions)",
+    ]
 
 
 def test_children_merged_once_into_root_totals():
@@ -584,3 +614,358 @@ def test_all_sessions_sorted_by_cost_desc_then_id():
     assert [s.session_id for s in summary.all_sessions] == ["b", "a", "c"]
     assert [s.session_id for s in summary.top_sessions_by_cost] == ["b"]  # top N restreint
     assert len(summary.all_sessions) == summary.totals.session_count == 3
+
+
+def test_is_noise_separators_system_and_bounds():
+    from weekly_telemetry_aggregator.aggregator import is_noise
+
+    assert is_noise("═" * 20)
+    assert is_noise("résultat\n" + "=" * 12)
+    assert is_noise("system: tu es un assistant")
+    assert is_noise("x" * 2001)
+    assert not is_noise("corrige le bug de parsing du fichier de config")
+
+
+def test_is_noise_control_turns_and_yesno():
+    from weekly_telemetry_aggregator.aggregator import is_noise
+
+    for control in ("continue", "try again", "yes", "no", "cancel", "abort", "stop", "retry"):
+        assert is_noise(control), control
+    assert is_noise("continue to iterate")
+    assert is_noise("y")
+    assert is_noise("n!")
+    assert is_noise("?!")
+    assert not is_noise("continue la refonte du module de facturation")
+
+
+def test_normalize_fingerprint_collapses_values_and_order():
+    from weekly_telemetry_aggregator.aggregator import normalize_fingerprint
+
+    a = normalize_fingerprint("Refactor le module 12 et le module 34 s'il te plaît")
+    b = normalize_fingerprint("Refactor le module 87 et le module 5 s'il te plaît")
+    assert a == b and a
+
+    assert normalize_fingerprint("alpha beta gamma delta") == normalize_fingerprint(
+        "delta gamma beta alpha"
+    )
+
+
+def test_normalize_fingerprint_code_strings_paths_and_empty():
+    from weekly_telemetry_aggregator.aggregator import normalize_fingerprint
+
+    assert normalize_fingerprint("```py\nprint(1)\n```") == normalize_fingerprint(
+        "```js\nconsole.log(2)\n```"
+    )
+    assert normalize_fingerprint('config "alpha" ici') == normalize_fingerprint('config "beta" ici')
+    assert normalize_fingerprint("ouvre /home/benjamin/dev/projet") == normalize_fingerprint(
+        "ouvre /tmp/autre/chemin"
+    )
+    assert normalize_fingerprint("!!! ??? ...") == ""
+    assert normalize_fingerprint("") == ""
+
+
+def test_prompt_repeat_groups_by_fingerprint():
+    from helpers import make_usage
+
+    from weekly_telemetry_aggregator.aggregator import _prompt_repeat_groups
+
+    turns = [
+        "Analyse le rapport numéro 12 et propose des actions concrètes pour le sprint en cours",
+        "Analyse le rapport numéro 34 et propose des actions concrètes pour le sprint en cours",
+        "Analyse le rapport numéro 78 et propose des actions concrètes pour le sprint en cours",
+    ]
+    usage = make_usage("s1", [], user_turns=turns)
+    out = _prompt_repeat_groups([usage], repeat_min=3, similarity=0.9, min_chars=20)
+    assert len(out) == 1
+    assert out[0].count == 3
+    assert out[0].sessions_distinct == 1
+    assert out[0].estimated_time_saved_mins == 6
+
+
+def test_prompt_repeat_groups_cap_and_sort_order():
+    from helpers import make_usage
+
+    from weekly_telemetry_aggregator.aggregator import _prompt_repeat_groups
+
+    usages = []
+    for i in range(25):
+        prompt = (
+            f"Tâche récurrente sujet{chr(97 + i)} à automatiser avec suffisamment de contenu "
+            "pour dépasser le seuil minimum de caractères de détection"
+        )
+        usages.append(make_usage(f"s{i:02d}", [], user_turns=[prompt, prompt, prompt]))
+    out = _prompt_repeat_groups(usages, repeat_min=3, similarity=0.9, min_chars=40)
+    assert len(out) == 20
+    keys = [(r.count, r.session_id) for r in out]
+    assert keys == sorted(keys, key=lambda k: (-k[0], k[1]))
+
+
+def test_prompt_repeat_groups_excludes_compaction_artifacts():
+    from helpers import make_usage
+
+    from weekly_telemetry_aggregator.aggregator import _prompt_repeat_groups
+
+    art = "▣ dcp | -1209.7k removed, +3.5k summary │█░░"
+    usage = make_usage("s1", [], user_turns=[art, art, art, art])
+    out = _prompt_repeat_groups([usage], repeat_min=3, similarity=0.9, min_chars=1)
+    assert out == []
+
+
+def test_user_prompt_repeat_enriched_fields():
+    from helpers import make_usage
+
+    from weekly_telemetry_aggregator.aggregator import _prompt_repeat_groups
+
+    prompt = "Optimise le pipeline de collecte avec un contenu assez long pour dépasser le seuil"
+    a = make_usage("s1", [], user_turns=[prompt, prompt])
+    a.harness = "opencode"
+    b = make_usage("s2", [], user_turns=[prompt])
+    b.harness = "claude"
+    out = _prompt_repeat_groups([a, b], repeat_min=3, similarity=0.9, min_chars=20)
+    assert len(out) == 1
+    rep = out[0]
+    assert rep.count == 3
+    assert rep.sessions_distinct == 2
+    assert rep.harnesses_distinct == 2
+    assert rep.cancel_rate == 0.0
+    assert rep.estimated_time_saved_mins == 6
+    assert rep.examples == [prompt]
+    assert "# Skill" in rep.skill_draft
+    assert "## When to use" in rep.skill_draft
+    assert "## Steps" in rep.skill_draft
+    assert "## Example prompts" in rep.skill_draft
+
+
+# --- B2 / B3 / B4 / B5 — filtres boilerplate et narration d'outil ------------
+
+
+def test_normalize_fingerprint_drops_tool_narration():
+    """B4 : la narration d'outillage ne produit AUCUNE empreinte.
+
+    Les 4 premiers tokens TRIÉS de « Called the Read tool with the following
+    input: … » sont identiques pour tous les outils d'une langue — le mégabucket
+    `called|following|read|tool` (× 7 sur le run 2026-10-03) absorbait le budget de
+    findings sans signaler d'anomalie.
+    """
+    from weekly_telemetry_aggregator.aggregator import normalize_fingerprint
+
+    narration = 'Called the Read tool with the following input: {"filePath":"/home/benjamin/a"}'
+    assert normalize_fingerprint(narration) == ""
+    # même narration, autre outil → toujours aucune empreinte (pas de forme figée)
+    for other in (
+        "Called the Glob tool with the following input: {}",
+        "Running the Bash tool with the following input: {}",
+        'Invoking the Edit tool with the following input: {"path":"a"}',
+    ):
+        assert normalize_fingerprint(other) == "", other
+    # une intention réelle qui contient les mêmes mots reste fingerprintée
+    assert normalize_fingerprint(
+        "le tool called following read needs a schema change in the parser"
+    )
+
+
+def test_normalize_fingerprint_drops_degenerate_single_token():
+    """B4 : sous 2 tokens normalisés, l'empreinte ne distingue plus rien.
+
+    Sur le run 2026-10-03 ces buckets portaient `str` (× 8) et `es` (× 2). Seuil à 2
+    et non 3 : « améliore ce script » (2 tokens) est une intention répétée légitime.
+    """
+    from weekly_telemetry_aggregator.aggregator import normalize_fingerprint
+
+    assert normalize_fingerprint("```py\nprint(1)\n```") == ""  # 1 token : `code`
+    assert normalize_fingerprint("/home/benjamin/dev/projet") == ""  # 1 token : `path`
+    assert normalize_fingerprint("améliore ce script") == "améliore|script"
+
+
+def test_prompt_repeats_ignores_tool_narration_megabucket():
+    """B4 bout-en-bout : 30 narrations ne produisent aucun groupe de répétition."""
+    from helpers import make_usage
+
+    from weekly_telemetry_aggregator.aggregator import _prompt_repeat_groups
+
+    narration = 'Called the Read tool with the following input: {"filePath":"/home/benjamin/%d"}'
+    usages = [make_usage(f"s{i}", [], user_turns=[narration % i] * 3) for i in range(10)]
+    assert _prompt_repeat_groups(usages, repeat_min=3, similarity=0.9, min_chars=20) == []
+
+
+def test_prompt_repeats_dominant_repeat_still_reported():
+    """B4.2 — refus argumenté : le seuil de support RELATIF au corpus est un anti-Goal.
+
+    Le plan demandait « un bucket ne compte que s'il est anormal pour CE corpus ». Sur
+    ce corpus, 100 prompts identiques = 100 % du total : un plafond de part (ou un
+    plancher proportionnel) tuerait la tête de la métrique. Ce test verrouille le
+    comportement voulu — la nature du tour discrimine, pas son poids.
+    """
+    from helpers import make_usage
+
+    from weekly_telemetry_aggregator.aggregator import _prompt_repeat_groups
+
+    dominant = "Tâche récurrente à automatiser avec suffisamment de contenu pour dépasser le seuil"
+    usages = [make_usage(f"s{i:02d}", [], user_turns=[dominant] * 100) for i in range(20)]
+    out = _prompt_repeat_groups(usages, repeat_min=3, similarity=0.9, min_chars=40)
+    assert len(out) == 1
+    assert out[0].count == 2000
+
+
+def test_command_name_strips_client_quoting():
+    """B5.1 : le client sérialise l'invocation, la stored turn est quotée.
+
+    Sur le run 2026-10-03 la seule slash-command du corpus est stockée
+    `"/swarmx test: …"` : sans retrait des guillemets, `command_usage` restait vide
+    alors que le corpus en contient.
+    """
+    from weekly_telemetry_aggregator.aggregator import _command_name
+
+    assert _command_name("\"/swarmx test: réponds JUSTE 'ok'\"") == "swarmx"
+    assert _command_name("'/caveman ultra'") == "caveman"
+    assert _command_name("/optimize") == "optimize"
+
+
+def test_command_name_ignores_tool_narration_with_slash_payload():
+    """B5.1 : la narration ne devient jamais une commande, même chargée d'un chemin."""
+    from weekly_telemetry_aggregator.aggregator import _command_name, is_tool_narration
+
+    narration = 'Called the Read tool with the following input: {"filePath":"/home/benjamin/a"}'
+    assert is_tool_narration(narration)
+    assert _command_name(narration) is None
+    assert not is_tool_narration("/optimize le rapport")
+    assert not is_tool_narration("utilise opencode-browser pour recharger la page")
+
+
+def test_command_usage_state_distinguishes_no_data_from_measured_empty():
+    """B5.2 : « aucune commande slash » ≠ « commandes slash non mesurées »."""
+    from helpers import make_usage
+
+    from weekly_telemetry_aggregator.aggregator import COMMAND_USAGE_NO_DATA, command_usage_state
+
+    # aucun tour du tout → rien n'a été mesuré
+    assert command_usage_state([make_usage("s0", [], user_turns=[])]) == COMMAND_USAGE_NO_DATA
+    # des tours, mais aucun slash-command → mesuré, et le compte 0 est vrai
+    assert (
+        command_usage_state([make_usage("s1", [], user_turns=["bonjour", "continue"])])
+        == "computed"
+    )
+    # une narration seule ne prouve pas que le canal est fonctionnel
+    narration = 'Called the Read tool with the following input: {"filePath":"/a"}'
+    assert (
+        command_usage_state([make_usage("s2", [], user_turns=[narration] * 3)])
+        == COMMAND_USAGE_NO_DATA
+    )
+    # une vraie commande → mesuré
+    assert command_usage_state([make_usage("s3", [], user_turns=["/optimize le rapport"])]) == (
+        "computed"
+    )
+
+
+def test_agent_loop_distribution_unchanged_by_result_channel_boilerplate():
+    """B2 — HONNÊTETÉ : le filtre du canal RÉSULTAT ne change AUCUN finding.
+
+    `_agent_loop_findings` (B1) lit `tool_argument_fingerprints` seul. Le filtre de
+    boilerplate agit sur `tool_result_fingerprints`, canal plus aucun ne consomme.
+    Preuve arithmétique sur la distribution de référence du run 2026-10-03
+    (§3.2) : 344 buckets d'arguments pour `edit` avec max 1, et un bucket RÉSULTAT
+    unique de cardinal 341 → à seuil 8, exactement 2 findings : `read` 11, `skill` 22.
+    """
+    from weekly_telemetry_aggregator.insights import _agent_loop_findings
+
+    edit_arg_buckets = {f"edit-fp-{i}": 1 for i in range(344)}  # 344 appels, 344 empreintes
+    summary = {
+        "tool_argument_fingerprints": {
+            "edit": edit_arg_buckets,
+            "write": {f"write-fp-{i}": 1 for i in range(76)},
+            "read": {f"read-fp-{i}": 1 for i in range(1078)} | {"read-fp-repeated": 11},
+            "skill": {f"skill-fp-{i}": 1 for i in range(36)} | {"skill-fp-reloaded": 22},
+            "glob": {f"glob-fp-{i}": 1 for i in range(140)},
+            "bash": {f"bash-fp-{i}": 1 for i in range(1722)},
+            "apply_patch": {f"patch-fp-{i}": 1 for i in range(36)},
+        },
+        # le canal que B2 vide : une constante par outil, cardinal = nombre d'appels
+        "tool_result_fingerprints": {
+            "edit": {"constant": 341},
+            "write": {"constant": 76},
+            "glob": {"constant": 76},
+            "grep": {"constant": 31},
+        },
+    }
+    findings = _agent_loop_findings(
+        summary, loop_min_repeats=8, loop_task_min_repeats=8, ignored_findings=[]
+    )
+    assert [(f["description"], f["evidence_summary"]) for f in findings] == [
+        (
+            "outil 'read' répété avec la même empreinte (11 occurrences)",
+            "tool=read; repeats=11; threshold=8",
+        ),
+        (
+            "outil 'skill' répété avec la même empreinte (22 occurrences)",
+            "tool=skill; repeats=22; threshold=8",
+        ),
+    ]
+
+    # et le canal RÉSULTAT seul ne produirait RIEN : le test est bien découplé
+    emptied = {**summary, "tool_result_fingerprints": {}}
+    assert (
+        _agent_loop_findings(
+            emptied, loop_min_repeats=8, loop_task_min_repeats=8, ignored_findings=[]
+        )
+        == findings
+    )
+
+
+# ============================================================ D5 — cap de warnings
+
+
+def test_cap_warnings_groups_identical_messages_before_cap():
+    """D5 : 50 warnings identiques → 1 entité `count=50`, pas 50 lignes."""
+    repeated = [
+        WarningEntry(
+            session_id=f"ses_{i:03d}",
+            message="session active exclue des totaux (télémétrie incomplète)",
+        )
+        for i in range(MAX_WARNINGS)
+    ]
+    other = WarningEntry(session_id="ses_other", message="orphan child session")
+    capped = _cap_warnings([*repeated, other])
+
+    assert len(capped) == 2
+    active = next(w for w in capped if w.message.startswith("session active exclue"))
+    assert active.count == MAX_WARNINGS
+    assert active.session_ids == [f"ses_{i:03d}" for i in range(MAX_WARNING_SESSION_SAMPLE)]
+    assert other.count == 1
+
+
+def test_cap_warnings_is_idempotent_on_already_grouped_entries():
+    """D5 : le ré-cap de main.py ne doit pas effacer le multiplicateur."""
+    grouped = _cap_warnings(
+        [
+            WarningEntry(session_id=f"ses_{i}", message="session read failed: boom", partial=True)
+            for i in range(4)
+        ]
+    )
+    assert grouped[0].count == 4
+    assert grouped[0].partial is True
+
+    again = _cap_warnings([*grouped, WarningEntry(message="orphan child session")])
+    assert next(w for w in again if w.message.startswith("session read failed")).count == 4
+
+
+def test_cap_warnings_caps_distinct_entities_and_keeps_structured_payloads():
+    """D5 : MAX_WARNINGS plafonne les messages distincts ; K7 n'est pas regroupé."""
+    distinct = [WarningEntry(session_id=f"ses_{i}", message=f"message {i}") for i in range(80)]
+    # Deux écarts cross-check de sessions différentes, même arithmétique → même
+    # message, mais payload chiffré par session : insights les consomme 1:1.
+    structured = [
+        WarningEntry(
+            session_id=f"ses_x{i}",
+            message="cross-check mismatch: parts cost $0.5081 vs session_v2 $0.3663",
+            parts_cost=0.5081,
+            session_v2_cost=0.3663,
+        )
+        for i in range(2)
+    ]
+    capped = _cap_warnings([*distinct, *structured])
+
+    assert len(capped) == MAX_WARNINGS
+    # 2 lignes K7 non regroupées (même message, payload par session) + 48 entités
+    # informationnelles distinctes.
+    assert [w.count for w in capped if w.parts_cost is not None] == [1, 1]
+    assert len({w.message for w in capped if w.parts_cost is None}) == MAX_WARNINGS - 2
