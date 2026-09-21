@@ -74,6 +74,7 @@ def _pct_delta(current: float | None, previous: float | None) -> float | None:
 
 # ------------------------------------------------------------------ compute helpers
 
+
 def _lint_delta_by_rule(
     current_digest: dict | None,
     previous_digest: dict | None,
@@ -161,9 +162,7 @@ def _daily_spike_alerts(
         if cost == 0:
             continue
         combined = baseline + [cost]
-        zmap = {
-            round(c, 4): z for c, z in zip(combined, _robust_z_scores(combined), strict=False)
-        }
+        zmap = {round(c, 4): z for c, z in zip(combined, _robust_z_scores(combined), strict=False)}
         raw_z = zmap.get(round(cost, 4), 0.0)
         if raw_z >= z_min:
             z = min(raw_z, DAILY_SPIKE_Z_CAP)
@@ -412,17 +411,13 @@ def compute(
     findings.extend(_retire)
 
     _sim_min = (
-        insights_cfg.skill_similarity_min
-        if hasattr(insights_cfg, "skill_similarity_min")
-        else 0.8
+        insights_cfg.skill_similarity_min if hasattr(insights_cfg, "skill_similarity_min") else 0.8
     )
     findings.extend(_merge_candidates(current_summary, ignored_findings, _sim_min))
 
     findings.extend(_token_risk_findings(current_summary, insights_cfg, ignored_findings))
 
-    findings.extend(
-        _harness_fix_findings(current_digest, harness_ignored_rules, ignored_findings)
-    )
+    findings.extend(_harness_fix_findings(current_digest, harness_ignored_rules, ignored_findings))
 
     stats = {
         "runs_scanned": len(recent_summaries),
@@ -465,9 +460,7 @@ def _lint_max_alert(
     return None
 
 
-def _lint_coverage_alert(
-    current_digest: dict | None, insights_cfg: InsightsConfig
-) -> dict | None:
+def _lint_coverage_alert(current_digest: dict | None, insights_cfg: InsightsConfig) -> dict | None:
     """Alerte lint_coverage (surfaces .opencode/ hors allowlist), ou None."""
     digest_scope = (current_digest or {}).get("harness_scope") or {}
     unscoped = digest_scope.get("unscoped_file_count")

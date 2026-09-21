@@ -771,7 +771,9 @@ def aggregate(
     # ---- totals (roots + children merged once) + per-root aggregated rows ----
     acc = _RootTotals()
     for root in sorted(roots, key=lambda u: u.session_id):
-        _process_root(root, by_id, acc, include_subagents=include_subagents, children_ids=children_ids)
+        _process_root(
+            root, by_id, acc, include_subagents=include_subagents, children_ids=children_ids
+        )
     totals = acc.totals
     root_costs = acc.root_costs
     model_agg = acc.model_agg

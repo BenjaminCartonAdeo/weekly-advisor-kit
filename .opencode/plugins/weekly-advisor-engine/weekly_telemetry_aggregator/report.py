@@ -719,9 +719,7 @@ def _valid_watch_candidates(value: Mapping) -> bool:
 
 
 def _valid_remediation(value: Mapping) -> bool:
-    return isinstance(value.get("summary"), Mapping) and isinstance(
-        value.get("postcheck"), Mapping
-    )
+    return isinstance(value.get("summary"), Mapping) and isinstance(value.get("postcheck"), Mapping)
 
 
 def _valid_timings(value: Mapping) -> bool:
@@ -1331,9 +1329,7 @@ def _coerce_summary_rc(summary: Mapping, fallback_rc: int | None) -> int:
     return raw
 
 
-def _collect_join_records(
-    summary: Mapping, additional_records: Iterable[object]
-) -> list[object]:
+def _collect_join_records(summary: Mapping, additional_records: Iterable[object]) -> list[object]:
     """Gather warnings, worker statuses, recovered inputs and join records."""
     warnings = summary.get("warnings")
     if not isinstance(warnings, list):
@@ -1489,9 +1485,7 @@ def applicable_summary_rc(
         return _empty_records_rc(summary, raw)
     return (
         0
-        if _records_all_nonblocking(
-            records, summary, out=out, date=date, project_root=project_root
-        )
+        if _records_all_nonblocking(records, summary, out=out, date=date, project_root=project_root)
         else 1
     )
 
@@ -2000,9 +1994,7 @@ def _load_report_artifacts(out, date: str) -> dict | None:
         "skill_curate": _load_json(out / f"skill-curate-{date}.json"),
         "audit_candidates": audit_candidates,
         "watch_findings": _load_json(out / f"weekly-watch-findings-{date}.json"),
-        "harness_remediation": _load_json(
-            out / f"weekly-harness-remediation-{date}.json"
-        ),
+        "harness_remediation": _load_json(out / f"weekly-harness-remediation-{date}.json"),
     }
 
 
@@ -2078,9 +2070,7 @@ def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> 
         "cost_outliers_state": summary.get("cost_outliers_state", "computed"),
         "outliers": {o["session_id"] for o in summary.get("cost_outliers", [])},
         "audit_candidates": artifacts["audit_candidates"],
-        "audit_worker_statuses": (
-            (artifacts["audit_candidates"] or {}).get("worker_statuses", [])
-        ),
+        "audit_worker_statuses": ((artifacts["audit_candidates"] or {}).get("worker_statuses", [])),
         "watch_findings": artifacts["watch_findings"],
         "coherence_findings": coherence_findings,
         "coherence_items": _coherence_findings(coherence_findings),

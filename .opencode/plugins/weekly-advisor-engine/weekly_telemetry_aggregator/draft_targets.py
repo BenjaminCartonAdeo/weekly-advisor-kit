@@ -23,6 +23,7 @@ class DraftTargetsLike(Protocol):
     mode: str
     targets: list[str] | tuple[str, ...]
 
+
 #: Identifiants de harnais alignés sur le registre des providers
 # (`providers/base.py` + `PROVIDER_TYPE` des implementations).
 HARNESS_CLAUDE_CODE = "claude-code"

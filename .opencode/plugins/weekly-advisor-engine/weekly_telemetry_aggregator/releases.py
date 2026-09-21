@@ -763,7 +763,12 @@ def _split_repo(repo: str) -> tuple[str, str]:
 
 
 def _watch_repo_release_items(
-    display_name: str, html_url: str, description: str, releases: object, start: datetime, end: datetime
+    display_name: str,
+    html_url: str,
+    description: str,
+    releases: object,
+    start: datetime,
+    end: datetime,
 ) -> list[dict]:
     """Items release in-window d'un repo suivi."""
     items: list[dict] = []
@@ -790,8 +795,15 @@ def _watch_repo_release_items(
 
 
 def _watch_repo_activity_fallback(
-    client, owner: str, name: str, display_name: str, html_url: str, description: str,
-    info: object, start: datetime, end: datetime,
+    client,
+    owner: str,
+    name: str,
+    display_name: str,
+    html_url: str,
+    description: str,
+    info: object,
+    start: datetime,
+    end: datetime,
 ) -> list[dict]:
     """Repli push/commits quand aucune release in-window — [] si rien ne bouge."""
     publish = parse_iso_ts(info.get("pushed_at")) if isinstance(info, dict) else None
@@ -824,8 +836,7 @@ def _watch_repo_activity_fallback(
         c
         for c in commits
         if isinstance(c, dict)
-        and parse_iso_ts(((c.get("commit") or {}).get("author") or {}).get("date"))
-        is not None
+        and parse_iso_ts(((c.get("commit") or {}).get("author") or {}).get("date")) is not None
     ]
     if not in_window:
         return []

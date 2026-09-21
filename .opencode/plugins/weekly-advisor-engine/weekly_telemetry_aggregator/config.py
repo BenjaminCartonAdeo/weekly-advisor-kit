@@ -289,7 +289,9 @@ def _parse_harness_include(raw: dict, cfg: TelemetryConfig) -> None:
     cfg.harness_include = harness_include
 
 
-def _parse_harness_include_dict(include_raw: dict, harness_include: HarnessIncludeConfig) -> HarnessIncludeConfig:
+def _parse_harness_include_dict(
+    include_raw: dict, harness_include: HarnessIncludeConfig
+) -> HarnessIncludeConfig:
     """Branche dict de harness_include : profils + patterns + exclusions."""
     profile = include_raw.get("default_profile")
     if isinstance(profile, str) and profile:
@@ -468,7 +470,10 @@ def _parse_watch_distill(raw: dict, cfg: TelemetryConfig) -> None:
     if isinstance(weights_raw, dict):
         wd_cfg = replace(
             wd_cfg,
-            weights={**wd_cfg.weights, **_parse_int_map(weights_raw, set(WATCH_DEFAULT_WEIGHTS), 0)},
+            weights={
+                **wd_cfg.weights,
+                **_parse_int_map(weights_raw, set(WATCH_DEFAULT_WEIGHTS), 0),
+            },
         )
     memory_file = wds.get("memory_file")
     if isinstance(memory_file, str) and memory_file.strip():
