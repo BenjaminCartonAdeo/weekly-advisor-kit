@@ -3,9 +3,10 @@ import fs from "node:fs"
 import test from "node:test"
 import path from "node:path"
 
-import { canonicalPytestCommand, checkTestCounts, collectPytest, documentedTestCounts, tsCommands } from "../check-flow-docs.mjs"
+import { canonicalPytestCommand, checkTestCounts, collectPytest, documentedTestCounts, tsCommands, registryCLICommands } from "../check-flow-docs.mjs"
 
 const ROOT = path.resolve(import.meta.dirname, "../..")
+const REGISTRY_PATH = path.join(ROOT, ".opencode", "plugins", "weekly-advisor", "tool-registry.ts")
 
 test("collection probe invokes uv python module pytest with quiet collection", () => {
   let invocation
@@ -72,11 +73,14 @@ test("tsCommands extracts command literals from multi-line argv arrays and decla
   assert.deepEqual([...cmds].sort(), ["harness-remediate", "self-cost"])
 })
 
-test("tsCommands discovers every CLI-mediating tool in the real plugin", () => {
-  const ts = fs.readFileSync(path.join(ROOT, ".opencode", "plugins", "weekly-advisor.ts"), "utf8")
-  const cmds = [...tsCommands(ts)].sort()
-  assert.equal(cmds.length, 18)
+test("registryCLICommands discovers every CLI-mediating tool in the neutral registry (19 commands)", () => {
+  const ts = fs.readFileSync(REGISTRY_PATH, "utf8")
+  const cmds = [...registryCLICommands(ts)].sort()
+  assert.equal(cmds.length, 19, `expected 19 CLI commands from registry, got ${cmds.length}`)
   assert.ok(cmds.includes("harness-remediate"))
+  assert.ok(cmds.includes("run"))
+  assert.ok(cmds.includes("skill-curate"))
+  assert.ok(cmds.includes("report-blocks-check"), "le check de prose doit être exposé comme tool")
 })
 
 test("canonical worker pytest command enforces engine cwd and selector", () => {

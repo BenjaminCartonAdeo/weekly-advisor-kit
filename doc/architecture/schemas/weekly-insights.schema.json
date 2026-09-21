@@ -32,7 +32,15 @@
           "observed": { "type": ["number", "null"] },
           "over_by": { "type": ["number", "null"] },
           "severity": { "type": "string" },
-          "recommended_action": { "type": ["string", "null"] }
+          "recommended_action": { "type": ["string", "null"] },
+          "day": {
+            "type": ["string", "null"],
+            "description": "Jour du pic, pour une alerte par jour (règle daily-spike)."
+          },
+          "note": {
+            "type": ["string", "null"],
+            "description": "Note lisible accompagnant l'alerte (ex. « MAD≈0, z borné »)."
+          }
         }
       }
     },
@@ -53,7 +61,11 @@
               "evidence_summary": { "type": "string" },
               "recommendation": { "type": "string" },
               "recommendation_type": { "type": "string" },
-              "impact_order_of_magnitude": { "type": ["string", "null"] }
+              "impact_order_of_magnitude": { "type": ["string", "null"] },
+              "details": {
+                "type": "object",
+                "description": "Détails propres à la règle (ex. `targets` consommés par le snooze `ignored_findings`, `alert` pour les règles à sink alerts)."
+              }
             }
           }
         },

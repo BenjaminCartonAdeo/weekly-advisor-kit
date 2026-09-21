@@ -19,9 +19,9 @@ intégrante du contrat : elles doivent survivre telles quelles à toute reconstr
 Le produit réalise, à cadence hebdomadaire, une **revue complète de l'activité des agents de
 code** sur une instance locale, pour produire un rapport unique qui :
 
-- agrège et chiffre l'usage (tokens, coûts, cache, modèles) des sessions de la semaine ;
+- agrège et chiffre l'usage (tokens, coûts, cache, modèles) des sessions de la semaine, y compris classification déterministe (intent, spec-driven, relecture, maturité) et règles d'audit déclaratives ;
 - détecte les dérives coûteuses et les opportunités d'économies (boucles, invalidation de
-  cache, sous-emploi de l'environnement, mauvais choix de modèle) ;
+   cache, sous-emploi de l'environnement, mauvais choix de modèle, prompts répétés par fingerprint, code non relu, maturité faible, non-spec coûteuse) ;
 - surveille l'écosystème du marché (nouveaux outils, plugins, serveurs d'outils, évolutions du
   cœur) et le confronte à l'environnement existant ;
 - contrôle la santé de la configuration de l'environnement lui-même ;

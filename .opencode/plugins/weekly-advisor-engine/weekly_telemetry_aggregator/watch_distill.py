@@ -315,18 +315,16 @@ _QUOTA_ORDER = ("new", "improvable", "resurfaced")
 def truncate_summary(description: object, limit: int = SUMMARY_MAX_CHARS) -> str:
     """Description blanchie (espaces) et tronquée à ``limit`` chars, 1-2 phrases.
 
-    Coupe de préférence en fin de phrase ; sinon coupure franche avec ellipse.
-    """
+     Coupe de préférence en fin de phrase ; sinon sur une FRONTIÈRE DE MOT avec
+     ellipse — plus jamais au milieu d'un mot.
 
-    text = " ".join(str(description or "").split())
-    if len(text) <= limit:
-        return text
-    cut = text[:limit]
-    dot = cut.rfind(". ")
-    if dot >= limit // 3:
-        return cut[: dot + 1]
-    # Ellipse : borne à limit-1 AVANT l'ellipse (sinon 200 + 1 = 201, cf. revue).
-    return cut.rstrip()[: limit - 1].rstrip() + "…"
+    Source unique : ``report.truncate_text``. L'import est différé parce que
+     ``report`` importe ``config``, qui importe ``watch_distill`` : un lien au
+     niveau module serait circulaire.
+    """
+    from .report import truncate_text
+
+    return truncate_text(description, limit)
 
 
 def _category(entry: Mapping[str, Any] | None) -> str:

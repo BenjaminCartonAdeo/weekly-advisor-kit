@@ -18,10 +18,11 @@ en réutilisant ``watch_memory`` si pertinent, sinon le fallback
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .util import parse_iso_ts
@@ -117,6 +118,32 @@ def _split_skill_ids(value: object) -> list[str]:
     else:
         values = ()
     return [item.strip() for item in values if isinstance(item, str) and item.strip()]
+
+
+#: A6 — description qui déclare le skill non chargeable seul (« the harness only
+#: reaches it from another skill »). Un tel skill ne peut structurellement pas
+#: apparaître dans « jamais chargé » : son absence d'appel est la conséquence de
+#: sa déclaration, pas un défaut d'usage. Cas réel : `weekly-safety-guardrails`.
+_NEVER_STANDALONE_RE = re.compile(
+    r"\b(?:never|not|non)\b[^.;]{0,40}?\b"
+    r"(?:load|use|run|invoke|call)(?:ed|ing)?\s*"
+    r"(?:standalone|alone|on\s+its\s+own|by\s+itself|directly)\b",
+    re.IGNORECASE,
+)
+
+
+def is_reachable_skill(entry: Mapping[str, Any] | object, description: str = "") -> bool:
+    """A6 — un skill est-il atteignable par le harnais résolu ?
+
+    Réutilise la normalisation de protection existante (``_skill_fields``) au
+    lieu d'une seconde règle : ``origin == 'user'`` est hors périmètre de la
+    revue, donc jamais recommandé ; « never load standalone » est unreachable
+    par construction. Les deuxProduce exactement le faux positif que la curation
+    protége déjà de son côté.
+    """
+    if _skill_fields(entry)[1] == "user":
+        return False
+    return not _NEVER_STANDALONE_RE.search(description or "")
 
 
 def _signal_archive_ids(signal: object) -> list[str]:
@@ -434,7 +461,11 @@ def ttl_archive_candidates(
     return archived
 
 
-def build_catalog_from_skills(project_root: Path | None) -> list[dict]:
+def build_catalog_from_skills(
+    project_root: Path | None,
+    resolved_drafts: object | None = None,
+    global_roots: Iterable[Path] | None = None,
+) -> list[dict]:
     """Catalogue de skills avec ``metadata.origin`` / ``ttl_policy`` / ``usage`` du disque.
 
     Source autorité pour l'auto-load (Phase 1) quand aucun catalogue explicite
@@ -443,36 +474,30 @@ def build_catalog_from_skills(project_root: Path | None) -> list[dict]:
     (pas ``origin``/``ttl_policy``), or ``decide_actions`` a besoin de ces champs
     pour la protection ``user``/``pin``.
 
+    A5 : PLUS de second scanner. Ce n'est qu'un rendu du scan unique
+    (``main.scan_skill_records``) — même surface, même dédup par chemin
+    canonique, même exclusion `_archive` (A6). ``resolved_drafts`` /
+    ``global_roots`` absents ⇒ racines projet = cible skills du harnais résolu
+    ou, à défaut, ``.opencode/skills`` ; racines globales = défaut documenté.
+
     Entrée : ``{"skill_id": <nom dossier>, "metadata": {origin, ttl_policy, usage}}``.
     """
-    from .main import _skill_dirs
-    from .safe_git_write import frontmatter_blocks
+    from .draft_targets import DEFAULT_DRAFT_HARNESS, DRAFT_HARNESS_TARGETS
+    from .main import SkillSurface, resolve_skill_surface, scan_skill_records
 
-    catalog: list[dict] = []
-    for root in _skill_dirs(project_root):
-        if not root.is_dir():
-            continue
-        for skill_md in sorted(root.glob("**/SKILL.md")):
-            if not skill_md.is_file():
-                continue
-            sid = skill_md.parent.name
-            meta, _body, _err = frontmatter_blocks(skill_md)
-            nested = meta.get("metadata")
-            nested = nested if isinstance(nested, Mapping) else {}
-            catalog.append(
-                {
-                    "skill_id": sid,
-                    "metadata": {
-                        # ``frontmatter_blocks`` is intentionally a tiny parser;
-                        # nested YAML keys also appear at the top level.  Read
-                        # both forms so protection remains effective on disk.
-                        "origin": nested.get("origin") or meta.get("origin"),
-                        "ttl_policy": nested.get("ttl_policy") or meta.get("ttl_policy"),
-                        "usage": nested.get("usage") or meta.get("usage"),
-                    },
-                }
-            )
-    return catalog
+    surface = resolve_skill_surface(project_root, resolved_drafts, global_roots)
+    if not surface.project_roots:
+        # Aucun harnais résolu fourni : on retombe sur la racine skills du
+        # harnais par défaut plutôt que d'inventer une surface multi-harnais.
+        root = project_root or Path.cwd()
+        default_targets = DRAFT_HARNESS_TARGETS.get(DEFAULT_DRAFT_HARNESS, ())
+        surface = SkillSurface(
+            project_roots=tuple(
+                root.joinpath(*PurePosixPath(str(target)).parts) for target in default_targets
+            ),
+            global_roots=surface.global_roots,
+        )
+    return [record.as_protection_entry() for record in scan_skill_records(surface)]
 
 
 def _memory_paths(

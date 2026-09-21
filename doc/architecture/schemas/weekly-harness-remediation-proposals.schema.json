@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "weekly-harness-remediation-proposals.schema.json",
+  "title": "weekly-harness-remediation-proposals-<date>.json",
+  "description": "Propositions LLM de remédiation harness (étape 5.5, skill harness-remediation), entrée obligatoire de `harness-remediate`. Miroir exact de la gate `report._valid_remediation_proposals` (date YYYY-MM-DD égale à la date du run, tableau `proposals`, schema_version ∈ {1,2}). Schéma documentaire : clés principales contraintes, le reste libre.",
+  "type": "object",
+  "required": ["schema_version", "date", "proposals"],
+  "properties": {
+    "schema_version": { "type": "integer", "enum": [1, 2] },
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "proposals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule", "path", "decision", "confidence"],
+        "properties": {
+          "rule": { "type": "string" },
+          "path": { "type": "string" },
+          "line": { "type": ["integer", "null"] },
+          "decision": { "type": "string", "enum": ["apply", "propose", "manual", "dismiss"] },
+          "confidence": { "type": "string" },
+          "description": { "type": "string" },
+          "rationale": { "type": "string" },
+          "old_text": { "type": ["string", "null"] },
+          "new_text": { "type": ["string", "null"] }
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -332,6 +332,73 @@ def test_build_usage_collects_tool_fingerprints():
     assert usage.tool_result_fingerprints == {"bash": {"def": 1}}
 
 
+def test_build_usage_populates_edit_and_user_timestamps():
+    """Régression P6.3 : les timestamps edit/write et user doivent être peuplés.
+
+    Sans ce câblage, `classify_production_review` retourne `review_pct=None` pour
+    toute session ayant de l'activité edit/write (champs déclarés mais jamais écrits).
+    """
+    from weekly_telemetry_aggregator.sqlite_reader import PartRecord
+
+    base = RUN_TIME - timedelta(minutes=30)
+    later = base + timedelta(seconds=40)
+
+    class TimestampAdapter:
+        name = "fake"
+
+        def session_steps(self, *a):
+            return [type("S", (), {"model": "m", "cost": 0.1})()]
+
+        def session_tools(self, *a):
+            return {"edit": 1}, {}, {}
+
+        def session_tool_fingerprints(self, *a):
+            return {}, {}
+
+        def session_user_turns(self, *a):
+            return ["fais"]
+
+        def session_context_chars(self, *a):
+            return {}
+
+        def session_aggregates(self, *a):
+            return None
+
+        def session_parts(self, *a):
+            return [
+                PartRecord(ts=base, kind="user", text="fais"),
+                PartRecord(ts=base + timedelta(seconds=5), kind="tool", tool_name="edit"),
+                PartRecord(ts=base + timedelta(seconds=10), kind="tool", tool_name="read"),
+                PartRecord(ts=later, kind="user", text="relis"),
+            ]
+
+    period = Period(start=RUN_TIME - timedelta(days=7), end=RUN_TIME)
+    warnings: list[WarningEntry] = []
+    usage, failed = build_usage(
+        type(
+            "M",
+            (),
+            {
+                "session_id": "s",
+                "time_updated": RUN_TIME - timedelta(hours=1),
+                "title": "T",
+                "directory": None,
+                "agent": None,
+                "parent_id": None,
+            },
+        )(),
+        TimestampAdapter(),
+        period=period,
+        run_time=RUN_TIME,
+        cfg=_cfg(Path("/tmp"), Path("/x.db")),
+        warnings=warnings,
+    )
+    assert failed is False
+    assert usage is not None
+    assert usage.user_turn_timestamps == [base, later]
+    assert usage.edit_write_timestamps == [base + timedelta(seconds=5)]
+
+
 def test_run_partial_only_on_read_failure(tmp_path: Path, monkeypatch):
     import weekly_telemetry_aggregator.main as main_mod
 
@@ -581,20 +648,22 @@ def test_doctor_generic_multi_harness_sections(tmp_path: Path, monkeypatch, caps
 # ================================================== cellule 2.1 (cibles de drafting au doctor)
 
 
-def test_doctor_shows_detected_draft_target(tmp_path: Path, capsys, fake_opencode):
-    """Marqueur .opencode présent → cible affichée en mode détection, sans warning."""
+def test_doctor_shows_default_draft_target(tmp_path: Path, capsys, fake_opencode):
+    """Marqueur .opencode présent → cible affichée en mode défaut (A2 : les
+    marqueurs ne décident plus), warning qui ne parle plus de marqueur."""
     _ = (tmp_path / ".opencode").mkdir()
     db = _seed_n(tmp_path / "opencode.db", 3)
     cfg = _cfg(tmp_path, db)
     cfg.project_root = tmp_path
     assert doctor(cfg) in (EXIT_OK, EXIT_PARTIAL)
     out = capsys.readouterr().out
-    assert "doctor: cibles de drafting: opencode (détection)" in out
+    assert "doctor: cibles de drafting: opencode (défaut)" in out
     assert "WARNING" not in out or "marqueur" not in out
 
 
-def test_doctor_detects_claude_before_opencode(tmp_path: Path, capsys):
-    """Priorité §2.1 visible au doctor : .claude + .opencode → claude-code."""
+def test_doctor_ignores_claude_marker(tmp_path: Path, capsys):
+    """A2 : `.claude` + `.opencode` → plus de priorité de détection, le défaut
+    opencode s'applique (régression du run 2026-10-03, cible claude-code)."""
     _ = (tmp_path / ".claude").mkdir()
     _ = (tmp_path / ".opencode").mkdir()
     db = _seed_n(tmp_path / "opencode.db", 3)
@@ -602,11 +671,16 @@ def test_doctor_detects_claude_before_opencode(tmp_path: Path, capsys):
     cfg.project_root = tmp_path
     _ = doctor(cfg)
     out = capsys.readouterr().out
-    assert "doctor: cibles de drafting: claude-code (détection)" in out
+    assert "doctor: cibles de drafting: opencode (défaut)" in out
+    # A3 : le warning de marqueur *nomme* le harnais étranger — comportement
+    # voulu. Ce qui ne doit jamais apparaître, c'est claude-code comme cible
+    # résolue (le marqueur n'a aucun pouvoir de décision).
+    assert "cibles de drafting: claude-code" not in out
+    assert "marqueur(s) de harnais hors cible résolue : .claude/ → claude-code" in out
 
 
 def test_doctor_shows_config_override_draft_target(tmp_path: Path, capsys, fake_opencode):
-    """Override config > détection : cible affichée en mode config."""
+    """Override config > défaut : cible affichée en mode config."""
     _ = (tmp_path / ".opencode").mkdir()
     db = _seed_n(tmp_path / "opencode.db", 3)
     cfg = _cfg(tmp_path, db)
@@ -631,8 +705,8 @@ def test_doctor_shows_legacy_draft_target(tmp_path: Path, capsys, fake_opencode)
 
 
 def test_doctor_warns_default_draft_target_without_marker(tmp_path: Path, capsys, fake_opencode):
-    """Aucun marqueur → défaut opencode affiché + WARNING (rc inchangé : la
-    sentinelle project_root-sans-.opencode reste le vrai blocant)."""
+    """Aucun draft_targets explicite → défaut opencode affiché + WARNING (rc
+    inchangé : la sentinelle project_root-sans-.opencode reste le vrai blocant)."""
     empty_root = tmp_path / "vide"
     empty_root.mkdir()  # aucun marqueur
     db = _seed_n(tmp_path / "opencode.db", 3)
@@ -641,7 +715,7 @@ def test_doctor_warns_default_draft_target_without_marker(tmp_path: Path, capsys
     assert doctor(cfg) == EXIT_TOTAL_FAILURE  # sentinelle existante, inchangée
     out = capsys.readouterr().out
     assert "doctor: cibles de drafting: opencode (défaut)" in out
-    assert "WARNING: aucun marqueur de harnais trouvé" in out
+    assert "WARNING: aucun draft_targets explicite en config" in out
 
 
 def test_self_cost_finds_advisor_session(tmp_path: Path, capsys):
@@ -1928,6 +2002,12 @@ def test_harness_projects_detected_harness_and_records_orphans(tmp_path: Path, m
     monkeypatch.setattr("subprocess.run", fake_run)
     cfg = _cfg(tmp_path / "reports", tmp_path / "opencode.db", kit_root=_make_kit(tmp_path))
     cfg.project_root = project
+    # A2 : plus de détection par marqueur — la projection de `.claude/skills`
+    # suppose désormais un draft_targets explicite.
+    cfg = replace(
+        cfg,
+        draft_targets=replace(cfg.draft_targets, mode="override", targets=["claude-code"]),
+    )
 
     assert harness(cfg, anchor=RUN_TIME.isoformat()) == EXIT_OK
 
@@ -1937,7 +2017,7 @@ def test_harness_projects_detected_harness_and_records_orphans(tmp_path: Path, m
         )
     )
     draft_block = digest["draft_targets"]
-    assert draft_block["mode"] == "detected"
+    assert draft_block["mode"] == "override"
     assert draft_block["harnesses"] == ["claude-code"]
     assert ".claude/skills/kit-skill/SKILL.md" in draft_block["orphan_files"]
     assert ".claude/skills/user-skill/SKILL.md" not in draft_block["orphan_files"]
@@ -2009,6 +2089,12 @@ def test_doctor_prints_remediation_surface_5_5(tmp_path: Path, fake_opencode, ca
     (project / ".claude").mkdir()
     cfg = _cfg(tmp_path / "reports", db)
     cfg.project_root = project
+    # A2 : la surface portability ne s'atteint plus par marqueur, seulement par
+    # draft_targets explicite.
+    cfg = replace(
+        cfg,
+        draft_targets=replace(cfg.draft_targets, mode="override", targets=["claude-code"]),
+    )
     assert doctor(cfg) in (EXIT_OK, EXIT_PARTIAL)
     out = capsys.readouterr().out
     assert "surface de remédiation 5.5: portability" in out
@@ -2067,3 +2153,403 @@ def test_run_dedups_resumed_session_fork(tmp_path: Path, monkeypatch):
     assert len(merged) == 1 and merged[0] not in kept
     warn_msgs = [w["message"] for w in data.get("warnings", [])]
     assert any("session reprise fusionnée" in m for m in warn_msgs)
+
+
+# ============================================================ A4 : global_roots
+#
+# Une racine skills globale est une surface LECTURE SEULE. Elle doit pouvoir
+# alimenter le catalogue (OpenCode la charge réellement) sans jamais devenir
+# une surface projetable : ni destination de projection, ni origine de draft,
+# ni cible du scan de remédiation.
+
+
+def test_global_roots_default_is_the_opencode_global_skills_root():
+    from weekly_telemetry_aggregator.config import DEFAULT_GLOBAL_SKILL_ROOT
+
+    assert TelemetryConfig().global_roots == [DEFAULT_GLOBAL_SKILL_ROOT]
+    assert Path.home() / ".config" / "opencode" / "skills" == DEFAULT_GLOBAL_SKILL_ROOT
+
+
+def _config_from(tmp_path: Path, payload: dict):
+    """Config parsée depuis un vrai fichier — même chemin que le run."""
+    from weekly_telemetry_aggregator.config import load_config
+
+    conf = tmp_path / "weekly-telemetry-config.json"
+    conf.write_text(json.dumps(payload), encoding="utf-8")
+    return load_config(conf)
+
+
+def test_global_roots_absent_key_keeps_documented_default(tmp_path):
+    cfg = _config_from(tmp_path, {})
+    assert len(cfg.global_roots) == 1
+    assert cfg.global_roots[0] == Path.home() / ".config" / "opencode" / "skills"
+
+
+def test_global_roots_empty_list_means_no_global_root(tmp_path):
+    """Zéro racine globale est une config valide : le scan se comporte sans elle."""
+    cfg = _config_from(tmp_path, {"global_roots": []})
+    assert cfg.global_roots == []
+
+
+def test_global_roots_config_expands_and_dedups(tmp_path):
+    cfg = _config_from(tmp_path, {"global_roots": ["~/a-skills", "~/a-skills", "~/b-skills"]})
+    assert cfg.global_roots == [Path.home() / "a-skills", Path.home() / "b-skills"]
+
+
+def test_global_roots_malformed_warns_and_keeps_default(tmp_path):
+    from weekly_telemetry_aggregator.config import DEFAULT_GLOBAL_SKILL_ROOT
+
+    with pytest.warns(UserWarning, match="global_roots mal formé"):
+        cfg = _config_from(tmp_path, {"global_roots": "~/.config/opencode/skills"})
+    assert cfg.global_roots == [DEFAULT_GLOBAL_SKILL_ROOT]
+
+
+def test_global_roots_non_string_entries_warn_and_are_skipped(tmp_path):
+    with pytest.warns(UserWarning, match="global_roots : entrée ignorée"):
+        cfg = _config_from(tmp_path, {"global_roots": ["~/ok-skills", 42, "", None]})
+    assert cfg.global_roots == [Path.home() / "ok-skills"]
+
+
+def test_global_roots_are_never_project_roots(tmp_path):
+    """Invariant A4 : une racine globale n'est jamais une destination de projection."""
+    from weekly_telemetry_aggregator.draft_targets import resolve_draft_targets
+    from weekly_telemetry_aggregator.harness_scope import harness_extra_roots
+    from weekly_telemetry_aggregator.main import resolve_skill_surface
+
+    project = tmp_path / "project"
+    glob = tmp_path / "global"
+    (project / ".opencode").mkdir(parents=True)
+    glob.mkdir()
+
+    cfg = TelemetryConfig(project_root=project, global_roots=[glob])
+    resolved = resolve_draft_targets(project, cfg.draft_targets)
+    surface = resolve_skill_surface(project, resolved, cfg.global_roots)
+    assert surface.global_roots == (glob,)
+    assert glob not in surface.project_roots
+    assert set(surface.project_roots).isdisjoint(surface.global_roots)
+    # Aucune racine globale ne peut apparaître parmi les racines projetables.
+    assert all(not Path(root).is_absolute() for root in harness_extra_roots(resolved))
+
+
+def test_skill_surface_never_mixes_a_global_root_into_project_roots(tmp_path):
+    """Un `global_roots` redéclarant une racine projet est retiré des racines projet."""
+    from weekly_telemetry_aggregator.draft_targets import resolve_draft_targets
+    from weekly_telemetry_aggregator.main import resolve_skill_surface
+
+    project = tmp_path / "project"
+    clash = project / ".opencode" / "skills"
+    cfg = TelemetryConfig(project_root=project, global_roots=[clash])
+    resolved = resolve_draft_targets(project, cfg.draft_targets)
+    surface = resolve_skill_surface(project, resolved, cfg.global_roots)
+    assert surface.project_roots == ()
+    assert surface.global_roots == (clash,)
+
+
+def test_skill_surface_without_resolved_harness_has_no_project_root(tmp_path):
+    """Surface non déclarée n'est pas inventée : pas de racine projet."""
+    from weekly_telemetry_aggregator.main import resolve_skill_surface
+
+    surface = resolve_skill_surface(tmp_path, None, [tmp_path / "global"])
+    assert surface.project_roots == ()
+    assert surface.global_roots == (tmp_path / "global",)
+
+
+def test_skill_surface_legacy_mode_covers_every_known_skills_root(tmp_path):
+    from weekly_telemetry_aggregator.draft_targets import resolve_draft_targets
+    from weekly_telemetry_aggregator.main import resolve_skill_surface
+
+    project = tmp_path / "project"
+    cfg = TelemetryConfig(project_root=project, global_roots=[])
+    cfg = replace(cfg, draft_targets=replace(cfg.draft_targets, mode="legacy", targets=[]))
+    surface = resolve_skill_surface(project, resolve_draft_targets(project, cfg.draft_targets), [])
+    # Ordre = priorité des harnais (DRAFT_TARGET_PRIORITY), déterministe.
+    assert surface.project_roots == (
+        project / ".claude" / "skills",
+        project / ".opencode" / "skills",
+        project / ".github" / "prompts",
+        project / ".github" / "skills",
+        project / ".agents",
+    )
+
+
+def test_skill_surface_is_global_classifies_read_only_records(tmp_path):
+    from weekly_telemetry_aggregator.main import resolve_skill_surface
+
+    surface = resolve_skill_surface(tmp_path, None, [tmp_path / "global"])
+    assert surface.is_global(tmp_path / "global" / "swarm-worker-protocol" / "SKILL.md") is True
+    assert surface.is_global(tmp_path / "project" / "demo" / "SKILL.md") is False
+
+
+def test_harness_extra_roots_opencode_case_unchanged(tmp_path):
+    """Attestation : `harness_extra_roots` sur le cas opencode reste ∅.
+
+    Le catalogue A5 n'y touche pas ; on épingle le contrat pour qu'une future
+    table de surface ne réintroduise pas `.claude`/`.agents` en projection.
+    """
+    from weekly_telemetry_aggregator.draft_targets import (
+        DRAFT_HARNESS_LAYOUTS,
+        resolve_draft_targets,
+    )
+    from weekly_telemetry_aggregator.harness_scope import harness_extra_roots
+
+    project = tmp_path / "project"
+    _ = (project / ".opencode").mkdir(parents=True)
+    cfg = TelemetryConfig(project_root=project)
+    resolved = resolve_draft_targets(project, cfg.draft_targets)
+    assert resolved.harnesses == ("opencode",)
+    assert harness_extra_roots(resolved) == ()
+    # Parité avec la formule pré-A5 pour le harnais opencode.
+    legacy = {t for t in DRAFT_HARNESS_LAYOUTS["opencode"].skills}
+    legacy.discard(".opencode/skills")
+    assert set(harness_extra_roots(resolved)) == legacy
+
+
+def test_remediation_target_guard_rejects_a_global_root_path(tmp_path):
+    """Invariant A4 : la remédiation ne peut viser que `.opencode/…` du projet."""
+    from weekly_telemetry_aggregator.harness_remediation import _resolve_target
+
+    project = tmp_path / "project"
+    allowed = project / ".opencode" / "skills" / "x" / "SKILL.md"
+    allowed.parent.mkdir(parents=True)
+    allowed.write_text("x\n", encoding="utf-8")
+    for value in ("~/.config/opencode/skills/x/SKILL.md", "/etc/skills/x/SKILL.md", "../x"):
+        with pytest.raises(ValueError):
+            _resolve_target(project, value)
+    assert _resolve_target(project, ".opencode/skills/x/SKILL.md")[1].endswith("SKILL.md")
+
+
+# ================================================ A5 : un seul catalogue de skills
+
+
+def _opencode_surface(project: Path, global_roots: list[Path]):
+    """Surface skills telle que le run la résout pour le harnais opencode."""
+    from weekly_telemetry_aggregator.draft_targets import resolve_draft_targets
+    from weekly_telemetry_aggregator.main import resolve_skill_surface
+
+    cfg = TelemetryConfig(project_root=project, global_roots=global_roots)
+    return resolve_skill_surface(
+        project, resolve_draft_targets(project, cfg.draft_targets), global_roots
+    )
+
+
+def test_skill_layouts_constant_is_gone():
+    """A5 : plus de liste codée en dur à 3 harnais dans main."""
+    from weekly_telemetry_aggregator import main as main_mod
+
+    assert not hasattr(main_mod, "SKILL_LAYOUTS")
+
+
+def test_default_opencode_surface_no_longer_scans_claude_or_agents(tmp_path):
+    """A5 : `.claude/skills` et `.agents` sortent du catalogue opencode."""
+    from weekly_telemetry_aggregator.draft_targets import resolve_draft_targets
+    from weekly_telemetry_aggregator.main import resolve_skill_surface, scan_skill_records
+
+    project = tmp_path / "project"
+    for layout in (".opencode", ".claude", ".agents"):
+        skill = project / layout / "skills" / f"{layout[1:]}-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(f"---\nname: {layout[1:]}\n---\n", encoding="utf-8")
+
+    cfg = TelemetryConfig(project_root=project, global_roots=[])
+    surface = resolve_skill_surface(project, resolve_draft_targets(project, cfg.draft_targets), [])
+    assert [r.skill_id for r in scan_skill_records(surface)] == ["opencode-skill"]
+
+
+def _skill_file(root: Path, sid: str, *, description: str = "d", **meta) -> Path:
+    lines = "".join(f"{key}: {value}\n" for key, value in meta.items())
+    path = root / sid / "SKILL.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"---\nname: {sid}\ndescription: {description}\n{lines}---\n\ncorps\n", encoding="utf-8"
+    )
+    return path
+
+
+def test_scan_skill_records_dedups_by_canonical_path_not_by_name(tmp_path):
+    """A5 : deux homonymes dans deux racines sont deux fichiers distincts."""
+    from weekly_telemetry_aggregator.main import scan_skill_records
+
+    project = tmp_path / "project"
+    glob = tmp_path / "global"
+    _skill_file(project / ".opencode" / "skills", "swarm-worker-protocol")
+    _skill_file(glob, "swarm-worker-protocol")
+    surface = _opencode_surface(project, [glob])
+    records = scan_skill_records(surface)
+    assert [r.skill_id for r in records] == ["swarm-worker-protocol"] * 2
+    assert len({r.path for r in records}) == 2
+    # Ordre de la surface : projet d'abord, puis la racine lecture seule.
+    assert [r.is_global for r in records] == [False, True]
+
+
+def test_scan_skill_records_collapses_a_symlinked_duplicate(tmp_path):
+    """A5 : deux chemins, un fichier ⇒ une seule fiche (clé = chemin canonique)."""
+    from weekly_telemetry_aggregator.main import scan_skill_records
+
+    project = tmp_path / "project"
+    real = project / ".opencode" / "skills"
+    _skill_file(real, "demo")
+    alias = tmp_path / "alias-root"
+    alias.mkdir()
+    (alias / "demo").symlink_to(real / "demo")
+    surface = _opencode_surface(project, [alias])
+    assert len(scan_skill_records(surface)) == 1
+
+
+def test_scan_skill_records_excludes_archive_at_any_depth(tmp_path):
+    """A6 : `_archive/**` n'est plus chargeable ⇒ jamais catalogué."""
+    from weekly_telemetry_aggregator.main import scan_skill_records
+
+    project = tmp_path / "project"
+    root = project / ".opencode" / "skills"
+    _skill_file(root, "live-skill")
+    _skill_file(root / "_archive", "archived-skill")
+    _skill_file(root / "_archive" / "2026-09-12", "mcp-builder")
+    _skill_file(root / "not_archive", "kept-skill")
+    surface = _opencode_surface(project, [])
+    # `not_archive` n'est PAS un segment `_archive` : il reste catalogué.
+    assert [r.skill_id for r in scan_skill_records(surface)] == ["live-skill", "kept-skill"]
+
+
+def test_scan_skill_records_reads_each_file_once(tmp_path):
+    """A5 : un seul frontmatter par `SKILL.md`, les deux vues en découlent."""
+    from weekly_telemetry_aggregator.main import scan_skill_records
+
+    project = tmp_path / "project"
+    _skill_file(
+        project / ".opencode" / "skills",
+        "demo",
+        description="ma description",
+        target_agents="opencode, claude-code",
+    )
+    (record,) = scan_skill_records(_opencode_surface(project, []))
+    assert record.description == "ma description"
+    assert record.target_agents == ("opencode", "claude-code")
+    assert record.as_catalog_entry().name == "demo"
+    assert record.as_catalog_entry().description == "ma description"
+
+
+def test_scan_skill_records_tolerates_a_missing_root(tmp_path):
+    from weekly_telemetry_aggregator.main import scan_skill_records
+
+    surface = _opencode_surface(tmp_path / "absent", [tmp_path / "absent-global"])
+    assert scan_skill_records(surface) == []
+
+
+# ================================================ A6 : `never_loaded` restreint
+
+
+def test_scan_skill_catalog_names_exclude_unreachable_skills(tmp_path):
+    """A6 : `never_loaded` ne peut comparer que des skills atteignables."""
+    from weekly_telemetry_aggregator.main import scan_skill_catalog, scan_skill_records
+
+    project = tmp_path / "project"
+    root = project / ".opencode" / "skills"
+    _skill_file(root, "reachable-skill")
+    _skill_file(root, "user-skill", origin="user")
+    _skill_file(
+        root,
+        "weekly-safety-guardrails",
+        description="Garde-fous partagés. Never load standalone.",
+    )
+    records = scan_skill_records(_opencode_surface(project, []))
+    names, count, _entries = scan_skill_catalog(records)
+    assert names == ["reachable-skill"]
+    assert count == 1
+
+
+def test_scan_skill_catalog_entries_still_expose_protected_skills(tmp_path):
+    """Un skill `origin=user` reste auditable : absent des noms, présent en entries."""
+    from weekly_telemetry_aggregator.main import scan_skill_catalog, scan_skill_records
+
+    project = tmp_path / "project"
+    root = project / ".opencode" / "skills"
+    _skill_file(root, "reachable-skill")
+    _skill_file(root, "user-skill", origin="user")
+    records = scan_skill_records(_opencode_surface(project, []))
+    names, _count, entries = scan_skill_catalog(records)
+    assert names == ["reachable-skill"]
+    assert sorted(entry.name for entry in entries) == ["reachable-skill", "user-skill"]
+    protections = {r.skill_id: r.as_protection_entry()["metadata"]["origin"] for r in records}
+    assert protections["user-skill"] == "user"
+
+
+def test_archived_skill_cannot_be_listed_as_never_loaded(tmp_path):
+    """A6 bout-en-bout : un skill archivé sort du nom ET des entries."""
+    from weekly_telemetry_aggregator.main import scan_skill_catalog, scan_skill_records
+
+    project = tmp_path / "project"
+    root = project / ".opencode" / "skills"
+    _skill_file(root, "live-skill")
+    _skill_file(root / "_archive" / "2026-09-12", "mcp-builder")
+    records = scan_skill_records(_opencode_surface(project, []))
+    names, count, entries = scan_skill_catalog(records)
+    assert [entry.name for entry in entries] == ["live-skill"]
+
+
+# ================================ skill-curate : racines apply alignées sur A5
+
+
+def _curate_cfg(project: Path, **draft_over) -> TelemetryConfig:
+    """Config `skill-curate` avec un `draft_targets` explicite."""
+    cfg = TelemetryConfig(project_root=project)
+    return replace(cfg, draft_targets=replace(cfg.draft_targets, **draft_over))
+
+
+def test_skill_dirs_for_default_target_is_the_opencode_root_only(tmp_path):
+    """`_skill_dirs_for` suit la table A1 : sous le défaut opencode, `.claude/skills`
+    et `.agents/skills` sortent de l'univers apply — le catalogue ne les lit pas."""
+    from weekly_telemetry_aggregator.cli import _skill_dirs_for
+
+    project = tmp_path / "project"
+    roots = _skill_dirs_for(_curate_cfg(project))
+    assert roots == [project.resolve() / ".opencode" / "skills"]
+
+
+def test_skill_dirs_for_follows_the_resolved_target(tmp_path):
+    """Cible résolue = surface projet : un override déplace l'univers apply."""
+    from weekly_telemetry_aggregator.cli import _skill_dirs_for
+
+    project = tmp_path / "project"
+    cfg = _curate_cfg(project, mode="override", targets=["claude-code"])
+    assert _skill_dirs_for(cfg) == [project.resolve() / ".claude" / "skills"]
+    # Codex projette `.agents`, pas `.agents/skills` (constante codée en dur obsolète).
+    codex = _curate_cfg(project, mode="override", targets=["codex"])
+    assert _skill_dirs_for(codex) == [project.resolve() / ".agents"]
+
+
+def test_skill_dirs_for_legacy_covers_every_known_harness_root(tmp_path):
+    """Mode legacy : toutes les cibles connues, dans l'ordre de priorité A1."""
+    from weekly_telemetry_aggregator.cli import _skill_dirs_for
+
+    project = (tmp_path / "project").resolve()
+    roots = _skill_dirs_for(_curate_cfg(tmp_path / "project", mode="legacy"))
+    assert roots == [
+        project / ".claude" / "skills",
+        project / ".opencode" / "skills",
+        project / ".github" / "prompts",
+        project / ".github" / "skills",
+        project / ".agents",
+    ]
+
+
+def test_skill_dirs_for_never_returns_a_global_root(tmp_path, monkeypatch):
+    """Invariant A4 préservé : `--apply` ne peut pas muter une racine globale,
+    même quand le project_root *est* le home ou un lien symbolique vers lui."""
+    from weekly_telemetry_aggregator.cli import _skill_dirs_for
+
+    home = tmp_path / "home"
+    (home / ".claude" / "skills").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+
+    # project_root == home : la racine projet résout DANS une racine globale.
+    assert _skill_dirs_for(_curate_cfg(home, mode="override", targets=["claude-code"])) == []
+    # Même chose via un lien symbolique depuis un project_root distinct.
+    project = tmp_path / "project"
+    (project / ".claude").mkdir(parents=True)
+    (project / ".claude" / "skills").symlink_to(
+        home / ".claude" / "skills", target_is_directory=True
+    )
+    cfg = _curate_cfg(project, mode="override", targets=["claude-code"])
+    assert _skill_dirs_for(cfg) == []
+    # Le catalogage opencode, lui, n'est pas concerné : `.opencode/skills` passe.
+    assert _skill_dirs_for(_curate_cfg(home)) == [home.resolve() / ".opencode" / "skills"]

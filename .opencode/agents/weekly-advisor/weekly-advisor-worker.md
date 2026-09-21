@@ -5,6 +5,7 @@ mode: subagent
 permission:
   edit: allow
   bash: deny
+  task: deny
   read: allow
   glob: allow
   grep: allow
@@ -40,6 +41,13 @@ Inspiré du pattern context-manager : chaque worker reçoit un paquet minimal-co
    - `warnings` : liste des warnings non fatals rencontrés (ex. source indisponible, écoulement dépassé)
    - `artifacts` : fichiers créés par cette branche dans `runs/current/` (JSON findings, timings, extraits)
    - `elapsed_s` : temps total d'exécution en secondes
+   - `sha` : **branche D uniquement** — liste des faits de draft confirmés, **un objet par
+     commit RÉUSSI** : `{file, sha, short_sha, branch, subject}`. `sha` est le SHA COMPLET
+     recopié tel quel du retour structuré de l'outil, jamais la prose `message`, jamais
+     `short_sha`. `subject` porte la marque `auto-rédigé, revue hebdo` et n'est jamais
+     reconstruit. Un refus (`KO`), un refus de gate ou une sortie illisible n'ajoute
+     **aucune** entrée. Jamais une chaîne isolée à la place de la liste. Absent ou `[]`
+     sur toute autre branche.
    - `skills_loaded` : résultat du pre-flight skills F6 — `{ok, primary, secondary, missing}` (§ « Pre-flight skills (F6) »)
 
 ## Invariants appliqués
@@ -72,12 +80,26 @@ L'orchestrateur gère la synthèse en join (§5 design) : signale la latence, co
 ## Pre-flight skills (F6)
 
 **Avant tout step de branche**, vérifier la présence des skills requises par SA branche
-via le catalogue réel `scan_skill_catalog()` (multi-layout, lecture seule, jamais de
-chargement implicite) — ce sont les mêmes racines que le moteur (`_skill_dirs()` :
-`<project_root>/.opencode/skills`, `<project_root>/.claude/skills`,
-`<project_root>/.agents/skills`, `~/.config/opencode/skills`, plus layouts
-déclarés). Un simple `glob` sous `skills/` seul est incomplet (a causé `ses_f56a`
-→ audit rc=2 `missing weekly-quality-audit` malgré skill présent dans `.agents/`).
+par **lecture directe des racines listées ci-dessous** — le worker n'a pas `bash`, il
+n'appelle donc **pas** `scan_skill_catalog()` (API moteur, réservée au CLI) et n'émule
+aucun scan multi-racines. Ces racines sont **uniquement celles du projet** :
+
+- `<project_root>/.opencode/skills`
+- `<project_root>/.claude/skills`
+- `<project_root>/.agents/skills`
+
+Protocole : `glob <racine>/**/SKILL.md` sur **chacune** des trois racines, puis `Read`
+du chemin absolu exact quand Glob retourne zéro. Un simple `glob` sous
+`.opencode/skills/` seul est incomplet (un audit a échoué en rc=2
+`missing weekly-quality-audit` malgré skill présent dans `.agents/`).
+
+**Invariant worker (F6)** : une racine **hors worktree est interdite** au worker —
+toute racine utilisateur `$HOME/...` (ex. catalogue global `.config/opencode/skills`,
+`.claude`, `.agents`) est hors périmètre, à ne jamais glober ni lire ; le moteur les
+filtre déjà en catalogue-only non mutable. Un refus `external_directory` est un
+**warning de branche** (`{status: "report-only",
+report_only: true, category: "external-permission-refusal"}`), **jamais** un arrêt du
+sous-agent : ne pas demander de permission, ne pas re-spawn, poursuivre la branche.
 
 | Branche | Skill(s) requise(s) | Rôle |
 |---|---|---|
@@ -151,9 +173,9 @@ est tronqué/partiel (signal de troncation ou taille > ~150 Ko) : (a) **une seul
      `{status: "report-only", report_only: true, category: "external-permission-refusal"}`
      dans `warnings`.
 
-**Anti-hors-contrat (cas 2026-09-16 `ses_f6ed`)** : ne charger QUE le skill
-`weekly-quality-audit`. Ne jamais charger `graphify` ni aucun skill lourd dans un
-worker A : toute analyse texte libre hors enveloppe est ignorée et tronquée par
+**Anti-hors-contrat** : ne charger QUE le skill
+`weekly-quality-audit`. Ne jamais charger un skill lourd hors de la branche assignée
+dans un worker A : toute analyse texte libre hors enveloppe est ignorée et tronquée par
 l'orchestrateur, et un fichier manquant bloque le JOIN. Règle d'écriture :
 d'abord écrire `audit-findings-<session_id>.json` (enveloppe v1 valide, `summary`
 non-vide), ensuite seulement retourner le contrat. Si l'extrait dépasse ~150 Ko,
@@ -179,9 +201,11 @@ Exécutées en **wave 2** (parallèle, après JOIN wave 1). Détail dans l'agent
 
 Les identifiants `mcp-tool-poisoning`, `unbounded-delegation` et
 `memory-write-unscoped` imposent un arrêt de l'action concernée et un signalement au
-coordinateur ; ne jamais contourner ces findings. Toute commande dont le résultat est
-`rc != 0` est en échec, même si une sortie partielle existe, et doit rester dans
-`warnings` ou déclencher la fatalité applicable.
+coordinateur ; ne jamais contourner ces findings (source unique de ces IDs et de leur
+traitement warn-only : skill partagé `weekly-safety-guardrails`, § Entrées aval et
+sécurité). Toute commande dont le résultat est `rc != 0` est en échec, même si une
+sortie partielle existe, et doit rester dans `warnings` ou déclencher la fatalité
+applicable.
 
 | Scénario | Réaction | rc | warning | continuer |
 |---|---|---|---|---|
@@ -210,6 +234,15 @@ Dernière sortie du worker **AVANT toute autre sortie verbale** (résumé, logs,
   "warnings": [],
   "artifacts": ["weekly-draft-candidates-2026-08-25.json"],
   "elapsed_s": 420,
+  "sha": [
+    {
+      "file": "/abs/projet/.opencode/skills/mon-skill/SKILL.md",
+      "sha": "0123456789abcdef0123456789abcdef01234567",
+      "short_sha": "0123456789",
+      "branch": "feat/improvments",
+      "subject": "skill:mon-skill (auto-rédigé, revue hebdo 2026-08-25)"
+    }
+  ],
   "skills_loaded": {
     "ok": true,
     "missing": [],
@@ -227,8 +260,6 @@ Si logs détaillés de steps inclus, passer aussi une liste `steps_timings: {ét
 dans le contrat pour fine-grained instrumentation (optional mais recommandé).
 
 ## Garde artefact et périmètre
-
-<!-- ponytail: un seul envelope strict évite une seconde validation LLM au JOIN. -->
 
 Chaque worker A écrit un JSON `audit-findings-<session_id>.json` schema-valid, même quand
 l'extrait est borné, tronqué ou illisible. L'envelope v1 obligatoire est :

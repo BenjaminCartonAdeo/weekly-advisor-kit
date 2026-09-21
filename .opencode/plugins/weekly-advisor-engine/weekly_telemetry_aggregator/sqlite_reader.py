@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -251,6 +252,60 @@ def _fingerprint(value) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+#: Sorties d'outil SANS INFORMATION — messages de statut, constants par outil.
+#: Sur le run 2026-10-03 : `edit` renvoie 'Edit applied successfully.' sur 302/302
+#: appels, `write` 'Wrote file successfully.' sur 64/64, `glob` 'No files found' sur
+#: 48/94, `grep` sur 20/167, `bash` '(no output)' sur 55/1433. Le `_fingerprint` de
+#: ces constantes est IDENTIQUE à chaque appel → UN seul bucket de cardinal = nombre
+#: d'appels, ce qui transformait chaque `edit` en « boucle » alors que rien ne se
+#: répète (B2). Une sortie constante ne prouve aucune répétition : pas de bucket.
+#: Liste fermée, dérivée de la mesure terrain — pas d'heuristique « sortie courte ».
+_STATUS_OUTPUTS = frozenset(
+    {
+        "Edit applied successfully.",
+        "Wrote file successfully.",
+        "Image read successfully",
+        "No files found",
+        "No matches found",
+        "(no output)",
+        "Tool ran without output or errors",
+    }
+)
+#: `compress` : 'Compressed <n> messages into [Compressed conversation section].' —
+#: le compte varie donc les buckets tombent à cardinal 1 : même pathologie sans être
+#: une constante littérale.
+_STATUS_OUTPUT_RES = (
+    re.compile(r"^Compressed \d+ messages? into \[Compressed conversation section\]\.$"),
+)
+
+
+def _is_status_output(value) -> bool:
+    """True si la sortie d'un outil est un message de statut sans information (B2).
+
+    Les structures (dict/list) ne sont jamais des statuts : elles portent le payload.
+    """
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    return text in _STATUS_OUTPUTS or any(pat.match(text) for pat in _STATUS_OUTPUT_RES)
+
+
+def _is_serialized_payload(text: str) -> bool:
+    """True si le tour est un blob machine (verdict/payload JSON sérialisé).
+
+    Exigence : le tour doit être *entièrement* un conteneur JSON parsable. Un prompt
+    humain qui cite du JSON en reste un — il est conservé (B3).
+    """
+    stripped = str(text).strip()
+    if not stripped or stripped[0] not in "{[":
+        return False
+    try:
+        json.loads(stripped)
+    except ValueError:
+        return False
+    return True
+
+
 def _tally_tools(records) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
     """Accumulate tool-call counts, arg chars and loaded-skill counts from (name, input) pairs."""
     tool_calls: dict[str, int] = {}
@@ -408,6 +463,9 @@ class OpenCodeAdapter(SchemaAdapter):
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
         self._session_tables: list[str] = []
+        #: part.message_id existe-t-il ? (sélectionné par `check_schema`) — sans lui,
+        #: le rôle du message parent d'une part est indécidable.
+        self._part_has_message_id = False
 
     def check_schema(self) -> None:
         tables = {
@@ -432,6 +490,14 @@ class OpenCodeAdapter(SchemaAdapter):
         for st in session_tables:
             _require_columns(self.conn, st, _SESSION_COLUMNS)
         self._session_tables = session_tables
+        # `part.message_id` relie une part à son message parent — c'est le SEUL moyen
+        # de savoir si une part `text` est un tour humain ou de la narration d'agent
+        # (B3). Optionnel : les fixtures de test n'ont pas ces colonnes et le schéma
+        # déclaré ne les exige pas → détecté par PRAGMA, jamais supposé.
+        part_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(part)")}
+        self._part_has_message_id = {"id", "message_id"} <= part_cols
+        message_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(message)")}
+        self._part_has_message_id = self._part_has_message_id and "id" in message_cols
 
     def latest_updated_ms(self) -> int:
         if not self._session_tables:
@@ -485,21 +551,32 @@ class OpenCodeAdapter(SchemaAdapter):
     def _parts_of_type_all(
         self, session_id: str, start_ms: int, end_ms: int
     ) -> list[tuple[int, dict]]:
-        """Every part row in window, for context/lint walks.
+        """Every part row in window, for context/lint walks."""
+        return [
+            (ts, data) for ts, data, _mid in self._parts_in_window(session_id, start_ms, end_ms)
+        ]
+
+    def _parts_in_window(
+        self, session_id: str, start_ms: int, end_ms: int
+    ) -> list[tuple[int, dict, str | None]]:
+        """(time_created_ms, data, message_id) for each part row in window.
 
         Canonicalises the v1.18.19+ `tool-invocation` part type to `tool` so the
-        rest of the reader stays shape-agnostic.
+        rest of the reader stays shape-agnostic. `message_id` is None on schemas
+        without the part→message link (fixtures), never guessed.
         """
+        linked = self._part_has_message_id
+        cols = "id, message_id, data, time_created" if linked else "data, time_created"
         out = []
         for row in self.conn.execute(
-            "SELECT data, time_created FROM part WHERE session_id = ? "
+            f"SELECT {cols} FROM part WHERE session_id = ? "
             "AND time_created >= ? AND time_created <= ? ORDER BY time_created",
             (session_id, start_ms, end_ms),
         ):
             data = _json_obj(row["data"])
             if data.get("type") == "tool-invocation":
                 data["type"] = "tool"
-            out.append((int(row["time_created"]), data))
+            out.append((int(row["time_created"]), data, row["message_id"] if linked else None))
         return out
 
     def _parts_of_type(
@@ -546,25 +623,65 @@ class OpenCodeAdapter(SchemaAdapter):
     def session_tool_fingerprints(
         self, session_id: str, start_ms: int, end_ms: int
     ) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, int]]]:
-        """Return deterministic argument/result fingerprints, grouped by tool."""
+        """Return deterministic argument/result fingerprints, grouped by tool.
+
+        Argument side: one bucket per distinct payload — the only discriminating
+        channel. Result side: status boilerplate is dropped (B2), a constant output
+        is not a loop, it is a fingerprint of the tool itself.
+        """
         args: dict[str, dict[str, int]] = {}
         results: dict[str, dict[str, int]] = {}
         for _ts, data in self._tool_parts(session_id, start_ms, end_ms):
             name, raw_input, raw_output = _tool_name_and_io(data)
             arg_fp = _fingerprint(raw_input)
             args.setdefault(name, {})[arg_fp] = args.setdefault(name, {}).get(arg_fp, 0) + 1
-            if raw_output is not None:
+            if raw_output is not None and not _is_status_output(raw_output):
                 result_fp = _fingerprint(raw_output)
                 results.setdefault(name, {})[result_fp] = (
                     results.setdefault(name, {}).get(result_fp, 0) + 1
                 )
         return args, results
 
+    def _user_text_parts(
+        self, session_id: str, start_ms: int, end_ms: int
+    ) -> list[tuple[int, dict]]:
+        """Parts `text` dont le message parent a `role == "user"`.
+
+        Le type de part ne suffit PAS : sur le run 2026-10-03, `data.type == "text"`
+        couvre 852 parts `assistant` et 425 parts `user`. Lire le type seul comptait
+        la narration de l'agent comme des prompts utilisateur — 1272 tours au lieu de
+        425, dont 2 groupes de 22 verdicts JSON dans `user_prompt_repeats` (B3).
+        `message.data.role` est la seule source autoritative ; la jointure est exacte
+        et agnostique de la shape de part (historique `data.tool`+`data.state` comme
+        `toolInvocation`). Rôle absent ⇒ `assistant` (fail-closed, comme
+        `_assistant_messages`).
+        """
+        parts = self._parts_in_window(session_id, start_ms, end_ms)
+        if not self._part_has_message_id:
+            # Schéma sans lien part→message : le rôle est indécidable. Rendre les tours
+            # bruts (comportement historique) plutôt que tous les perdre en silence.
+            return [(ts, data) for ts, data, _mid in parts if data.get("type") == "text"]
+        roles: dict[str, str] = {}
+        for row in self.conn.execute(
+            "SELECT id, data FROM message WHERE session_id = ?", (session_id,)
+        ):
+            roles[str(row["id"])] = str(_json_obj(row["data"]).get("role") or "assistant")
+        return [
+            (ts, data)
+            for ts, data, mid in parts
+            if data.get("type") == "text" and mid is not None and roles.get(str(mid)) == "user"
+        ]
+
     def session_user_turns(self, session_id: str, start_ms: int, end_ms: int) -> list[str]:
+        """Human user turns only: `role == user`, non-empty, not a serialized payload.
+
+        Filters out tool narration and JSON verdict blobs written under the user role
+        (B3) — a serialized object is an output, not an intent.
+        """
         turns: list[str] = []
-        for _ts, data in self._parts_of_type(session_id, "text", start_ms, end_ms):
+        for _ts, data in self._user_text_parts(session_id, start_ms, end_ms):
             text = data.get("text")
-            if isinstance(text, str) and text.strip():
+            if isinstance(text, str) and text.strip() and not _is_serialized_payload(text):
                 turns.append(text)
         return turns
 

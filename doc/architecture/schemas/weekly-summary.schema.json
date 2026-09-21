@@ -75,6 +75,27 @@
     "skills_never_loaded": { "type": "array", "items": { "type": "string" } },
     "skills_targets": { "type": "object" },
     "user_prompt_repeats": { "type": "array" },
+    "session_classifications": {
+      "type": "array",
+      "description": "Classification déterministe par session (P6) — aucun LLM. Champ additif, schema_version inchangé (additionalProperties libre).",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "session_id": { "type": "string" },
+          "intent": { "type": "string" },
+          "spec_driven": { "type": "boolean" },
+          "spec_preuves": { "type": "array", "items": { "type": "string" } },
+          "cost_usd": { "type": "number" },
+          "production_review_pct": { "type": ["number", "null"] },
+          "production_review_measured": { "type": "integer" },
+          "production_review_warning": { "type": ["string", "null"] },
+          "prompt_maturity_score": { "type": "integer" },
+          "prompt_maturity_grade": { "type": "string" },
+          "prompt_maturity_dimensions": { "type": "object" }
+        }
+      }
+    },
     "subagent_totals": { "type": "object" },
     "cost_estimates": { "type": "object" },
     "warnings": { "type": "array" },
