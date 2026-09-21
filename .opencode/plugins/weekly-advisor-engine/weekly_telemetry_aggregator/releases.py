@@ -862,6 +862,49 @@ def _watch_repo_activity_fallback(
     ]
 
 
+def _watch_repo_display_fields(repo: str, info: object) -> tuple[str, str, str]:
+    """display_name/description/html_url d'un repo suivi (+ mention rename)."""
+    full_name = str(info.get("full_name") or repo) if isinstance(info, dict) else repo
+    display_name = full_name if "/" in full_name else repo
+    description = str(info.get("description") or "") if isinstance(info, dict) else ""
+    if display_name.lower() != repo.lower():
+        rename = f"Renommé de {repo}"
+        description = f"{rename} ; {description}" if description else rename
+    html_url = (
+        str(info.get("html_url") or f"https://github.com/{full_name}")
+        if isinstance(info, dict)
+        else f"https://github.com/{full_name}"
+    )
+    return display_name, description, html_url
+
+
+def _process_watch_repo(
+    client, repo: str, start: datetime, end: datetime
+) -> tuple[list[dict], bool]:
+    """Un repo suivi → (items, ok). False = repo en échec (split ou API)."""
+    try:
+        owner, name = _split_repo(repo)
+    except ValueError:
+        return [], False
+    try:
+        info = _github_json(client, f"https://api.github.com/repos/{owner}/{name}")
+        releases = _github_json(
+            client,
+            f"https://api.github.com/repos/{owner}/{name}/releases",
+            params={"per_page": 10},
+        )
+    except SourceError:
+        return [], False
+    display_name, description, html_url = _watch_repo_display_fields(repo, info)
+    repo_items = _watch_repo_release_items(display_name, html_url, description, releases, start, end)
+    if not repo_items:
+        # Aucune release émise pour ce repo → repli activité.
+        repo_items = _watch_repo_activity_fallback(
+            client, owner, name, display_name, html_url, description, info, start, end
+        )
+    return repo_items, True
+
+
 def _fetch_watch_repos(
     client, watch_repos: list[str], start: datetime, end: datetime
 ) -> list[dict]:
@@ -876,45 +919,11 @@ def _fetch_watch_repos(
         return items
     failures = 0
     for repo in watch_repos:
-        try:
-            owner, name = _split_repo(repo)
-        except ValueError:
+        repo_items, ok = _process_watch_repo(client, repo, start, end)
+        if not ok:
             failures += 1
             continue
-        try:
-            info = _github_json(client, f"https://api.github.com/repos/{owner}/{name}")
-            releases = _github_json(
-                client,
-                f"https://api.github.com/repos/{owner}/{name}/releases",
-                params={"per_page": 10},
-            )
-        except SourceError:
-            failures += 1
-            continue
-        full_name = str(info.get("full_name") or repo) if isinstance(info, dict) else repo
-        display_name = full_name if "/" in full_name else repo
-        description = str(info.get("description") or "") if isinstance(info, dict) else ""
-        if display_name.lower() != repo.lower():
-            if description:
-                description = f"Renommé de {repo} ; {description}"
-            else:
-                description = f"Renommé de {repo}"
-        html_url = (
-            str(info.get("html_url") or f"https://github.com/{full_name}")
-            if isinstance(info, dict)
-            else f"https://github.com/{full_name}"
-        )
-        n_before = len(items)
-        items.extend(
-            _watch_repo_release_items(display_name, html_url, description, releases, start, end)
-        )
-        if len(items) == n_before:
-            # Aucune release émise pour ce repo → repli activité.
-            items.extend(
-                _watch_repo_activity_fallback(
-                    client, owner, name, display_name, html_url, description, info, start, end
-                )
-            )
+        items.extend(repo_items)
     if failures and failures == len(watch_repos):
         raise SourceError("github:watch-repos — tous les repos suivis ont échoué (API GitHub)")
     return items

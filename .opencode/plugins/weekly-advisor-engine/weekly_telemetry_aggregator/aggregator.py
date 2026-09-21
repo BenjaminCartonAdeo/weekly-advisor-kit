@@ -351,6 +351,41 @@ def _emit_repeat_group(group: dict, *, repeat_min: int, min_chars: int) -> UserP
     )
 
 
+def _is_repeat_candidate(turn: str) -> bool:
+    """Un tour est candidat s'il n'est ni compaction, ni bruit, ni vide normalisé."""
+    if _is_compaction_artifact(turn):
+        return False
+    if is_noise(turn):
+        return False
+    return bool(normalize_prompt(turn))
+
+
+def _accumulate_usage_repeats(groups: dict[str, dict], usage: SessionUsage) -> None:
+    """Indexe les tours candidats d'un usage (sessions enfants exclues)."""
+    if usage.parent_id is not None:
+        return  # v5.30 (7) : tours des sessions enfants exclus
+    step_ts = [s.timestamp for s in usage.steps]
+    first_ts = min(step_ts) if step_ts else None
+    last_ts = max(step_ts) if step_ts else None
+    for turn in usage.user_turns:
+        if not _is_repeat_candidate(turn):
+            continue
+        _accumulate_repeat_turn(groups, usage, turn, first_ts, last_ts)
+
+
+def _emit_repeat_list(
+    groups: dict[str, dict], *, repeat_min: int, min_chars: int
+) -> list[UserPromptRepeat]:
+    """Émet, trie et plafonne les groupes répétés."""
+    out: list[UserPromptRepeat] = []
+    for group in groups.values():
+        emitted = _emit_repeat_group(group, repeat_min=repeat_min, min_chars=min_chars)
+        if emitted is not None:
+            out.append(emitted)
+    out.sort(key=lambda r: (-r.count, r.session_id))
+    return out[:PROMPT_REPEATS_CAP]
+
+
 def _prompt_repeat_groups(
     uses: list[SessionUsage],
     *,
@@ -368,27 +403,9 @@ def _prompt_repeat_groups(
     groups: dict[str, dict] = {}
 
     for usage in sorted(uses, key=lambda u: u.session_id):
-        if usage.parent_id is not None:
-            continue  # v5.30 (7) : tours des sessions enfants exclus
-        step_ts = [s.timestamp for s in usage.steps]
-        first_ts = min(step_ts) if step_ts else None
-        last_ts = max(step_ts) if step_ts else None
-        for turn in usage.user_turns:
-            if _is_compaction_artifact(turn):
-                continue
-            if is_noise(turn):
-                continue
-            if not normalize_prompt(turn):
-                continue
-            _accumulate_repeat_turn(groups, usage, turn, first_ts, last_ts)
+        _accumulate_usage_repeats(groups, usage)
 
-    out: list[UserPromptRepeat] = []
-    for group in groups.values():
-        emitted = _emit_repeat_group(group, repeat_min=repeat_min, min_chars=min_chars)
-        if emitted is not None:
-            out.append(emitted)
-    out.sort(key=lambda r: (-r.count, r.session_id))
-    return out[:PROMPT_REPEATS_CAP]
+    return _emit_repeat_list(groups, repeat_min=repeat_min, min_chars=min_chars)
 
 
 def _skill_similar_pairs(entries, min_similarity: float) -> list[SkillSimilarPair]:
