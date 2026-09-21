@@ -15,7 +15,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import timedelta
 from pathlib import Path
 
@@ -287,6 +287,152 @@ def _actor_for_finding(finding: dict) -> str:
 _SEV_RANK = {"high": 0, "critical": 0, "medium": 1, "warning": 1, "low": 2, "info": 2, "ok": 2}
 
 
+def _harness_step_candidates(digest: dict | None, ignored: set[str]) -> list[dict]:
+    """Candidats next-steps depuis les per-rule findings harness (source 1/3)."""
+    candidates: list[dict] = []
+    if not isinstance(digest, dict):
+        return candidates
+    try:
+        flat = flatten_harness_findings(digest)
+    except Exception:
+        flat = []
+    counter: Counter[str] = Counter()
+    for finding in flat:
+        rule = finding.get("rule")
+        if not isinstance(rule, str) or not rule or rule in ignored:
+            continue
+        counter[rule] += 1
+    # most_common est déjà trié par count desc ; on stabilise par règle
+    for rule, count in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0])):
+        actor = _actor_for_harness_rule(rule)
+        sev = "high" if "security" in rule.lower() else "medium"
+        candidates.append(
+            {
+                "actor": actor,
+                "source": "harness",
+                "rule": rule,
+                "count": count,
+                "severity": sev,
+                "text": f"Corriger `{rule}` — {count} violation(s)",
+                "detail": f"{count} violation(s) pour {rule}",
+            }
+        )
+    return candidates
+
+
+def _alert_step_candidates(insights: dict | None) -> list[dict]:
+    """Candidats next-steps depuis insights.alerts (source 2/3)."""
+    candidates: list[dict] = []
+    if not isinstance(insights, dict):
+        return candidates
+    alerts = insights.get("alerts")
+    if not isinstance(alerts, list):
+        return candidates
+    for alert in alerts:
+        if not isinstance(alert, dict):
+            continue
+        rule = str(alert.get("rule") or "").strip()
+        if not rule:
+            continue
+        sev = str(alert.get("severity") or "medium").lower()
+        actor = _actor_for_alert(rule)
+        observed = alert.get("observed")
+        threshold = alert.get("threshold")
+        unit = alert.get("unit") or ""
+        candidates.append(
+            {
+                "actor": actor,
+                "source": "alert",
+                "rule": rule,
+                "severity": sev,
+                "observed": observed,
+                "threshold": threshold,
+                "unit": unit,
+                "text": f"Alerte `{rule}` — observé {observed} vs seuil {threshold}{(' ' + unit) if unit else ''} ({sev})",
+                "detail": f"seuil {threshold}, observé {observed}{(' ' + unit) if unit else ''}",
+            }
+        )
+    return candidates
+
+
+def _audit_step_candidates(findings: dict | None) -> list[dict]:
+    """Candidats next-steps depuis les audit findings qualitatifs (source 3/3)."""
+    candidates: list[dict] = []
+    if not isinstance(findings, dict):
+        return candidates
+    flist = findings.get("findings")
+    if not isinstance(flist, list):
+        return candidates
+    for finding in flist:
+        if not isinstance(finding, dict):
+            continue
+        cat = str(finding.get("category") or "unknown").strip() or "unknown"
+        sev = str(finding.get("severity") or "medium").lower()
+        actor = _actor_for_finding(finding)
+        desc = str(finding.get("description") or "").strip()
+        rec = str(finding.get("recommendation") or "").strip()
+        # texte concis sans chiffres libres (spec prose) — on garde desc/rec tronqués
+        short = f"{cat} — {desc[:80]} → {rec[:80]}" if desc or rec else cat
+        candidates.append(
+            {
+                "actor": actor,
+                "source": "audit",
+                "category": cat,
+                "severity": sev,
+                "description": desc,
+                "recommendation": rec,
+                "text": short,
+                "detail": desc or cat,
+            }
+        )
+    return candidates
+
+
+def _order_step_candidates(candidates: list[dict], limit: int) -> list[dict]:
+    """Déduplique, trie et groupe les candidats (un meilleur par acteur + complément)."""
+
+    def _sort_key(cand: dict) -> tuple[int, int, int, str, str]:
+        sev_rank = _SEV_RANK.get(str(cand.get("severity") or "medium").lower(), 3)
+        source_rank = {"harness": 0, "alert": 1, "audit": 2}.get(str(cand.get("source") or ""), 3)
+        count_rank = -int(cand.get("count", 0)) if isinstance(cand.get("count"), int) else 0
+        rule_key = str(cand.get("rule") or cand.get("category") or "")
+        actor_key = str(cand.get("actor") or "")
+        return (sev_rank, source_rank, count_rank, rule_key, actor_key)
+
+    # Déduplication par (actor, rule/category/text)
+    seen: set[tuple[str, str]] = set()
+    uniq: list[dict] = []
+    for cand in candidates:
+        key_rule = cand.get("rule") or cand.get("category") or cand.get("text") or ""
+        key = (cand.get("actor") or "Agent", str(key_rule))
+        if key not in seen:
+            seen.add(key)
+            uniq.append(cand)
+    uniq.sort(key=_sort_key)
+    # Grouper : un meilleur par acteur d'abord, dans l'ordre Toi/Pipeline/Agent
+    by_actor: dict[str, list[dict]] = {"Toi": [], "Pipeline": [], "Agent": []}
+    for cand in uniq:
+        actor = cand.get("actor")
+        if actor not in by_actor:
+            actor = "Agent"
+            cand = {**cand, "actor": actor}
+        by_actor[actor].append(cand)
+    ordered: list[dict] = []
+    for actor in ("Toi", "Pipeline", "Agent"):
+        if by_actor[actor]:
+            ordered.append(by_actor[actor][0])
+            if len(ordered) >= limit:
+                break
+    # Compléter jusqu'à limit avec les suivants les plus sévères
+    if len(ordered) < limit:
+        for cand in uniq:
+            if cand not in ordered:
+                ordered.append(cand)
+                if len(ordered) >= limit:
+                    break
+    return ordered[:limit]
+
+
 def _top_next_steps(
     digest: dict | None,
     insights: dict | None,
@@ -310,139 +456,14 @@ def _top_next_steps(
     """
     ignored = set(ignored_rules or [])
     candidates: list[dict] = []
-
-    # 1) harness per-rule
-    if isinstance(digest, dict):
-        try:
-            flat = flatten_harness_findings(digest)
-        except Exception:
-            flat = []
-        counter: Counter[str] = Counter()
-        for finding in flat:
-            rule = finding.get("rule")
-            if not isinstance(rule, str) or not rule or rule in ignored:
-                continue
-            counter[rule] += 1
-        # most_common est déjà trié par count desc ; on stabilise par règle
-        for rule, count in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0])):
-            actor = _actor_for_harness_rule(rule)
-            sev = "high" if "security" in rule.lower() else "medium"
-            candidates.append(
-                {
-                    "actor": actor,
-                    "source": "harness",
-                    "rule": rule,
-                    "count": count,
-                    "severity": sev,
-                    "text": f"Corriger `{rule}` — {count} violation(s)",
-                    "detail": f"{count} violation(s) pour {rule}",
-                }
-            )
-
-    # 2) alerts
-    if isinstance(insights, dict):
-        alerts = insights.get("alerts")
-        if isinstance(alerts, list):
-            for alert in alerts:
-                if not isinstance(alert, dict):
-                    continue
-                rule = str(alert.get("rule") or "").strip()
-                if not rule:
-                    continue
-                sev = str(alert.get("severity") or "medium").lower()
-                actor = _actor_for_alert(rule)
-                observed = alert.get("observed")
-                threshold = alert.get("threshold")
-                unit = alert.get("unit") or ""
-                candidates.append(
-                    {
-                        "actor": actor,
-                        "source": "alert",
-                        "rule": rule,
-                        "severity": sev,
-                        "observed": observed,
-                        "threshold": threshold,
-                        "unit": unit,
-                        "text": f"Alerte `{rule}` — observé {observed} vs seuil {threshold}{(' ' + unit) if unit else ''} ({sev})",
-                        "detail": f"seuil {threshold}, observé {observed}{(' ' + unit) if unit else ''}",
-                    }
-                )
-
-    # 3) audit findings (qualitatif)
-    if isinstance(findings, dict):
-        flist = findings.get("findings")
-        if isinstance(flist, list):
-            for finding in flist:
-                if not isinstance(finding, dict):
-                    continue
-                cat = str(finding.get("category") or "unknown").strip() or "unknown"
-                sev = str(finding.get("severity") or "medium").lower()
-                actor = _actor_for_finding(finding)
-                desc = str(finding.get("description") or "").strip()
-                rec = str(finding.get("recommendation") or "").strip()
-                # texte concis sans chiffres libres (spec prose) — on garde desc/rec tronqués
-                short = f"{cat} — {desc[:80]} → {rec[:80]}" if desc or rec else cat
-                candidates.append(
-                    {
-                        "actor": actor,
-                        "source": "audit",
-                        "category": cat,
-                        "severity": sev,
-                        "description": desc,
-                        "recommendation": rec,
-                        "text": short,
-                        "detail": desc or cat,
-                    }
-                )
+    candidates.extend(_harness_step_candidates(digest, ignored))
+    candidates.extend(_alert_step_candidates(insights))
+    candidates.extend(_audit_step_candidates(findings))
 
     if not candidates:
         return []
 
-    # Déduplication par (actor, rule/category/text)
-    seen: set[tuple[str, str]] = set()
-    uniq: list[dict] = []
-    for cand in candidates:
-        key_rule = cand.get("rule") or cand.get("category") or cand.get("text") or ""
-        key = (cand.get("actor") or "Agent", str(key_rule))
-        if key not in seen:
-            seen.add(key)
-            uniq.append(cand)
-
-    def _sort_key(cand: dict) -> tuple[int, int, int, str, str]:
-        sev_rank = _SEV_RANK.get(str(cand.get("severity") or "medium").lower(), 3)
-        source_rank = {"harness": 0, "alert": 1, "audit": 2}.get(str(cand.get("source") or ""), 3)
-        count_rank = -int(cand.get("count", 0)) if isinstance(cand.get("count"), int) else 0
-        rule_key = str(cand.get("rule") or cand.get("category") or "")
-        actor_key = str(cand.get("actor") or "")
-        return (sev_rank, source_rank, count_rank, rule_key, actor_key)
-
-    uniq.sort(key=_sort_key)
-
-    # Grouper : un meilleur par acteur d'abord, dans l'ordre Toi/Pipeline/Agent
-    by_actor: dict[str, list[dict]] = {"Toi": [], "Pipeline": [], "Agent": []}
-    for cand in uniq:
-        actor = cand.get("actor")
-        if actor not in by_actor:
-            actor = "Agent"
-            cand = {**cand, "actor": actor}
-        by_actor[actor].append(cand)
-
-    ordered: list[dict] = []
-    for actor in ("Toi", "Pipeline", "Agent"):
-        if by_actor[actor]:
-            ordered.append(by_actor[actor][0])
-            if len(ordered) >= limit:
-                break
-
-    # Compléter jusqu'à limit avec les suivants les plus sévères
-    if len(ordered) < limit:
-        for cand in uniq:
-            if cand not in ordered:
-                ordered.append(cand)
-                if len(ordered) >= limit:
-                    break
-
-    return ordered[:limit]
+    return _order_step_candidates(candidates, limit)
 
 
 def _critical_security_findings(digest: object) -> list[dict]:
@@ -614,6 +635,155 @@ def _valid_date(date: object) -> bool:
     return isinstance(date, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) is not None
 
 
+def _valid_weekly_summary(value: Mapping) -> bool:
+    period = value.get("period")
+    return (
+        _valid_schema_version(value.get("schema_version"), 2)
+        and isinstance(period, Mapping)
+        and _nonempty_text(period.get("start"))
+        and _nonempty_text(period.get("end"))
+        and _nonempty_text(value.get("generated_at"))
+        and isinstance(value.get("totals"), Mapping)
+    )
+
+
+def _valid_weekly_insights(value: Mapping) -> bool:
+    return (
+        _valid_schema_version(value.get("schema_version"), 1)
+        and isinstance(value.get("period"), Mapping)
+        and _nonempty_text(value.get("generated_at"))
+        and isinstance(value.get("deltas"), Mapping)
+        and isinstance(value.get("alerts"), list)
+        and isinstance(value.get("maintenance"), Mapping)
+    )
+
+
+def _valid_harness_digest(value: Mapping) -> bool:
+    inspection = value.get("inspection")
+    return (
+        (isinstance(inspection, Mapping) and bool(inspection))
+        or (isinstance(value.get("rules"), list) and bool(value["rules"]))
+        or (isinstance(value.get("findings"), list) and bool(value["findings"]))
+    )
+
+
+def _valid_ecosystem(value: Mapping) -> bool:
+    return (
+        _valid_schema_version(value.get("schema_version"), 2)
+        and isinstance(value.get("new_items"), list)
+        and isinstance(value.get("core_changes"), list)
+        and isinstance(value.get("warnings"), list)
+    )
+
+
+def _has_findings_list(value: Mapping) -> bool:
+    return isinstance(value.get("findings"), list)
+
+
+def _valid_coherence(value: Mapping) -> bool:
+    return isinstance(value.get("findings"), list) or isinstance(
+        value.get("curation_signal"), (list, Mapping)
+    )
+
+
+def _valid_audit_candidates(value: Mapping) -> bool:
+    return (
+        _valid_schema_version(value.get("schema_version"), 1)
+        and isinstance(value.get("audited"), list)
+        and isinstance(value.get("unaudited"), list)
+        and isinstance(value.get("limit"), int)
+        and not isinstance(value.get("limit"), bool)
+    )
+
+
+def _valid_watch_context(value: Mapping) -> bool:
+    return _valid_schema_version(value.get("schema_version"), 1) and isinstance(
+        value.get("market_matches"), list
+    )
+
+
+def _valid_watch_findings(value: Mapping) -> bool:
+    return (
+        _valid_schema_version(value.get("schema_version"), 2)
+        and isinstance(value.get("findings"), list)
+        and isinstance(value.get("validation"), Mapping)
+    )
+
+
+def _valid_watch_candidates(value: Mapping) -> bool:
+    return (
+        _valid_schema_version(value.get("schema_version"), 1)
+        and isinstance(value.get("candidates"), list)
+        and isinstance(value.get("security_annex"), list)
+    )
+
+
+def _valid_remediation(value: Mapping) -> bool:
+    return isinstance(value.get("summary"), Mapping) and isinstance(
+        value.get("postcheck"), Mapping
+    )
+
+
+def _valid_timings(value: Mapping) -> bool:
+    return isinstance(value.get("branches"), Mapping) or isinstance(
+        value.get("steps"), (list, Mapping)
+    )
+
+
+def _valid_remediation_proposals(value: Mapping, date: str | None) -> bool:
+    envelope = (
+        _valid_date(value.get("date"))
+        and (date is None or value.get("date") == date)
+        and isinstance(value.get("proposals"), list)
+    )
+    # The remediation producer currently emits v1. Keep v1 as the
+    # canonical proposal contract until the producer is versioned to v2.
+    return envelope and (
+        _valid_schema_version(value.get("schema_version"), 1)
+        or _valid_schema_version(value.get("schema_version"), 2)
+    )
+
+
+def _valid_skill_curate(value: Mapping, date: str | None, allow_legacy_v1: bool) -> bool:
+    mode = value.get("mode")
+    common = (
+        mode in {"dry-run", "dry_run", "apply"}
+        and isinstance(value.get("dry_run"), bool)
+        and isinstance(value.get("decisions"), list)
+        and _coerce_rc(value.get("rc"), default=None) is not None
+        and _valid_date(value.get("date"))
+        and (date is None or value.get("date") == date)
+    )
+    if not common:
+        return False
+    if _valid_schema_version(value.get("schema_version"), 2):
+        return (
+            _nonempty_text(value.get("generated_at"))
+            and _nonempty_text(value.get("anchor"))
+            and isinstance(value.get("summary"), Mapping)
+            and isinstance(value.get("skipped_details"), list)
+        )
+    return allow_legacy_v1 and _valid_schema_version(value.get("schema_version"), 1)
+
+
+#: Artifact name → shape validator (date/legacy variants handled separately).
+_ARTIFACT_CONTRACTS: dict[str, Callable[[Mapping], bool]] = {
+    "weekly-summary": _valid_weekly_summary,
+    "weekly-insights": _valid_weekly_insights,
+    "weekly-harness-digest": _valid_harness_digest,
+    "weekly-ecosystem": _valid_ecosystem,
+    "weekly-quality-findings": _has_findings_list,
+    "weekly-watch-findings-raw": _has_findings_list,
+    "weekly-coherence-findings": _valid_coherence,
+    "weekly-audit-candidates": _valid_audit_candidates,
+    "weekly-watch-context": _valid_watch_context,
+    "weekly-watch-findings": _valid_watch_findings,
+    "watch-candidates": _valid_watch_candidates,
+    "weekly-harness-remediation": _valid_remediation,
+    "weekly-timings": _valid_timings,
+}
+
+
 def _artifact_contract_valid(
     name: str,
     value: object,
@@ -629,109 +799,13 @@ def _artifact_contract_valid(
     """
     if not isinstance(value, Mapping) or not value:
         return False
-    if name == "weekly-summary":
-        period = value.get("period")
-        return (
-            _valid_schema_version(value.get("schema_version"), 2)
-            and isinstance(period, Mapping)
-            and _nonempty_text(period.get("start"))
-            and _nonempty_text(period.get("end"))
-            and _nonempty_text(value.get("generated_at"))
-            and isinstance(value.get("totals"), Mapping)
-        )
-    if name == "weekly-insights":
-        return (
-            _valid_schema_version(value.get("schema_version"), 1)
-            and isinstance(value.get("period"), Mapping)
-            and _nonempty_text(value.get("generated_at"))
-            and isinstance(value.get("deltas"), Mapping)
-            and isinstance(value.get("alerts"), list)
-            and isinstance(value.get("maintenance"), Mapping)
-        )
-    if name == "weekly-harness-digest":
-        inspection = value.get("inspection")
-        return (
-            (isinstance(inspection, Mapping) and bool(inspection))
-            or (isinstance(value.get("rules"), list) and bool(value["rules"]))
-            or (isinstance(value.get("findings"), list) and bool(value["findings"]))
-        )
-    if name == "weekly-ecosystem":
-        return (
-            _valid_schema_version(value.get("schema_version"), 2)
-            and isinstance(value.get("new_items"), list)
-            and isinstance(value.get("core_changes"), list)
-            and isinstance(value.get("warnings"), list)
-        )
-    if name in {"weekly-quality-findings", "weekly-watch-findings-raw"}:
-        return isinstance(value.get("findings"), list)
-    if name == "weekly-coherence-findings":
-        return isinstance(value.get("findings"), list) or isinstance(
-            value.get("curation_signal"), (list, Mapping)
-        )
-    if name == "weekly-audit-candidates":
-        return (
-            _valid_schema_version(value.get("schema_version"), 1)
-            and isinstance(value.get("audited"), list)
-            and isinstance(value.get("unaudited"), list)
-            and isinstance(value.get("limit"), int)
-            and not isinstance(value.get("limit"), bool)
-        )
-    if name == "weekly-watch-context":
-        return _valid_schema_version(value.get("schema_version"), 1) and isinstance(
-            value.get("market_matches"), list
-        )
-    if name == "weekly-watch-findings":
-        return (
-            _valid_schema_version(value.get("schema_version"), 2)
-            and isinstance(value.get("findings"), list)
-            and isinstance(value.get("validation"), Mapping)
-        )
-    if name == "watch-candidates":
-        return (
-            _valid_schema_version(value.get("schema_version"), 1)
-            and isinstance(value.get("candidates"), list)
-            and isinstance(value.get("security_annex"), list)
-        )
-    if name == "weekly-harness-remediation":
-        return isinstance(value.get("summary"), Mapping) and isinstance(
-            value.get("postcheck"), Mapping
-        )
     if name == "weekly-harness-remediation-proposals":
-        envelope = (
-            _valid_date(value.get("date"))
-            and (date is None or value.get("date") == date)
-            and isinstance(value.get("proposals"), list)
-        )
-        # The remediation producer currently emits v1. Keep v1 as the
-        # canonical proposal contract until the producer is versioned to v2.
-        return envelope and (
-            _valid_schema_version(value.get("schema_version"), 1)
-            or _valid_schema_version(value.get("schema_version"), 2)
-        )
+        return _valid_remediation_proposals(value, date)
     if name == "skill-curate":
-        mode = value.get("mode")
-        common = (
-            mode in {"dry-run", "dry_run", "apply"}
-            and isinstance(value.get("dry_run"), bool)
-            and isinstance(value.get("decisions"), list)
-            and _coerce_rc(value.get("rc"), default=None) is not None
-            and _valid_date(value.get("date"))
-            and (date is None or value.get("date") == date)
-        )
-        if not common:
-            return False
-        if _valid_schema_version(value.get("schema_version"), 2):
-            return (
-                _nonempty_text(value.get("generated_at"))
-                and _nonempty_text(value.get("anchor"))
-                and isinstance(value.get("summary"), Mapping)
-                and isinstance(value.get("skipped_details"), list)
-            )
-        return allow_legacy_v1 and _valid_schema_version(value.get("schema_version"), 1)
-    if name == "weekly-timings":
-        return isinstance(value.get("branches"), Mapping) or isinstance(
-            value.get("steps"), (list, Mapping)
-        )
+        return _valid_skill_curate(value, date=date, allow_legacy_v1=allow_legacy_v1)
+    validator = _ARTIFACT_CONTRACTS.get(name)
+    if validator is not None:
+        return validator(value)
     # Unknown required names still need a non-empty object.  The path and file
     # name are validated by ``validate_required_artifacts`` below.
     return True
@@ -1238,24 +1312,8 @@ def _warning_is_nonblocking(
     return False
 
 
-def applicable_summary_rc(
-    summary: object,
-    *,
-    out: Path | None = None,
-    date: str | None = None,
-    additional_records: Iterable[object] = (),
-    project_root: Path | str | None = None,
-    fallback_rc: int | None = None,
-) -> int:
-    """Compute the summary process status without counting report-only facts.
-
-    ``weekly_run`` and external joins historically surfaced every partial worker
-    warning as ``1``.  The final contract treats valid transcript-truncated,
-    recovered optional inputs and external report-only permissions as facts, not
-    failures.  Fatal ``2`` is never downgraded.
-    """
-    if not isinstance(summary, Mapping):
-        return 2
+def _coerce_summary_rc(summary: Mapping, fallback_rc: int | None) -> int:
+    """Coerce the summary-level rc/exit (partial=1, never an accidental success)."""
     raw_value = summary.get("rc")
     if raw_value is None:
         raw_value = summary.get("exit")
@@ -1270,7 +1328,13 @@ def applicable_summary_rc(
         raw = _coerce_rc(raw_value, default=None)
     if raw is None:
         raw = 1
+    return raw
 
+
+def _collect_join_records(
+    summary: Mapping, additional_records: Iterable[object]
+) -> list[object]:
+    """Gather warnings, worker statuses, recovered inputs and join records."""
     warnings = summary.get("warnings")
     if not isinstance(warnings, list):
         warnings = []
@@ -1324,48 +1388,57 @@ def applicable_summary_rc(
             )
         )
     ]
-    records = [
+    return [
         *warnings,
         *worker_statuses,
         *recovered_inputs,
         *report_only_permissions,
         *join_records,
     ]
-    if raw >= 2 or any(
-        isinstance(record, Mapping) and _coerce_rc(record.get("rc"), default=0) >= 2
-        for record in records
-    ):
-        return 2
-    if not records:
-        inputs = _summary_artifact_inputs(summary)
-        valid_input_statuses = {"absent", "not_applicable", "present", "valid", "recovered"}
-        optional_entries = [
-            value
-            for value in inputs.values()
-            if isinstance(value, Mapping) and value.get("required") is False
-        ]
-        blocking_inputs = [
-            value
+
+
+def _empty_records_rc(summary: Mapping, raw: int) -> int:
+    """RC when no join records exist: blocking inputs fail, optional-only passes."""
+    inputs = _summary_artifact_inputs(summary)
+    valid_input_statuses = {"absent", "not_applicable", "present", "valid", "recovered"}
+    optional_entries = [
+        value
+        for value in inputs.values()
+        if isinstance(value, Mapping) and value.get("required") is False
+    ]
+    blocking_inputs = [
+        value
+        for value in inputs.values()
+        if isinstance(value, Mapping)
+        and value.get("required") is True
+        and str(value.get("status") or "").casefold() not in {"present", "valid", "ok"}
+    ]
+    optional_only = (
+        bool(optional_entries)
+        and not blocking_inputs
+        and all(
+            str(value.get("status") or "").casefold() in valid_input_statuses
             for value in inputs.values()
             if isinstance(value, Mapping)
-            and value.get("required") is True
-            and str(value.get("status") or "").casefold() not in {"present", "valid", "ok"}
-        ]
-        optional_only = (
-            bool(optional_entries)
-            and not blocking_inputs
-            and all(
-                str(value.get("status") or "").casefold() in valid_input_statuses
-                for value in inputs.values()
-                if isinstance(value, Mapping)
-            )
         )
-        if blocking_inputs:
-            return 1
-        if optional_only:
-            return 0
-        return 0 if raw == 0 else 1
-    all_nonblocking = all(
+    )
+    if blocking_inputs:
+        return 1
+    if optional_only:
+        return 0
+    return 0 if raw == 0 else 1
+
+
+def _records_all_nonblocking(
+    records: list[object],
+    summary: object,
+    *,
+    out: Path | None,
+    date: str | None,
+    project_root: Path | str | None,
+) -> bool:
+    """Whether every join record is an informational (non-blocking) fact."""
+    return all(
         _warning_is_nonblocking(
             item,
             summary=summary,
@@ -1384,7 +1457,43 @@ def applicable_summary_rc(
         )
         for item in records
     )
-    return 0 if all_nonblocking else 1
+
+
+def applicable_summary_rc(
+    summary: object,
+    *,
+    out: Path | None = None,
+    date: str | None = None,
+    additional_records: Iterable[object] = (),
+    project_root: Path | str | None = None,
+    fallback_rc: int | None = None,
+) -> int:
+    """Compute the summary process status without counting report-only facts.
+
+    ``weekly_run`` and external joins historically surfaced every partial worker
+    warning as ``1``.  The final contract treats valid transcript-truncated,
+    recovered optional inputs and external report-only permissions as facts, not
+    failures.  Fatal ``2`` is never downgraded.
+    """
+    if not isinstance(summary, Mapping):
+        return 2
+    raw = _coerce_summary_rc(summary, fallback_rc)
+
+    records = _collect_join_records(summary, additional_records)
+    if raw >= 2 or any(
+        isinstance(record, Mapping) and _coerce_rc(record.get("rc"), default=0) >= 2
+        for record in records
+    ):
+        return 2
+    if not records:
+        return _empty_records_rc(summary, raw)
+    return (
+        0
+        if _records_all_nonblocking(
+            records, summary, out=out, date=date, project_root=project_root
+        )
+        else 1
+    )
 
 
 def _artifact_provenance(out: Path, date: str) -> dict[str, dict[str, object]]:

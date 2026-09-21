@@ -379,44 +379,14 @@ def compute(
         insights_cfg=insights_cfg,
     )
 
-    lint_total = _digest_violations(current_digest, harness_ignored_rules or [])
-    if (
-        current_digest is not None
-        and lint_total is not None
-        and lint_total > insights_cfg.lint_violations_max
-    ):
-        alerts.append(
-            {
-                "rule": "lint_violations_max",
-                "threshold": insights_cfg.lint_violations_max,
-                "observed": lint_total,
-                "unit": "findings",
-                "severity": "medium",
-            }
-        )
+    lint_max = _lint_max_alert(current_digest, harness_ignored_rules, insights_cfg)
+    if lint_max is not None:
+        alerts.append(lint_max)
 
     # ---- couverture lint (v6.0.n) : surfaces .opencode/ hors allowlist ----
-    digest_scope = (current_digest or {}).get("harness_scope") or {}
-    unscoped = digest_scope.get("unscoped_file_count")
-    inspected_total = (current_digest or {}).get("inspection", {}).get("summary", {}).get("total")
-    if (
-        current_digest is not None
-        and isinstance(unscoped, int)
-        and isinstance(inspected_total, int)
-        and inspected_total + unscoped > 0
-    ):
-        coverage = inspected_total / (inspected_total + unscoped)
-        if coverage < insights_cfg.lint_coverage_min:
-            alerts.append(
-                {
-                    "rule": "lint_coverage",
-                    "threshold": insights_cfg.lint_coverage_min,
-                    "observed": round(coverage, 2),
-                    "unit": "surfaces scannées",
-                    "note": f"{inspected_total} scannées, {unscoped} hors allowlist",
-                    "severity": "low",
-                }
-            )
+    lint_coverage = _lint_coverage_alert(current_digest, insights_cfg)
+    if lint_coverage is not None:
+        alerts.append(lint_coverage)
 
     # ---- maintenance R1-R4 (findings initialisés avant l'alerte cache K8) ----
     findings = _agent_loop_findings(
@@ -427,65 +397,15 @@ def compute(
     )
     # Observation-only architecture/config drift.  This intentionally emits a
     # report finding, not an alert that can block CI or trigger curation/apply.
-    current_arch = _architecture_observation(current_summary)
-    previous_arch = _architecture_observation(previous_summary)
-    drift_fields = _architecture_drift(current_arch, previous_arch)
-    drift_runs = 1 if drift_fields else 0
-    for summary in recent_summaries[1:]:
-        earlier = _architecture_observation(summary)
-        if not drift_fields or not _architecture_drift(current_arch, earlier):
-            break
-        drift_runs += 1
-    drift_threshold = max(1, int(architecture_drift_runs))
-    if drift_fields and drift_runs >= drift_threshold:
-        findings.append(
-            {
-                "session_id": None,
-                "category": "architecture-drift",
-                "severity": "low",
-                "description": "configuration/architecture observations changed: "
-                + ", ".join(drift_fields),
-                "evidence_summary": (
-                    f"watch-context fields={','.join(drift_fields)}; "
-                    f"consecutive_runs={drift_runs}/{drift_threshold}"
-                ),
-                "recommendation": "Review declared/observed/absent state and harness scope manually",
-                "recommendation_type": "architecture-drift",
-                "action": "recalibrate",
-                "observation_only": True,
-            }
-        )
-    consecutive_zero_write = 0
-    for s in recent_summaries:
-        if (s.get("totals", {}) or {}).get("cache_write_tokens", 0) == 0:
-            consecutive_zero_write += 1
-        else:
-            break
-    if consecutive_zero_write >= insights_cfg.cache_write_zero_runs:
-        alerts.append(
-            {
-                "rule": "cache_write_zero_runs",
-                "threshold": insights_cfg.cache_write_zero_runs,
-                "observed": consecutive_zero_write,
-                "severity": "medium",
-            }
-        )
-        findings.append(
-            {
-                "category": "fix-candidate",
-                "severity": "medium",
-                "description": (
-                    f"cache_write_tokens=0 sur {consecutive_zero_write} run(s) consécutif(s) — "
-                    "trou de télémétrie probable côté client"
-                ),
-                "recommendation": (
-                    "vérifier la persistance du cache du client OpenCode (config/checkpoint) "
-                    "avant d'interpréter les coûts"
-                ),
-                "recommendation_type": "cache-write-zero",
-                "target": None,
-            }
-        )
+    drift_finding = _architecture_drift_finding(
+        current_summary, previous_summary, recent_summaries, architecture_drift_runs
+    )
+    if drift_finding is not None:
+        findings.append(drift_finding)
+    zero_alert, zero_finding = _cache_write_zero_alerts(recent_summaries, insights_cfg)
+    if zero_alert is not None and zero_finding is not None:
+        alerts.append(zero_alert)
+        findings.append(zero_finding)
     _retire, never_loaded_consecutive = _retire_candidates(
         current_summary, recent_summaries, insights_cfg, ignored_findings, current_digest
     )
@@ -521,6 +441,126 @@ def compute(
         "alerts": sorted(alerts, key=lambda a: (a["severity"] != "high", a["rule"])),
         "maintenance": {"findings": findings, "stats": stats},
     }
+
+
+def _lint_max_alert(
+    current_digest: dict | None,
+    harness_ignored_rules: list[str] | None,
+    insights_cfg: InsightsConfig,
+) -> dict | None:
+    """Alerte lint_violations_max, ou None si sous le seuil."""
+    lint_total = _digest_violations(current_digest, harness_ignored_rules or [])
+    if (
+        current_digest is not None
+        and lint_total is not None
+        and lint_total > insights_cfg.lint_violations_max
+    ):
+        return {
+            "rule": "lint_violations_max",
+            "threshold": insights_cfg.lint_violations_max,
+            "observed": lint_total,
+            "unit": "findings",
+            "severity": "medium",
+        }
+    return None
+
+
+def _lint_coverage_alert(
+    current_digest: dict | None, insights_cfg: InsightsConfig
+) -> dict | None:
+    """Alerte lint_coverage (surfaces .opencode/ hors allowlist), ou None."""
+    digest_scope = (current_digest or {}).get("harness_scope") or {}
+    unscoped = digest_scope.get("unscoped_file_count")
+    inspected_total = (current_digest or {}).get("inspection", {}).get("summary", {}).get("total")
+    if (
+        current_digest is not None
+        and isinstance(unscoped, int)
+        and isinstance(inspected_total, int)
+        and inspected_total + unscoped > 0
+    ):
+        coverage = inspected_total / (inspected_total + unscoped)
+        if coverage < insights_cfg.lint_coverage_min:
+            return {
+                "rule": "lint_coverage",
+                "threshold": insights_cfg.lint_coverage_min,
+                "observed": round(coverage, 2),
+                "unit": "surfaces scannées",
+                "note": f"{inspected_total} scannées, {unscoped} hors allowlist",
+                "severity": "low",
+            }
+    return None
+
+
+def _architecture_drift_finding(
+    current_summary: dict,
+    previous_summary: dict | None,
+    recent_summaries: list[dict],
+    architecture_drift_runs: int,
+) -> dict | None:
+    """Finding architecture-drift observation-only, ou None si pas de dérive persistante."""
+    current_arch = _architecture_observation(current_summary)
+    previous_arch = _architecture_observation(previous_summary)
+    drift_fields = _architecture_drift(current_arch, previous_arch)
+    drift_runs = 1 if drift_fields else 0
+    for summary in recent_summaries[1:]:
+        earlier = _architecture_observation(summary)
+        if not drift_fields or not _architecture_drift(current_arch, earlier):
+            break
+        drift_runs += 1
+    drift_threshold = max(1, int(architecture_drift_runs))
+    if drift_fields and drift_runs >= drift_threshold:
+        return {
+            "session_id": None,
+            "category": "architecture-drift",
+            "severity": "low",
+            "description": "configuration/architecture observations changed: "
+            + ", ".join(drift_fields),
+            "evidence_summary": (
+                f"watch-context fields={','.join(drift_fields)}; "
+                f"consecutive_runs={drift_runs}/{drift_threshold}"
+            ),
+            "recommendation": "Review declared/observed/absent state and harness scope manually",
+            "recommendation_type": "architecture-drift",
+            "action": "recalibrate",
+            "observation_only": True,
+        }
+    return None
+
+
+def _cache_write_zero_alerts(
+    recent_summaries: list[dict], insights_cfg: InsightsConfig
+) -> tuple[dict | None, dict | None]:
+    """Couple (alerte, finding) cache_write_tokens=0, ou (None, None)."""
+    consecutive_zero_write = 0
+    for s in recent_summaries:
+        if (s.get("totals", {}) or {}).get("cache_write_tokens", 0) == 0:
+            consecutive_zero_write += 1
+        else:
+            break
+    if consecutive_zero_write >= insights_cfg.cache_write_zero_runs:
+        return (
+            {
+                "rule": "cache_write_zero_runs",
+                "threshold": insights_cfg.cache_write_zero_runs,
+                "observed": consecutive_zero_write,
+                "severity": "medium",
+            },
+            {
+                "category": "fix-candidate",
+                "severity": "medium",
+                "description": (
+                    f"cache_write_tokens=0 sur {consecutive_zero_write} run(s) consécutif(s) — "
+                    "trou de télémétrie probable côté client"
+                ),
+                "recommendation": (
+                    "vérifier la persistance du cache du client OpenCode (config/checkpoint) "
+                    "avant d'interpréter les coûts"
+                ),
+                "recommendation_type": "cache-write-zero",
+                "target": None,
+            },
+        )
+    return None, None
 
 
 def _digest_violations(digest: dict | None, ignored_rules: list[str] | None = None) -> int | None:
@@ -820,6 +860,75 @@ def _discover_previous(
     return _fallback_previous_artifact(output_dir, pattern, exclude_dir)
 
 
+def _validated_digest(out: Path, date: str) -> dict | None:
+    """Charge le digest harness du run et le dégrade à None si invalide (warnings stderr)."""
+    current_digest = _load(out / f"weekly-harness-digest-{date}.json")
+    for digest_problem in harness_digest_problems(current_digest):
+        print(
+            f"insights: WARNING: {digest_problem} — volet harness dégradé",
+            file=sys.stderr,
+            flush=True,
+        )
+        current_digest = None
+    return current_digest
+
+
+def _baseline_fallback(
+    previous: dict | None,
+    baseline_summary_path: str | None,
+    cfg: TelemetryConfig,
+    date: str,
+) -> tuple[dict | None, str | None]:
+    """Repli baseline explicite (P1.1) quand aucun previous découvert, ou (previous, None)."""
+    baseline_used: str | None = None
+    if previous is None and (baseline_summary_path or cfg.baseline_summary_path):
+        bp = Path(baseline_summary_path or cfg.baseline_summary_path or "").expanduser()
+        if bp.is_file():
+            loaded = _load(bp)
+            if loaded and str(loaded.get("generated_at", ""))[:10] < date:
+                previous, baseline_used = loaded, str(bp)
+    return previous, baseline_used
+
+
+def _collect_recent(root: Path, current: dict, date: str, limit: int = 8) -> list[dict]:
+    """Fenêtre recent_summaries (current + précédents, newest-first, cap limit)."""
+    recent = [current]
+    for _d, p in _artifacts_before(root, "weekly-summary-*.json", date)[::-1]:
+        if len(recent) >= limit:
+            break
+        loaded = _load(p)
+        if loaded is not None:
+            recent.append(loaded)
+    return recent
+
+
+def _persist_baseline(
+    out: Path,
+    date: str,
+    current_path: Path,
+    current_digest: dict | None,
+    previous: dict | None,
+    baseline_used: str | None,
+    data: dict,
+) -> None:
+    """Auto-baseline K11 (premier run) ou rattachement du baseline explicite."""
+    if baseline_used:
+        data["baseline_summary_file"] = baseline_used
+    elif previous is None:
+        data["baseline"] = "first-run"
+        write_json_atomic(
+            out / f"weekly-baseline-{date}.json",
+            {
+                "schema_version": 1,
+                "run_date": date,
+                "summary_file": current_path.name,
+                "digest_file": f"weekly-harness-digest-{date}.json"
+                if current_digest is not None
+                else None,
+            },
+        )
+
+
 def run(
     cfg: TelemetryConfig,
     *,
@@ -849,34 +958,15 @@ def run(
         if state_summary is not None
         else _discover_previous("weekly-summary-*.json", date, root, exclude_dir=out)
     )
-    current_digest = _load(out / f"weekly-harness-digest-{date}.json")
-    for digest_problem in harness_digest_problems(current_digest):
-        print(
-            f"insights: WARNING: {digest_problem} — volet harness dégradé",
-            file=sys.stderr,
-            flush=True,
-        )
-        current_digest = None
+    current_digest = _validated_digest(out, date)
     previous_digest = (
         state_digest
         if state_digest is not None
         else _discover_previous("weekly-harness-digest-*.json", date, root, exclude_dir=out)
     )
-    baseline_used: str | None = None
-    if previous is None and (baseline_summary_path or cfg.baseline_summary_path):
-        bp = Path(baseline_summary_path or cfg.baseline_summary_path or "").expanduser()
-        if bp.is_file():
-            loaded = _load(bp)
-            if loaded and str(loaded.get("generated_at", ""))[:10] < date:
-                previous, baseline_used = loaded, str(bp)
+    previous, baseline_used = _baseline_fallback(previous, baseline_summary_path, cfg, date)
 
-    recent = [current]
-    for _d, p in _artifacts_before(root, "weekly-summary-*.json", date)[::-1]:
-        if len(recent) >= 8:
-            break
-        loaded = _load(p)
-        if loaded is not None:
-            recent.append(loaded)
+    recent = _collect_recent(root, current, date)
 
     data = compute(
         run_time=run_time,
@@ -894,22 +984,7 @@ def run(
             "aucun digest harness disponible (deltas lint à null, règle sautée)"
         ]
 
-    if baseline_used:
-        data["baseline_summary_file"] = baseline_used
-    elif previous is None:
-        # K11: auto-baseline — premier run tracé (pas de tendance possible).
-        data["baseline"] = "first-run"
-        write_json_atomic(
-            out / f"weekly-baseline-{date}.json",
-            {
-                "schema_version": 1,
-                "run_date": date,
-                "summary_file": current_path.name,
-                "digest_file": f"weekly-harness-digest-{date}.json"
-                if current_digest is not None
-                else None,
-            },
-        )
+    _persist_baseline(out, date, current_path, current_digest, previous, baseline_used, data)
 
     out_path = out / f"weekly-insights-{date}.json"
     write_json_atomic(out_path, data)
