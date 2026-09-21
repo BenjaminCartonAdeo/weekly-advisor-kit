@@ -22,6 +22,7 @@ from pathlib import Path
 from warnings import warn as _warn_user
 
 from .aggregator import _cap_warnings, aggregate, dedup_resumed_usages
+from .classifiers import _EDIT_WRITE_TOOLS
 from .config import TelemetryConfig, apply_lookback_override
 from .curation import build_catalog_from_skills
 from .draft_targets import DRAFT_HARNESS_TARGETS, describe_draft_target, resolve_draft_targets
@@ -310,6 +311,17 @@ def build_usage(
                 )
         return None, False
 
+    # Parts fetched ONCE: cross-check lifetime cost + P6.3 timestamps (edit/write, user).
+    # Best-effort: a provider without parts must never kill the session (empty → unmeasured).
+    try:
+        parts = adapter.session_parts(meta.session_id)
+    except Exception:  # noqa: BLE001 - parts are optional per provider
+        parts = []
+    user_turn_timestamps = sorted(p.ts for p in parts if p.kind == "user")
+    edit_write_timestamps = sorted(
+        p.ts for p in parts if p.kind == "tool" and (p.tool_name or "").lower() in _EDIT_WRITE_TOOLS
+    )
+
     missing = sorted({s.model for s in steps if s.cost is None})
     for model in missing:
         warnings.append(
@@ -323,7 +335,7 @@ def build_usage(
     if reported_cost:
         try:
             lifetime = 0.0
-            for rec in adapter.session_parts(meta.session_id):
+            for rec in parts:
                 if rec.kind == "step-finish" and rec.cost is not None:
                     lifetime += rec.cost
             tolerance = cfg.cross_check_tolerance_pct
@@ -377,6 +389,8 @@ def build_usage(
             user_turns=turns,
             context_chars=context_chars,
             first_user_text=first_user,
+            edit_write_timestamps=edit_write_timestamps,
+            user_turn_timestamps=user_turn_timestamps,
             reported_cost_usd_lifetime=reported_cost,
             harness=getattr(meta, "harness", "") or getattr(adapter, "harness", "") or "",
         ),
@@ -828,6 +842,29 @@ def _copilot_doctor_details(provider) -> list[str]:
     return []
 
 
+def _unknown_session_source_types(cfg: TelemetryConfig) -> tuple[list[str], list[str]]:
+    """Types session_sources inconnus du registre — ([], []) si registre illisible."""
+    try:
+        from .providers.registry import discover_provider_factories as _discover_factories
+
+        supported = set(_discover_factories().keys())
+        unknown: list[str] = []
+        for src in cfg.session_sources:
+            if not isinstance(src, dict):
+                unknown.append(repr(src))
+                continue
+            if src.get("enabled", True) is False:
+                continue
+            t = src.get("type")
+            if not isinstance(t, str) or t not in supported:
+                unknown.append(repr(t))
+        if unknown:
+            return sorted(set(unknown)), sorted(supported)
+        return [], sorted(supported)
+    except Exception:  # pragma: no cover - diagnostic best-effort
+        return [], []
+
+
 def doctor(
     cfg: TelemetryConfig,
     *,
@@ -871,27 +908,12 @@ def doctor(
     # ses_f55 : session_sources avec type inconnu (ex. copilot-app) passait en
     # warning fail-soft côté registry → coût 0.0 malgré tokens → alertes fausses.
     # Doctor doit être strict : type inconnu = PROBLEM rc2, pas un warning muet.
-    try:
-        from .providers.registry import discover_provider_factories as _discover_factories
-
-        _supported = set(_discover_factories().keys())
-        _unknown: list[str] = []
-        for _src in cfg.session_sources:
-            if not isinstance(_src, dict):
-                _unknown.append(repr(_src))
-                continue
-            if _src.get("enabled", True) is False:
-                continue
-            _t = _src.get("type")
-            if not isinstance(_t, str) or _t not in _supported:
-                _unknown.append(repr(_t))
-        if _unknown:
-            problems.append(
-                f"session_sources contient des types inconnus {sorted(set(_unknown))}"
-                f" — types supportés: {sorted(_supported)} — corriger weekly-telemetry-config.json"
-            )
-    except Exception:  # pragma: no cover - diagnostic best-effort
-        pass
+    _unknown, _supported = _unknown_session_source_types(cfg)
+    if _unknown:
+        problems.append(
+            f"session_sources contient des types inconnus {_unknown}"
+            f" — types supportés: {_supported} — corriger weekly-telemetry-config.json"
+        )
 
     # Garde-fou : un output_dir résolu sous .opencode/plugins/ signale un run
     # lancé avec cwd = moteur du plugin — les artefacts (reports/, baselines)

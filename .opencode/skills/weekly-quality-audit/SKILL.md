@@ -130,7 +130,26 @@ identifiable dans le frontmatter/description du skill.
 | `skill-improvement` | Skill existant dont l'usage est défaillant (frontmatter/description mal calibré) — boucle raffinement R7 |
 | `model-mismatch` | Modèle surdimensionné pour la tâche (coût/min actif anormal) |
 | `command-improvement` | Session coûteuse lancée par une commande existante → garde-fous manquants |
+| `non-spec-driven` | Session coûteuse (`session_classifications.cost_usd` élevé) sans preuve spec-driven (`spec_driven: false`) → recommander un cadrage amont |
+| `code-non-relu` | Édits jamais relus (`production_review_measured > 0`, `production_review_pct == 0`) → recommander une relecture systématique |
+| `low-maturity-prompt` | Prompt de faible maturité (`prompt_maturity_grade: F`) → recommander une hygiène de prompting |
 | `environment-change` | Constat dont la cible est hors `project_root` ou non écrasable (report-only) |
+
+### Catégories alimentées par `session_classifications` (P6, déterministe)
+
+Le bloc `session_classifications` du summary fournit un signal par session (aucun
+choix LLM) : `non-spec-driven`, `code-non-relu` et `low-maturity-prompt` sont
+priorisés par `audit-candidates` et ne doivent être émis qu'avec les
+`recommendation_type` existants :
+
+| Catégorie | `recommendation_type` |
+|---|---|
+| `non-spec-driven` | `prompting-habit` (cadrage amont : spec/PRD avant implémentation) |
+| `code-non-relu` | `prompting-habit` (relecture systématique après édit) |
+| `low-maturity-prompt` | `prompting-habit` (hygiène de prompting : spécificité/contexte/contrainte/vérifiabilité) |
+
+Ces constats n'ajoutent pas de catégorie de recommandation : ils réutilisent
+`prompting-habit` pour rester dans l'échelle de drafting existante.
 
 ## Schéma du fichier findings (JSON strict, archive)
 

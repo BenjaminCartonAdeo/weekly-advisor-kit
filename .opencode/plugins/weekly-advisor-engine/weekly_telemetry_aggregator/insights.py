@@ -72,6 +72,114 @@ def _pct_delta(current: float | None, previous: float | None) -> float | None:
     return round((current - previous) / previous * 100, 1)
 
 
+# ------------------------------------------------------------------ compute helpers
+
+def _lint_delta_by_rule(
+    current_digest: dict | None,
+    previous_digest: dict | None,
+    harness_ignored_rules: list[str] | None,
+) -> dict | None:
+    """Deltas de violations par règle (None si digest manquant — jamais d'échec)."""
+    if current_digest is None or previous_digest is None:
+        return None
+    ignored = set(harness_ignored_rules or [])
+
+    def _rule_counts(digest: dict) -> dict:
+        counts: dict[str, int] = {}
+        for f in flatten_harness_findings(digest):
+            key = str(f.get("rule") or f.get("severity") or "unknown")
+            if key in ignored:
+                continue
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    cur_counts = _rule_counts(current_digest)
+    prev_counts = _rule_counts(previous_digest)
+    return {
+        r: cur_counts.get(r, 0) - prev_counts.get(r, 0)
+        for r in sorted(set(cur_counts) | set(prev_counts))
+    }
+
+
+def _collect_cost_discrepancies(current_summary: dict) -> list[dict]:
+    """Écarts cross-check structurés K7 (parts lifetime vs session_v2 lifetime)."""
+    discrepancies: list[dict] = []
+    for w in current_summary.get("warnings", []):
+        msg = w.get("message", "")
+        if "cross-check mismatch" not in msg:
+            continue
+        parts_cost = w.get("parts_cost")
+        session_v2_cost = w.get("session_v2_cost")
+        if parts_cost is None or session_v2_cost is None:
+            continue
+        discrepancies.append(
+            {
+                "session_id": w.get("session_id"),
+                "parts_cost_usd": parts_cost,
+                "session_v2_cost_usd": session_v2_cost,
+            }
+        )
+    return discrepancies
+
+
+def _month_cost(recent_summaries: list[dict], run_time: datetime) -> float:
+    """Coût cumulé 30j glissants (inclus current en tête de liste)."""
+    month_start = run_time - timedelta(days=30)
+    total = 0.0
+    for s in recent_summaries:
+        gen = parse_iso_ts(s.get("generated_at")) or run_time
+        if month_start <= gen <= run_time:
+            total += s.get("totals", {}).get("total_cost_usd", 0.0)
+    return total
+
+
+def _spike_baseline(recent_summaries: list[dict]) -> tuple[list[float], int]:
+    """Baseline quotidienne hors run courant (zéro ignoré)."""
+    costs: list[float] = []
+    days = 0
+    for s in recent_summaries[1:]:
+        for d in s.get("daily_totals", []):
+            cost = float(d.get("cost_usd", 0.0))
+            if cost == 0:
+                continue
+            costs.append(cost)
+            days += 1
+    return costs, days
+
+
+def _daily_spike_alerts(
+    current_summary: dict,
+    baseline: list[float],
+    z_min: float,
+) -> list[dict]:
+    """Un alert par jour courant anormal vs baseline (z robuste, borné)."""
+    alerts: list[dict] = []
+    if not baseline:
+        return alerts
+    for day in current_summary.get("daily_totals", []):
+        cost = float(day.get("cost_usd", 0.0))
+        if cost == 0:
+            continue
+        combined = baseline + [cost]
+        zmap = {
+            round(c, 4): z for c, z in zip(combined, _robust_z_scores(combined), strict=False)
+        }
+        raw_z = zmap.get(round(cost, 4), 0.0)
+        if raw_z >= z_min:
+            z = min(raw_z, DAILY_SPIKE_Z_CAP)
+            alerts.append(
+                {
+                    "rule": "daily_spike_z_min",
+                    "threshold": z_min,
+                    "observed": round(z, 2),
+                    "severity": "medium",
+                    "day": day.get("date"),
+                    "note": "MAD≈0, z borné" if raw_z > DAILY_SPIKE_Z_CAP else "",
+                }
+            )
+    return alerts
+
+
 # ------------------------------------------------------------------ pure compute
 
 
@@ -112,47 +220,14 @@ def compute(
     )
 
     # ---- lint deltas (null if either digest missing — never fail insights) ----
-    lint_delta: dict | None = None
-    if current_digest is not None and previous_digest is not None:
-        ignored = set(harness_ignored_rules or [])
-
-        def _rule_counts(digest: dict) -> dict:
-            counts: dict[str, int] = {}
-            for f in flatten_harness_findings(digest):
-                key = str(f.get("rule") or f.get("severity") or "unknown")
-                if key in ignored:
-                    continue
-                counts[key] = counts.get(key, 0) + 1
-            return counts
-
-        cur_counts = _rule_counts(current_digest)
-        prev_counts = _rule_counts(previous_digest)
-        lint_delta = {
-            r: cur_counts.get(r, 0) - prev_counts.get(r, 0)
-            for r in sorted(set(cur_counts) | set(prev_counts))
-        }
+    lint_delta = _lint_delta_by_rule(current_digest, previous_digest, harness_ignored_rules)
 
     previous_run_date = None
     if previous_summary:
         previous_run_date = previous_summary["generated_at"][:10]
 
     # K7: écarts cross-check structurés (parts lifetime vs session_v2 lifetime).
-    cost_discrepancies: list[dict] = []
-    for w in current_summary.get("warnings", []):
-        msg = w.get("message", "")
-        if "cross-check mismatch" not in msg:
-            continue
-        parts_cost = w.get("parts_cost")
-        session_v2_cost = w.get("session_v2_cost")
-        if parts_cost is None or session_v2_cost is None:
-            continue
-        cost_discrepancies.append(
-            {
-                "session_id": w.get("session_id"),
-                "parts_cost_usd": parts_cost,
-                "session_v2_cost_usd": session_v2_cost,
-            }
-        )
+    cost_discrepancies = _collect_cost_discrepancies(current_summary)
 
     deltas = {
         "cost_wow_pct": _pct_delta(current_cost, previous_cost),
@@ -200,12 +275,7 @@ def compute(
             }
         )
 
-    month_start = run_time - timedelta(days=30)
-    month_cost = 0.0
-    for s in recent_summaries:
-        gen = parse_iso_ts(s.get("generated_at")) or run_time
-        if month_start <= gen <= run_time:
-            month_cost += s.get("totals", {}).get("total_cost_usd", 0.0)
+    month_cost = _month_cost(recent_summaries, run_time)
     if month_cost > insights_cfg.monthly_budget_usd:
         alerts.append(
             {
@@ -221,38 +291,10 @@ def compute(
             }
         )
 
-    baseline_costs, baseline_days = [], 0
-    for s in recent_summaries[1:]:
-        for d in s.get("daily_totals", []):
-            cost = float(d.get("cost_usd", 0.0))
-            if cost == 0:
-                continue
-            baseline_costs.append(cost)
-            baseline_days += 1
-    if baseline_costs:
-        baseline_list = baseline_costs
-        # z of each current day vs the baseline distribution:
-        for day in current_summary.get("daily_totals", []):
-            cost = float(day.get("cost_usd", 0.0))
-            if cost == 0:
-                continue
-            combined = baseline_list + [cost]
-            zmap = {
-                round(c, 4): z for c, z in zip(combined, _robust_z_scores(combined), strict=False)
-            }
-            raw_z = zmap.get(round(cost, 4), 0.0)
-            if raw_z >= insights_cfg.daily_spike_z_min:
-                z = min(raw_z, DAILY_SPIKE_Z_CAP)
-                alerts.append(
-                    {
-                        "rule": "daily_spike_z_min",
-                        "threshold": insights_cfg.daily_spike_z_min,
-                        "observed": round(z, 2),
-                        "severity": "medium",
-                        "day": day.get("date"),
-                        "note": "MAD≈0, z borné" if raw_z > DAILY_SPIKE_Z_CAP else "",
-                    }
-                )
+    baseline_costs, baseline_days = _spike_baseline(recent_summaries)
+    alerts.extend(
+        _daily_spike_alerts(current_summary, baseline_costs, insights_cfg.daily_spike_z_min)
+    )
 
     if current_cache is not None and current_cache < insights_cfg.cache_hit_rate_min:
         alerts.append(
@@ -401,123 +443,26 @@ def compute(
                 "target": None,
             }
         )
-    runs = [s.get("skills_never_loaded", []) for s in recent_summaries]
-    never_loaded_consecutive: dict[str, int] = {}
-    if current_summary.get("skills_never_loaded"):
-        for skill in sorted(current_summary["skills_never_loaded"]):
-            count = 0
-            for run_skills in runs:
-                if skill in run_skills:
-                    count += 1
-                else:
-                    break
-            never_loaded_consecutive[skill] = count
-            if count >= insights_cfg.never_loaded_runs_threshold and not _ignored(
-                ignored_findings, "skill-maintenance", skill
-            ):
-                overlap = bool(
-                    current_digest and current_digest.get("triggers", {}).get("overlaps")
-                )
-                severity = "high" if overlap else "medium"
-                targets = (current_summary.get("skills_targets") or {}).get(skill, [])
-                cible = f" (cible déclarée : {', '.join(targets)})" if targets else ""
-                findings.append(
-                    {
-                        "session_id": None,
-                        "category": "retire-candidate",
-                        "severity": severity,
-                        "description": f"skill '{skill}' jamais chargé sur {count} runs consécutifs"
-                        + cible
-                        + (" + chevauchement de déclencheurs" if overlap else ""),
-                        "evidence_summary": f"skills_never_loaded: {count}/{len(runs)} runs"
-                        + (" ; lint trigger-overlap présent" if overlap else ""),
-                        "recommendation": f"Retirer .opencode/skills/{skill}/SKILL.md après revue",
-                        "recommendation_type": "skill-maintenance",
-                        "impact_order_of_magnitude": "small",
-                    }
-                )
+    _retire, never_loaded_consecutive = _retire_candidates(
+        current_summary, recent_summaries, insights_cfg, ignored_findings, current_digest
+    )
+    findings.extend(_retire)
 
-    for pair in current_summary.get("skill_similar_pairs", []):
-        skills = list(pair.get("skills", []))
-        if not skills:
-            continue
-        target = skills[0]
-        if _ignored(ignored_findings, "skill-maintenance", target):
-            continue
-        findings.append(
-            {
-                "session_id": None,
-                "category": "merge-candidate",
-                "severity": "medium",
-                "description": f"skills '{skills[0]}' et '{skills[1]}' probablement redondants",
-                "evidence_summary": f"similarité difflib {pair.get('similarity', 0.0):.2f} ≥ {insights_cfg.skill_similarity_min if hasattr(insights_cfg, 'skill_similarity_min') else 0.8}",
-                "recommendation": "Fusion manuelle des deux SKILL.md après revue",
-                "recommendation_type": "skill-maintenance",
-                "impact_order_of_magnitude": "small",
-            }
-        )
+    _sim_min = (
+        insights_cfg.skill_similarity_min
+        if hasattr(insights_cfg, "skill_similarity_min")
+        else 0.8
+    )
+    findings.extend(_merge_candidates(current_summary, ignored_findings, _sim_min))
 
-    # token-risk (v6.0.q) : sessions top-coût dépassant le cap de tokens
-    # (drivers réels : context-bloat / loops swarm silent-empty).
-    token_cap = insights_cfg.session_token_cap
-    for s in current_summary.get("top_sessions_by_cost", []):
-        total = s.get("total_tokens") or 0
-        if total > token_cap:
-            sid = s.get("session_id")
-            if _ignored(ignored_findings, "token-risk", sid or ""):
-                continue
-            findings.append(
-                {
-                    "session_id": sid,
-                    "category": "token-risk",
-                    "severity": "medium",
-                    "description": (
-                        f"session {sid} : {total:,} tokens > cap {token_cap:,} "
-                        f"(coût ${s.get('cost_usd', 0.0):.2f})"
-                    ),
-                    "evidence_summary": f"top_sessions_by_cost: {total} tokens",
-                    "recommendation": (
-                        "réduire le context-bloat (lectures répétées de gros fichiers) "
-                        "et les loops swarm silent-empty (worker task_result vide)"
-                    ),
-                    "recommendation_type": "token-budget",
-                    "impact_order_of_magnitude": "medium",
-                }
-            )
+    findings.extend(_token_risk_findings(current_summary, insights_cfg, ignored_findings))
 
-    # R4/R5 from lint digest findings (v1: report only, never automatic)
-    trivial_kw = ("frontmatter", "description", "missing", "invalid")
-    seen_rules: set[str] = set()
-    if isinstance(current_digest, dict):
-        for f in flatten_harness_findings(current_digest):
-            if str(f.get("rule") or "") in set(harness_ignored_rules or []):
-                continue
-            if not isinstance(f, dict):
-                continue
-            rule = str(f.get("rule") or f.get("id") or "unknown")
-            message = str(f.get("message") or f.get("detail") or "")
-            if rule in seen_rules:
-                continue
-            seen_rules.add(rule)
-            low = any(k in rule.lower() or k in message.lower() for k in trivial_kw)
-            if _ignored(ignored_findings, "harness-fix", rule):
-                continue
-            findings.append(
-                {
-                    "session_id": None,
-                    "category": "fix-candidate",
-                    "severity": "low" if low else "medium",
-                    "description": f"violation harness '{rule}'"
-                    + ("" if not low else " (format triviale)"),
-                    "evidence_summary": message[:200] or f"{rule}: {f.get('severity', '')}",
-                    "recommendation": "Correction manuelle (R4: corrigeable en auto-fix v2 ; R5: jamais automatique)",
-                    "recommendation_type": "harness-fix",
-                    "impact_order_of_magnitude": "small",
-                }
-            )
+    findings.extend(
+        _harness_fix_findings(current_digest, harness_ignored_rules, ignored_findings)
+    )
 
     stats = {
-        "runs_scanned": len(runs),
+        "runs_scanned": len(recent_summaries),
         "skills_in_catalog": current_summary.get("skill_catalog_count", DEFAULT_CATALOG_COUNT),
         "never_loaded_consecutive": dict(sorted(never_loaded_consecutive.items())),
         "spike_baseline_days": baseline_days,
@@ -589,6 +534,152 @@ def flatten_harness_findings(digest: dict | None) -> list[dict]:
             }
         )
         finding_rules.add(str(rec["rule"]))
+    return out
+
+
+def _retire_candidates(
+    current_summary: dict,
+    recent_summaries: list[dict],
+    insights_cfg: InsightsConfig,
+    ignored_findings: list[str],
+    current_digest: dict | None,
+) -> tuple[list[dict], dict[str, int]]:
+    """R1 retire-candidates : skills jamais chargés N runs consécutifs."""
+    out: list[dict] = []
+    runs = [s.get("skills_never_loaded", []) for s in recent_summaries]
+    consecutive: dict[str, int] = {}
+    if current_summary.get("skills_never_loaded"):
+        for skill in sorted(current_summary["skills_never_loaded"]):
+            count = 0
+            for run_skills in runs:
+                if skill in run_skills:
+                    count += 1
+                else:
+                    break
+            consecutive[skill] = count
+            if count >= insights_cfg.never_loaded_runs_threshold and not _ignored(
+                ignored_findings, "skill-maintenance", skill
+            ):
+                overlap = bool(
+                    current_digest and current_digest.get("triggers", {}).get("overlaps")
+                )
+                severity = "high" if overlap else "medium"
+                targets = (current_summary.get("skills_targets") or {}).get(skill, [])
+                cible = f" (cible déclarée : {', '.join(targets)})" if targets else ""
+                out.append(
+                    {
+                        "session_id": None,
+                        "category": "retire-candidate",
+                        "severity": severity,
+                        "description": f"skill '{skill}' jamais chargé sur {count} runs consécutifs"
+                        + cible
+                        + (" + chevauchement de déclencheurs" if overlap else ""),
+                        "evidence_summary": f"skills_never_loaded: {count}/{len(runs)} runs"
+                        + (" ; lint trigger-overlap présent" if overlap else ""),
+                        "recommendation": f"Retirer .opencode/skills/{skill}/SKILL.md après revue",
+                        "recommendation_type": "skill-maintenance",
+                        "impact_order_of_magnitude": "small",
+                    }
+                )
+    return out, consecutive
+
+
+def _merge_candidates(
+    current_summary: dict, ignored_findings: list[str], min_similarity: float = 0.8
+) -> list[dict]:
+    """R2 merge-candidates : paires de skills probablement redondantes."""
+    out: list[dict] = []
+    for pair in current_summary.get("skill_similar_pairs", []):
+        skills = list(pair.get("skills", []))
+        if not skills:
+            continue
+        target = skills[0]
+        if _ignored(ignored_findings, "skill-maintenance", target):
+            continue
+        out.append(
+            {
+                "session_id": None,
+                "category": "merge-candidate",
+                "severity": "medium",
+                "description": f"skills '{skills[0]}' et '{skills[1]}' probablement redondants",
+                "evidence_summary": f"similarité difflib {pair.get('similarity', 0.0):.2f} ≥ {min_similarity}",
+                "recommendation": "Fusion manuelle des deux SKILL.md après revue",
+                "recommendation_type": "skill-maintenance",
+                "impact_order_of_magnitude": "small",
+            }
+        )
+    return out
+
+
+def _token_risk_findings(
+    current_summary: dict, insights_cfg: InsightsConfig, ignored_findings: list[str]
+) -> list[dict]:
+    """R3 token-risk : sessions top-coût au-delà du cap de tokens."""
+    out: list[dict] = []
+    token_cap = insights_cfg.session_token_cap
+    for s in current_summary.get("top_sessions_by_cost", []):
+        total = s.get("total_tokens") or 0
+        if total > token_cap:
+            sid = s.get("session_id")
+            if _ignored(ignored_findings, "token-risk", sid or ""):
+                continue
+            out.append(
+                {
+                    "session_id": sid,
+                    "category": "token-risk",
+                    "severity": "medium",
+                    "description": (
+                        f"session {sid} : {total:,} tokens > cap {token_cap:,} "
+                        f"(coût ${s.get('cost_usd', 0.0):.2f})"
+                    ),
+                    "evidence_summary": f"top_sessions_by_cost: {total} tokens",
+                    "recommendation": (
+                        "réduire le context-bloat (lectures répétées de gros fichiers) "
+                        "et les loops swarm silent-empty (worker task_result vide)"
+                    ),
+                    "recommendation_type": "token-budget",
+                    "impact_order_of_magnitude": "medium",
+                }
+            )
+    return out
+
+
+def _harness_fix_findings(
+    current_digest: dict | None,
+    harness_ignored_rules: list[str] | None,
+    ignored_findings: list[str],
+) -> list[dict]:
+    """R4/R5 harness-fix : violations digest, report-only jamais automatique."""
+    out: list[dict] = []
+    trivial_kw = ("frontmatter", "description", "missing", "invalid")
+    seen_rules: set[str] = set()
+    if isinstance(current_digest, dict):
+        for f in flatten_harness_findings(current_digest):
+            if str(f.get("rule") or "") in set(harness_ignored_rules or []):
+                continue
+            if not isinstance(f, dict):
+                continue
+            rule = str(f.get("rule") or f.get("id") or "unknown")
+            message = str(f.get("message") or f.get("detail") or "")
+            if rule in seen_rules:
+                continue
+            seen_rules.add(rule)
+            low = any(k in rule.lower() or k in message.lower() for k in trivial_kw)
+            if _ignored(ignored_findings, "harness-fix", rule):
+                continue
+            out.append(
+                {
+                    "session_id": None,
+                    "category": "fix-candidate",
+                    "severity": "low" if low else "medium",
+                    "description": f"violation harness '{rule}'"
+                    + ("" if not low else " (format triviale)"),
+                    "evidence_summary": message[:200] or f"{rule}: {f.get('severity', '')}",
+                    "recommendation": "Correction manuelle (R4: corrigeable en auto-fix v2 ; R5: jamais automatique)",
+                    "recommendation_type": "harness-fix",
+                    "impact_order_of_magnitude": "small",
+                }
+            )
     return out
 
 

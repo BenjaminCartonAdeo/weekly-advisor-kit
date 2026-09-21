@@ -37,7 +37,7 @@ Sous-commandes (table déclarative `_SUBCOMMANDS` dans
 | Insights / curation | `insights`, `skill-curate` |
 | Drafting | `draft-candidates`, `commit-draft` |
 | Rapport | `report-prep`, `report-blocks-draft`, `report-assemble` |
-| Divers | `self-cost`, `doctor` |
+| Divers | `self-cost`, `doctor`, `debug-rule` |
 
 Les handlers référencés par la table sont résolus à l'exécution
 (`globals()[func.__name__]`), ce qui préserve la substitution des handlers dans
@@ -150,6 +150,39 @@ si la gate déterministe l'autorise (confiance élevée, règle explicitement
 autorisée, remplacement unique, ≤ 1 fichier par run) ; les règles `security/*`
 restent toujours bloquées.
 
+## Classification déterministe et règles déclaratives
+
+`classifiers.py` (P6) classe chaque session **sans LLM** : intent
+(priorité planning > debug > review > explore > implementation), session
+spec-driven (preuves regex : chemin `spec|prd|plan…`, mots modaux, listes
+markdown, `/plan`), relecture production (gap > 30 s après un edit/write,
+`% relu`, `review-unmeasurable:<harness>` si timestamps indisponibles — jamais
+0 mensonger) et maturité de prompt (5 dimensions, grades A≥80 / B≥65 / C≥50 /
+D≥40 / F<40). Le bloc **additif** `session_classifications` de
+`weekly-summary` (schema_version inchangé) alimente `audit-candidates`
+(priorités `code-non-relu`, `maturity-F`, `non-spec` coûteuse — plafond
+`audit_max_sessions` inchangé) et les catégories du skill
+`weekly-quality-audit` (`non-spec-driven`, `code-non-relu`,
+`low-maturity-prompt`).
+
+Le moteur de règles déclaratives (P1) vit dans `rules/` (règles `.md`
+versionnées : frontmatter YAML + sections Description / When Triggered / How
+to Improve / Examples + blocs `` ```detect `` / `` ```test `` exécutés par
+pytest), `rule_loader.py` (mini-YAML déterministe maison, `extends` par
+préfixe `+` avec fusion clé à clé) et `rule_pipeline.py` (DSL
+`scan/match/aggregate/check` évalué par **AST whitelisté, sans `eval`**,
+placeholders `{{count}}`/`{{pct}}`/`{{extra.*}}`/`{{thresholds.*}}`, findings
+uniformes triés par id, tests de règles embarqués via `run_rule_tests`). V1 :
+les règles sont versionnées et testées, évaluées à la demande via le
+playground — leur consommation automatique dans le pipeline `run` n'est pas
+encore câblée.
+
+`debug-rule` (P2) est un playground **lecture seule** sur le run actif
+(`resolve_active_run_dir`) : `evaluate <rule-id|expression>`, `fields`
+(catalogue typé + arités DSL), `distributions [filtre]` (top valeurs,
+min/max, sample size) ; rc 2 si le résumé est absent/invalide ou l'entrée
+inconnue.
+
 ## Qualité, tests et CI
 
 - `pytest` (moteur) est la source de vérité ; `--collect-only` est réservé au
@@ -186,5 +219,5 @@ stricte des skills `origin=user`.
 ## Annexes
 
 - [Schémas des artefacts JSON](schemas/README.md)
-- Diagrammes (HTML, source unique) : [`doc/diagrams/`](../diagrams/) —
-  architecture, classes, séquences `weekly-run`, `doctor`, `commit-draft`.
+- Diagrammes (HTML source, exports SVG/PNG) : [`doc/diagrams/`](../diagrams/) —
+  architecture, classes, séquences `weekly-run`, `doctor`, `commit-draft` (chaque `*.html` a son `*.svg` et `*.png` générés à l'identique, voir `doc/diagrams/README.md`).

@@ -258,6 +258,194 @@ def load_config(path: str | Path | None = None) -> TelemetryConfig:
     return TelemetryConfig()
 
 
+def _parse_harness_include(raw: dict, cfg: TelemetryConfig) -> None:
+    include_raw = raw.get("harness_include")
+    harness_include = cfg.harness_include
+    if isinstance(include_raw, str):
+        harness_include = replace(harness_include, default_profile=include_raw)
+    elif isinstance(include_raw, list):
+        profiles = dict(harness_include.profiles)
+        profiles[harness_include.default_profile] = [str(x) for x in include_raw]
+        harness_include = replace(harness_include, profiles=profiles)
+    elif isinstance(include_raw, dict):
+        profile = include_raw.get("default_profile")
+        if isinstance(profile, str) and profile:
+            harness_include = replace(harness_include, default_profile=profile)
+        profiles = include_raw.get("profiles")
+        if isinstance(profiles, dict):
+            merged = dict(harness_include.profiles)
+            for name, patterns in profiles.items():
+                if isinstance(name, str) and isinstance(patterns, list):
+                    merged[name] = [str(x) for x in patterns]
+            harness_include = replace(harness_include, profiles=merged)
+        patterns = include_raw.get("patterns")
+        if isinstance(patterns, list):
+            merged = dict(harness_include.profiles)
+            merged[harness_include.default_profile] = [str(x) for x in patterns]
+            harness_include = replace(harness_include, profiles=merged)
+        excludes = include_raw.get("exclude_patterns", include_raw.get("excludes"))
+        if isinstance(excludes, list):
+            harness_include = replace(harness_include, exclude_patterns=[str(x) for x in excludes])
+    cfg.harness_include = harness_include
+
+
+def _parse_session_sources(raw: dict, cfg: TelemetryConfig) -> None:
+    sources_raw = raw.get("session_sources")
+    if isinstance(sources_raw, list):
+        parsed_sources: list[dict] = []
+        for entry in sources_raw:
+            if not isinstance(entry, dict):
+                continue
+            stype = entry.get("type")
+            if not isinstance(stype, str) or not stype.strip():
+                continue
+            source: dict = {"type": stype.strip(), "enabled": bool(entry.get("enabled", True))}
+            for key, value in entry.items():
+                if key not in ("type", "enabled"):
+                    source[key] = value
+            parsed_sources.append(source)
+        cfg.session_sources = parsed_sources
+
+
+def _parse_draft_targets(raw: dict, cfg: TelemetryConfig) -> None:
+    dt_raw = raw.get("draft_targets")
+    if dt_raw is None:
+        return
+    if isinstance(dt_raw, list):
+        if not dt_raw:
+            cfg.draft_targets = replace(cfg.draft_targets, mode=MODE_LEGACY, targets=[])
+            return
+        names = [x.strip() for x in dt_raw if isinstance(x, str)]
+        known = set(DRAFT_TARGET_PRIORITY)
+        valid: list[str] = []
+        for name in names:
+            if name not in known:
+                warnings.warn(
+                    f"draft_targets : valeur inconnue {name!r} ignorée "
+                    f"— harnais connus : {sorted(known)}",
+                    stacklevel=3,
+                )
+            elif name not in valid:
+                valid.append(name)
+        if valid:
+            cfg.draft_targets = replace(cfg.draft_targets, mode="override", targets=valid)
+        else:
+            cfg.draft_targets = replace(cfg.draft_targets, mode=MODE_AUTO, targets=[])
+        return
+    warnings.warn(
+        f"draft_targets mal formé ({type(dt_raw).__name__}, liste attendue) "
+        "— fallback détection auto",
+        stacklevel=3,
+    )
+
+
+def _parse_watch(raw: dict, cfg: TelemetryConfig) -> None:
+    cfg.release_keywords = [str(x) for x in raw.get("release_keywords", cfg.release_keywords)]
+    cfg.watch_repos = [str(x) for x in raw.get("watch_repos", cfg.watch_repos)]
+    cfg.watch = []
+    for entry in raw.get("watch", []):
+        if not isinstance(entry, dict) or not entry.get("name"):
+            continue
+        watch_entry = {"type": str(entry.get("type", "repo")), "name": str(entry.get("name", ""))}
+        if watch_entry["type"] == "radar":
+            if entry.get("tool"):
+                watch_entry["tool"] = str(entry["tool"])
+            if entry.get("rss_fallback"):
+                watch_entry["rss_fallback"] = str(entry["rss_fallback"])
+            window_days = entry.get("window_days")
+            if isinstance(window_days, int) and not isinstance(window_days, bool) and window_days >= 1:
+                watch_entry["window_days"] = window_days
+        cfg.watch.append(watch_entry)
+    for repo in cfg.watch_repos:
+        if not any(w["name"] == repo for w in cfg.watch):
+            cfg.watch.append({"type": "repo", "name": repo})
+    cfg.ignored_findings = [str(x) for x in raw.get("ignored_findings", cfg.ignored_findings)]
+
+
+def _parse_paths(raw: dict, cfg: TelemetryConfig) -> None:
+    if raw.get("project_root"):
+        cfg.project_root = _expand(raw["project_root"])
+        if not cfg.project_root.is_dir():
+            warnings.warn(
+                f"project_root {cfg.project_root} inexistant ou non-répertoire "
+                "— vérifier weekly-telemetry-config.json",
+                stacklevel=3,
+            )
+    if raw.get("output_dir"):
+        cfg.output_dir = _abs(raw["output_dir"])
+    if "html_report_dir" in raw:
+        v = raw["html_report_dir"]
+        cfg.html_report_dir = None if v is None else str(v)
+    if "open_browser" in raw:
+        cfg.open_browser = bool(raw["open_browser"])
+    if raw.get("kit_root"):
+        cfg.kit_root = _expand(raw["kit_root"])
+
+
+def _parse_audit_insights(raw: dict, cfg: TelemetryConfig) -> None:
+    audit = raw.get("audit") or {}
+    cfg.audit = replace(
+        cfg.audit,
+        cost_per_active_minute_min=float(
+            audit.get("cost_per_active_minute_min", cfg.audit.cost_per_active_minute_min)
+        ),
+        cache_efficiency_gap=float(
+            audit.get("cache_efficiency_gap", cfg.audit.cache_efficiency_gap)
+        ),
+    )
+    ins = raw.get("insights") or {}
+    cfg.insights = replace(
+        cfg.insights,
+        weekly_budget_usd=float(ins.get("weekly_budget_usd", cfg.insights.weekly_budget_usd)),
+        monthly_budget_usd=float(ins.get("monthly_budget_usd", cfg.insights.monthly_budget_usd)),
+        daily_spike_z_min=float(ins.get("daily_spike_z_min", cfg.insights.daily_spike_z_min)),
+        cache_hit_rate_min=float(ins.get("cache_hit_rate_min", cfg.insights.cache_hit_rate_min)),
+        cost_wow_pct_max=float(ins.get("cost_wow_pct_max", cfg.insights.cost_wow_pct_max)),
+        lint_violations_max=int(ins.get("lint_violations_max", cfg.insights.lint_violations_max)),
+        lint_coverage_min=float(ins.get("lint_coverage_min", cfg.insights.lint_coverage_min)),
+        never_loaded_runs_threshold=int(
+            ins.get("never_loaded_runs_threshold", cfg.insights.never_loaded_runs_threshold)
+        ),
+        cache_write_zero_runs=int(
+            ins.get("cache_write_zero_runs", cfg.insights.cache_write_zero_runs)
+        ),
+    )
+
+
+def _parse_watch_distill(raw: dict, cfg: TelemetryConfig) -> None:
+    wds = raw.get("watch_distill")
+    if not isinstance(wds, dict):
+        return
+    wd_cfg = cfg.watch_distill
+    if isinstance(wds.get("enabled"), bool):
+        wd_cfg = replace(wd_cfg, enabled=wds["enabled"])
+    top_n = wds.get("top_n")
+    if isinstance(top_n, int) and not isinstance(top_n, bool) and top_n >= 1:
+        wd_cfg = replace(wd_cfg, top_n=top_n)
+    quotas_raw = wds.get("quotas")
+    if isinstance(quotas_raw, dict):
+        for cat in WATCH_QUOTAS:
+            value = quotas_raw.get(cat)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                wd_cfg = replace(wd_cfg, quotas={**wd_cfg.quotas, cat: value})
+    weights_raw = wds.get("weights")
+    if isinstance(weights_raw, dict):
+        for key in WATCH_DEFAULT_WEIGHTS:
+            value = weights_raw.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                wd_cfg = replace(wd_cfg, weights={**wd_cfg.weights, key: value})
+    memory_file = wds.get("memory_file")
+    if isinstance(memory_file, str) and memory_file.strip():
+        wd_cfg = replace(wd_cfg, memory_file=memory_file)
+    retention_weeks = wds.get("retention_weeks")
+    if isinstance(retention_weeks, int) and not isinstance(retention_weeks, bool) and retention_weeks >= 1:
+        wd_cfg = replace(wd_cfg, retention_weeks=retention_weeks)
+    min_candidates = wds.get("min_candidates")
+    if isinstance(min_candidates, int) and not isinstance(min_candidates, bool) and min_candidates >= 0:
+        wd_cfg = replace(wd_cfg, min_candidates=min_candidates)
+    cfg.watch_distill = wd_cfg
+
+
 def _parse(p: Path) -> TelemetryConfig:
     raw = json.loads(p.read_text(encoding="utf-8"))
     cfg = TelemetryConfig()
@@ -288,34 +476,7 @@ def _parse(p: Path) -> TelemetryConfig:
     auto_fix_max_files = raw.get("harness_auto_fix_max_files", cfg.harness_auto_fix_max_files)
     if isinstance(auto_fix_max_files, int) and not isinstance(auto_fix_max_files, bool):
         cfg.harness_auto_fix_max_files = max(0, auto_fix_max_files)
-    include_raw = raw.get("harness_include")
-    harness_include = cfg.harness_include
-    if isinstance(include_raw, str):
-        harness_include = replace(harness_include, default_profile=include_raw)
-    elif isinstance(include_raw, list):
-        profiles = dict(harness_include.profiles)
-        profiles[harness_include.default_profile] = [str(x) for x in include_raw]
-        harness_include = replace(harness_include, profiles=profiles)
-    elif isinstance(include_raw, dict):
-        profile = include_raw.get("default_profile")
-        if isinstance(profile, str) and profile:
-            harness_include = replace(harness_include, default_profile=profile)
-        profiles = include_raw.get("profiles")
-        if isinstance(profiles, dict):
-            merged = dict(harness_include.profiles)
-            for name, patterns in profiles.items():
-                if isinstance(name, str) and isinstance(patterns, list):
-                    merged[name] = [str(x) for x in patterns]
-            harness_include = replace(harness_include, profiles=merged)
-        patterns = include_raw.get("patterns")
-        if isinstance(patterns, list):
-            merged = dict(harness_include.profiles)
-            merged[harness_include.default_profile] = [str(x) for x in patterns]
-            harness_include = replace(harness_include, profiles=merged)
-        excludes = include_raw.get("exclude_patterns", include_raw.get("excludes"))
-        if isinstance(excludes, list):
-            harness_include = replace(harness_include, exclude_patterns=[str(x) for x in excludes])
-    cfg.harness_include = harness_include
+    _parse_harness_include(raw, cfg)
     _bsv = raw.get("baseline_summary_path")
     cfg.baseline_summary_path = str(_bsv) if _bsv else None
     cfg.blocks_min_words = _get("blocks_min_words", cfg.blocks_min_words, int)
@@ -338,175 +499,10 @@ def _parse(p: Path) -> TelemetryConfig:
     cfg.git_email = str(raw.get("git_email", cfg.git_email))
     cfg.advisor_run_title = str(raw.get("advisor_run_title", cfg.advisor_run_title))
     cfg.opencode_db_path = str(raw.get("opencode_db_path", cfg.opencode_db_path))
-    # Sources de sessions multi-harnais — validation tolérante : entrées non-dict
-    # ou sans "type" ignorées ; défaut conservé si la clé est absente/mal formée.
-    sources_raw = raw.get("session_sources")
-    if isinstance(sources_raw, list):
-        parsed_sources: list[dict] = []
-        for entry in sources_raw:
-            if not isinstance(entry, dict):
-                continue
-            stype = entry.get("type")
-            if not isinstance(stype, str) or not stype.strip():
-                continue
-            source: dict = {"type": stype.strip(), "enabled": bool(entry.get("enabled", True))}
-            for key, value in entry.items():
-                if key not in ("type", "enabled"):
-                    source[key] = value
-            parsed_sources.append(source)
-        cfg.session_sources = parsed_sources
-    # Cibles de drafting mono-cible (cellule 2.1) — tolérant, style fail-soft :
-    #   clé absente/null → auto (détection par marqueurs au doctor/run) ;
-    #   liste vide []    → legacy (toutes les cibles, comportement historique) ;
-    #   liste non vide   → override (valeurs inconnues ignorées avec warning ;
-    #                      aucune valeur valide restante → fallback auto) ;
-    #   autre type       → warning + auto.
-    dt_raw = raw.get("draft_targets")
-    if dt_raw is None:
-        pass  # absent → défaut auto conservé
-    elif isinstance(dt_raw, list):
-        if not dt_raw:
-            cfg.draft_targets = replace(cfg.draft_targets, mode=MODE_LEGACY, targets=[])
-        else:
-            names = [x.strip() for x in dt_raw if isinstance(x, str)]
-            known = set(DRAFT_TARGET_PRIORITY)
-            valid: list[str] = []
-            for name in names:
-                if name not in known:
-                    warnings.warn(
-                        f"draft_targets : valeur inconnue {name!r} ignorée "
-                        f"— harnais connus : {sorted(known)}",
-                        stacklevel=2,
-                    )
-                elif name not in valid:
-                    valid.append(name)
-            if valid:
-                cfg.draft_targets = replace(cfg.draft_targets, mode="override", targets=valid)
-            else:
-                cfg.draft_targets = replace(cfg.draft_targets, mode=MODE_AUTO, targets=[])
-    else:
-        warnings.warn(
-            f"draft_targets mal formé ({type(dt_raw).__name__}, liste attendue) "
-            "— fallback détection auto",
-            stacklevel=2,
-        )
-    cfg.release_keywords = [str(x) for x in raw.get("release_keywords", cfg.release_keywords)]
-    cfg.watch_repos = [str(x) for x in raw.get("watch_repos", cfg.watch_repos)]
-    cfg.watch = []
-    for entry in raw.get("watch", []):
-        if not isinstance(entry, dict) or not entry.get("name"):
-            continue
-        watch_entry = {"type": str(entry.get("type", "repo")), "name": str(entry.get("name", ""))}
-        if watch_entry["type"] == "radar":
-            # clés propres au type radar (Task 4) — sources déclaratives uniquement.
-            if entry.get("tool"):
-                watch_entry["tool"] = str(entry["tool"])
-            if entry.get("rss_fallback"):
-                watch_entry["rss_fallback"] = str(entry["rss_fallback"])
-            window_days = entry.get("window_days")
-            if (
-                isinstance(window_days, int)
-                and not isinstance(window_days, bool)
-                and window_days >= 1
-            ):
-                watch_entry["window_days"] = window_days
-        cfg.watch.append(watch_entry)
-    # rétrocompat : watch_repos → entrées type repo (dédupliquées)
-    for repo in cfg.watch_repos:
-        if not any(w["name"] == repo for w in cfg.watch):
-            cfg.watch.append({"type": "repo", "name": repo})
-    cfg.ignored_findings = [str(x) for x in raw.get("ignored_findings", cfg.ignored_findings)]
-    if raw.get("project_root"):
-        cfg.project_root = _expand(raw["project_root"])
-        if not cfg.project_root.is_dir():
-            # #11 : signal précoce au parse (fail-soft conservé, jamais bloquant) —
-            # sinon le défaut n'est nommé que plus tard, au doctor/run.
-            warnings.warn(
-                f"project_root {cfg.project_root} inexistant ou non-répertoire "
-                "— vérifier weekly-telemetry-config.json",
-                stacklevel=2,
-            )
-    if raw.get("output_dir"):
-        # X4 : normalisé ABSOLU à la source — toute réponse de tool dérive de
-        # output_dir ; relatif, chaque réponse porterait un chemin dépendant
-        # du cwd que l'agent devrait deviner (incident post-run 07:41).
-        cfg.output_dir = _abs(raw["output_dir"])
-    if "html_report_dir" in raw:
-        # None/absent → défaut <project_root>/reports/html ; "" explicite → désactivé.
-        v = raw["html_report_dir"]
-        cfg.html_report_dir = None if v is None else str(v)
-    if "open_browser" in raw:
-        cfg.open_browser = bool(raw["open_browser"])
-    if raw.get("kit_root"):
-        cfg.kit_root = _expand(raw["kit_root"])
-
-    audit = raw.get("audit") or {}
-    cfg.audit = replace(
-        cfg.audit,
-        cost_per_active_minute_min=float(
-            audit.get("cost_per_active_minute_min", cfg.audit.cost_per_active_minute_min)
-        ),
-        cache_efficiency_gap=float(
-            audit.get("cache_efficiency_gap", cfg.audit.cache_efficiency_gap)
-        ),
-    )
-
-    ins = raw.get("insights") or {}
-    cfg.insights = replace(
-        cfg.insights,
-        weekly_budget_usd=float(ins.get("weekly_budget_usd", cfg.insights.weekly_budget_usd)),
-        monthly_budget_usd=float(ins.get("monthly_budget_usd", cfg.insights.monthly_budget_usd)),
-        daily_spike_z_min=float(ins.get("daily_spike_z_min", cfg.insights.daily_spike_z_min)),
-        cache_hit_rate_min=float(ins.get("cache_hit_rate_min", cfg.insights.cache_hit_rate_min)),
-        cost_wow_pct_max=float(ins.get("cost_wow_pct_max", cfg.insights.cost_wow_pct_max)),
-        lint_violations_max=int(ins.get("lint_violations_max", cfg.insights.lint_violations_max)),
-        lint_coverage_min=float(ins.get("lint_coverage_min", cfg.insights.lint_coverage_min)),
-        never_loaded_runs_threshold=int(
-            ins.get("never_loaded_runs_threshold", cfg.insights.never_loaded_runs_threshold)
-        ),
-        cache_write_zero_runs=int(
-            ins.get("cache_write_zero_runs", cfg.insights.cache_write_zero_runs)
-        ),
-    )
-
-    # Distill déterministe (étape 2.2) — style fail-soft : clé absente/mal
-    # formée → défauts conservés ; valeurs hors type/hors bornes ignorées.
-    wds = raw.get("watch_distill")
-    if isinstance(wds, dict):
-        wd_cfg = cfg.watch_distill
-        if isinstance(wds.get("enabled"), bool):
-            wd_cfg = replace(wd_cfg, enabled=wds["enabled"])
-        top_n = wds.get("top_n")
-        if isinstance(top_n, int) and not isinstance(top_n, bool) and top_n >= 1:
-            wd_cfg = replace(wd_cfg, top_n=top_n)
-        quotas_raw = wds.get("quotas")
-        if isinstance(quotas_raw, dict):
-            for cat in WATCH_QUOTAS:
-                value = quotas_raw.get(cat)
-                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-                    wd_cfg = replace(wd_cfg, quotas={**wd_cfg.quotas, cat: value})
-        weights_raw = wds.get("weights")
-        if isinstance(weights_raw, dict):
-            for key in WATCH_DEFAULT_WEIGHTS:
-                value = weights_raw.get(key)
-                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-                    wd_cfg = replace(wd_cfg, weights={**wd_cfg.weights, key: value})
-        memory_file = wds.get("memory_file")
-        if isinstance(memory_file, str) and memory_file.strip():
-            wd_cfg = replace(wd_cfg, memory_file=memory_file)
-        retention_weeks = wds.get("retention_weeks")
-        if (
-            isinstance(retention_weeks, int)
-            and not isinstance(retention_weeks, bool)
-            and retention_weeks >= 1
-        ):
-            wd_cfg = replace(wd_cfg, retention_weeks=retention_weeks)
-        min_candidates = wds.get("min_candidates")
-        if (
-            isinstance(min_candidates, int)
-            and not isinstance(min_candidates, bool)
-            and min_candidates >= 0
-        ):
-            wd_cfg = replace(wd_cfg, min_candidates=min_candidates)
-        cfg.watch_distill = wd_cfg
+    _parse_session_sources(raw, cfg)
+    _parse_draft_targets(raw, cfg)
+    _parse_watch(raw, cfg)
+    _parse_paths(raw, cfg)
+    _parse_audit_insights(raw, cfg)
+    _parse_watch_distill(raw, cfg)
     return cfg

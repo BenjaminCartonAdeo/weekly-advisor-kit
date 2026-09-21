@@ -762,6 +762,95 @@ def _split_repo(repo: str) -> tuple[str, str]:
     return quote(parts[0]), quote(parts[1])
 
 
+def _watch_repo_release_items(
+    display_name: str, html_url: str, description: str, releases: object, start: datetime, end: datetime
+) -> list[dict]:
+    """Items release in-window d'un repo suivi."""
+    items: list[dict] = []
+    for release in releases if isinstance(releases, list) else []:
+        if not isinstance(release, dict):
+            continue
+        published = parse_iso_ts(release.get("published_at"))
+        if published is None or not (start <= published <= end):
+            continue
+        tag = str(release.get("tag_name") or release.get("name") or "")
+        items.append(
+            {
+                "name": f"{display_name} {tag}" if tag else f"{display_name} (release)",
+                "category": "repo",
+                "repo_url": html_url,
+                "npm_package": None,
+                "description": _release_summary(str(release.get("body") or "")) or description,
+                "published_at": published,
+                "found_via": [SOURCE_WATCH],
+                "new_repo": False,
+            }
+        )
+    return items
+
+
+def _watch_repo_activity_fallback(
+    client, owner: str, name: str, display_name: str, html_url: str, description: str,
+    info: object, start: datetime, end: datetime,
+) -> list[dict]:
+    """Repli push/commits quand aucune release in-window — [] si rien ne bouge."""
+    publish = parse_iso_ts(info.get("pushed_at")) if isinstance(info, dict) else None
+    if publish is not None and start <= publish <= end:
+        return [
+            {
+                "name": display_name,
+                "category": "repo",
+                "repo_url": html_url,
+                "npm_package": None,
+                "description": (
+                    f"Activité du dépôt (dernier push {publish:%Y-%m-%d}) — {description}"
+                )[:200],
+                "published_at": publish,
+                "found_via": [SOURCE_WATCH],
+                "new_repo": False,
+            }
+        ]
+    # v5.30 (3) : le dernier push peut être post-clôture alors que le repo a
+    # travaillé DANS la fenêtre — fallback sur les commits de la fenêtre.
+    try:
+        commits = _github_json(
+            client,
+            f"https://api.github.com/repos/{owner}/{name}/commits",
+            params={"since": _iso(start), "until": _iso(end), "per_page": 5},
+        )
+    except SourceError:
+        commits = []
+    in_window = [
+        c
+        for c in commits
+        if isinstance(c, dict)
+        and parse_iso_ts(((c.get("commit") or {}).get("author") or {}).get("date"))
+        is not None
+    ]
+    if not in_window:
+        return []
+    latest = max(
+        in_window,
+        key=lambda c: parse_iso_ts(c["commit"]["author"]["date"]),
+    )
+    last_commit = parse_iso_ts(latest["commit"]["author"]["date"])
+    return [
+        {
+            "name": display_name,
+            "category": "repo",
+            "repo_url": html_url,
+            "npm_package": None,
+            "description": (
+                f"Activité du dépôt ({len(in_window)} commit(s) dans la fenêtre, "
+                f"dernier le {last_commit:%Y-%m-%d}) — {description}"
+            )[:200],
+            "published_at": last_commit,
+            "found_via": [SOURCE_WATCH],
+            "new_repo": False,
+        }
+    ]
+
+
 def _fetch_watch_repos(
     client, watch_repos: list[str], start: datetime, end: datetime
 ) -> list[dict]:
@@ -804,83 +893,17 @@ def _fetch_watch_repos(
             if isinstance(info, dict)
             else f"https://github.com/{full_name}"
         )
-        emitted = False
-        for release in releases if isinstance(releases, list) else []:
-            if not isinstance(release, dict):
-                continue
-            published = parse_iso_ts(release.get("published_at"))
-            if published is None or not (start <= published <= end):
-                continue
-            tag = str(release.get("tag_name") or release.get("name") or "")
-            emitted = True
-            items.append(
-                {
-                    "name": f"{display_name} {tag}" if tag else f"{display_name} (release)",
-                    "category": "repo",
-                    "repo_url": html_url,
-                    "npm_package": None,
-                    "description": _release_summary(str(release.get("body") or "")) or description,
-                    "published_at": published,
-                    "found_via": [SOURCE_WATCH],
-                    "new_repo": False,
-                }
-            )
-        if not emitted:
-            publish = parse_iso_ts(info.get("pushed_at")) if isinstance(info, dict) else None
-            if publish is not None and start <= publish <= end:
-                items.append(
-                    {
-                        "name": display_name,
-                        "category": "repo",
-                        "repo_url": html_url,
-                        "npm_package": None,
-                        "description": (
-                            f"Activité du dépôt (dernier push {publish:%Y-%m-%d}) — {description}"
-                        )[:200],
-                        "published_at": publish,
-                        "found_via": [SOURCE_WATCH],
-                        "new_repo": False,
-                    }
+        n_before = len(items)
+        items.extend(
+            _watch_repo_release_items(display_name, html_url, description, releases, start, end)
+        )
+        if len(items) == n_before:
+            # Aucune release émise pour ce repo → repli activité.
+            items.extend(
+                _watch_repo_activity_fallback(
+                    client, owner, name, display_name, html_url, description, info, start, end
                 )
-            else:
-                # v5.30 (3) : le dernier push peut être post-clôture alors que le repo a
-                # travaillé DANS la fenêtre — fallback sur les commits de la fenêtre.
-                try:
-                    commits = _github_json(
-                        client,
-                        f"https://api.github.com/repos/{owner}/{name}/commits",
-                        params={"since": _iso(start), "until": _iso(end), "per_page": 5},
-                    )
-                except SourceError:
-                    commits = []
-                in_window = [
-                    c
-                    for c in commits
-                    if isinstance(c, dict)
-                    and parse_iso_ts(((c.get("commit") or {}).get("author") or {}).get("date"))
-                    is not None
-                ]
-                if in_window:
-                    latest = max(
-                        in_window,
-                        key=lambda c: parse_iso_ts(c["commit"]["author"]["date"]),
-                    )
-                    last_commit = parse_iso_ts(latest["commit"]["author"]["date"])
-                    items.append(
-                        {
-                            "name": display_name,
-                            "category": "repo",
-                            "repo_url": html_url,
-                            "npm_package": None,
-                            "description": (
-                                f"Activité du dépôt ({len(in_window)} commit(s) dans la fenêtre, "
-                                f"dernier le {last_commit:%Y-%m-%d}) — {description}"
-                            )[:200],
-                            "published_at": last_commit,
-                            "found_via": [SOURCE_WATCH],
-                            "new_repo": False,
-                        }
-                    )
+            )
     if failures and failures == len(watch_repos):
         raise SourceError("github:watch-repos — tous les repos suivis ont échoué (API GitHub)")
     return items

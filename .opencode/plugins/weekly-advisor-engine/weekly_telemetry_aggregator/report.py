@@ -1871,6 +1871,32 @@ def _curation_manifest_gate(
     return 0, None
 
 
+def _load_report_artifacts(out, date: str) -> dict | None:
+    """Charge les artefacts JSON du run actif — None si summary absente/invalide."""
+    summary = _load_json(out / f"weekly-summary-{date}.json")
+    if not _artifact_contract_valid("weekly-summary", summary, date=date):
+        return None
+    digest = _load_json(out / f"weekly-harness-digest-{date}.json")
+    for digest_problem in harness_digest_problems(digest):
+        print(f"report: WARNING: {digest_problem}", file=sys.stderr, flush=True)
+        digest = None
+    audit_candidates = _load_json(out / f"weekly-audit-candidates-{date}.json")
+    return {
+        "summary": summary,
+        "insights": _load_json(out / f"weekly-insights-{date}.json"),
+        "digest": digest,
+        "ecosystem": _load_json(out / f"weekly-ecosystem-{date}.json"),
+        "findings": _load_json(out / f"weekly-quality-findings-{date}.json"),
+        "coherence_findings": _load_json(out / f"weekly-coherence-findings-{date}.json"),
+        "skill_curate": _load_json(out / f"skill-curate-{date}.json"),
+        "audit_candidates": audit_candidates,
+        "watch_findings": _load_json(out / f"weekly-watch-findings-{date}.json"),
+        "harness_remediation": _load_json(
+            out / f"weekly-harness-remediation-{date}.json"
+        ),
+    }
+
+
 def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> dict | None:
     """Construit le ctx Jinja du rapport (v6.1) — partagé par prep et assemble.
 
@@ -1883,19 +1909,16 @@ def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> 
     date = run_time.strftime("%Y-%m-%d")
     out = resolve_active_run_dir(cfg.output_dir, date)
 
-    summary = _load_json(out / f"weekly-summary-{date}.json")
-    if not _artifact_contract_valid("weekly-summary", summary, date=date):
+    artifacts = _load_report_artifacts(out, date)
+    if artifacts is None:
         return None
-
-    insights = _load_json(out / f"weekly-insights-{date}.json")
-    digest = _load_json(out / f"weekly-harness-digest-{date}.json")
-    for digest_problem in harness_digest_problems(digest):
-        print(f"report: WARNING: {digest_problem}", file=sys.stderr, flush=True)
-        digest = None
-    ecosystem = _load_json(out / f"weekly-ecosystem-{date}.json")
-    findings = _load_json(out / f"weekly-quality-findings-{date}.json")
-    coherence_findings = _load_json(out / f"weekly-coherence-findings-{date}.json")
-    skill_curate = _load_json(out / f"skill-curate-{date}.json")
+    summary = artifacts["summary"]
+    insights = artifacts["insights"]
+    digest = artifacts["digest"]
+    ecosystem = artifacts["ecosystem"]
+    findings = artifacts["findings"]
+    coherence_findings = artifacts["coherence_findings"]
+    skill_curate = artifacts["skill_curate"]
 
     git_commits = _git_log(
         cfg.project_root,
@@ -1945,13 +1968,11 @@ def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> 
         ),
         "cost_outliers_state": summary.get("cost_outliers_state", "computed"),
         "outliers": {o["session_id"] for o in summary.get("cost_outliers", [])},
-        "audit_candidates": _load_json(out / f"weekly-audit-candidates-{date}.json"),
+        "audit_candidates": artifacts["audit_candidates"],
         "audit_worker_statuses": (
-            (_load_json(out / f"weekly-audit-candidates-{date}.json") or {}).get(
-                "worker_statuses", []
-            )
+            (artifacts["audit_candidates"] or {}).get("worker_statuses", [])
         ),
-        "watch_findings": _load_json(out / f"weekly-watch-findings-{date}.json"),
+        "watch_findings": artifacts["watch_findings"],
         "coherence_findings": coherence_findings,
         "coherence_items": _coherence_findings(coherence_findings),
         "skill_curate": skill_curate,
@@ -1966,7 +1987,7 @@ def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> 
         "run_dir": (active_run_meta(cfg.output_dir, date) or {}).get("run_dir"),
         "provenance": provenance,
         "gate_status": _gate_status(provenance["artifact_inputs"]),
-        "harness_remediation": _load_json(out / f"weekly-harness-remediation-{date}.json"),
+        "harness_remediation": artifacts["harness_remediation"],
         "warnings_grouped": _group_warnings(summary.get("warnings", [])),
         "watch_warned": any(
             w.get("source") == "github:watch-repos" for w in (ecosystem or {}).get("warnings", [])

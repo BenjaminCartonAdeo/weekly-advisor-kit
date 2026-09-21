@@ -3,7 +3,7 @@
 Revue hebdomadaire automatisée de vos agents de code : analyse de la télémétrie locale, veille écosystème, audit des sessions coûteuses et rapport HTML interactif, avec un moteur 100 % déterministe, zéro LLM pour les chiffres.
 
 [![CI](https://github.com/BenjaminCartonAdeo/weekly-advisor-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/BenjaminCartonAdeo/weekly-advisor-kit/actions/workflows/ci.yml)
-[![tests 660](https://img.shields.io/badge/tests-660-brightgreen)](.opencode/plugins/weekly-advisor-engine)
+[![tests 842](https://img.shields.io/badge/tests-842-brightgreen)](.opencode/plugins/weekly-advisor-engine)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Schéma d'architecture : [`doc/diagrams/architecture.html`](doc/diagrams/architecture.html).
@@ -19,7 +19,9 @@ Le cœur est 100 % déterministe : le moteur Python lit directement la télémé
 | Fonctionnalité | Ce que vous obtenez |
 |---|---|
 | Multi-harnais | Télémétrie OpenCode, Claude Code et Copilot VS Code via `session_sources`, extensible par source ; **Codex n'est jamais un provider de télémétrie** — cible de drafting seule (`.agents/`) |
-| Chiffres déterministes | Moteur Python pur, zéro LLM sur les données : coûts, tokens, cache, outliers, prompts répétés |
+| Chiffres déterministes | Moteur Python pur, zéro LLM sur les données : coûts, tokens, cache, outliers, prompts répétés par fingerprint (O(n)) |
+| Classification déterministe | Intent, spec-driven, relecture production (gap > 30 s), maturité de prompt (grades A–F) par session, sans LLM ; alimente l'audit |
+| Règles d'audit déclaratives | Règles `.md` versionnées + DSL `scan/match/aggregate/check`, tests embarqués, playground `debug-rule` en lecture seule |
 | Coûts estimés | Estimation par session avec surcharge `cost_rate_usd_per_mtok` par source, alertes budget semaine/mois |
 | Audit qualité | Sessions candidates auditées par skill dédié, constats archivés avec baseline pour mesurer la dérive |
 | Veille marché | Distillation hebdomadaire (~30 fiches scorées) confrontée à votre environnement, avec mémoire inter-run |
@@ -109,7 +111,7 @@ Contributions bienvenues, en particulier : nouveaux providers de harnais, règle
 Validation locale (depuis le dossier moteur `.opencode/plugins/weekly-advisor-engine`) :
 
 ```sh
-uv run python -m pytest -q    # 660 tests
+uv run python -m pytest -q    # 842 tests
 uv run ruff check .           # lint
 uv run ruff format --check .  # format
 ```
@@ -128,23 +130,7 @@ Gate docs ↔ code (depuis la racine du repo, node requis) :
 node scripts/check-flow-docs.mjs   # G1 : comptes de tests cohérents + contrats de flux
 ```
 
-Le CI (`.github/workflows/ci.yml`) répète lint, format, 660 tests et packaging sur Ubuntu et Windows, puis exécute les tests de contrat node (Ubuntu) et la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec/`](doc/spec/README.md), l'architecture dans [`doc/architecture/`](doc/architecture/README.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
-
-### WAVE 2.5 — manifeste de curation (dry-run)
-
-Après la jointure de WAVE 2 (donc après `weekly-coherence-review`), le pipeline exécute
-`weekly_skill_curate` et écrit `skill-curate-<date>.json` dans `runs/current/`. Ce manifeste
-déterministe liste les actions proposées (`archive`, `merge`, `pin`, `reference`), leurs
-cibles et leur statut. **Par défaut, c'est un dry-run (gate no-apply) : aucun fichier n'est déplacé,
-fusionné, supprimé ou modifié.** Une application nécessite une validation humaine explicite
-et un appel avec `apply=true`. **Gate politique** : même en `apply`, seule l'action
-`archive` est exécutée (déplacement idempotent vers `_archive/<date>/`, jamais de
-suppression) ; `merge`, `reference`, `pin`, `delete` et `recalibrate` restent des
-propositions, sans aucune opération fichiers. Les éléments `origin=user` restent protégés.
-WAVE 2.5 est séquentielle et précède le tail de génération du rapport ; elle est
-**REQUIRED** à l'assemble : si les findings de cohérence portent des actions de curation
-mais que le manifeste `skill-curate-<date>.json` est absent, le rapport passe en P0 avec
-rc=1 (partiel).
+Le CI (`.github/workflows/ci.yml`) répète lint, format, 842 tests et packaging sur Ubuntu et Windows, puis exécute les tests de contrat node (Ubuntu) et la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec/`](doc/spec/README.md), l'architecture dans [`doc/architecture/`](doc/architecture/README.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
 
 ## Documentation
 

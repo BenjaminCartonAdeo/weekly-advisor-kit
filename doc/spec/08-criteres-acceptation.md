@@ -13,8 +13,11 @@ présente spécification. Chaque critère est **testable par un humain**.
       distinct du coût facturé, jamais additionné à lui.
 - [ ] A5. Les outliers (médiane+MAD, z ≥ 3, coût ≥ 0,50 $) sont identifiés ; avertissement si < 15
       sessions.
-- [ ] A6. Deux runs à la même ancre et mêmes entrées produisent des sorties **identiques**.
+- [ ] A6. Deux runs à la même ancre et mêmes entrées produisent des sorties **identiques** (tri stable, round6, fingerprint O(n) stable).
 - [ ] A7. Le ratio de cache = cache lu ÷ (cache lu + entrée fraîche) ; `null` sans entrée.
+- [ ] A8. Les prompts répétés sont détectés par empreinte fingerprint `|` (filtre bruit, CODE/STR/PATH/NUM, stop-list, 4 tokens triés, O(n)), compte ≥3, cap 20, tri -count/session_id, canonique plus court ≥20, agrégats déterministes (sessions/harnais distincts, cancelRate, correctionTurns, examples ≤5, skillDraft).
+- [ ] A9. Chaque session porte une classification P6 sans LLM : `intent` (planning>debug>review>explore>implementation), `spec_driven`/`preuves`, `production_review` (gap 30 s, `review-unmeasurable` agrégé), `prompt_maturity` grades A–F (5 dims 0–20).
+- [ ] A10. Les règles `rules/*.md` (frontmatter + `detect`/`test`, DSL AST whitelisté, `extends` `+` merge) produisent un finding uniforme trié par `id` ; `debug-rule {evaluate|fields|distributions}` est read-only et retourne rc 2 si run absent/invalide.
 
 ## B. Veille
 - [ ] B1. Une source d'API en panne → avertissement, le run reste complet si une autre source a
@@ -27,9 +30,8 @@ présente spécification. Chaque critère est **testable par un humain**.
       ne reste jamais `installer-nouveau`).
 
 ## C. Audit & drafting
-- [ ] C1. La sélection des sessions à auditer est **déterministe** (signaux chiffrés), plafonnée à 8.
-- [ ] C2. Chaque constat porte catégorie, sévérité, preuve **paraphrasée** (pas de citation
-      verbatim), type de recommandation.
+- [ ] C1. La sélection des sessions à auditer est **déterministe** (9 signaux : top coût 5, coût/min 0.50, cache -0.20, prompts répétés, outliers, code-non-relu 0 %, maturity F, non-spec ≥1 $), plafonnée à 8 avec priorité documentée.
+- [ ] C2. Chaque constat porte catégorie (10+3 : `boucle`, `invalidation-cache`, `contexte-gonflé`, `injection-manuelle`, `sous-usage-skill/command`, `command-candidat`, `skill-candidat`, `mauvais-modèle`, `amélioration-command`, `non-spec-driven`, `code-non-relu`, `low-maturity-prompt`), sévérité, preuve **paraphrasée** (pas de citation verbatim), type de recommandation.
 - [ ] C3. Le drafting cible **un harnais** résolu par (override > marqueurs > défaut), priorité
       claude-code > opencode > copilot-cli > codex.
 - [ ] C4. Au plus 3 documents générés par run ; un chevauchement détecté ne crée **jamais** de

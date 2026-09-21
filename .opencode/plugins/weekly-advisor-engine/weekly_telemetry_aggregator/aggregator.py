@@ -12,9 +12,11 @@ from __future__ import annotations
 import difflib
 import hashlib
 import math
+import re
 from collections import defaultdict
 from datetime import datetime, timedelta
 
+from .classifiers import classify_sessions
 from .models import (
     MAX_WARNINGS,
     OUTLIER_MIN_SESSIONS,
@@ -137,80 +139,253 @@ def _is_compaction_artifact(turn: str) -> bool:
     return "dcp |" in low and "removed" in low and ("summary" in low or "compact" in low)
 
 
+#: Séparateurs de layout (`═─━=-_*` × 10+) : bruit visuel, pas un prompt.
+_NOISE_SEPARATOR_RE = re.compile(r"[-═─━=_*]{10,}")
+#: Micro-réponses oui/non/ponctuation (`y`, `n!`, `?!`, `...`) sans intention.
+_NOISE_YESNO_RE = re.compile(r"[yn.!?]{1,3}")
+#: Tours = commande de contrôle seule (pilotage, pas contenu réutilisable).
+_CONTROL_TURNS = frozenset(
+    {"continue", "try again", "yes", "no", "cancel", "abort", "stop", "retry"}
+)
+#: Au-delà, un "prompt" est un collage (log, artefact), pas une intention (v5.30, P3).
+_NOISE_MAX_CHARS = 2000
+
+#: Stop-list de formulation (~60 mots FR/EN) retirée avant empreinte.
+_STOPWORD_SOURCE = (
+    "le la les un une des du de d dans et ou mais donc or ni car que qui quoi dont "
+    "au aux en y il elle ils elles je tu nous vous on ce cet cette ces mon ma mes "
+    "ton ta tes son sa ses pour par sur sous avec sans vers chez est sont etre avoir "
+    "fait faire pas plus moins tres tout tous toute toutes bien peux peut veux faut "
+    "the a an and or but to of in on for with is are be this that it as at by from "
+    "can you i we please just my me do"
+)
+_STOPWORDS = frozenset(_STOPWORD_SOURCE.split())
+
+_CODE_BLOCK_RE = re.compile(r"```.*?```|`[^`]*`", re.DOTALL)
+_QUOTED_RE = re.compile(r"\"[^\"]*\"|'[^'\n]*'")
+_WINDOWS_PATH_RE = re.compile(r"[a-z]:\\[^\s]+", re.IGNORECASE)
+_POSIX_PATH_RE = re.compile(r"(?:/[\w.\-]+){2,}/?")
+_NUMBER_RE = re.compile(r"\d+")
+_NON_WORD_RE = re.compile(r"[^\w\s]+")
+
+#: Tours d'annulation (n'expriment pas un contenu réutilisable).
+_CANCEL_TURNS = frozenset({"cancel", "abort", "stop", "annule", "abandonne"})
+#: Préfixes de correction d'un tour précédent.
+_CORRECTION_PREFIXES = (
+    "no ",
+    "non ",
+    "nope",
+    "pas ",
+    "not ",
+    "actually ",
+    "instead ",
+    "plutot ",
+    "plutôt ",
+    "wait ",
+)
+
+
+def is_noise(prompt: str) -> bool:
+    """True si le tour n'est pas un prompt utilisateur exploitable (v5.30, P3).
+
+    Bruit : séparateurs de layout (`═` × 10+), préfixe `system`, tour hors-borne
+    (> 2000 chars), commande de contrôle seule (`continue`, `yes`, `retry`…),
+    `continue to iterate` court, ou micro-réponse `[yn.!?]{1,3}`.
+    """
+    raw = str(prompt)
+    text = raw.strip()
+    if not text:
+        return True
+    if _NOISE_SEPARATOR_RE.search(text):
+        return True
+    low = text.lower()
+    if low.startswith("system"):
+        return True
+    if len(raw) > _NOISE_MAX_CHARS:
+        return True
+    collapsed = " ".join(low.split())
+    if collapsed in _CONTROL_TURNS:
+        return True
+    if "continue to iterate" in collapsed and len(text) < 80:
+        return True
+    return bool(_NOISE_YESNO_RE.fullmatch(collapsed))
+
+
+def normalize_fingerprint(prompt: str) -> str:
+    """Empreinte O(n) : 4 premiers tokens normalisés, triés, joints par `|` (v5.30, P3).
+
+    Normalisation : minuscules ; blocs de code → `code` ; chaînes quotées → `str` ;
+    chemins → `path` ; nombres → `num` ; ponctuation → espace ; stop-list retirée ;
+    tokens de longueur ≤ 1 ignorés. Le tri rend l'empreinte insensible à l'ordre des
+    mots : deux prompts qui ne diffèrent que par des valeurs partagent la même empreinte.
+    """
+    text = str(prompt).lower()
+    text = _CODE_BLOCK_RE.sub(" code ", text)
+    text = _QUOTED_RE.sub(" str ", text)
+    text = _WINDOWS_PATH_RE.sub(" path ", text)
+    text = _POSIX_PATH_RE.sub(" path ", text)
+    text = _NUMBER_RE.sub(" num ", text)
+    text = _NON_WORD_RE.sub(" ", text)
+    tokens = [tok for tok in text.split() if len(tok) > 1 and tok not in _STOPWORDS]
+    if not tokens:
+        return ""
+    return "|".join(sorted(tokens[:4]))
+
+
+def _canonical_prompt(prompts: list[str]) -> str:
+    """Prompt canonique : le plus court ≥ 20 chars normalisés, sinon le plus court."""
+    long_enough = [p for p in prompts if len(normalize_prompt(p)) >= 20]
+    pool = long_enough or prompts
+    return min(pool, key=lambda p: (len(p), p))
+
+
+def _is_cancel_turn(norm: str) -> bool:
+    return norm in _CANCEL_TURNS
+
+
+def _is_correction_turn(norm: str) -> bool:
+    return norm.startswith(_CORRECTION_PREFIXES)
+
+
+def _build_skill_draft(label: str, count: int, sessions: int, examples: list[str]) -> str:
+    """Brouillon markdown (# Skill / When to use / Steps / Example prompts)."""
+    samples = [e[:120] for e in examples[:3]]
+    lines = [
+        f"# Skill: {label}",
+        "",
+        "## When to use",
+        f"Réponse répétée {count}× sur {sessions} session(s) — automatiser ce flux.",
+        "",
+        "## Steps",
+        "1. Reproduire le flux récurrent et figer ses entrées/sorties.",
+        "2. Encapsuler la procédure dans un skill portable.",
+        "3. Valider sur un cas réel avant généralisation.",
+        "",
+        "## Example prompts",
+        *[f"- {sample}" for sample in samples],
+    ]
+    return "\n".join(lines)
+
+
+def _new_repeat_bucket() -> dict:
+    return {
+        "count": 0,
+        "chars_sum": 0,
+        "prompts": [],
+        "sessions": set(),
+        "harnesses": set(),
+        "cancels": 0,
+        "corrections": 0,
+        "first": None,
+        "last": None,
+    }
+
+
+def _accumulate_repeat_turn(
+    groups: dict[str, dict], usage: SessionUsage, turn: str, first_ts, last_ts
+) -> None:
+    fingerprint = normalize_fingerprint(turn)
+    if not fingerprint:
+        return
+    norm = normalize_prompt(turn)
+    group = groups.get(fingerprint)
+    if group is None:
+        group = _new_repeat_bucket()
+        groups[fingerprint] = group
+    group["count"] += 1
+    group["chars_sum"] += len(turn)
+    group["prompts"].append(turn)
+    group["sessions"].add(usage.session_id)
+    if usage.harness:
+        group["harnesses"].add(usage.harness)
+    if _is_cancel_turn(norm):
+        group["cancels"] += 1
+    if _is_correction_turn(norm):
+        group["corrections"] += 1
+    if first_ts is not None and (group["first"] is None or first_ts < group["first"]):
+        group["first"] = first_ts
+    if last_ts is not None and (group["last"] is None or last_ts > group["last"]):
+        group["last"] = last_ts
+
+
+def _repeat_examples(prompts: list[str], limit: int = 5) -> list[str]:
+    examples: list[str] = []
+    seen: set[str] = set()
+    for candidate in prompts:
+        stripped = candidate.strip()
+        if not stripped or stripped in seen:
+            continue
+        seen.add(stripped)
+        examples.append(stripped)
+        if len(examples) >= limit:
+            break
+    return examples
+
+
+def _emit_repeat_group(group: dict, *, repeat_min: int, min_chars: int) -> UserPromptRepeat | None:
+    count = group["count"]
+    if count < repeat_min:
+        return None
+    canonical = _canonical_prompt(group["prompts"])
+    preview = normalize_prompt(canonical)
+    if len(preview) < min_chars:
+        return None
+    sessions = sorted(group["sessions"])
+    session_count = len(sessions)
+    examples = _repeat_examples(group["prompts"])
+    return UserPromptRepeat(
+        normalized_preview=preview[:80],
+        count=count,
+        session_id=sessions[0] if sessions else "",
+        avg_chars=round(group["chars_sum"] / count),
+        sessions_distinct=session_count,
+        harnesses_distinct=len(group["harnesses"]),
+        cancel_rate=round6(group["cancels"] / count),
+        avg_correction_turns=round6(group["corrections"] / session_count) if session_count else 0.0,
+        first_seen=group["first"].isoformat() if group["first"] else "",
+        last_seen=group["last"].isoformat() if group["last"] else "",
+        examples=examples,
+        skill_draft=_build_skill_draft(preview[:80], count, session_count, examples),
+        estimated_time_saved_mins=count * 2,
+    )
+
+
 def _prompt_repeat_groups(
     uses: list[SessionUsage],
     *,
     repeat_min: int,
-    similarity: float,
+    similarity: float,  # noqa: ARG001 — vestigial, conservé pour compat d'appel (v5.30 P3)
     min_chars: int,
 ) -> list[UserPromptRepeat]:
-    """User prompts exactly repeated + quasi-duplicates across the window (v5.15/v5.19).
+    """User prompts repeated across the window, grouped by O(n) fingerprint (v5.30, P3).
 
-    Normalized turns are grouped greedily (deterministic order: session_id ASC,
-    then turn order): exact match wins, else SequenceMatcher ratio on the first
-    PROMPT_COMPARE_CHARS of the normalized text >= `similarity`.
-    Quasi-duplicate scan is bucketed by length (len//16, ±2 buckets): with
-    similarity >= 0.9 over 100 chars, matching texts have near-equal lengths
-    (v5.30 A — single path, no volume threshold).
+    Filtre bruit / compaction / sessions enfants, puis indexe les tours par
+    `normalize_fingerprint` (bucket map) — plus de `difflib` ni de scan quadratique.
+    Un groupe est émis si `count >= repeat_min` et que son prompt canonique atteint
+    `min_chars`. Sortie triée `(-count, session_id)`, plafonnée à `PROMPT_REPEATS_CAP`.
     """
-    groups: list[dict] = []  # {rep, count, chars_sum, session_id}
-    exact: dict[str, dict] = {}
-    buckets: dict[int, list[dict]] = {}
+    groups: dict[str, dict] = {}
 
     for usage in sorted(uses, key=lambda u: u.session_id):
         if usage.parent_id is not None:
-            continue  # v5.30 (7) : tours des sessions enfants (workers swarm) exclus —
-            # la détection vise les prompts de l'utilisateur, pas les prompts système des sous-agents
+            continue  # v5.30 (7) : tours des sessions enfants exclus
+        step_ts = [s.timestamp for s in usage.steps]
+        first_ts = min(step_ts) if step_ts else None
+        last_ts = max(step_ts) if step_ts else None
         for turn in usage.user_turns:
             if _is_compaction_artifact(turn):
-                continue  # v5.30 (B) : artefact de compaction, pas un prompt utilisateur
-            norm = normalize_prompt(turn)
-            if not norm:
                 continue
-            target = exact.get(norm)
-            if target is None:
-                b = len(norm) // 16
-                for g in [cand for bb in range(b - 2, b + 3) for cand in buckets.get(bb, ())]:
-                    if g["rep"] == norm:
-                        target = g
-                        break
-                    if (
-                        len(g["rep"]) >= min_chars
-                        and difflib.SequenceMatcher(
-                            None, g["rep"][:PROMPT_COMPARE_CHARS], norm[:PROMPT_COMPARE_CHARS]
-                        ).ratio()
-                        >= similarity
-                    ):
-                        target = g
-                        break
-            if target is None:
-                target = {
-                    "rep": norm,
-                    "count": 1,
-                    "chars_sum": len(turn),
-                    "session_id": usage.session_id,
-                }
-                groups.append(target)
-                exact[norm] = target
-                buckets.setdefault(len(norm) // 16, []).append(target)
-            else:
-                exact[norm] = target  # cache : les futurs turns identiques sont O(1)
-                target["count"] += 1
-                target["chars_sum"] += len(turn)
-                if target["session_id"] is None and usage.session_id is not None:
-                    target["session_id"] = usage.session_id
-    out = []
-    for g in groups:
-        if g["count"] < repeat_min or len(g["rep"]) < min_chars:
-            continue
-        out.append(
-            UserPromptRepeat(
-                normalized_preview=g["rep"][:80],
-                count=g["count"],
-                session_id=g.get("session_id") or "",
-                avg_chars=round(g["chars_sum"] / g["count"]),
-            )
-        )
+            if is_noise(turn):
+                continue
+            if not normalize_prompt(turn):
+                continue
+            _accumulate_repeat_turn(groups, usage, turn, first_ts, last_ts)
+
+    out: list[UserPromptRepeat] = []
+    for group in groups.values():
+        emitted = _emit_repeat_group(group, repeat_min=repeat_min, min_chars=min_chars)
+        if emitted is not None:
+            out.append(emitted)
     out.sort(key=lambda r: (-r.count, r.session_id))
     return out[:PROMPT_REPEATS_CAP]
 
@@ -586,6 +761,23 @@ def aggregate(
         min_chars=user_prompt_repeat_min_chars,
     )
 
+    # ---- deterministic session classifications (P6) ----
+    session_classifications = classify_sessions(usages)
+    # De-noise: one aggregated review-unmeasurable warning per harness (not per session).
+    _unmeasurable: dict[str, int] = defaultdict(int)
+    for sc in session_classifications:
+        warning = sc.production_review_warning
+        if not warning:
+            continue
+        harness = warning[len("review-unmeasurable:") :]
+        _unmeasurable[harness] += 1
+    for harness in sorted(_unmeasurable):
+        all_warnings.append(
+            WarningEntry(
+                message=f"review-unmeasurable:{harness} ({_unmeasurable[harness]} sessions)"
+            )
+        )
+
     # ---- subagent totals (children + orphans, spec §8) ----
     sub_children = children + [u for u in usages if u.session_id in orphan_ids]
     child_count = len(sub_children)
@@ -623,6 +815,7 @@ def aggregate(
         skills_never_loaded=skills_never_loaded,
         skills_targets=skills_targets,
         user_prompt_repeats=user_prompt_repeats,
+        session_classifications=session_classifications,
         subagent_totals=subagent_totals,
         tool_argument_fingerprints={
             tool: dict(sorted(values.items()))

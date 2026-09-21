@@ -82,6 +82,10 @@ class SessionUsage:
     tool_result_fingerprints: dict[str, dict[str, int]] = field(default_factory=dict)
     skills_loaded: dict[str, int] = field(default_factory=dict)
     user_turns: list[str] = field(default_factory=list)
+    #: Timestamps des édits/écritures (P6.3) — vide si le harnais ne les expose pas.
+    edit_write_timestamps: list[datetime] = field(default_factory=list)
+    #: Timestamps des tours utilisateur (P6.3) — vide si indisponibles.
+    user_turn_timestamps: list[datetime] = field(default_factory=list)
     #: Part char counts per category (chars/4 → tokens): file, tool_result, text, reasoning.
     context_chars: dict[str, int] = field(default_factory=dict)
     first_user_text: str | None = None
@@ -197,6 +201,23 @@ class UserPromptRepeat:
     count: int = 0
     session_id: str = ""
     avg_chars: int = 0
+    #: Nombre de sessions distinctes contributrices.
+    sessions_distinct: int = 0
+    #: Nombre de harnais distincts contributeurs ("" ignoré).
+    harnesses_distinct: int = 0
+    #: Part des tours du groupe qui sont des annulations (cancel/abort/stop).
+    cancel_rate: float = 0.0
+    #: Nombre moyen de tours de correction par session du groupe.
+    avg_correction_turns: float = 0.0
+    #: Bornes temporelles du groupe (ISO-8601, "" si inconnu).
+    first_seen: str = ""
+    last_seen: str = ""
+    #: Jusqu'à 5 exemples bruts, ordre de première occurrence.
+    examples: list[str] = field(default_factory=list)
+    #: Brouillon de skill markdown prêt à relire.
+    skill_draft: str = ""
+    #: Gain de temps estimé (répétitions × 2 min).
+    estimated_time_saved_mins: int = 0
 
 
 @dataclass(slots=True)
@@ -230,6 +251,35 @@ class WarningEntry:
 class Period:
     start: datetime
     end: datetime
+
+
+@dataclass(slots=True)
+class SessionClassification:
+    """Classification déterministe d'une session (P6) — aucun LLM.
+
+    Bloc `session_classifications` du summary : un enregistrement par session
+    active, trié par `session_id` en amont.
+    """
+
+    session_id: str
+    #: planning | debug | review | explore | implementation
+    intent: str = "implementation"
+    spec_driven: bool = False
+    #: Signaux textuels ayant motivé `spec_driven` (ordre déterministe).
+    spec_preuves: list[str] = field(default_factory=list)
+    #: Coût fenêtré de la session (round6) — support de la priorité « non-spec coûteuse ».
+    cost_usd: float = 0.0
+    #: % d'édits relus (gap > 30 s) — None si non mesurable (jamais 0 inventé).
+    production_review_pct: float | None = None
+    #: Nombre d'édits effectivement mesurés (dénominateur).
+    production_review_measured: int = 0
+    #: `review-unmeasurable:<harness>` si les timestamps utilisateur manquent.
+    production_review_warning: str | None = None
+    #: Score 0-100 = somme des 5 dimensions (chacune 0-20).
+    prompt_maturity_score: int = 0
+    #: A | B | C | D | F
+    prompt_maturity_grade: str = "F"
+    prompt_maturity_dimensions: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -271,6 +321,8 @@ class WeeklySummary:
     #: skills auto-rédigés → agents ciblés (metadata.target_agents, v5.30).
     skills_targets: dict[str, list[str]] = field(default_factory=dict)
     user_prompt_repeats: list[UserPromptRepeat] = field(default_factory=list)
+    #: Classification déterministe par session (P6) — vide pour les anciens runs.
+    session_classifications: list[SessionClassification] = field(default_factory=list)
     subagent_totals: SubagentTotals = field(default_factory=SubagentTotals)
     #: Additive tool payload fingerprints for deterministic loop analysis.
     tool_argument_fingerprints: dict[str, dict[str, int]] = field(default_factory=dict)
