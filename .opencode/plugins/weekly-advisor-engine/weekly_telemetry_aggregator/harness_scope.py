@@ -420,31 +420,9 @@ def attach_component_paths(digest: dict[str, Any], scope: HarnessScope) -> None:
     if not isinstance(inspection, dict):
         return
 
-    uncategorized = inspection.get("uncategorized")
-    unclassified_paths = digest.get("uncategorized_files")
-    if isinstance(uncategorized, list) and isinstance(unclassified_paths, list):
-        for component, path in zip(uncategorized, unclassified_paths, strict=False):
-            if isinstance(component, dict) and "path" not in component and isinstance(path, str):
-                component["path"] = path
-
+    _attach_uncategorized_paths(digest, inspection)
     for section, directory in (("command", ".opencode/commands/"), ("claude_md", ".opencode/")):
-        components = inspection.get(section)
-        if not isinstance(components, list):
-            continue
-        for component in components:
-            if not isinstance(component, dict) or component.get("path"):
-                continue
-            name = component.get("name")
-            if not isinstance(name, str) or not name:
-                continue
-            candidates = [
-                path
-                for path in scope.included_files
-                if path.startswith(directory)
-                and Path(path).stem.casefold() == Path(name).stem.casefold()
-            ]
-            if len(candidates) == 1:
-                component["path"] = candidates[0]
+        _attach_section_paths(inspection, scope, section, directory)
 
 
 def _as_nonnegative_int(value: object) -> int | None:
@@ -465,20 +443,41 @@ def _first_count(data: Mapping[str, object], *keys: str) -> int | None:
     return None
 
 
-def harness_digest_counts(digest: Mapping[str, object]) -> dict[str, int | None]:
-    """Normalize scan metrics without confusing components with violations.
+def _attach_uncategorized_paths(digest: dict[str, Any], inspection: dict) -> None:
+    """Aligne ``inspection.uncategorized`` avec ``uncategorized_files`` (ordre 7.9.0)."""
+    uncategorized = inspection.get("uncategorized")
+    unclassified_paths = digest.get("uncategorized_files")
+    if isinstance(uncategorized, list) and isinstance(unclassified_paths, list):
+        for component, path in zip(uncategorized, unclassified_paths, strict=False):
+            if isinstance(component, dict) and "path" not in component and isinstance(path, str):
+                component["path"] = path
 
-    ``components_scanned`` describes scanner work, not lint failures.  Raw
-    findings count detailed finding records before de-duplication; unique
-    findings de-duplicate exact records while retaining their component/path
-    identity.  Failing summary ``rules`` with no detailed finding are counted
-    as unique fallback findings, matching the insights normalizer's intent.
-    """
-    metadata = digest.get("metadata")
-    metadata_map = metadata if isinstance(metadata, Mapping) else {}
-    inspection = digest.get("inspection")
-    inspection_map = inspection if isinstance(inspection, Mapping) else {}
 
+def _attach_section_paths(
+    inspection: dict, scope: HarnessScope, section: str, directory: str
+) -> None:
+    """Résout le path des composants d'une section depuis leur basename."""
+    components = inspection.get(section)
+    if not isinstance(components, list):
+        return
+    for component in components:
+        if not isinstance(component, dict) or component.get("path"):
+            continue
+        name = component.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        candidates = [
+            path
+            for path in scope.included_files
+            if path.startswith(directory)
+            and Path(path).stem.casefold() == Path(name).stem.casefold()
+        ]
+        if len(candidates) == 1:
+            component["path"] = candidates[0]
+
+
+def _digest_components(inspection_map: Mapping[str, object]) -> list[tuple[str, Mapping[str, object]]]:
+    """Composants (path, mapping) des 3 sections d'inspection, index de repli inclus."""
     components: list[tuple[str, Mapping[str, object]]] = []
     for section in ("command", "claude_md", "uncategorized"):
         values = inspection_map.get(section)
@@ -488,7 +487,15 @@ def harness_digest_counts(digest: Mapping[str, object]) -> dict[str, int | None]
             if isinstance(component, Mapping):
                 path = str(component.get("path") or f"{section}[{index}]")
                 components.append((path, component))
+    return components
 
+
+def _digest_files_scanned(
+    digest: Mapping[str, object],
+    metadata_map: Mapping[str, object],
+    components: list[tuple[str, Mapping[str, object]]],
+) -> int | None:
+    """files_scanned : digest > metadata > chemins distincts des composants."""
     files = _first_count(digest, "files_scanned")
     if files is None:
         files = _first_count(metadata_map, "files_scanned")
@@ -499,7 +506,16 @@ def harness_digest_counts(digest: Mapping[str, object]) -> dict[str, int | None]
             if not path.startswith(("command[", "claude_md[", "uncategorized["))
         }
         files = len(paths) if paths else None
+    return files
 
+
+def _digest_components_scanned(
+    digest: Mapping[str, object],
+    metadata_map: Mapping[str, object],
+    inspection_map: Mapping[str, object],
+    components: list[tuple[str, Mapping[str, object]]],
+) -> int:
+    """components_scanned : digest > metadata > inspection > comptage local."""
     components_scanned = _first_count(digest, "components_scanned")
     if components_scanned is None:
         components_scanned = _first_count(metadata_map, "components_scanned")
@@ -507,11 +523,15 @@ def harness_digest_counts(digest: Mapping[str, object]) -> dict[str, int | None]
         components_scanned = _first_count(inspection_map, "components_scanned")
     if components_scanned is None:
         components_scanned = len(components)
+    return components_scanned
 
+
+def _accumulate_top_findings(
+    top_findings: object,
+) -> tuple[int, set[tuple[str, str, str, str]]]:
+    """Findings racine : compteur brut + enregistrements uniques."""
     raw_count = 0
     unique_records: set[tuple[str, str, str, str]] = set()
-
-    top_findings = digest.get("findings")
     if isinstance(top_findings, list):
         for index, finding in enumerate(top_findings):
             if not isinstance(finding, Mapping):
@@ -525,7 +545,15 @@ def harness_digest_counts(digest: Mapping[str, object]) -> dict[str, int | None]
                     str(finding.get("severity") or ""),
                 )
             )
+    return raw_count, unique_records
 
+
+def _accumulate_component_findings(
+    components: list[tuple[str, Mapping[str, object]]],
+) -> tuple[int, set[tuple[str, str, str, str]]]:
+    """Findings détaillés + règles en échec sans détail (repli unique)."""
+    raw_count = 0
+    unique_records: set[tuple[str, str, str, str]] = set()
     for path, component in components:
         detailed_rules: set[str] = set()
         findings = component.get("findings")
@@ -555,6 +583,34 @@ def harness_digest_counts(digest: Mapping[str, object]) -> dict[str, int | None]
                 rule = str(rule_entry.get("rule") or "unknown")
                 if rule not in detailed_rules:
                     unique_records.add((path, rule, "", ""))
+    return raw_count, unique_records
+
+
+def harness_digest_counts(digest: Mapping[str, object]) -> dict[str, int | None]:
+    """Normalize scan metrics without confusing components with violations.
+
+    ``components_scanned`` describes scanner work, not lint failures.  Raw
+    findings count detailed finding records before de-duplication; unique
+    findings de-duplicate exact records while retaining their component/path
+    identity.  Failing summary ``rules`` with no detailed finding are counted
+    as unique fallback findings, matching the insights normalizer's intent.
+    """
+    metadata = digest.get("metadata")
+    metadata_map = metadata if isinstance(metadata, Mapping) else {}
+    inspection = digest.get("inspection")
+    inspection_map = inspection if isinstance(inspection, Mapping) else {}
+
+    components = _digest_components(inspection_map)
+
+    files = _digest_files_scanned(digest, metadata_map, components)
+    components_scanned = _digest_components_scanned(
+        digest, metadata_map, inspection_map, components
+    )
+
+    raw_top, unique_top = _accumulate_top_findings(digest.get("findings"))
+    raw_comp, unique_comp = _accumulate_component_findings(components)
+    raw_count = raw_top + raw_comp
+    unique_records = unique_top | unique_comp
 
     findings_raw = _first_count(digest, "findings_raw")
     if findings_raw is None:
