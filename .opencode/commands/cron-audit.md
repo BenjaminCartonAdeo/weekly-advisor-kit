@@ -16,7 +16,9 @@ Enchaîne en une passe l'audit d'un run cron `weekly-advisor` : inventaire logs 
 
 - **OpenCode** : `/cron-audit` ou `/cron-audit <run_dir>` — la commande résout `<output_dir>/runs/current/` puis fallback sur la dernière archive `reports/runs/<date>-*/`.
 - **Claude Code / Codex / Cursor** : même fichier sous `.opencode/commands/cron-audit.md` (ou miroir `.claude/commands/` si harnais multiple) — invoquer `cron-audit` depuis la palette commandes.
-- Variable : `/home/benjamin/log/weekly` peut porter un chemin de run (`reports/runs/2026-09-09-*/`) ou un filtre (`--since 7d`).
+- Argument optionnel : un chemin de run explicite (ex. `reports/runs/2026-09-09-*/`) ou un filtre temporel (ex. `--since 7d`).
+
+Pour un simple résumé de lecture du dernier rapport (sans recoupement provenance/CI), voir `/weekly-report`.
 
 ## Procédure
 
@@ -32,7 +34,7 @@ Enchaîne en une passe l'audit d'un run cron `weekly-advisor` : inventaire logs 
 
 3. **Matrice warnings et plan** :
    - Agréger `warnings` du summary, `findings` de `weekly-quality-findings-<date>.json`, `weekly-watch-findings-<date>.json`, `weekly-harness-digest-<date>.json`.
-   - Classer par sévérité (`high` > `medium` > `low`) et par catégorie (`security/mcp-tool-poisoning`, `unbounded-delegation`, `memory-write-unscoped`, `budget`, `provenance-drift`).
+    - Classer par sévérité (`high` > `medium` > `low`) et par catégorie (voir IDs sécu dans `weekly-safety-guardrails`, plus `budget`, `provenance-drift`).
    - Produire matrice : `| source | règle | observé | seuil | action |` + plan remédiation (fichier/ligne, gate à corriger).
 
 ## Sortie attendue
@@ -53,5 +55,5 @@ Enchaîne en une passe l'audit d'un run cron `weekly-advisor` : inventaire logs 
 ## Garde-fous
 
 - `rc != 0` reste en échec même avec sortie partielle — conserver `rc` agrégé.
-- Findings sécurité `mcp-tool-poisoning`, `unbounded-delegation`, `memory-write-unscoped` : bloquants, pas d'auto-correction.
+- Findings sécurité (IDs dans `weekly-safety-guardrails`) : bloquants, pas d'auto-correction.
 - Chemin hors worktree (`external-directory`) → record `{status:"report-only", report_only:true, category:"external-permission-refusal"}` — ne pas lire/écrire hors projet.

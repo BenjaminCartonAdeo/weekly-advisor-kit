@@ -34,12 +34,11 @@ Sélection déterministe en amont (aucun choix de session ici), examen LLM des t
 
 ## Contrat de sortie worker (strict)
 
-<!-- ponytail: le worker envelope est minimal ; le JOIN reste déterministe. -->
-
 Le worker A écrit un fichier par session (`audit-findings-<session_id>.json`) avant la
 consolidation déterministe. Chaque fichier doit respecter l'envelope JSON v1 suivante,
 y compris pour un transcript borné, tronqué ou illisible :
 
+<!-- envelope-example: audit-findings (miroir doc/architecture/schemas/audit-findings.schema.json) -->
 ```json
 {
   "schema_version": 1,
@@ -63,8 +62,9 @@ deviné : ne jamais inventer un finding. Le JOIN ne répare ni ne réécrit l'en
 
 - Détecter la troncature ou la lecture partielle ; lire seulement des fenêtres bornées
   `offset/limit`, jamais un export intégral non borné.
-- Autoriser **une seule retry bornée** (`max_retry=1`, au plus trois fenêtres de
-  diagnostic). Aucun hang, respawn loop ou nouvelle sous-tâche après cette tentative.
+- Retry unique via le skill partagé `weekly-safety-guardrails` (`max_retry=1`, au plus
+  trois fenêtres de diagnostic). Aucun hang, respawn loop ou nouvelle sous-tâche après
+  cette tentative.
 - Si la sortie récupérée est **complete-enough**, c'est-à-dire suffisante pour justifier
   chaque finding, produire l'envelope avec `rc: 0` : une recovery réussie ne doit pas
   faire passer le cron en `rc=1`. Si une troncature avait été détectée, conserver

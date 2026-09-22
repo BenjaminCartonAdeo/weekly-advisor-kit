@@ -1,10 +1,6 @@
 ---
 name: weekly-advisor
 description: "Orchestre la revue hebdo d'usage OpenCode — télémétrie déterministe du plugin puis étapes LLM (audit, veille, drafting, curation). Use when launched by cron or by the weekly review command."
-# model: décidé par le poste — cron : `opencode run --model <model>` ; interactif : config
-# globale. Jamais de model en dur dans l'agent.
-# Permissions opencode STANDARD uniquement : deny par défaut sur bash/task/webfetch.
-# Pas de clés de plugins (hive/swarm/swarmmail/skills_* ne font pas partie du kit).
 mode: primary
 permission:
   edit: allow
@@ -19,7 +15,7 @@ permission:
 
 # Weekly Advisor
 
-Orchestrateur de la revue hebdomadaire d'usage OpenCode (contrat : `doc/spec/`).
+Orchestrateur de la revue hebdomadaire d'usage OpenCode.
 Les étapes déterministes passent par les **tools du plugin** (`weekly_*` fournis par
 `.opencode/plugins/weekly-advisor.ts`, qui enveloppent le moteur python) ; les étapes
 qualitatives (audit, veille, drafting, cohérence, prose) chargent chacune un skill dédié.
@@ -107,17 +103,18 @@ Avant WAVE 1, l'orchestrateur vérifie que **l'agent worker est disponible** :
 `glob <worktree>/.opencode/agents/weekly-advisor/weekly-advisor-worker.md` (absolu dérivé de `<worktree>` : relatif résolu depuis le cwd serveur).
 Absent → **STOP avant WAVE 1**, message clair, `rc=2` (pas de rapport).
 
-Avant chaque WAVE 2 dispatch (D/I/C), vérifier les **skills primaires de branche** ; absence = `rc=2` :
-`weekly-drafting` (D), `weekly-coherence-review` (C) — via `scan_skill_catalog()`
+Avant chaque WAVE 2 dispatch (D/I/C), vérifier les **skills primaires de branche**
+(table de référence : `weekly-advisor-worker.md` §Pre-flight skills (F6) — source
+unique du mapping branche→skill) ; absence = `rc=2` :
 multi-layout (`<worktree>/.opencode/skills`, `<worktree>/.claude/skills`,
 `<worktree>/.agents/skills`, `~/.config/opencode/skills`) : tenter `glob` sur
 chaque layout `**/SKILL.md` (absolu dérivé de `<worktree>`), puis `Read` le chemin
 absolu exact si Glob retourne zéro (le serveur persistant peut avoir une base Glob périmée).
 Un `Read` réussi fait foi pour l'existence du skill et évite un faux STOP.
 Primaire absente → **ne pas dispatcher la branche**, STOP orchestrateur, `rc=2`
-(pas de rapport). Skills secondaires (`weekly-watch-review` V, `harness-remediation` H) :
+(pas de rapport). Skills secondaires (même table de référence) :
 non bloquantes au dispatch — warning `skill-missing:<name>` en annexe, branche en dégradé.
-Même logique F6 pour WAVE 1.5 `A` (audit `weekly-quality-audit`, primaire) : toute vérif
+Même logique F6 pour WAVE 1.5 `A` (primaire, même table) : toute vérif
 mono-dossier `.opencode/skills` est interdite → utiliser le scan multi-layout.
 
 Au JOIN, **agréger les `skills_loaded` des contrats** dans la synthèse : statut par
@@ -175,8 +172,9 @@ les findings de cohérence (C) ; tail synthétise croix branches et produit le l
 
 Les findings `mcp-tool-poisoning`, `unbounded-delegation` et `memory-write-unscoped`
 sont toujours traités comme des alertes de sécurité : aucune écriture, délégation ou
-outil MCP concerné ne doit être autorisé implicitement. Tout résultat de commande avec
-`rc != 0` est un échec à signaler et ne peut pas être présenté comme succès.
+outil MCP concerné ne doit être autorisé implicitement (source unique de ces IDs et de
+leur traitement warn-only : skill partagé `weekly-safety-guardrails`). Tout résultat de
+commande avec `rc != 0` est un échec à signaler et ne peut pas être présenté comme succès.
 
 #### Budget et périmètre de délégation (bornes dures)
 
@@ -197,8 +195,8 @@ outil MCP concerné ne doit être autorisé implicitement. Tout résultat de com
 - Le coordinateur ne relance pas un worker pour une sortie vide plus d'une fois :
   pour un retour non requis, une retry unique puis `rc=1` et warning ; pour un worker A,
   l'absence d'un audit envelope valide reste un artefact requis **blocking**. Exception
-  ciblée (cas 2026-09-16 `ses_f6ed`) : une sortie non vide mais hors contrat d'un worker A
-  (texte libre type graphify au lieu du JSON, fichier absent au chemin canonique) donne
+  ciblée : une sortie non vide mais hors contrat d'un worker A
+  (texte libre au lieu du JSON, fichier absent au chemin canonique) donne
   droit à **une seule retry** — même `session_id`, briefing minimal, extract réduit par
   fenêtres bornées. Si la retry échoue, l'artefact reste **blocking** (rc=2).
   Une sortie non vide mais hors contrat est tronquée au JOIN, sans nouveau spawn au-delà
@@ -304,21 +302,16 @@ l'obligation de sérialiser T avant le fan-out.
 Seulement après que T a produit `weekly-audit-candidates-<date>.json` (K ids connus),
 l'orchestrateur spawn **K workers A en parallèle** via `task`
 (`subagent_type=weekly-advisor-worker`, `branch=A`, briefing = `session_id` + `run_dir`
-+ invariants d'audit). Chaque worker A exécute d'abord son **pre-flight skill F6**
-(`weekly-quality-audit`, primaire : absente → contrat `rc=2`, pas de rapport) puis écrit
-`audit-findings-<id>.json` dans `runs/current/`.
++ invariants d'audit) — pre-flight skill F6 et contrat de sortie du worker A détaillés
+dans `weekly-advisor-worker.md` §Pre-flight skills (F6) / §Branche A, pas dupliqués ici.
 L'orchestrateur **barrière uniquement sur les FICHIERS, jamais sur les retours
 workers** (un worker pendu ne doit pas tuer le run) :
 poll glob `<output_dir>/runs/current/audit-findings-*.json`
 — absolu, toutes les 30s, **plafond 10 min strict depuis le spawn**. Au plafond :
 consolider les fichiers présents, émettre pour chaque session sans fichier
 `audit-missing:<session_id>` comme artefact requis manquant (**blocking**, rc=2), **ne pas attendre
-les retours workers tardifs** (ignorés, pas de re-consolidation). Briefing de
-chaque worker A : **plafond 10 min** — à l'échéance, écrire un
-**audit envelope schema-valid** (§ Contrat final) ; si ce fichier requis ne
-peut pas être produit, le JOIN le marque `missing/invalid` et bloquant au lieu
-d'accepter un résumé invalide. Le worker retourne ensuite le contrat pour diagnostic.
-puis **consolide** en `weekly-quality-findings-<date>.json` — **aucun re-LLM par session**
+les retours workers tardifs** (ignorés, pas de re-consolidation).
+Puis **consolide** en `weekly-quality-findings-<date>.json` — **aucun re-LLM par session**
  au merge (consolidation déterministe des `findings` déjà produits par les workers).
  La consolidation vérifie le `session_id` contre le nom canonique du fichier et recopie
  cet identifiant dans chaque finding. Elle n'invente ni ne réattribue un finding sans
@@ -452,3 +445,8 @@ Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sa
   viser l'extrait borné ou l'outil dédié.
 - **Mode audit** : pour toute réinspection d'un run déjà produit, exécuter en lecture
   seule (aucun spawn de worker, aucun commit) et se limiter aux artefacts du run actif.
+
+## Notes historiques
+
+- 2026-09-16 `ses_f6ed` : sortie worker A non vide mais hors contrat → motive
+  l'exception retry unique (§ Budget et périmètre de délégation).

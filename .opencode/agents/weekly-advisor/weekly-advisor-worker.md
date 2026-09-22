@@ -5,6 +5,7 @@ mode: subagent
 permission:
   edit: allow
   bash: deny
+  task: deny
   read: allow
   glob: allow
   grep: allow
@@ -76,8 +77,8 @@ via le catalogue réel `scan_skill_catalog()` (multi-layout, lecture seule, jama
 chargement implicite) — ce sont les mêmes racines que le moteur (`_skill_dirs()` :
 `<project_root>/.opencode/skills`, `<project_root>/.claude/skills`,
 `<project_root>/.agents/skills`, `~/.config/opencode/skills`, plus layouts
-déclarés). Un simple `glob` sous `skills/` seul est incomplet (a causé `ses_f56a`
-→ audit rc=2 `missing weekly-quality-audit` malgré skill présent dans `.agents/`).
+déclarés). Un simple `glob` sous `skills/` seul est incomplet (un audit a
+échoué en rc=2 `missing weekly-quality-audit` malgré skill présent dans `.agents/`).
 
 | Branche | Skill(s) requise(s) | Rôle |
 |---|---|---|
@@ -151,9 +152,9 @@ est tronqué/partiel (signal de troncation ou taille > ~150 Ko) : (a) **une seul
      `{status: "report-only", report_only: true, category: "external-permission-refusal"}`
      dans `warnings`.
 
-**Anti-hors-contrat (cas 2026-09-16 `ses_f6ed`)** : ne charger QUE le skill
-`weekly-quality-audit`. Ne jamais charger `graphify` ni aucun skill lourd dans un
-worker A : toute analyse texte libre hors enveloppe est ignorée et tronquée par
+**Anti-hors-contrat** : ne charger QUE le skill
+`weekly-quality-audit`. Ne jamais charger un skill lourd hors de la branche assignée
+dans un worker A : toute analyse texte libre hors enveloppe est ignorée et tronquée par
 l'orchestrateur, et un fichier manquant bloque le JOIN. Règle d'écriture :
 d'abord écrire `audit-findings-<session_id>.json` (enveloppe v1 valide, `summary`
 non-vide), ensuite seulement retourner le contrat. Si l'extrait dépasse ~150 Ko,
@@ -179,9 +180,11 @@ Exécutées en **wave 2** (parallèle, après JOIN wave 1). Détail dans l'agent
 
 Les identifiants `mcp-tool-poisoning`, `unbounded-delegation` et
 `memory-write-unscoped` imposent un arrêt de l'action concernée et un signalement au
-coordinateur ; ne jamais contourner ces findings. Toute commande dont le résultat est
-`rc != 0` est en échec, même si une sortie partielle existe, et doit rester dans
-`warnings` ou déclencher la fatalité applicable.
+coordinateur ; ne jamais contourner ces findings (source unique de ces IDs et de leur
+traitement warn-only : skill partagé `weekly-safety-guardrails`, § Entrées aval et
+sécurité). Toute commande dont le résultat est `rc != 0` est en échec, même si une
+sortie partielle existe, et doit rester dans `warnings` ou déclencher la fatalité
+applicable.
 
 | Scénario | Réaction | rc | warning | continuer |
 |---|---|---|---|---|
@@ -228,8 +231,6 @@ dans le contrat pour fine-grained instrumentation (optional mais recommandé).
 
 ## Garde artefact et périmètre
 
-<!-- ponytail: un seul envelope strict évite une seconde validation LLM au JOIN. -->
-
 Chaque worker A écrit un JSON `audit-findings-<session_id>.json` schema-valid, même quand
 l'extrait est borné, tronqué ou illisible. L'envelope v1 obligatoire est :
 
@@ -258,3 +259,10 @@ warning dans l'artefact. Le worker vérifie cette forme avant son contrat de ret
 - Tout finding doit être soutenu par l'input effectivement lu. Ne jamais compléter un
   transcript, un digest, un raw ou une proposition par supposition.
 - Sécurité et hors-worktree : voir skill partagé `weekly-safety-guardrails` (external-permission-refusal, environment-change, IDs bloquants).
+
+## Notes historiques
+
+- `ses_f56a` : `glob` incomplet sous `skills/` → motive le scan multi-layout
+  `scan_skill_catalog()` (§ Pre-flight skills).
+- 2026-09-16 `ses_f6ed` : chargement d'un skill lourd (`graphify`, hors branche
+  assignée) + analyse hors enveloppe → motive la règle anti-hors-contrat (branche A).

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Contrat de flux docs ↔ code (G1, v6.0.p) — 7 surfaces vérifiées statiquement.
+ * Contrat de flux docs ↔ code (G1, v6.0.p) — 8 surfaces vérifiées statiquement.
  *
  *  1. Tools TS → sous-commandes CLI : chaque outil du plugin invoque une
  *     sous-commande réelle du moteur (aucun argv fantôme).
@@ -21,6 +21,16 @@
  *     `task: allow`, marqueurs WAVE/JOIN, contrat retour JSON du worker,
  *     référence agent dans la commande — dérive observée : phrase interdisant
  *     encore le dispatch en subagent côté commande).
+ *  8. Envelopes LLM : les exemples JSON embarqués dans les SKILL.md (marqués
+ *     `<!-- envelope-example: <id> -->`) respectent le contrat réellement
+ *     vérifié par le JOIN (miroir des schémas
+ *     `doc/architecture/schemas/<id>.schema.json` — dérive observée : prose
+ *     dupliquée qui dérive du validateur moteur).
+ *  9. Table branche→skill : la table du worker (§Pre-flight skills) est la
+ *     source unique — chaque skill listée existe sous `.opencode/skills/`, et
+ *     l'agent orchestrateur pointe vers le worker au lieu de dupliquer la
+ *     table (dérive observée : table recopiée agent/worker, divergence
+ *     silencieuse).
  *
  * Zéro dépendance (node stdlib). Lancé par la CI après pytest ; exit 0/1.
  */
@@ -318,9 +328,153 @@ ok(
   /agent:\s*weekly-advisor\b/.test(frontmatter(commandSrc7)),
 )
 
+// ------------------------------------------------------------------ surface 8
+
+// Envelopes LLM : chaque SKILL.md producteur montre un exemple marqué
+// `<!-- envelope-example: <id> -->`. Le check extrait le bloc clôturé qui suit,
+// retire les commentaires jsonc (sans casser les `//` dans les chaînes, ex.
+// les URLs `https://…`), parse, puis contrôle les clés requises — le même
+// contrat que le schéma `doc/architecture/schemas/<id>.schema.json` et le
+// validateur moteur (report.py). Zéro dépendance : pas de validateur JSON
+// Schema externe, les contrôles sont codés en dur ci-dessous.
+const SKILLS_DIR = path.join(ROOT, ".opencode", "skills")
+const ENVELOPES = [
+  "weekly-quality-audit/audit-findings",
+  "weekly-watch-review/weekly-watch-findings-raw",
+  "harness-remediation/weekly-harness-remediation-proposals",
+]
+function stripJsonc(src) {
+  let out = ""
+  let inStr = false
+  let esc = false
+  for (let i = 0; i < src.length; i += 1) {
+    const c = src[i]
+    if (inStr) {
+      out += c
+      if (esc) esc = false
+      else if (c === "\\") esc = true
+      else if (c === '"') inStr = false
+    } else if (c === '"') {
+      inStr = true
+      out += c
+    } else if (c === "/" && src[i + 1] === "/") {
+      while (i < src.length && src[i] !== "\n") i += 1
+      out += "\n"
+    } else {
+      out += c
+    }
+  }
+  return out
+}
+function envelopeExample(skillSrc, id) {
+  const at = skillSrc.indexOf(`<!-- envelope-example: ${id}`)
+  if (at === -1) return { found: false }
+  const open = skillSrc.indexOf("```", at)
+  const openEnd = open === -1 ? -1 : skillSrc.indexOf("\n", open)
+  const close = openEnd === -1 ? -1 : skillSrc.indexOf("```", openEnd)
+  if (open === -1 || openEnd === -1 || close === -1) return { found: true, block: null }
+  return { found: true, block: skillSrc.slice(openEnd + 1, close) }
+}
+function isRecord(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v)
+}
+function checkEnvelope(id, value) {
+  if (id === "audit-findings") {
+    return (
+      isRecord(value) &&
+      value.schema_version === 1 &&
+      typeof value.session_id === "string" &&
+      typeof value.summary === "string" &&
+      value.summary.trim().length > 0 &&
+      Array.isArray(value.findings) &&
+      (value.rc === 0 || value.rc === 1) &&
+      Array.isArray(value.warnings)
+    )
+  }
+  if (id === "weekly-watch-findings-raw") {
+    return (
+      isRecord(value) &&
+      value.schema_version === 1 &&
+      Array.isArray(value.findings) &&
+      value.findings.every(
+        (f) =>
+          isRecord(f) &&
+          typeof f.category === "string" &&
+          typeof f.severity === "string" &&
+          typeof f.token_impact === "string",
+      )
+    )
+  }
+  // weekly-harness-remediation-proposals
+  const DECISIONS = new Set(["apply", "propose", "manual", "dismiss"])
+  return (
+    isRecord(value) &&
+    (value.schema_version === 1 || value.schema_version === 2) &&
+    typeof value.date === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(value.date) &&
+    Array.isArray(value.proposals) &&
+    value.proposals.every(
+      (p) =>
+        isRecord(p) &&
+        typeof p.rule === "string" &&
+        typeof p.path === "string" &&
+        DECISIONS.has(p.decision),
+    )
+  )
+}
+console.log("— Surface 8 : exemples d'envelopes conformes au contrat JOIN")
+for (const pair of ENVELOPES) {
+  const [skill, id] = pair.split("/")
+  const src = read(path.join(SKILLS_DIR, skill, "SKILL.md"))
+  const ex = envelopeExample(src, id)
+  ok(`SKILL ${skill} marque un exemple d'envelope "${id}"`, ex.found)
+  if (!ex.found) continue
+  let value = null
+  let parsed = false
+  if (ex.block !== null) {
+    try {
+      value = JSON.parse(stripJsonc(ex.block))
+      parsed = true
+    } catch {
+      parsed = false
+    }
+  }
+  ok(`exemple "${id}" parse comme JSON (commentaires jsonc ignorés)`, parsed, parsed ? "" : "bloc illisible")
+  if (parsed) ok(`exemple "${id}" respecte le contrat JOIN`, checkEnvelope(id, value))
+}
+
+// ------------------------------------------------------------------ surface 9
+
+// Table branche→skill : source unique = worker §Pre-flight skills. Le check
+// extrait les noms en backticks des lignes de table, vérifie que chaque skill
+// existe sous `.opencode/skills/`, et que l'agent pointe vers le worker sans
+// recopier la table.
+console.log("— Surface 9 : table branche→skill (source unique worker)")
+const preflightAt = workerSrc.indexOf("## Pre-flight skills")
+const mappingAt = workerSrc.indexOf("**Mapping rc**", preflightAt === -1 ? 0 : preflightAt)
+const tableZone = preflightAt !== -1 && mappingAt !== -1 ? workerSrc.slice(preflightAt, mappingAt) : ""
+const tableSkills = [...tableZone.matchAll(/^\|[^|\n]*\|([^|\n]*)\|/gm)]
+  .flatMap((m) => [...m[1].matchAll(/`([^`]+)`/g)].map((b) => b[1]))
+ok("worker §Pre-flight skills liste ≥1 skill en table", tableSkills.length > 0)
+for (const skill of tableSkills) {
+  ok(
+    `skill de branche "${skill}" existe sous .opencode/skills/`,
+    fs.existsSync(path.join(SKILLS_DIR, skill, "SKILL.md")),
+  )
+}
+const agentSrc9 = read(AGENT_FILE)
+ok(
+  "agent pointe vers weekly-advisor-worker.md (pas de table dupliquée)",
+  agentSrc9.includes("weekly-advisor-worker.md"),
+)
+ok(
+  "agent ne recopie pas la table branche→skill",
+  !agentSrc9.includes("| Branche | Skill(s) requise(s) |"),
+)
+
 console.log(
   failures === 0
-    ? "\nFLOW-DOCS OK — contrat de flux 7 surfaces vérifié"
+    ? "\nFLOW-DOCS OK — contrat de flux 9 surfaces vérifié"
     : `\n${failures} échec(s)`,
 )
 process.exit(failures === 0 ? 0 : 1)

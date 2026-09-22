@@ -23,6 +23,16 @@ courante.
 | [weekly-draft-candidates](weekly-draft-candidates.schema.json) | `draft-candidates` | 4 |
 | [skill-curate](skill-curate.schema.json) | `skill-curate` | 6.5 |
 
+Envelopes produites par le LLM et validées comme "schema-valid" de façon
+bloquante par le JOIN (`report.py`) — la source de vérité prose vit dans le
+SKILL.md de chaque étape, le schéma en est le miroir exact :
+
+| Schéma | Producteur (LLM) | Gate bloquante |
+| ------ | ---------------- | -------------- |
+| [audit-findings](audit-findings.schema.json) | worker A (`weekly-quality-audit`) | `_audit_envelope_reason` |
+| [weekly-watch-findings-raw](weekly-watch-findings-raw.schema.json) | `weekly-watch-review` | `_has_findings_list` |
+| [weekly-harness-remediation-proposals](weekly-harness-remediation-proposals.schema.json) | `harness-remediation` | `_valid_remediation_proposals` |
+
 Le rapport final (`weekly-report-<date>.md`) suit la structure de sections
 décrite dans [`doc/spec/06-sorties.md`](../../spec/06-sorties.md) ; la page HTML
 est une projection interactive best-effort du même contenu.

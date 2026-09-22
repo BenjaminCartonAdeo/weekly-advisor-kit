@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "weekly-watch-findings-raw.schema.json",
+  "title": "weekly-watch-findings-raw-<date>.json",
+  "description": "Brouillon LLM de la revue de veille (étape 3.5, skill weekly-watch-review), entrée obligatoire de `watch-validate`. La gate moteur (`report._has_findings_list`) n'exige qu'un tableau `findings` ; le skill impose en plus schema_version==1 et `token_impact` obligatoire par finding. Schéma documentaire : clés principales contraintes, le reste libre.",
+  "type": "object",
+  "required": ["schema_version", "findings"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "filet": {
+      "type": "object",
+      "properties": {
+        "kept": { "type": "array", "items": { "type": "string" } },
+        "dropped_reasons": { "type": "object" }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["category", "severity", "token_impact"],
+        "properties": {
+          "category": { "type": "string" },
+          "severity": { "type": "string" },
+          "token_impact": { "type": "string", "enum": ["high", "medium", "low"] },
+          "target_local": { "type": ["string", "null"] },
+          "description": { "type": "string" },
+          "evidence_summary": { "type": "string" },
+          "recommendation": { "type": "string" },
+          "subject": { "type": "object" },
+          "recommendation_type": { "type": "string" },
+          "impact_order_of_magnitude": { "type": "string" }
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}
