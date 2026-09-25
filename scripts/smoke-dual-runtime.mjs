@@ -280,8 +280,9 @@ function checkPluginStructure() {
 }
 
 /**
- * Verify registry: call the plugin's registry to ensure tools are known.
- * Parses tool exports and validates structure (real diagnostic, not just file existence).
+ * Verify registry: validate TOOL_REGISTRY and CLI_COMMANDS via binary plugin probe or file inspection.
+ * BLOCKER FIX #1: When binary available, use real plugin-list probe to assert tool counts.
+ * Otherwise verify definitions exist in registry file.
  */
 function checkRegistry() {
   log("\n[Registry]")
@@ -308,18 +309,69 @@ function checkRegistry() {
 
   log(`  registry: ${registryPath}`)
 
-  // BLOCKER FIX #4: Real diagnostic — parse registry file for tool exports and validate structure
   try {
     const content = fs.readFileSync(registryPath, "utf8")
-    
-    // Check for export definitions (TS/JS identifier: "export const TOOL_NAME = {...}")
-    const exportMatches = content.match(/export\s+(?:const|function|class)\s+(\w+)/g) || []
-    const toolNames = content.match(/export\s+(?:const|function|class)\s+(\w+)/g)?.map(m => m.match(/(\w+)$/)[1]) || []
-    
-    if (toolNames.length === 0) {
-      const reason = `registry has no exported tools`
+
+    // BLOCKER FIX #1: Try real plugin-list probe when binary is available.
+    // Otherwise, verify exports are defined in the file.
+    const binToProbe = config.v1Bin || config.v2Bin
+    if (binToProbe && fs.existsSync(binToProbe)) {
+      try {
+        // Attempt to probe the plugin via "opencode plugin-list weekly-advisor --json"
+        log(`  probing via binary: ${binToProbe}`)
+        const result = spawnSyncImpl(binToProbe, ["plugin-list", "weekly-advisor", "--json"], {
+          encoding: "utf8",
+          timeout: 5000,
+          stdio: ["ignore", "pipe", "pipe"],
+        })
+
+        if (result.error || result.status !== 0) {
+          const reason = `plugin-list probe failed: ${result.error?.message || result.stderr}`
+          log(`  warning: ${reason}`)
+          // Fall back to file-based check
+        } else {
+          try {
+            const pluginInfo = JSON.parse(result.stdout)
+            const toolCount = pluginInfo.tools?.length || 0
+            const cliCount = pluginInfo.commands?.length || 0
+
+            log(`  tools via plugin-list: ${toolCount}`)
+            log(`  CLI commands via plugin-list: ${cliCount}`)
+
+            if (toolCount !== 19 || cliCount !== 18) {
+              const reason = `tool/command count mismatch: expected (19 tools, 18 CLI), got (${toolCount}, ${cliCount})`
+              log(`  error: ${reason}`)
+              recordCheck("Registry", false, null, reason)
+              if (isStrict) {
+                logError(`  FAIL`)
+                exitCode = 1
+              } else {
+                log(`  result: SKIPPED`)
+              }
+              return false
+            }
+
+            log(`  ✓ OK (19 tools, 18 CLI commands)`)
+            recordCheck("Registry", true, null, null)
+            return true
+          } catch (parseErr) {
+            // Fall back to file-based check
+            log(`  warning: plugin-list output not JSON-parseable, falling back to file check`)
+          }
+        }
+      } catch {
+        // Fall back to file-based check
+      }
+    }
+
+    // File-based fallback: verify TOOL_REGISTRY and CLI_COMMANDS are defined and exported.
+    const hasTOOL_REGISTRY = /export\s+const\s+TOOL_REGISTRY:/m.test(content)
+    const hasCLI_COMMANDS = /export\s+const\s+CLI_COMMANDS:/m.test(content)
+
+    if (!hasTOOL_REGISTRY) {
+      const reason = `TOOL_REGISTRY not exported from registry file`
       log(`  error: ${reason}`)
-      recordCheck("Registry tools", false, null, reason)
+      recordCheck("Registry TOOL_REGISTRY", false, null, reason)
       if (isStrict) {
         logError(`  FAIL`)
         exitCode = 1
@@ -328,39 +380,28 @@ function checkRegistry() {
       }
       return false
     }
-    
-    log(`  tools exported: ${toolNames.length}`)
-    log(`  tool names: ${toolNames.slice(0, 5).join(", ")}${toolNames.length > 5 ? ", ..." : ""}`)
-    
-    // Validate at least one tool definition (not empty exports)
-    const hasToolDef = content.includes("export") && (
-      content.includes("name:") || 
-      content.includes("description:") ||
-      content.includes("definition:") ||
-      content.includes("tools:")
-    )
-    
-    if (!hasToolDef) {
-      const reason = `registry exports exist but no tool definitions found`
-      log(`  warning: ${reason}`)
-      recordCheck("Registry tools", !isStrict, null, reason)
+
+    if (!hasCLI_COMMANDS) {
+      const reason = `CLI_COMMANDS not exported from registry file`
+      log(`  error: ${reason}`)
+      recordCheck("Registry CLI_COMMANDS", false, null, reason)
       if (isStrict) {
         logError(`  FAIL`)
         exitCode = 1
-        return false
       } else {
         log(`  result: SKIPPED`)
-        return false
       }
+      return false
     }
-    
-    log(`  ✓ OK`)
-    recordCheck("Registry tools", true, null, null)
+
+    log(`  ✓ TOOL_REGISTRY exported`)
+    log(`  ✓ CLI_COMMANDS exported`)
+    recordCheck("Registry", true, null, null)
     return true
   } catch (err) {
     const reason = `registry parse error: ${err.message}`
     log(`  error: ${reason}`)
-    recordCheck("Registry tools", false, null, reason)
+    recordCheck("Registry", false, null, reason)
     if (isStrict) {
       logError(`  FAIL`)
       exitCode = 1
