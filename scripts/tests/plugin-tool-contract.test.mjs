@@ -73,7 +73,9 @@ const EXPECTED_CLI_COMMANDS = [
 ]
 
 // Load registry tools dynamically at test time
+// MUST succeed; failure is a test failure, not a skip.
 let REGISTRY_TOOLS = []
+let registryLoadError = null
 try {
   const registryUrl = new URL(
     "../../.opencode/plugins/weekly-advisor/tool-registry.ts",
@@ -88,8 +90,17 @@ try {
     anchored: tool.anchored ?? true,
   }))
 } catch (e) {
-  console.warn("Failed to load registry tools:", e.message)
+  registryLoadError = e
 }
+
+// ---------------------------------------------------------------------------
+// Registry Load Guard (MUST run first and MUST not skip)
+// ---------------------------------------------------------------------------
+
+test("registry must load successfully", () => {
+  assert.ok(registryLoadError === null, `Registry load failed: ${registryLoadError?.message}`)
+  assert.equal(REGISTRY_TOOLS.length, 19, "Registry must provide exactly 19 tools")
+})
 
 // ---------------------------------------------------------------------------
 // Fixture
@@ -148,10 +159,6 @@ test("CLI commands match the engine subcommand table", () => {
 // ---------------------------------------------------------------------------
 
 test("registry tools match fixture tool names and order", () => {
-  if (REGISTRY_TOOLS.length === 0) {
-    // Skip if registry failed to load
-    return
-  }
   assert.equal(REGISTRY_TOOLS.length, 19, "registre : 19 outils")
   assert.deepEqual(
     REGISTRY_TOOLS.map((t) => t.name),
@@ -161,17 +168,11 @@ test("registry tools match fixture tool names and order", () => {
 })
 
 test("registry CLI subcommands match fixture", () => {
-  if (REGISTRY_TOOLS.length === 0) {
-    return
-  }
   const regCliCmds = REGISTRY_TOOLS.filter((t) => t.cliSubcommand !== null).map((t) => t.cliSubcommand)
   assert.deepEqual(regCliCmds, CONTRACT.cliCommands, "CLI subcommands identiques et dans le même ordre")
 })
 
 test("registry tool descriptions match fixture byte-for-byte", () => {
-  if (REGISTRY_TOOLS.length === 0) {
-    return
-  }
   const byName = new Map(CONTRACT.tools.map((t) => [t.name, t]))
   for (const regTool of REGISTRY_TOOLS) {
     const contractTool = byName.get(regTool.name)
@@ -181,9 +182,6 @@ test("registry tool descriptions match fixture byte-for-byte", () => {
 })
 
 test("registry timeouts and anchoring match fixture", () => {
-  if (REGISTRY_TOOLS.length === 0) {
-    return
-  }
   const byName = new Map(CONTRACT.tools.map((t) => [t.name, t]))
   for (const regTool of REGISTRY_TOOLS) {
     const contractTool = byName.get(regTool.name)
@@ -205,9 +203,6 @@ test("dual entrypoint plugin exports {id, server, setup} interface", async () =>
 })
 
 test("registry fields match fixture fields exactly", () => {
-  if (REGISTRY_TOOLS.length === 0) {
-    return
-  }
   const byName = new Map(CONTRACT.tools.map((t) => [t.name, t]))
   for (const regTool of REGISTRY_TOOLS) {
     const contractTool = byName.get(regTool.name)
