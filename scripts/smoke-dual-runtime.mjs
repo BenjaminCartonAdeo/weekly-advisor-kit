@@ -26,6 +26,13 @@ import path from "node:path"
 import { execSync, spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 
+// For testing: injectable subprocess execution
+let spawnSyncImpl = spawnSync
+
+export function setSpawnSyncImpl(impl) {
+  spawnSyncImpl = impl
+}
+
 // Constants
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const REPORT_FILE = path.join(ROOT, "reports", "smoke-dual-runtime-report.json")
@@ -36,9 +43,10 @@ const isStrict = args.includes("--strict") || (!args.includes("--non-strict") &&
 const isQuiet = args.includes("--quiet")
 
 // Configuration from environment
+// BLOCKER FIX #1: V1 and V2 must be DISTINCT in strict mode; no defaulting to same PATH binary.
 const config = {
-  v1Bin: process.env.OPENCODE_V1_BIN || resolveFromPath("opencode"), // Try PATH
-  v2Bin: process.env.OPENCODE_V2_BIN || resolveFromPath("opencode"), // Try PATH
+  v1Bin: process.env.OPENCODE_V1_BIN || null,
+  v2Bin: process.env.OPENCODE_V2_BIN || null,
   v1Expected: process.env.V1_EXPECTED_VERSION || null,
   v2Expected: process.env.V2_EXPECTED_VERSION || null,
   kitRoot: process.env.WEEKLY_KIT_ROOT || discoverKitRoot(),
@@ -47,6 +55,7 @@ const config = {
 // State
 let exitCode = 0
 const checks = []
+let hasSkipped = false // BLOCKER FIX #2: track SKIPPED checks globally
 
 // Utilities
 
@@ -59,7 +68,10 @@ function logError(msg) {
 }
 
 function recordCheck(name, ok, version, reason) {
-  checks.push({ name, ok, version, reason, timestamp: new Date().toISOString() })
+  // State is "skipped" when there's a reason but non-strict allows it (ok=true but reason exists)
+  const state = reason ? "skipped" : (ok ? "passed" : "failed")
+  if (state === "skipped") hasSkipped = true
+  checks.push({ name, ok, version, reason, state, timestamp: new Date().toISOString() })
 }
 
 function resolveFromPath(binName) {
@@ -93,11 +105,12 @@ function discoverKitRoot() {
 /**
  * Extract version from binary --version output.
  * Handles formats like "opencode 1.19.0" or "1.19.0" or "v1.19.0".
+ * Exported for testing.
  */
-function extractVersion(binPath) {
+export function extractVersion(binPath) {
   if (!binPath || !fs.existsSync(binPath)) return null
   try {
-    const result = spawnSync(binPath, ["--version"], {
+    const result = spawnSyncImpl(binPath, ["--version"], {
       encoding: "utf8",
       timeout: 5000,
       stdio: ["ignore", "pipe", "ignore"],
@@ -113,8 +126,9 @@ function extractVersion(binPath) {
 
 /**
  * Verify a single binary.
+ * Exported for testing.
  */
-function checkBinary(name, binPath, expectedVersion, runtime) {
+export function checkBinary(name, binPath, expectedVersion, runtime) {
   const label = `${runtime} ${name}`
   log(`\n[${label}]`)
 
@@ -267,7 +281,7 @@ function checkPluginStructure() {
 
 /**
  * Verify registry: call the plugin's registry to ensure tools are known.
- * For now, this is a mock that checks file existence.
+ * Parses tool exports and validates structure (real diagnostic, not just file existence).
  */
 function checkRegistry() {
   log("\n[Registry]")
@@ -293,19 +307,68 @@ function checkRegistry() {
   }
 
   log(`  registry: ${registryPath}`)
-  recordCheck("Registry", true, null, null)
 
-  // Count exports
+  // BLOCKER FIX #4: Real diagnostic — parse registry file for tool exports and validate structure
   try {
     const content = fs.readFileSync(registryPath, "utf8")
-    const exportCount = (content.match(/export\s+(?:const|function)/g) || []).length
-    log(`  exports: ${exportCount}`)
-  } catch {
-    // Silent ignore; registry file exists, that's enough
+    
+    // Check for export definitions (TS/JS identifier: "export const TOOL_NAME = {...}")
+    const exportMatches = content.match(/export\s+(?:const|function|class)\s+(\w+)/g) || []
+    const toolNames = content.match(/export\s+(?:const|function|class)\s+(\w+)/g)?.map(m => m.match(/(\w+)$/)[1]) || []
+    
+    if (toolNames.length === 0) {
+      const reason = `registry has no exported tools`
+      log(`  error: ${reason}`)
+      recordCheck("Registry tools", false, null, reason)
+      if (isStrict) {
+        logError(`  FAIL`)
+        exitCode = 1
+      } else {
+        log(`  result: SKIPPED`)
+      }
+      return false
+    }
+    
+    log(`  tools exported: ${toolNames.length}`)
+    log(`  tool names: ${toolNames.slice(0, 5).join(", ")}${toolNames.length > 5 ? ", ..." : ""}`)
+    
+    // Validate at least one tool definition (not empty exports)
+    const hasToolDef = content.includes("export") && (
+      content.includes("name:") || 
+      content.includes("description:") ||
+      content.includes("definition:") ||
+      content.includes("tools:")
+    )
+    
+    if (!hasToolDef) {
+      const reason = `registry exports exist but no tool definitions found`
+      log(`  warning: ${reason}`)
+      recordCheck("Registry tools", !isStrict, null, reason)
+      if (isStrict) {
+        logError(`  FAIL`)
+        exitCode = 1
+        return false
+      } else {
+        log(`  result: SKIPPED`)
+        return false
+      }
+    }
+    
+    log(`  ✓ OK`)
+    recordCheck("Registry tools", true, null, null)
+    return true
+  } catch (err) {
+    const reason = `registry parse error: ${err.message}`
+    log(`  error: ${reason}`)
+    recordCheck("Registry tools", false, null, reason)
+    if (isStrict) {
+      logError(`  FAIL`)
+      exitCode = 1
+    } else {
+      log(`  result: SKIPPED`)
+    }
+    return false
   }
-
-  log(`  ✓ OK`)
-  return true
 }
 
 // Main execution
@@ -336,10 +399,11 @@ function main() {
   log("=".repeat(70))
 
   const allPassed = v1Ok && v2Ok && pluginOk && registryOk
-  const passCount = checks.filter((c) => c.ok).length
-  const failCount = checks.filter((c) => !c.ok).length
+  const passCount = checks.filter((c) => c.state === "passed").length
+  const failCount = checks.filter((c) => c.state === "failed").length
+  const skipCount = checks.filter((c) => c.state === "skipped").length
 
-  log(`checks: ${passCount} passed, ${failCount} failed`)
+  log(`checks: ${passCount} passed, ${failCount} failed, ${skipCount} skipped`)
   log(`exit code: ${exitCode}`)
 
   // Write report
@@ -375,15 +439,18 @@ function main() {
 
   if (isStrict && exitCode !== 0) {
     logError("\n❌ FAILED (strict mode)")
-  } else if (!isStrict && exitCode === 0) {
-    log("\n✅ PASSED (non-strict)")
-  } else if (!isStrict && exitCode !== 0) {
-    log("\n⚠️  SKIPPED (non-strict, checks failed)")
-  } else {
+  } else if (!isStrict && hasSkipped) {
+    log("\n⚠️  SKIPPED (checks failed or binaries missing)")
+  } else if (exitCode === 0) {
     log("\n✅ PASSED")
+  } else {
+    logError("\n❌ FAILED")
   }
 
   process.exit(exitCode)
 }
 
-main()
+// Only invoke main() if run as a script, not when imported for testing
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main()
+}
