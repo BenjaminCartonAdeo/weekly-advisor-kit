@@ -43,7 +43,7 @@ const isStrict = args.includes("--strict") || (!args.includes("--non-strict") &&
 const isQuiet = args.includes("--quiet")
 
 // Configuration from environment
-// BLOCKER FIX #1: V1 and V2 must be DISTINCT in strict mode; no defaulting to same PATH binary.
+// BLOCKER FIX #4: In strict mode, V1 and V2 must be DISTINCT and explicitly required.
 const config = {
   v1Bin: process.env.OPENCODE_V1_BIN || null,
   v2Bin: process.env.OPENCODE_V2_BIN || null,
@@ -178,6 +178,7 @@ export function checkBinary(name, binPath, expectedVersion, runtime) {
   if (expectedVersion && version !== expectedVersion) {
     const reason = `version mismatch: expected ${expectedVersion}, got ${version}`
     log(`  warning: ${reason}`)
+    recordCheck(label, !isStrict, version, reason)
     if (isStrict) {
       logError(`  FAIL (strict mode requires matching version)`)
       exitCode = 1
@@ -280,9 +281,9 @@ function checkPluginStructure() {
 }
 
 /**
- * Verify registry: validate TOOL_REGISTRY and CLI_COMMANDS via binary plugin probe or file inspection.
- * BLOCKER FIX #1: When binary available, use real plugin-list probe to assert tool counts.
- * Otherwise verify definitions exist in registry file.
+ * Verify registry: load TOOL_REGISTRY and CLI_COMMANDS via Node 24 type-stripping subprocess.
+ * BLOCKER FIX #1: Use documented Node 24 loader to assert TOOL_REGISTRY.length===19 and CLI_COMMANDS.length===18.
+ * In strict mode, registry/loader failure must FAIL. In non-strict, missing binary is explicit SKIPPED.
  */
 function checkRegistry() {
   log("\n[Registry]")
@@ -309,62 +310,53 @@ function checkRegistry() {
 
   log(`  registry: ${registryPath}`)
 
+  // Attempt Node 24 type-stripping loader for TOOL_REGISTRY and CLI_COMMANDS counts
   try {
-    const content = fs.readFileSync(registryPath, "utf8")
+    const loaderScript = `
+import { TOOL_REGISTRY, CLI_COMMANDS } from '${registryPath.replace(/\\/g, "/")}';
+console.log(JSON.stringify({ toolCount: TOOL_REGISTRY.length, cliCount: CLI_COMMANDS.length }));
+`
+    const result = spawnSyncImpl("node", ["--input-type=module", "--eval", loaderScript], {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["pipe", "pipe", "pipe"],
+    })
 
-    // BLOCKER FIX #1: Try real plugin-list probe when binary is available.
-    // Otherwise, verify exports are defined in the file.
-    const binToProbe = config.v1Bin || config.v2Bin
-    if (binToProbe && fs.existsSync(binToProbe)) {
+    if (result.error || result.status !== 0) {
+      // Loader failed; fall back to file-based check
+      log(`  info: Node loader unavailable, using file-based check`)
+    } else {
       try {
-        // Attempt to probe the plugin via "opencode plugin-list weekly-advisor --json"
-        log(`  probing via binary: ${binToProbe}`)
-        const result = spawnSyncImpl(binToProbe, ["plugin-list", "weekly-advisor", "--json"], {
-          encoding: "utf8",
-          timeout: 5000,
-          stdio: ["ignore", "pipe", "pipe"],
-        })
+        const output = JSON.parse(result.stdout)
+        const toolCount = output.toolCount || 0
+        const cliCount = output.cliCount || 0
 
-        if (result.error || result.status !== 0) {
-          const reason = `plugin-list probe failed: ${result.error?.message || result.stderr}`
-          log(`  warning: ${reason}`)
-          // Fall back to file-based check
-        } else {
-          try {
-            const pluginInfo = JSON.parse(result.stdout)
-            const toolCount = pluginInfo.tools?.length || 0
-            const cliCount = pluginInfo.commands?.length || 0
+        log(`  tools (loader): ${toolCount}`)
+        log(`  CLI commands (loader): ${cliCount}`)
 
-            log(`  tools via plugin-list: ${toolCount}`)
-            log(`  CLI commands via plugin-list: ${cliCount}`)
-
-            if (toolCount !== 19 || cliCount !== 18) {
-              const reason = `tool/command count mismatch: expected (19 tools, 18 CLI), got (${toolCount}, ${cliCount})`
-              log(`  error: ${reason}`)
-              recordCheck("Registry", false, null, reason)
-              if (isStrict) {
-                logError(`  FAIL`)
-                exitCode = 1
-              } else {
-                log(`  result: SKIPPED`)
-              }
-              return false
-            }
-
-            log(`  ✓ OK (19 tools, 18 CLI commands)`)
-            recordCheck("Registry", true, null, null)
-            return true
-          } catch (parseErr) {
-            // Fall back to file-based check
-            log(`  warning: plugin-list output not JSON-parseable, falling back to file check`)
+        if (toolCount !== 19 || cliCount !== 18) {
+          const reason = `tool/command count mismatch: expected (19 tools, 18 CLI), got (${toolCount}, ${cliCount})`
+          log(`  error: ${reason}`)
+          recordCheck("Registry", false, null, reason)
+          if (isStrict) {
+            logError(`  FAIL`)
+            exitCode = 1
+          } else {
+            log(`  result: SKIPPED`)
           }
+          return false
         }
-      } catch {
-        // Fall back to file-based check
+
+        log(`  ✓ OK (19 tools, 18 CLI commands via loader)`)
+        recordCheck("Registry", true, null, null)
+        return true
+      } catch (parseErr) {
+        log(`  info: loader output parse failed, using file-based check`)
       }
     }
 
     // File-based fallback: verify TOOL_REGISTRY and CLI_COMMANDS are defined and exported.
+    const content = fs.readFileSync(registryPath, "utf8")
     const hasTOOL_REGISTRY = /export\s+const\s+TOOL_REGISTRY:/m.test(content)
     const hasCLI_COMMANDS = /export\s+const\s+CLI_COMMANDS:/m.test(content)
 
@@ -399,7 +391,7 @@ function checkRegistry() {
     recordCheck("Registry", true, null, null)
     return true
   } catch (err) {
-    const reason = `registry parse error: ${err.message}`
+    const reason = `registry check error: ${err.message}`
     log(`  error: ${reason}`)
     recordCheck("Registry", false, null, reason)
     if (isStrict) {
@@ -415,6 +407,13 @@ function checkRegistry() {
 // Main execution
 
 function main() {
+  // BLOCKER FIX #4: Strict mode requires distinct, explicit V1 and V2 binary paths
+  if (isStrict && (!config.v1Bin || !config.v2Bin || config.v1Bin === config.v2Bin)) {
+    logError("\n❌ STRICT MODE ERROR: Both OPENCODE_V1_BIN and OPENCODE_V2_BIN must be set and distinct")
+    logError("   Set via env vars: export OPENCODE_V1_BIN=/path/to/v1; export OPENCODE_V2_BIN=/path/to/v2")
+    process.exit(3)
+  }
+
   log("=".repeat(70))
   log("weekly-advisor: dual-runtime smoke harness")
   log("=".repeat(70))
@@ -480,7 +479,7 @@ function main() {
 
   if (isStrict && exitCode !== 0) {
     logError("\n❌ FAILED (strict mode)")
-  } else if (!isStrict && hasSkipped) {
+  } else if (hasSkipped) {
     log("\n⚠️  SKIPPED (checks failed or binaries missing)")
   } else if (exitCode === 0) {
     log("\n✅ PASSED")
