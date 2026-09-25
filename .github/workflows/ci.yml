@@ -63,3 +63,10 @@ jobs:
         # collecte pytest exécutable (documentation counts are advisory).
         run: node scripts/check-flow-docs.mjs
         working-directory: .
+
+      - name: Smoke test — V1/V2 dual runtime (strict)
+        # Validates that OpenCode V1 and V2 are compatible with the plugin:
+        # entry point exists, package constraint valid, registry loads.
+        # --strict fails on any missing binary/constraint; --non-strict would skip.
+        run: node scripts/smoke-dual-runtime.mjs --strict
+        working-directory: .
