@@ -72,24 +72,24 @@ jobs:
           node scripts/smoke-dual-runtime.mjs --non-strict --quiet
         working-directory: .
 
-       - name: Smoke test — V1/V2 compatibility (strict, if binaries provided)
-         # Optional: when V1 and V2 binaries are explicitly provisioned via env vars,
-         # run in strict mode to validate actual V1/V2 compatibility with the plugin.
-         # This requires OPENCODE_V1_BIN, OPENCODE_V2_BIN, and optionally expected versions.
-         # Skipped silently if binaries are not available.
-         if: (env.OPENCODE_V1_BIN != '' && env.OPENCODE_V2_BIN != '') || (secrets.OPENCODE_V1_BIN != '' && secrets.OPENCODE_V2_BIN != '')
-         env:
-           # Map secrets/vars to env for shell access (no direct secret references in shell)
-           OPENCODE_V1_BIN: ${{ secrets.OPENCODE_V1_BIN || env.OPENCODE_V1_BIN || '' }}
-           OPENCODE_V2_BIN: ${{ secrets.OPENCODE_V2_BIN || env.OPENCODE_V2_BIN || '' }}
-           V1_EXPECTED_VERSION: ${{ vars.V1_EXPECTED_VERSION || '' }}
-           V2_EXPECTED_VERSION: ${{ vars.V2_EXPECTED_VERSION || '' }}
-         run: |
-           # Strict test — provision binaries and run compatibility validation
-           # This is an opt-in compatibility gate for dual-runtime validation
-           if [ -n "${OPENCODE_V1_BIN}" ] && [ -n "${OPENCODE_V2_BIN}" ]; then
-             node scripts/smoke-dual-runtime.mjs --strict --quiet
-           else
-             echo "V1/V2 binaries not provisioned; skipping strict compatibility check"
-           fi
-         working-directory: .
+      - name: Smoke test — V1/V2 compatibility (strict, if binaries provided)
+        # Optional: when V1 and V2 binaries are explicitly provisioned via env vars,
+        # run in strict mode to validate actual V1/V2 compatibility with the plugin.
+        # This requires OPENCODE_V1_BIN, OPENCODE_V2_BIN, and optionally expected versions.
+        # Skipped silently if binaries are not available.
+        if: env.OPENCODE_V1_BIN != '' && env.OPENCODE_V2_BIN != ''
+        env:
+          # Map secrets/vars to env for shell access (no direct secret references in shell)
+          OPENCODE_V1_BIN: ${{ secrets.OPENCODE_V1_BIN || env.OPENCODE_V1_BIN || '' }}
+          OPENCODE_V2_BIN: ${{ secrets.OPENCODE_V2_BIN || env.OPENCODE_V2_BIN || '' }}
+          V1_EXPECTED_VERSION: ${{ vars.V1_EXPECTED_VERSION || '' }}
+          V2_EXPECTED_VERSION: ${{ vars.V2_EXPECTED_VERSION || '' }}
+        run: |
+          # Strict test — provision binaries and run compatibility validation
+          # This is an opt-in compatibility gate for dual-runtime validation
+          if [ -n "${OPENCODE_V1_BIN}" ] && [ -n "${OPENCODE_V2_BIN}" ]; then
+            node scripts/smoke-dual-runtime.mjs --strict --quiet
+          else
+            echo "V1/V2 binaries not provisioned; skipping strict compatibility check"
+          fi
+        working-directory: .

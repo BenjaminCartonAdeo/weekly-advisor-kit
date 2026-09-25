@@ -33,6 +33,11 @@ export function setSpawnSyncImpl(impl) {
   spawnSyncImpl = impl
 }
 
+// Exported state helpers for testing
+export function getCheckState() {
+  return { checks, hasSkipped, exitCode, isStrict, isQuiet }
+}
+
 // Constants
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const REPORT_FILE = path.join(ROOT, "reports", "smoke-dual-runtime-report.json")
@@ -312,8 +317,12 @@ function checkRegistry() {
 
   // Attempt Node 24 type-stripping loader for TOOL_REGISTRY and CLI_COMMANDS counts
   try {
+    // Import pathToFileURL at top-level via dynamic import is not available in sync context.
+    // Use synchronous path→URL conversion with the file:// protocol.
+    const registryUrl = `file://${path.resolve(registryPath).replace(/\\/g, "/")}`
+    
     const loaderScript = `
-import { TOOL_REGISTRY, CLI_COMMANDS } from '${registryPath.replace(/\\/g, "/")}';
+import { TOOL_REGISTRY, CLI_COMMANDS } from '${registryUrl}';
 console.log(JSON.stringify({ toolCount: TOOL_REGISTRY.length, cliCount: CLI_COMMANDS.length }));
 `
     const result = spawnSyncImpl("node", ["--input-type=module", "--eval", loaderScript], {
@@ -491,6 +500,8 @@ function main() {
 }
 
 // Only invoke main() if run as a script, not when imported for testing
-if (import.meta.url === `file://${process.argv[1]}`) {
+import { pathToFileURL } from "node:url"
+const scriptUrl = pathToFileURL(process.argv[1] ?? "").href
+if (import.meta.url === scriptUrl) {
   main()
 }
