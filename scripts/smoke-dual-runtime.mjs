@@ -5,11 +5,15 @@
 //   node scripts/smoke-dual-runtime.mjs [--strict|--non-strict] [--quiet]
 //
 // Environment:
-//   OPENCODE_V1_BIN: path to V1 binary (optional, detected from PATH if omitted)
-//   OPENCODE_V2_BIN: path to V2 binary (optional, detected from PATH if omitted)
-//   V1_EXPECTED_VERSION: expected V1 semver (optional, skipped if omitted)
-//   V2_EXPECTED_VERSION: expected V2 semver (optional, skipped if omitted)
+//   OPENCODE_V1_BIN: path to V1 binary — REQUIRED in strict mode
+//   OPENCODE_V2_BIN: path to V2 binary — REQUIRED in strict mode, distinct from V1
+//   V1_EXPECTED_VERSION: expected V1 semver — REQUIRED in strict mode
+//   V2_EXPECTED_VERSION: expected V2 semver — REQUIRED in strict mode
 //   WEEKLY_KIT_ROOT: kit root directory (defaults to cwd or parent of .opencode)
+//
+// Strict mode (default) refuses to start (exit 3) when a binary is missing,
+// the two binaries are identical, or an expected version is missing. In
+// non-strict mode the same gaps become SKIPPED checks — never a silent PASSED.
 //
 // Behavior:
 //   --strict: fail if any binary/plugin/loader check fails (default)
@@ -17,9 +21,9 @@
 //   --quiet: suppress detailed output (exit code and summary only)
 //
 // Exit codes:
-//   0: all checks passed
-//   1: checks failed in strict mode, or non-strict with critical errors
-//   3: configuration or environment error
+//   0: all checks passed (or non-strict run with checks skipped)
+//   1: a check failed in strict mode
+//   3: configuration or environment error (strict preconditions not met)
 //
 import fs from "node:fs"
 import path from "node:path"

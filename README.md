@@ -32,7 +32,7 @@ Le cœur est 100 % déterministe : le moteur Python lit directement la télémé
 
 ## Installation
 
-Prérequis : `uv`, Python ≥ 3.11, `opencode` ≥ 1.18 avec un modèle authentifié (`opencode auth login`), `harness-eval` ≥ 7.9.0 pour l'étape 5. Détails et alternatives : [`INSTALL.md`](INSTALL.md).
+Prérequis : `uv`, Python ≥ 3.11, `opencode` V1 ≥ 1.18.29 (ou V2 `2.*`) avec un modèle authentifié (`opencode auth login`), `harness-eval` ≥ 7.9.0 pour l'étape 5. Détails et alternatives : [`INSTALL.md`](INSTALL.md).
 
 ```sh
 git clone https://github.com/BenjaminCartonAdeo/weekly-advisor-kit.git && cd weekly-advisor-kit
@@ -40,6 +40,69 @@ uv sync --project .opencode/plugins/weekly-advisor-engine --extra dev
 ```
 
 > **Piège connu** : `--extra dev` est obligatoire. Sans lui, `pytest` et `ruff` ne sont pas installés et la validation locale échoue.
+
+## Compatibilité OpenCode V1/V2
+
+Le kit tourne sur les deux lignes d'opencode :
+
+| Ligne | Versions supportées | Contrainte |
+|---|---|---|
+| V1 | `>= 1.18.29 < 2.0.0` | déclarée dans `.opencode/package.json` (`@opencode-ai/plugin`) ; le lockfile résout `1.18.32` |
+| V2 | `2.*` (alpha) | aucun SDK V2 en dépendance — l'adaptateur V2 déclare ses types de contexte **structurellement** |
+
+Le plancher V1 existe pour une raison : le point d'entrée dual repose sur le
+contrat de module **objet** `{ id, server, setup }` du loader d'opencode,
+supporté à partir de la 1.18.29. Les versions `1.18.25` à `1.18.28` ne sont
+**pas** supportées par ce kit.
+
+**Adaptateurs paresseux et version-spécifiques.** `.opencode/plugins/weekly-advisor.ts`
+expose exactement `{ id: "weekly-advisor", server, setup }`, sans aucune logique
+d'outil ni import d'exécution du SDK. `server` charge par `import()` dynamique
+`weekly-advisor/adapters/v1.ts` — le seul module avec un import d'exécution de
+`@opencode-ai/plugin` — et `setup` charge `weekly-advisor/adapters/v2.ts`
+(types V2 structurels, aucun import SDK). Le cœur neutre (`types.ts`, `paths.ts`,
+`preflight.ts`, `runtime.ts`, `tool-registry.ts`) porte toute la logique et reste
+la source de vérité unique des 19 outils / 18 sous-commandes CLI. Seul
+l'adaptateur correspondant à l'hôte qui charge le plugin est jamais importé :
+aucune résolution croisée V1/V2, et un échec d'import **remonte** — il n'existe
+aucun repli silencieux.
+
+**Différences de comportement V1 ↔ V2** (ce que les opérateurs doivent savoir) :
+
+| Aspect | V1 | V2 |
+|---|---|---|
+| Hooks | `command.execute.before` (filtré sur `weekly-review`) + `chat.message` (agent `weekly-advisor`) | pas d'équivalent du hook pré-commande V1 ; le pré-flight passe par `ctx.session.hook("prompt")` filtré strictement sur `event.prompt.agents` contenant `weekly-advisor` |
+| Pré-flight | fail-closed, message gelé `weekly_preflight rc=3 — …` | identique (même texte gelé) |
+| Résultat d'outil | `string` | `{ content }` |
+| Schéma d'outil | builders SDK `tool.schema.*` | JSON Schema dans `input` (`object` / `properties` / `required` / `additionalProperties: false`) |
+| Chargement | dynamique depuis `server` | dynamique depuis `setup` |
+
+**Smoke harness.** `scripts/smoke-dual-runtime.mjs` valide les deux runtimes
+sans hôte : env `OPENCODE_V1_BIN`, `OPENCODE_V2_BIN`, `V1_EXPECTED_VERSION`,
+`V2_EXPECTED_VERSION`, `WEEKLY_KIT_ROOT` ; flags `--strict` (défaut) /
+`--non-strict` / `--quiet`. Codes de sortie : `0` tout passe, `1` un check
+échoue en strict, `3` erreur de configuration/environnement — en strict, le
+harness refuse de démarrer (exit 3) si un binaire manque, si les deux binaires
+sont identiques, ou si une version attendue manque. En `--non-strict`, un check
+impossible imprime un verdict `SKIPPED` explicite et ne produit **jamais** de
+`PASSED` silencieux. Rapport écrit dans `reports/smoke-dual-runtime-report.json`.
+
+Le CI (`.github/workflows/ci.yml`) exécute toujours le self-test `--non-strict`
+(il ne peut pas échouer et ne prouve rien sur de vrais binaires V1/V2) ; l'étape
+stricte de compatibilité est **opt-in** — elle ne tourne que lorsque les
+binaires sont provisionnés, et la garde vit dans le shell (`shell: bash`) car un
+`if:` d'étape GitHub Actions ne voit pas l'`env:` d'étape. **Le CI ne prouve
+donc pas la compatibilité V1/V2.** État de validation réelle : un run strict
+avec de vrais binaires a été exécuté le 2026-09-26 (V1 `1.19.5`, V2 `2.4.1`) —
+identification des binaires, point d'entrée et contrainte de package passés ;
+le check registre a alors rapporté un comptage (0, 0) et le run est sorti en
+`1`, pas en `0`. Le registre charge aujourd'hui bien 19/18 via le même loader
+Node 24 — relancez le smoke strict pour un verdict à jour.
+
+**Distribution.** Local-only : le plugin vit dans `.opencode/plugins/` et est
+auto-découvert par opencode — pas de publication npm (`private: true`), pas de
+dépendance npm V2 au runtime (l'adaptateur V2 est structurel), et aucun Bun
+requis au runtime.
 
 ## Quickstart
 
