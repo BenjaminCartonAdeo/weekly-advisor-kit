@@ -52,20 +52,17 @@ Le résultat explique chaque décision (`applied`, `proposed`, `manual`, `blocke
 
 ### Gate proposal → validate/remediate
 
-<!-- ponytail: un seul proposal file rend l'apply traçable et borné. -->
-
 Le fichier de propositions est obligatoire **avant** toute validation ou appel
 `harness-remediate` : le proposal JSON doit exister dans `runs/current/`, être lisible,
 porter `schema_version: 1`, une date valide et un tableau `proposals`. Ne jamais passer
 une proposition inline, absente ou reconstruite depuis un message de scanner au tool.
 
-Si le digest ou le proposal manque, est tronqué ou invalide, effectuer **one bounded
-retry** (`max_retry=1`, une seule recovery bornée, relecture ciblée des seules entrées
-disponibles), puis signaler `blocked`/`manual` sans apply. Après cette recovery, un
-proposal absent ou invalide est bloquant pour `harness-remediate`. Aucun respawn loop,
-hang, nouveau finding ou patch inventé pour faire passer la gate. La remédiation ne
-démarre pas tant que le proposal n'est pas présent et schema-valid. Une recovery réussie
-peut être tracée par `{status: "recovered", source: "harness", artifact: "proposal"}`.
+Si le digest ou le proposal manque, est tronqué ou invalide, appliquer la recovery
+bornée du skill partagé `weekly-safety-guardrails` (`max_retry=1`), puis signaler
+`blocked`/`manual` sans apply. Après cette recovery, un proposal absent ou invalide
+est bloquant pour `harness-remediate`. La remédiation ne démarre pas tant que le
+proposal n'est pas présent et schema-valid. Une recovery réussie peut être tracée par
+`{status: "recovered", source: "harness", artifact: "proposal"}`.
 
 ## Surface de remédiation
 
@@ -95,10 +92,11 @@ Pour chaque finding :
 
 Le fichier brut suit ce format :
 
+<!-- envelope-example: weekly-harness-remediation-proposals (miroir doc/architecture/schemas/weekly-harness-remediation-proposals.schema.json) -->
 ```jsonc
 {
   "schema_version": 1,
-  "date": "YYYY-MM-DD",
+  "date": "2026-09-22",
   "proposals": [
     {
       "rule": "quality/example-rule",

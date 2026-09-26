@@ -194,8 +194,8 @@ def _npm_category(package: dict) -> str:
     return "plugin"
 
 
-def _fetch_npm(client, start: datetime, end: datetime) -> list[dict]:
-    """npm search, paginated up to NPM_MAX_ROWS when `total > 250`."""
+def _npm_fetch_pages(client) -> list:
+    """npm search pages, up to NPM_MAX_ROWS when `total > 250`."""
     params: dict = {"text": NPM_QUERY, "size": NPM_PAGE_SIZE}
     payload = _get_json(client, URL_NPM, params=params)
     total = int(payload.get("total") or 0) if isinstance(payload, dict) else 0
@@ -212,30 +212,190 @@ def _fetch_npm(client, start: datetime, end: datetime) -> list[dict]:
             break
         objects.extend(page_objects)
         offset += NPM_PAGE_SIZE
+    return objects
 
-    items: list[dict] = []
-    for obj in objects:
-        package = obj.get("package") if isinstance(obj, dict) else None
-        if not isinstance(package, dict):
-            continue
-        published = parse_iso_ts(package.get("date"))
-        if published is None or not (start <= published <= end):
-            continue
-        links = package.get("links")
-        repo_url = links.get("repository") if isinstance(links, dict) else ""
-        name = str(package.get("name") or "")
-        items.append(
-            {
-                "name": name,
-                "category": _npm_category(package),
-                "repo_url": str(repo_url or "") if repo_url else "",
-                "npm_package": name or None,
-                "description": str(package.get("description") or ""),
-                "published_at": published,
-                "found_via": [SOURCE_NPM],
-                "new_repo": False,
-            }
+
+def _npm_map_object(obj, start: datetime, end: datetime) -> dict | None:
+    """One npm search object → item, or None when malformed/out-of-window."""
+    package = obj.get("package") if isinstance(obj, dict) else None
+    if not isinstance(package, dict):
+        return None
+    published = parse_iso_ts(package.get("date"))
+    if published is None or not (start <= published <= end):
+        return None
+    links = package.get("links")
+    repo_url = links.get("repository") if isinstance(links, dict) else ""
+    name = str(package.get("name") or "")
+    return {
+        "name": name,
+        "category": _npm_category(package),
+        "repo_url": str(repo_url or "") if repo_url else "",
+        "npm_package": name or None,
+        "description": str(package.get("description") or ""),
+        "published_at": published,
+        "found_via": [SOURCE_NPM],
+        "new_repo": False,
+    }
+
+
+def _mcp_map_entry(entry, start: datetime, end: datetime) -> dict | None:
+    """One registry server entry → item, or None when filtered out."""
+    if not isinstance(entry, dict):
+        return None
+    outer_meta = entry.get("_meta") if isinstance(entry.get("_meta"), dict) else {}
+    official = outer_meta.get("io.modelcontextprotocol.registry/official")
+    if not isinstance(official, dict):
+        official = {}
+    # Defensive guard: skip non-latest revisions of an official server.
+    if official.get("isLatest") is False:
+        return None
+    inner = entry.get("server") if isinstance(entry.get("server"), dict) else entry
+    if not isinstance(inner, dict):
+        return None
+    status = str(inner.get("status") or official.get("status") or "")
+    if status == "deleted":
+        return None
+    published = parse_iso_ts(official.get("publishedAt") or inner.get("publishedAt"))
+    if published is None or not (start <= published <= end):
+        return None
+    return {
+        "name": str(inner.get("name") or inner.get("title") or ""),
+        "category": "mcp-server",
+        "repo_url": _mcp_repo_url(inner),
+        "npm_package": None,
+        "description": str(inner.get("description") or ""),
+        "published_at": published,
+        "found_via": [SOURCE_MCP],
+        "new_repo": False,
+    }
+
+
+def _rss_local(tag: str) -> str:
+    """Local XML name without namespace."""
+    return tag.rsplit("}", 1)[-1]
+
+
+def _rss_map_node(node, url: str, start: datetime, end: datetime) -> dict | None:
+    """One RSS/Atom entry/item node → article, or None when dateless/out-of-window."""
+    if _rss_local(node.tag) not in ("entry", "item"):
+        return None
+    title = link = published = None
+    for child in node.iter():
+        name = _rss_local(child.tag)
+        if name == "title" and title is None:
+            title = " ".join((child.text or "").split())[:160]
+        elif name == "link" and link is None:
+            link = (child.get("href") or (child.text or "")).strip()
+        elif name in ("updated", "published", "pubDate", "date") and published is None:
+            published = _rss_date((child.text or "").strip())
+    if published is not None and start <= published <= end and title and link:
+        return {
+            "name": title,
+            "category": "article",
+            "repo_url": link,
+            "npm_package": None,
+            "description": f"Article publié le {published:%Y-%m-%d}",
+            "published_at": published,
+            "found_via": [f"rss:{url}"],
+            "new_repo": False,
+        }
+    return None
+
+
+def _partition_watch_entries(watch_entries: list) -> tuple[list, list, list, list, list]:
+    """Split watch entries by type → (repos, lists, topics, rss_urls, radars)."""
+    repos = [w["name"] for w in watch_entries if w.get("type", "repo") == "repo"]
+    lists = [w["name"] for w in watch_entries if w.get("type") == "list"]
+    topics = [w["name"] for w in watch_entries if w.get("type") == "topic"]
+    rss_urls = [w["name"] for w in watch_entries if w.get("type") == "rss"]
+    radars = [w for w in watch_entries if w.get("type") == "radar"]
+    return repos, lists, topics, rss_urls, radars
+
+
+def _collect_watch_sources(
+    cfg, client, start, end, watch_entries, run_source, sink_item, counts_by_source
+) -> None:
+    """Extended watch dispatch (v5.30) : repo / list / topic / rss / radar entries."""
+    state_dir = cfg.output_dir / "watch-state"
+    repos, lists, topics, rss_urls, radars = _partition_watch_entries(watch_entries)
+    if repos:
+        run_source(SOURCE_WATCH, lambda: _fetch_watch_repos(client, repos, start, end), sink_item)
+    for repo in lists:
+        source_id = f"watch:list:{repo}"
+        counts_by_source.setdefault(source_id, 0)
+        run_source(
+            source_id,
+            lambda r=repo: _fetch_watch_list(client, r, end, state_dir),
+            sink_item,
         )
+    for topic in topics:
+        source_id = f"github:topic:{topic}"
+        counts_by_source.setdefault(source_id, 0)
+        run_source(
+            source_id,
+            lambda t=topic: _fetch_github_topics(client, t, start, end, cfg.github_min_stars),
+            sink_item,
+        )
+    for url in rss_urls:
+        source_id = f"rss:{url}"
+        counts_by_source.setdefault(source_id, 0)
+        run_source(
+            source_id,
+            lambda u=url: _fetch_rss(client, u, start, end),
+            sink_item,
+        )
+    # radars MCP (Task 4) : URL résolue depuis <project_root>/opencode.json,
+    # repli RSS par entrée ; un radar mort reste un warning toléré.
+    for r in radars:
+        source_id = f"radar:{r['name']}"
+        counts_by_source.setdefault(source_id, 0)
+        run_source(
+            source_id,
+            lambda e=r: _fetch_radar(client, e, start, end, project_root=cfg.project_root),
+            sink_item,
+        )
+
+
+def _collect_release_changes(cfg, client, start, end) -> tuple[list, int, Exception | None]:
+    """Core release changes — (changes, count, None), or ([], 0, exc) on source failure."""
+    try:
+        changes, in_window_count = _fetch_releases(client, start, end, cfg.release_keywords)
+        return changes, in_window_count, None
+    except Exception as exc:  # noqa: BLE001 - one failing source never kills the run
+        return [], 0, exc
+
+
+def _build_ecosystem(cfg, start, end, items, changes, counts_by_source, warnings) -> dict:
+    """Final ecosystem payload : finalized items + core changes + counts."""
+    new_items = _finalize_items(items)
+    core_changes = sorted(
+        changes, key=lambda c: (-datetime.fromisoformat(c["date"]).timestamp(), c["version"])
+    )
+    counts_by_category = {"plugin": 0, "skill": 0, "agent": 0, "mcp-server": 0, "repo": 0}
+    for item in new_items:
+        cat = item.get("category")
+        if cat in counts_by_category:
+            counts_by_category[cat] += 1
+    return {
+        "schema_version": 2,
+        "period": {"start": _iso(start), "end": _iso(end)},
+        "generated_at": _iso(end),
+        "new_items": new_items,
+        "core_changes": core_changes,
+        "counts_by_category": counts_by_category,
+        "counts_by_source": counts_by_source,
+        "watch_repos": list(cfg.watch_repos),
+        "warnings": warnings,
+    }
+
+
+def _fetch_npm(client, start: datetime, end: datetime) -> list[dict]:
+    """npm search, paginated up to NPM_MAX_ROWS when `total > 250`."""
+    items: list[dict] = []
+    for obj in _npm_fetch_pages(client):
+        mapped = _npm_map_object(obj, start, end)
+        if mapped is not None:
+            items.append(mapped)
     return items
 
 
@@ -306,36 +466,9 @@ def _fetch_mcp(client, start: datetime, end: datetime) -> list[dict]:
 
     items: list[dict] = []
     for entry in servers:
-        if not isinstance(entry, dict):
-            continue
-        outer_meta = entry.get("_meta") if isinstance(entry.get("_meta"), dict) else {}
-        official = outer_meta.get("io.modelcontextprotocol.registry/official")
-        if not isinstance(official, dict):
-            official = {}
-        # Defensive guard: skip non-latest revisions of an official server.
-        if official.get("isLatest") is False:
-            continue
-        inner = entry.get("server") if isinstance(entry.get("server"), dict) else entry
-        if not isinstance(inner, dict):
-            continue
-        status = str(inner.get("status") or official.get("status") or "")
-        if status == "deleted":
-            continue
-        published = parse_iso_ts(official.get("publishedAt") or inner.get("publishedAt"))
-        if published is None or not (start <= published <= end):
-            continue
-        items.append(
-            {
-                "name": str(inner.get("name") or inner.get("title") or ""),
-                "category": "mcp-server",
-                "repo_url": _mcp_repo_url(inner),
-                "npm_package": None,
-                "description": str(inner.get("description") or ""),
-                "published_at": published,
-                "found_via": [SOURCE_MCP],
-                "new_repo": False,
-            }
-        )
+        mapped = _mcp_map_entry(entry, start, end)
+        if mapped is not None:
+            items.append(mapped)
     return items
 
 
@@ -533,35 +666,11 @@ def _fetch_rss(client, url: str, start: datetime, end: datetime) -> list[dict]:
     except ET.ParseError as exc:
         raise SourceError(f"rss {url}: XML invalide") from exc
 
-    def _local(tag: str) -> str:
-        return tag.rsplit("}", 1)[-1]
-
     items: list[dict] = []
     for node in root.iter():
-        if _local(node.tag) not in ("entry", "item"):
-            continue
-        title = link = published = None
-        for child in node.iter():
-            name = _local(child.tag)
-            if name == "title" and title is None:
-                title = " ".join((child.text or "").split())[:160]
-            elif name == "link" and link is None:
-                link = (child.get("href") or (child.text or "")).strip()
-            elif name in ("updated", "published", "pubDate", "date") and published is None:
-                published = _rss_date((child.text or "").strip())
-        if published is not None and start <= published <= end and title and link:
-            items.append(
-                {
-                    "name": title,
-                    "category": "article",
-                    "repo_url": link,
-                    "npm_package": None,
-                    "description": f"Article publié le {published:%Y-%m-%d}",
-                    "published_at": published,
-                    "found_via": [f"rss:{url}"],
-                    "new_repo": False,
-                }
-            )
+        mapped = _rss_map_node(node, url, start, end)
+        if mapped is not None:
+            items.append(mapped)
     return items
 
 
@@ -762,6 +871,151 @@ def _split_repo(repo: str) -> tuple[str, str]:
     return quote(parts[0]), quote(parts[1])
 
 
+def _watch_repo_release_items(
+    display_name: str,
+    html_url: str,
+    description: str,
+    releases: object,
+    start: datetime,
+    end: datetime,
+) -> list[dict]:
+    """Items release in-window d'un repo suivi."""
+    items: list[dict] = []
+    for release in releases if isinstance(releases, list) else []:
+        if not isinstance(release, dict):
+            continue
+        published = parse_iso_ts(release.get("published_at"))
+        if published is None or not (start <= published <= end):
+            continue
+        tag = str(release.get("tag_name") or release.get("name") or "")
+        items.append(
+            {
+                "name": f"{display_name} {tag}" if tag else f"{display_name} (release)",
+                "category": "repo",
+                "repo_url": html_url,
+                "npm_package": None,
+                "description": _release_summary(str(release.get("body") or "")) or description,
+                "published_at": published,
+                "found_via": [SOURCE_WATCH],
+                "new_repo": False,
+            }
+        )
+    return items
+
+
+def _watch_repo_activity_fallback(
+    client,
+    owner: str,
+    name: str,
+    display_name: str,
+    html_url: str,
+    description: str,
+    info: object,
+    start: datetime,
+    end: datetime,
+) -> list[dict]:
+    """Repli push/commits quand aucune release in-window — [] si rien ne bouge."""
+    publish = parse_iso_ts(info.get("pushed_at")) if isinstance(info, dict) else None
+    if publish is not None and start <= publish <= end:
+        return [
+            {
+                "name": display_name,
+                "category": "repo",
+                "repo_url": html_url,
+                "npm_package": None,
+                "description": (
+                    f"Activité du dépôt (dernier push {publish:%Y-%m-%d}) — {description}"
+                )[:200],
+                "published_at": publish,
+                "found_via": [SOURCE_WATCH],
+                "new_repo": False,
+            }
+        ]
+    # v5.30 (3) : le dernier push peut être post-clôture alors que le repo a
+    # travaillé DANS la fenêtre — fallback sur les commits de la fenêtre.
+    try:
+        commits = _github_json(
+            client,
+            f"https://api.github.com/repos/{owner}/{name}/commits",
+            params={"since": _iso(start), "until": _iso(end), "per_page": 5},
+        )
+    except SourceError:
+        commits = []
+    in_window = [
+        c
+        for c in commits
+        if isinstance(c, dict)
+        and parse_iso_ts(((c.get("commit") or {}).get("author") or {}).get("date")) is not None
+    ]
+    if not in_window:
+        return []
+    latest = max(
+        in_window,
+        key=lambda c: parse_iso_ts(c["commit"]["author"]["date"]),
+    )
+    last_commit = parse_iso_ts(latest["commit"]["author"]["date"])
+    return [
+        {
+            "name": display_name,
+            "category": "repo",
+            "repo_url": html_url,
+            "npm_package": None,
+            "description": (
+                f"Activité du dépôt ({len(in_window)} commit(s) dans la fenêtre, "
+                f"dernier le {last_commit:%Y-%m-%d}) — {description}"
+            )[:200],
+            "published_at": last_commit,
+            "found_via": [SOURCE_WATCH],
+            "new_repo": False,
+        }
+    ]
+
+
+def _watch_repo_display_fields(repo: str, info: object) -> tuple[str, str, str]:
+    """display_name/description/html_url d'un repo suivi (+ mention rename)."""
+    full_name = str(info.get("full_name") or repo) if isinstance(info, dict) else repo
+    display_name = full_name if "/" in full_name else repo
+    description = str(info.get("description") or "") if isinstance(info, dict) else ""
+    if display_name.lower() != repo.lower():
+        rename = f"Renommé de {repo}"
+        description = f"{rename} ; {description}" if description else rename
+    html_url = (
+        str(info.get("html_url") or f"https://github.com/{full_name}")
+        if isinstance(info, dict)
+        else f"https://github.com/{full_name}"
+    )
+    return display_name, description, html_url
+
+
+def _process_watch_repo(
+    client, repo: str, start: datetime, end: datetime
+) -> tuple[list[dict], bool]:
+    """Un repo suivi → (items, ok). False = repo en échec (split ou API)."""
+    try:
+        owner, name = _split_repo(repo)
+    except ValueError:
+        return [], False
+    try:
+        info = _github_json(client, f"https://api.github.com/repos/{owner}/{name}")
+        releases = _github_json(
+            client,
+            f"https://api.github.com/repos/{owner}/{name}/releases",
+            params={"per_page": 10},
+        )
+    except SourceError:
+        return [], False
+    display_name, description, html_url = _watch_repo_display_fields(repo, info)
+    repo_items = _watch_repo_release_items(
+        display_name, html_url, description, releases, start, end
+    )
+    if not repo_items:
+        # Aucune release émise pour ce repo → repli activité.
+        repo_items = _watch_repo_activity_fallback(
+            client, owner, name, display_name, html_url, description, info, start, end
+        )
+    return repo_items, True
+
+
 def _fetch_watch_repos(
     client, watch_repos: list[str], start: datetime, end: datetime
 ) -> list[dict]:
@@ -776,111 +1030,11 @@ def _fetch_watch_repos(
         return items
     failures = 0
     for repo in watch_repos:
-        try:
-            owner, name = _split_repo(repo)
-        except ValueError:
+        repo_items, ok = _process_watch_repo(client, repo, start, end)
+        if not ok:
             failures += 1
             continue
-        try:
-            info = _github_json(client, f"https://api.github.com/repos/{owner}/{name}")
-            releases = _github_json(
-                client,
-                f"https://api.github.com/repos/{owner}/{name}/releases",
-                params={"per_page": 10},
-            )
-        except SourceError:
-            failures += 1
-            continue
-        full_name = str(info.get("full_name") or repo) if isinstance(info, dict) else repo
-        display_name = full_name if "/" in full_name else repo
-        description = str(info.get("description") or "") if isinstance(info, dict) else ""
-        if display_name.lower() != repo.lower():
-            if description:
-                description = f"Renommé de {repo} ; {description}"
-            else:
-                description = f"Renommé de {repo}"
-        html_url = (
-            str(info.get("html_url") or f"https://github.com/{full_name}")
-            if isinstance(info, dict)
-            else f"https://github.com/{full_name}"
-        )
-        emitted = False
-        for release in releases if isinstance(releases, list) else []:
-            if not isinstance(release, dict):
-                continue
-            published = parse_iso_ts(release.get("published_at"))
-            if published is None or not (start <= published <= end):
-                continue
-            tag = str(release.get("tag_name") or release.get("name") or "")
-            emitted = True
-            items.append(
-                {
-                    "name": f"{display_name} {tag}" if tag else f"{display_name} (release)",
-                    "category": "repo",
-                    "repo_url": html_url,
-                    "npm_package": None,
-                    "description": _release_summary(str(release.get("body") or "")) or description,
-                    "published_at": published,
-                    "found_via": [SOURCE_WATCH],
-                    "new_repo": False,
-                }
-            )
-        if not emitted:
-            publish = parse_iso_ts(info.get("pushed_at")) if isinstance(info, dict) else None
-            if publish is not None and start <= publish <= end:
-                items.append(
-                    {
-                        "name": display_name,
-                        "category": "repo",
-                        "repo_url": html_url,
-                        "npm_package": None,
-                        "description": (
-                            f"Activité du dépôt (dernier push {publish:%Y-%m-%d}) — {description}"
-                        )[:200],
-                        "published_at": publish,
-                        "found_via": [SOURCE_WATCH],
-                        "new_repo": False,
-                    }
-                )
-            else:
-                # v5.30 (3) : le dernier push peut être post-clôture alors que le repo a
-                # travaillé DANS la fenêtre — fallback sur les commits de la fenêtre.
-                try:
-                    commits = _github_json(
-                        client,
-                        f"https://api.github.com/repos/{owner}/{name}/commits",
-                        params={"since": _iso(start), "until": _iso(end), "per_page": 5},
-                    )
-                except SourceError:
-                    commits = []
-                in_window = [
-                    c
-                    for c in commits
-                    if isinstance(c, dict)
-                    and parse_iso_ts(((c.get("commit") or {}).get("author") or {}).get("date"))
-                    is not None
-                ]
-                if in_window:
-                    latest = max(
-                        in_window,
-                        key=lambda c: parse_iso_ts(c["commit"]["author"]["date"]),
-                    )
-                    last_commit = parse_iso_ts(latest["commit"]["author"]["date"])
-                    items.append(
-                        {
-                            "name": display_name,
-                            "category": "repo",
-                            "repo_url": html_url,
-                            "npm_package": None,
-                            "description": (
-                                f"Activité du dépôt ({len(in_window)} commit(s) dans la fenêtre, "
-                                f"dernier le {last_commit:%Y-%m-%d}) — {description}"
-                            )[:200],
-                            "published_at": last_commit,
-                            "found_via": [SOURCE_WATCH],
-                            "new_repo": False,
-                        }
-                    )
+        items.extend(repo_items)
     if failures and failures == len(watch_repos):
         raise SourceError("github:watch-repos — tous les repos suivis ont échoué (API GitHub)")
     return items
@@ -966,80 +1120,20 @@ def _collect(cfg, client, start: datetime, end: datetime) -> tuple[dict, int]:
     if not watch_entries and cfg.watch_repos:
         watch_entries = [{"type": "repo", "name": r} for r in cfg.watch_repos]
     if watch_entries:  # no-op source when nothing to watch must not inflate ok_sources
-        repos = [w["name"] for w in watch_entries if w.get("type", "repo") == "repo"]
-        lists = [w["name"] for w in watch_entries if w.get("type") == "list"]
-        topics = [w["name"] for w in watch_entries if w.get("type") == "topic"]
-        rss_urls = [w["name"] for w in watch_entries if w.get("type") == "rss"]
-        state_dir = cfg.output_dir / "watch-state"
-        if repos:
-            run_source(
-                SOURCE_WATCH, lambda: _fetch_watch_repos(client, repos, start, end), sink_item
-            )
-        for repo in lists:
-            source_id = f"watch:list:{repo}"
-            counts_by_source.setdefault(source_id, 0)
-            run_source(
-                source_id,
-                lambda r=repo: _fetch_watch_list(client, r, end, state_dir),
-                sink_item,
-            )
-        for topic in topics:
-            source_id = f"github:topic:{topic}"
-            counts_by_source.setdefault(source_id, 0)
-            run_source(
-                source_id,
-                lambda t=topic: _fetch_github_topics(client, t, start, end, cfg.github_min_stars),
-                sink_item,
-            )
-        for url in rss_urls:
-            source_id = f"rss:{url}"
-            counts_by_source.setdefault(source_id, 0)
-            run_source(
-                source_id,
-                lambda u=url: _fetch_rss(client, u, start, end),
-                sink_item,
-            )
-        # radars MCP (Task 4) : URL résolue depuis <project_root>/opencode.json,
-        # repli RSS par entrée ; un radar mort reste un warning toléré.
-        radars = [w for w in watch_entries if w.get("type") == "radar"]
-        for r in radars:
-            source_id = f"radar:{r['name']}"
-            counts_by_source.setdefault(source_id, 0)
-            run_source(
-                source_id,
-                lambda e=r: _fetch_radar(client, e, start, end, project_root=cfg.project_root),
-                sink_item,
-            )
+        _collect_watch_sources(
+            cfg, client, start, end, watch_entries, run_source, sink_item, counts_by_source
+        )
 
-    try:
-        changes, in_window_count = _fetch_releases(client, start, end, cfg.release_keywords)
+    changes, in_window_count, release_exc = _collect_release_changes(cfg, client, start, end)
+    if release_exc is None:
         ok_sources += 1
         counts_by_source[SOURCE_RELEASES] += in_window_count
-    except Exception as exc:  # noqa: BLE001 - one failing source never kills the run
-        warnings.append({"source": SOURCE_RELEASES, "message": _fail_message(exc)})
+    else:  # noqa: BLE001 - one failing source never kills the run
+        warnings.append({"source": SOURCE_RELEASES, "message": _fail_message(release_exc)})
 
-    new_items = _finalize_items(items)
-    core_changes = sorted(
-        changes, key=lambda c: (-datetime.fromisoformat(c["date"]).timestamp(), c["version"])
+    return _build_ecosystem(cfg, start, end, items, changes, counts_by_source, warnings), (
+        0 if ok_sources >= 1 else 1
     )
-    counts_by_category = {"plugin": 0, "skill": 0, "agent": 0, "mcp-server": 0, "repo": 0}
-    for item in new_items:
-        cat = item.get("category")
-        if cat in counts_by_category:
-            counts_by_category[cat] += 1
-
-    ecosystem = {
-        "schema_version": 2,
-        "period": {"start": _iso(start), "end": _iso(end)},
-        "generated_at": _iso(end),
-        "new_items": new_items,
-        "core_changes": core_changes,
-        "counts_by_category": counts_by_category,
-        "counts_by_source": counts_by_source,
-        "watch_repos": list(cfg.watch_repos),
-        "warnings": warnings,
-    }
-    return ecosystem, 0 if ok_sources >= 1 else 1
 
 
 def _finalize_items(items: dict[str, dict]) -> list[dict]:

@@ -21,6 +21,9 @@ def summary_to_dict(summary: WeeklySummary) -> dict:
 
     Built on dataclasses.asdict (field names/order already match the spec
     schemas); only the spec's deviations are adjusted afterwards.
+
+    `session_classifications` (P6) is additive: `additionalProperties` stays free
+    for consumers, so no schema bump is required (same convention as `by_harness`).
     """
     data = {"schema_version": 2, **asdict(summary)}
     data.pop("skill_catalog_source", None)  # internal field, not part of spec §4

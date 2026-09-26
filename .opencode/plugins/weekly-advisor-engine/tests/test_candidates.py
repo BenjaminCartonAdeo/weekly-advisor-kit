@@ -361,3 +361,64 @@ def test_select_draft_enriches_with_provenance():
     assert all(c["origin"] == "weekly-background" for c in cands)
     assert all(c["action"] == "create" for c in cands)
     assert cands[0]["skill_id"] == generate_skill_id("High Skill")
+
+
+# --------------------------------------------------------------------------- #
+# P6 — priorités d'audit déterministes issues de session_classifications
+# --------------------------------------------------------------------------- #
+
+
+def _classif(sid, **kwargs):
+    base = {
+        "session_id": sid,
+        "intent": "implementation",
+        "spec_driven": False,
+        "cost_usd": 0.0,
+        "production_review_pct": None,
+        "production_review_measured": 0,
+        "prompt_maturity_score": 60,
+        "prompt_maturity_grade": "C",
+    }
+    base.update(kwargs)
+    return base
+
+
+def test_audit_adds_classification_priorities():
+    summary = _summary()
+    summary["session_classifications"] = [
+        _classif("a", production_review_measured=1, production_review_pct=0.0),
+        _classif("b", prompt_maturity_grade="F"),
+        _classif("c", spec_driven=False, cost_usd=1.5),
+    ]
+    cands = select_audit_candidates(summary)
+    by_id = {c["session_id"]: c for c in cands}
+    assert "code-non-relu" in by_id["a"]["reasons"]
+    assert "maturity-F" in by_id["b"]["reasons"]
+    assert "non-spec coûteuse" in by_id["c"]["reasons"]
+
+
+def test_audit_classification_priorities_merge_into_existing():
+    summary = _summary(tops=[{"session_id": "a", "cost_per_active_minute": 1.0}])
+    summary["session_classifications"] = [
+        _classif("a", production_review_measured=2, production_review_pct=0.0)
+    ]
+    cand = select_audit_candidates(summary)[0]
+    assert cand["reasons"] == ["top-cost", "loop", "code-non-relu"]
+
+
+def test_audit_classification_no_false_positive():
+    summary = _summary()
+    summary["session_classifications"] = [
+        _classif("a", production_review_pct=0.5, production_review_measured=2),
+        _classif("b", prompt_maturity_grade="B"),
+        _classif("c", spec_driven=True, cost_usd=9.0),
+        _classif("d", spec_driven=False, cost_usd=0.1),
+        _classif("e", production_review_pct=None),
+    ]
+    cands = select_audit_candidates(summary)
+    assert cands == []  # aucun faux positif
+
+
+def test_audit_missing_classifications_does_not_break():
+    cands = select_audit_candidates(_summary(tops=[{"session_id": "a"}]))
+    assert [c["session_id"] for c in cands] == ["a"]

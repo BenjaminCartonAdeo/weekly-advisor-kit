@@ -13,10 +13,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Protocol, runtime_checkable
 
-if TYPE_CHECKING:
-    from .config import DraftTargetsConfig
+
+@runtime_checkable
+class DraftTargetsLike(Protocol):
+    """Structure minimale requise (mode + targets) — évite le cycle statique vers config."""
+
+    mode: str
+    targets: list[str] | tuple[str, ...]
+
 
 #: Identifiants de harnais alignés sur le registre des providers
 # (`providers/base.py` + `PROVIDER_TYPE` des implementations).
@@ -104,7 +110,7 @@ def detect_draft_target(project_root: Path | str | None) -> str | None:
 
 
 def resolve_draft_targets(
-    project_root: Path | str | None, draft_cfg: DraftTargetsConfig
+    project_root: Path | str | None, draft_cfg: DraftTargetsLike
 ) -> ResolvedDraftTarget:
     """Résolution effective : override config > détection > défaut opencode.
 

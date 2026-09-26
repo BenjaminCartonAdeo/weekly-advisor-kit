@@ -125,6 +125,43 @@ def _compact(entries: list[str]) -> list[str]:
     return out
 
 
+def _fetch_session_records(
+    providers: SessionProvider | Sequence[SessionProvider],
+    session_id: str,
+    *,
+    include_children: bool,
+) -> tuple[list, int]:
+    """Résolution provider + lecture des parts (session + enfants éventuels), triées par ts."""
+    sources: list[SessionProvider] = (
+        list(providers) if isinstance(providers, list | tuple) else [providers]
+    )
+    provider = _select_provider(sources, session_id)
+    canonical = _canonical_id(provider, session_id)
+    ids = [canonical]
+    if include_children:
+        ids.extend(_children_ids(provider, canonical))
+    records = []
+    for sid in ids:
+        records.extend(provider.session_parts(sid))
+    records.sort(key=lambda r: r.ts)
+    return records, len(ids)
+
+
+def _truncate_text(text: str, max_extract_bytes: int | None) -> str:
+    """Borne la taille du texte rendu — marqueur [truncated] au-delà, place réservée."""
+    if max_extract_bytes is None:
+        return text
+    full_bytes = len(text.encode("utf-8"))
+    if full_bytes <= max_extract_bytes:
+        return text
+    marker = f"\n… [truncated: {full_bytes - max_extract_bytes} bytes omitted]\n"
+    # Réserve la place du marqueur pour rester sous la borne.
+    cap = max_extract_bytes - len(marker.encode("utf-8"))
+    cap = cap if cap >= 0 else 0
+    truncated = text.encode("utf-8")[:cap].decode("utf-8", errors="ignore")
+    return truncated + marker
+
+
 def render_session(
     providers: SessionProvider | Sequence[SessionProvider],
     session_id: str,
@@ -142,31 +179,13 @@ def render_session(
     est ajouté — évite l'OOM (exit=137) sur les sessions géantes. `None` désactive
     la borne (comportement historique, non borné).
     """
-    sources: list[SessionProvider] = (
-        list(providers) if isinstance(providers, list | tuple) else [providers]
+    records, num_sessions = _fetch_session_records(
+        providers, session_id, include_children=include_children
     )
-    provider = _select_provider(sources, session_id)
-    canonical = _canonical_id(provider, session_id)
-    ids = [canonical]
-    if include_children:
-        ids.extend(_children_ids(provider, canonical))
-    records = []
-    for sid in ids:
-        records.extend(provider.session_parts(sid))
-    records.sort(key=lambda r: r.ts)
 
-    lines = [f"# Session {session_id}  —  {len(ids)} session(s)", ""]
+    lines = [f"# Session {session_id}  —  {num_sessions} session(s)", ""]
     entries = [ln for rec in records if (ln := _render_part(rec))]
     lines.extend(_compact(entries))
     text = "\n".join(lines) + "\n"
 
-    if max_extract_bytes is not None:
-        full_bytes = len(text.encode("utf-8"))
-        if full_bytes > max_extract_bytes:
-            marker = f"\n… [truncated: {full_bytes - max_extract_bytes} bytes omitted]\n"
-            # Réserve la place du marqueur pour rester sous la borne.
-            cap = max_extract_bytes - len(marker.encode("utf-8"))
-            cap = cap if cap >= 0 else 0
-            truncated = text.encode("utf-8")[:cap].decode("utf-8", errors="ignore")
-            text = truncated + marker
-    return text
+    return _truncate_text(text, max_extract_bytes)

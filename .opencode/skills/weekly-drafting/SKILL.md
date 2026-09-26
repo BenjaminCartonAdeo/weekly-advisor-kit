@@ -33,12 +33,10 @@ portables, avec commit direct traçable. Jamais de correction du code applicatif
 
 ### Entrées, recovery et absence d'invention
 
-<!-- ponytail: une recovery bornée évite une boucle de draft coûteuse. -->
-
 Le candidat, l'extrait et le résultat de la gate sont des entrées vérifiables. Si une
-entrée attendue manque, est tronquée ou invalide, effectuer **one bounded retry**
-(`max_retry=1`, une seule recovery bornée), puis signaler l'échec sans respawn loop ni
-attente indéfinie.
+entrée attendue manque, est tronquée ou invalide, appliquer la recovery bornée du skill
+partagé `weekly-safety-guardrails` (`max_retry=1`), puis signaler l'échec sans respawn
+loop ni attente indéfinie.
 Ne jamais inventer un candidat, une session, une preuve ou un contenu pour produire un
 draft ; sans source lisible, aucun artefact n'est écrit.
 

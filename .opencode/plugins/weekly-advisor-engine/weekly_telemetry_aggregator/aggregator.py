@@ -12,9 +12,12 @@ from __future__ import annotations
 import difflib
 import hashlib
 import math
+import re
 from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
+from .classifiers import classify_sessions
 from .models import (
     MAX_WARNINGS,
     OUTLIER_MIN_SESSIONS,
@@ -137,82 +140,272 @@ def _is_compaction_artifact(turn: str) -> bool:
     return "dcp |" in low and "removed" in low and ("summary" in low or "compact" in low)
 
 
+#: Séparateurs de layout (`═─━=-_*` × 10+) : bruit visuel, pas un prompt.
+_NOISE_SEPARATOR_RE = re.compile(r"[-═─━=_*]{10,}")
+#: Micro-réponses oui/non/ponctuation (`y`, `n!`, `?!`, `...`) sans intention.
+_NOISE_YESNO_RE = re.compile(r"[yn.!?]{1,3}")
+#: Tours = commande de contrôle seule (pilotage, pas contenu réutilisable).
+_CONTROL_TURNS = frozenset(
+    {"continue", "try again", "yes", "no", "cancel", "abort", "stop", "retry"}
+)
+#: Au-delà, un "prompt" est un collage (log, artefact), pas une intention (v5.30, P3).
+_NOISE_MAX_CHARS = 2000
+
+#: Stop-list de formulation (~60 mots FR/EN) retirée avant empreinte.
+_STOPWORD_SOURCE = (
+    "le la les un une des du de d dans et ou mais donc or ni car que qui quoi dont "
+    "au aux en y il elle ils elles je tu nous vous on ce cet cette ces mon ma mes "
+    "ton ta tes son sa ses pour par sur sous avec sans vers chez est sont etre avoir "
+    "fait faire pas plus moins tres tout tous toute toutes bien peux peut veux faut "
+    "the a an and or but to of in on for with is are be this that it as at by from "
+    "can you i we please just my me do"
+)
+_STOPWORDS = frozenset(_STOPWORD_SOURCE.split())
+
+_CODE_BLOCK_RE = re.compile(r"```.*?```|`[^`]*`", re.DOTALL)
+_QUOTED_RE = re.compile(r"\"[^\"]*\"|'[^'\n]*'")
+_WINDOWS_PATH_RE = re.compile(r"[a-z]:\\[^\s]+", re.IGNORECASE)
+_POSIX_PATH_RE = re.compile(r"(?:/[\w.\-]+){2,}/?")
+_NUMBER_RE = re.compile(r"\d+")
+_NON_WORD_RE = re.compile(r"[^\w\s]+")
+
+#: Tours d'annulation (n'expriment pas un contenu réutilisable).
+_CANCEL_TURNS = frozenset({"cancel", "abort", "stop", "annule", "abandonne"})
+#: Préfixes de correction d'un tour précédent.
+_CORRECTION_PREFIXES = (
+    "no ",
+    "non ",
+    "nope",
+    "pas ",
+    "not ",
+    "actually ",
+    "instead ",
+    "plutot ",
+    "plutôt ",
+    "wait ",
+)
+
+
+def is_noise(prompt: str) -> bool:
+    """True si le tour n'est pas un prompt utilisateur exploitable (v5.30, P3).
+
+    Bruit : séparateurs de layout (`═` × 10+), préfixe `system`, tour hors-borne
+    (> 2000 chars), commande de contrôle seule (`continue`, `yes`, `retry`…),
+    `continue to iterate` court, ou micro-réponse `[yn.!?]{1,3}`.
+    """
+    raw = str(prompt)
+    text = raw.strip()
+    if not text:
+        return True
+    if _NOISE_SEPARATOR_RE.search(text):
+        return True
+    low = text.lower()
+    if low.startswith("system"):
+        return True
+    if len(raw) > _NOISE_MAX_CHARS:
+        return True
+    collapsed = " ".join(low.split())
+    if collapsed in _CONTROL_TURNS:
+        return True
+    if "continue to iterate" in collapsed and len(text) < 80:
+        return True
+    return bool(_NOISE_YESNO_RE.fullmatch(collapsed))
+
+
+def normalize_fingerprint(prompt: str) -> str:
+    """Empreinte O(n) : 4 premiers tokens normalisés, triés, joints par `|` (v5.30, P3).
+
+    Normalisation : minuscules ; blocs de code → `code` ; chaînes quotées → `str` ;
+    chemins → `path` ; nombres → `num` ; ponctuation → espace ; stop-list retirée ;
+    tokens de longueur ≤ 1 ignorés. Le tri rend l'empreinte insensible à l'ordre des
+    mots : deux prompts qui ne diffèrent que par des valeurs partagent la même empreinte.
+    """
+    text = str(prompt).lower()
+    text = _CODE_BLOCK_RE.sub(" code ", text)
+    text = _QUOTED_RE.sub(" str ", text)
+    text = _WINDOWS_PATH_RE.sub(" path ", text)
+    text = _POSIX_PATH_RE.sub(" path ", text)
+    text = _NUMBER_RE.sub(" num ", text)
+    text = _NON_WORD_RE.sub(" ", text)
+    tokens = [tok for tok in text.split() if len(tok) > 1 and tok not in _STOPWORDS]
+    if not tokens:
+        return ""
+    return "|".join(sorted(tokens[:4]))
+
+
+def _canonical_prompt(prompts: list[str]) -> str:
+    """Prompt canonique : le plus court ≥ 20 chars normalisés, sinon le plus court."""
+    long_enough = [p for p in prompts if len(normalize_prompt(p)) >= 20]
+    pool = long_enough or prompts
+    return min(pool, key=lambda p: (len(p), p))
+
+
+def _is_cancel_turn(norm: str) -> bool:
+    return norm in _CANCEL_TURNS
+
+
+def _is_correction_turn(norm: str) -> bool:
+    return norm.startswith(_CORRECTION_PREFIXES)
+
+
+def _build_skill_draft(label: str, count: int, sessions: int, examples: list[str]) -> str:
+    """Brouillon markdown (# Skill / When to use / Steps / Example prompts)."""
+    samples = [e[:120] for e in examples[:3]]
+    lines = [
+        f"# Skill: {label}",
+        "",
+        "## When to use",
+        f"Réponse répétée {count}× sur {sessions} session(s) — automatiser ce flux.",
+        "",
+        "## Steps",
+        "1. Reproduire le flux récurrent et figer ses entrées/sorties.",
+        "2. Encapsuler la procédure dans un skill portable.",
+        "3. Valider sur un cas réel avant généralisation.",
+        "",
+        "## Example prompts",
+        *[f"- {sample}" for sample in samples],
+    ]
+    return "\n".join(lines)
+
+
+def _new_repeat_bucket() -> dict:
+    return {
+        "count": 0,
+        "chars_sum": 0,
+        "prompts": [],
+        "sessions": set(),
+        "harnesses": set(),
+        "cancels": 0,
+        "corrections": 0,
+        "first": None,
+        "last": None,
+    }
+
+
+def _accumulate_repeat_turn(
+    groups: dict[str, dict], usage: SessionUsage, turn: str, first_ts, last_ts
+) -> None:
+    fingerprint = normalize_fingerprint(turn)
+    if not fingerprint:
+        return
+    norm = normalize_prompt(turn)
+    group = groups.get(fingerprint)
+    if group is None:
+        group = _new_repeat_bucket()
+        groups[fingerprint] = group
+    group["count"] += 1
+    group["chars_sum"] += len(turn)
+    group["prompts"].append(turn)
+    group["sessions"].add(usage.session_id)
+    if usage.harness:
+        group["harnesses"].add(usage.harness)
+    if _is_cancel_turn(norm):
+        group["cancels"] += 1
+    if _is_correction_turn(norm):
+        group["corrections"] += 1
+    if first_ts is not None and (group["first"] is None or first_ts < group["first"]):
+        group["first"] = first_ts
+    if last_ts is not None and (group["last"] is None or last_ts > group["last"]):
+        group["last"] = last_ts
+
+
+def _repeat_examples(prompts: list[str], limit: int = 5) -> list[str]:
+    examples: list[str] = []
+    seen: set[str] = set()
+    for candidate in prompts:
+        stripped = candidate.strip()
+        if not stripped or stripped in seen:
+            continue
+        seen.add(stripped)
+        examples.append(stripped)
+        if len(examples) >= limit:
+            break
+    return examples
+
+
+def _emit_repeat_group(group: dict, *, repeat_min: int, min_chars: int) -> UserPromptRepeat | None:
+    count = group["count"]
+    if count < repeat_min:
+        return None
+    canonical = _canonical_prompt(group["prompts"])
+    preview = normalize_prompt(canonical)
+    if len(preview) < min_chars:
+        return None
+    sessions = sorted(group["sessions"])
+    session_count = len(sessions)
+    examples = _repeat_examples(group["prompts"])
+    return UserPromptRepeat(
+        normalized_preview=preview[:80],
+        count=count,
+        session_id=sessions[0] if sessions else "",
+        avg_chars=round(group["chars_sum"] / count),
+        sessions_distinct=session_count,
+        harnesses_distinct=len(group["harnesses"]),
+        cancel_rate=round6(group["cancels"] / count),
+        avg_correction_turns=round6(group["corrections"] / session_count) if session_count else 0.0,
+        first_seen=group["first"].isoformat() if group["first"] else "",
+        last_seen=group["last"].isoformat() if group["last"] else "",
+        examples=examples,
+        skill_draft=_build_skill_draft(preview[:80], count, session_count, examples),
+        estimated_time_saved_mins=count * 2,
+    )
+
+
+def _is_repeat_candidate(turn: str) -> bool:
+    """Un tour est candidat s'il n'est ni compaction, ni bruit, ni vide normalisé."""
+    if _is_compaction_artifact(turn):
+        return False
+    if is_noise(turn):
+        return False
+    return bool(normalize_prompt(turn))
+
+
+def _accumulate_usage_repeats(groups: dict[str, dict], usage: SessionUsage) -> None:
+    """Indexe les tours candidats d'un usage (sessions enfants exclues)."""
+    if usage.parent_id is not None:
+        return  # v5.30 (7) : tours des sessions enfants exclus
+    step_ts = [s.timestamp for s in usage.steps]
+    first_ts = min(step_ts) if step_ts else None
+    last_ts = max(step_ts) if step_ts else None
+    for turn in usage.user_turns:
+        if not _is_repeat_candidate(turn):
+            continue
+        _accumulate_repeat_turn(groups, usage, turn, first_ts, last_ts)
+
+
+def _emit_repeat_list(
+    groups: dict[str, dict], *, repeat_min: int, min_chars: int
+) -> list[UserPromptRepeat]:
+    """Émet, trie et plafonne les groupes répétés."""
+    out: list[UserPromptRepeat] = []
+    for group in groups.values():
+        emitted = _emit_repeat_group(group, repeat_min=repeat_min, min_chars=min_chars)
+        if emitted is not None:
+            out.append(emitted)
+    out.sort(key=lambda r: (-r.count, r.session_id))
+    return out[:PROMPT_REPEATS_CAP]
+
+
 def _prompt_repeat_groups(
     uses: list[SessionUsage],
     *,
     repeat_min: int,
-    similarity: float,
+    similarity: float,  # noqa: ARG001 — vestigial, conservé pour compat d'appel (v5.30 P3)
     min_chars: int,
 ) -> list[UserPromptRepeat]:
-    """User prompts exactly repeated + quasi-duplicates across the window (v5.15/v5.19).
+    """User prompts repeated across the window, grouped by O(n) fingerprint (v5.30, P3).
 
-    Normalized turns are grouped greedily (deterministic order: session_id ASC,
-    then turn order): exact match wins, else SequenceMatcher ratio on the first
-    PROMPT_COMPARE_CHARS of the normalized text >= `similarity`.
-    Quasi-duplicate scan is bucketed by length (len//16, ±2 buckets): with
-    similarity >= 0.9 over 100 chars, matching texts have near-equal lengths
-    (v5.30 A — single path, no volume threshold).
+    Filtre bruit / compaction / sessions enfants, puis indexe les tours par
+    `normalize_fingerprint` (bucket map) — plus de `difflib` ni de scan quadratique.
+    Un groupe est émis si `count >= repeat_min` et que son prompt canonique atteint
+    `min_chars`. Sortie triée `(-count, session_id)`, plafonnée à `PROMPT_REPEATS_CAP`.
     """
-    groups: list[dict] = []  # {rep, count, chars_sum, session_id}
-    exact: dict[str, dict] = {}
-    buckets: dict[int, list[dict]] = {}
+    groups: dict[str, dict] = {}
 
     for usage in sorted(uses, key=lambda u: u.session_id):
-        if usage.parent_id is not None:
-            continue  # v5.30 (7) : tours des sessions enfants (workers swarm) exclus —
-            # la détection vise les prompts de l'utilisateur, pas les prompts système des sous-agents
-        for turn in usage.user_turns:
-            if _is_compaction_artifact(turn):
-                continue  # v5.30 (B) : artefact de compaction, pas un prompt utilisateur
-            norm = normalize_prompt(turn)
-            if not norm:
-                continue
-            target = exact.get(norm)
-            if target is None:
-                b = len(norm) // 16
-                for g in [cand for bb in range(b - 2, b + 3) for cand in buckets.get(bb, ())]:
-                    if g["rep"] == norm:
-                        target = g
-                        break
-                    if (
-                        len(g["rep"]) >= min_chars
-                        and difflib.SequenceMatcher(
-                            None, g["rep"][:PROMPT_COMPARE_CHARS], norm[:PROMPT_COMPARE_CHARS]
-                        ).ratio()
-                        >= similarity
-                    ):
-                        target = g
-                        break
-            if target is None:
-                target = {
-                    "rep": norm,
-                    "count": 1,
-                    "chars_sum": len(turn),
-                    "session_id": usage.session_id,
-                }
-                groups.append(target)
-                exact[norm] = target
-                buckets.setdefault(len(norm) // 16, []).append(target)
-            else:
-                exact[norm] = target  # cache : les futurs turns identiques sont O(1)
-                target["count"] += 1
-                target["chars_sum"] += len(turn)
-                if target["session_id"] is None and usage.session_id is not None:
-                    target["session_id"] = usage.session_id
-    out = []
-    for g in groups:
-        if g["count"] < repeat_min or len(g["rep"]) < min_chars:
-            continue
-        out.append(
-            UserPromptRepeat(
-                normalized_preview=g["rep"][:80],
-                count=g["count"],
-                session_id=g.get("session_id") or "",
-                avg_chars=round(g["chars_sum"] / g["count"]),
-            )
-        )
-    out.sort(key=lambda r: (-r.count, r.session_id))
-    return out[:PROMPT_REPEATS_CAP]
+        _accumulate_usage_repeats(groups, usage)
+
+    return _emit_repeat_list(groups, repeat_min=repeat_min, min_chars=min_chars)
 
 
 def _skill_similar_pairs(entries, min_similarity: float) -> list[SkillSimilarPair]:
@@ -324,6 +517,227 @@ def dedup_resumed_usages(
     return kept, records
 
 
+def compute_cost_outliers_state(
+    n_roots: int, outlier_min_sessions: int, all_warnings: list[WarningEntry]
+) -> str:
+    """État de fiabilité des cost_outliers selon la taille d'échantillon (+ warning si petit)."""
+    if n_roots == 0:
+        return "no-data"
+    if n_roots < OUTLIER_MIN_ROOTS:
+        all_warnings.append(
+            WarningEntry(
+                session_id=None,
+                message=f"sample trop petit ({n_roots} sessions < {OUTLIER_MIN_ROOTS}), cost_outliers peu fiables",
+            )
+        )
+        return "skipped:small-sample"
+    if n_roots < outlier_min_sessions:
+        # K6: MAD robuste sur log-cost — fiable dès 5 racines (état dédié).
+        return "computed:small-sample"
+    return "computed"
+
+
+def _build_tool_usage(
+    usages: list[SessionUsage],
+) -> tuple[list[ToolUsage], dict[str, dict[str, int]], dict[str, dict[str, int]]]:
+    """Tool usage + fingerprints (roots + children, window only)."""
+    tool_counts: dict[str, int] = defaultdict(int)
+    tool_chars: dict[str, int] = defaultdict(int)
+    argument_fingerprints: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    result_fingerprints: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for u in usages:
+        for tool, count in u.tool_calls.items():
+            tool_counts[tool] += count
+            tool_chars[tool] += u.tool_arg_chars.get(tool, 0)
+        for tool, fingerprints in u.tool_arg_fingerprints.items():
+            for fingerprint, count in fingerprints.items():
+                argument_fingerprints[tool][fingerprint] += count
+        for tool, fingerprints in u.tool_result_fingerprints.items():
+            for fingerprint, count in fingerprints.items():
+                result_fingerprints[tool][fingerprint] += count
+    tool_usage = [
+        ToolUsage(
+            tool=t, call_count=tool_counts[t], estimated_tokens=_estimated_tokens(tool_chars[t])
+        )
+        for t in sorted(tool_counts)
+    ]
+    return tool_usage, argument_fingerprints, result_fingerprints
+
+
+def _build_skill_usage(
+    usages: list[SessionUsage], catalog: list[str]
+) -> tuple[list[SkillUsage], list[str]]:
+    """Skill usage + never-loaded list."""
+    skill_counts: dict[str, int] = defaultdict(int)
+    skill_sessions: dict[str, set] = defaultdict(set)
+    for u in usages:
+        for skill, count in u.skills_loaded.items():
+            skill_counts[skill] += count
+            skill_sessions[skill].add(u.session_id)
+    skill_usage = [
+        SkillUsage(skill=s, load_count=skill_counts[s], sessions_used_in=len(skill_sessions[s]))
+        for s in sorted(skill_counts)
+    ]
+    loaded = set(skill_counts)
+    return skill_usage, [s for s in catalog if s not in loaded]
+
+
+def _build_command_usage(usages: list[SessionUsage]) -> list[CommandUsage]:
+    """Command usage (v5.22)."""
+    command_counts: dict[str, int] = defaultdict(int)
+    command_sessions: dict[str, set] = defaultdict(set)
+    for u in usages:
+        for turn in u.user_turns:
+            name = _command_name(turn)
+            if name is None:
+                continue
+            command_counts[name] += 1
+            command_sessions[name].add(u.session_id)
+    return [
+        CommandUsage(
+            command=c, call_count=command_counts[c], sessions_used_in=len(command_sessions[c])
+        )
+        for c in sorted(command_counts)
+    ]
+
+
+def _unmeasurable_warnings(session_classifications) -> list[WarningEntry]:
+    """One aggregated review-unmeasurable warning per harness (not per session)."""
+    _unmeasurable: dict[str, int] = defaultdict(int)
+    for sc in session_classifications:
+        warning = sc.production_review_warning
+        if not warning:
+            continue
+        harness = warning[len("review-unmeasurable:") :]
+        _unmeasurable[harness] += 1
+    return [
+        WarningEntry(message=f"review-unmeasurable:{harness} ({_unmeasurable[harness]} sessions)")
+        for harness in sorted(_unmeasurable)
+    ]
+
+
+def _build_subagent_totals(
+    children: list[SessionUsage], usages: list[SessionUsage], orphan_ids: set[str]
+) -> SubagentTotals:
+    """Subagent totals (children + orphans, spec §8)."""
+    sub_children = children + [u for u in usages if u.session_id in orphan_ids]
+    by_agent: dict[str, dict] = defaultdict(lambda: {"count": 0, "cost": 0.0})
+    for c in sub_children:
+        agent = c.agent_type or "unknown"
+        by_agent[agent]["count"] += 1
+        by_agent[agent]["cost"] = round6(by_agent[agent]["cost"] + c.cost_usd)
+    return SubagentTotals(
+        child_session_count=len(sub_children),
+        total_cost_usd=round6(sum(c.cost_usd for c in sub_children)),
+        by_agent_type=[
+            AgentTypeUsage(a, d["count"], round6(d["cost"])) for a, d in sorted(by_agent.items())
+        ],
+    )
+
+
+def _usage_agg() -> dict:
+    """Fabrique defaultdict pour model_agg / harness_agg."""
+    return defaultdict(
+        lambda: {"sessions": set(), "tokens": 0, "cost": 0.0, "cache_read": 0.0, "fresh": 0.0}
+    )
+
+
+@dataclass(slots=True)
+class _RootTotals:
+    """Accumulateurs de la boucle roots (totals + lignes agrégées par root)."""
+
+    totals: Totals = field(default_factory=Totals)
+    root_costs: dict[str, float] = field(default_factory=dict)
+    model_agg: dict = field(default_factory=_usage_agg)
+    harness_agg: dict = field(default_factory=_usage_agg)
+    day_cost: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    day_tokens: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    day_cache: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    day_fresh: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    top_sessions: list[TopSession] = field(default_factory=list)
+
+
+def _process_root(
+    root: SessionUsage,
+    by_id: dict[str, SessionUsage],
+    acc: _RootTotals,
+    *,
+    include_subagents: bool,
+    children_ids: set[str],
+) -> None:
+    """Traite un root : fusionne descendants, MAJ accumulateurs + TopSession."""
+    descendants = _descendants(by_id, root) if include_subagents else []
+    merged = [s for u in [root, *descendants] for s in u.steps]
+    cost = round6(sum(s.cost for s in merged if s.cost is not None))
+    acc.root_costs[root.session_id] = cost
+    tokens = sum(s.total_tokens for s in merged)
+    acc.totals.session_count += 1
+    acc.totals.total_tokens += tokens
+    acc.totals.total_cost_usd = round6(acc.totals.total_cost_usd + cost)
+    cache_read = round(sum(s.tokens_cache_read for s in merged))
+    cache_write = round(sum(s.tokens_cache_write for s in merged))
+    fresh = round(sum(s.tokens_input for s in merged))
+    output = round(sum(s.tokens_output for s in merged))
+    reasoning = round(sum(s.tokens_reasoning for s in merged))
+    acc.totals.cache_read_tokens += cache_read
+    acc.totals.cache_write_tokens += cache_write
+    acc.totals.fresh_input_tokens += fresh
+    acc.totals.output_tokens += output
+    acc.totals.reasoning_tokens += reasoning
+    for s in merged:
+        agg = acc.model_agg[s.model]
+        agg["sessions"].add(root.session_id)
+        agg["tokens"] += s.total_tokens
+        agg["cost"] = round6(agg["cost"] + (s.cost if s.cost is not None else 0.0))
+        agg["cache_read"] += s.tokens_cache_read
+        agg["fresh"] += s.tokens_input
+        _bucket = s.timestamp.strftime("%Y-%m-%d")
+        acc.day_cost[_bucket] = round6(
+            acc.day_cost[_bucket] + (s.cost if s.cost is not None else 0.0)
+        )
+        acc.day_tokens[_bucket] += s.total_tokens
+        acc.day_cache[_bucket] += s.tokens_cache_read
+        acc.day_fresh[_bucket] += s.tokens_input
+    has_children = include_subagents and any(c.session_id in children_ids for c in descendants)
+    duration, active = session_duration(root)
+    harness = root.harness or split_canonical_session_id(root.session_id)[0] or ""
+    h_agg = acc.harness_agg[harness]
+    h_agg["sessions"].add(root.session_id)
+    h_agg["tokens"] += tokens
+    h_agg["cost"] = round6(h_agg["cost"] + cost)
+    h_agg["cache_read"] += cache_read
+    h_agg["fresh"] += fresh
+    context_chars: dict[str, int] = {"file": 0, "tool_result": 0, "text": 0, "reasoning": 0}
+    for u in [root, *descendants]:
+        for k in ("file", "tool_result", "text", "reasoning"):
+            context_chars[k] += u.context_chars.get(k, 0)
+    acc.top_sessions.append(
+        TopSession(
+            session_id=root.session_id,
+            title_or_topic=root.title or root.first_user_text,
+            cost_usd=cost,
+            reported_cost_usd_lifetime=root.reported_cost_usd_lifetime,
+            total_tokens=tokens,
+            project_path=root.project_path,
+            duration_seconds=duration,
+            active_time_seconds=active,
+            cost_per_active_minute=round6(cost / (active / 60.0)) if active > 0 else None,
+            api_call_count=len(merged),
+            includes_subagents=has_children,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+            cache_efficiency=_cache_hit_rate(cache_read, fresh),
+            harness=harness,
+            context_composition={  # chars/4 estimation (spec §2, TokenScope pattern)
+                "file_tokens": _estimated_tokens(context_chars["file"]),
+                "tool_result_tokens": _estimated_tokens(context_chars["tool_result"]),
+                "text_tokens": _estimated_tokens(context_chars["text"]),
+                "reasoning_tokens": _estimated_tokens(context_chars["reasoning"]),
+            },
+        )
+    )
+
+
 def aggregate(
     usages: list[SessionUsage],
     *,
@@ -372,89 +786,20 @@ def aggregate(
     children_ids = {u.session_id for u in children}
 
     # ---- totals (roots + children merged once) + per-root aggregated rows ----
-    totals = Totals()
-    root_costs: dict[str, float] = {}
-    model_agg: dict[str, dict] = defaultdict(
-        lambda: {"sessions": set(), "tokens": 0, "cost": 0.0, "cache_read": 0.0, "fresh": 0.0}
-    )
-    harness_agg: dict[str, dict] = defaultdict(
-        lambda: {"sessions": set(), "tokens": 0, "cost": 0.0, "cache_read": 0.0, "fresh": 0.0}
-    )
-    top_sessions: list[TopSession] = []
-    day_cost: dict[str, float] = defaultdict(float)
-    day_tokens: dict[str, int] = defaultdict(int)
-    day_cache: dict[str, float] = defaultdict(float)
-    day_fresh: dict[str, float] = defaultdict(float)
-
+    acc = _RootTotals()
     for root in sorted(roots, key=lambda u: u.session_id):
-        descendants = _descendants(by_id, root) if include_subagents else []
-        merged = [s for u in [root, *descendants] for s in u.steps]
-        cost = round6(sum(s.cost for s in merged if s.cost is not None))
-        root_costs[root.session_id] = cost
-        tokens = sum(s.total_tokens for s in merged)
-        totals.session_count += 1
-        totals.total_tokens += tokens
-        totals.total_cost_usd = round6(totals.total_cost_usd + cost)
-        cache_read = round(sum(s.tokens_cache_read for s in merged))
-        cache_write = round(sum(s.tokens_cache_write for s in merged))
-        fresh = round(sum(s.tokens_input for s in merged))
-        output = round(sum(s.tokens_output for s in merged))
-        reasoning = round(sum(s.tokens_reasoning for s in merged))
-        totals.cache_read_tokens += cache_read
-        totals.cache_write_tokens += cache_write
-        totals.fresh_input_tokens += fresh
-        totals.output_tokens += output
-        totals.reasoning_tokens += reasoning
-        for s in merged:
-            agg = model_agg[s.model]
-            agg["sessions"].add(root.session_id)
-            agg["tokens"] += s.total_tokens
-            agg["cost"] = round6(agg["cost"] + (s.cost if s.cost is not None else 0.0))
-            agg["cache_read"] += s.tokens_cache_read
-            agg["fresh"] += s.tokens_input
-            _bucket = s.timestamp.strftime("%Y-%m-%d")
-            day_cost[_bucket] = round6(day_cost[_bucket] + (s.cost if s.cost is not None else 0.0))
-            day_tokens[_bucket] += s.total_tokens
-            day_cache[_bucket] += s.tokens_cache_read
-            day_fresh[_bucket] += s.tokens_input
-        has_children = include_subagents and any(c.session_id in children_ids for c in descendants)
-        duration, active = session_duration(root)
-        harness = root.harness or split_canonical_session_id(root.session_id)[0] or ""
-        h_agg = harness_agg[harness]
-        h_agg["sessions"].add(root.session_id)
-        h_agg["tokens"] += tokens
-        h_agg["cost"] = round6(h_agg["cost"] + cost)
-        h_agg["cache_read"] += cache_read
-        h_agg["fresh"] += fresh
-        context_chars: dict[str, int] = {"file": 0, "tool_result": 0, "text": 0, "reasoning": 0}
-        for u in [root, *descendants]:
-            for k in ("file", "tool_result", "text", "reasoning"):
-                context_chars[k] += u.context_chars.get(k, 0)
-        top_sessions.append(
-            TopSession(
-                session_id=root.session_id,
-                title_or_topic=root.title or root.first_user_text,
-                cost_usd=cost,
-                reported_cost_usd_lifetime=root.reported_cost_usd_lifetime,
-                total_tokens=tokens,
-                project_path=root.project_path,
-                duration_seconds=duration,
-                active_time_seconds=active,
-                cost_per_active_minute=round6(cost / (active / 60.0)) if active > 0 else None,
-                api_call_count=len(merged),
-                includes_subagents=has_children,
-                cache_read_tokens=cache_read,
-                cache_write_tokens=cache_write,
-                cache_efficiency=_cache_hit_rate(cache_read, fresh),
-                harness=harness,
-                context_composition={  # chars/4 estimation (spec §2, TokenScope pattern)
-                    "file_tokens": _estimated_tokens(context_chars["file"]),
-                    "tool_result_tokens": _estimated_tokens(context_chars["tool_result"]),
-                    "text_tokens": _estimated_tokens(context_chars["text"]),
-                    "reasoning_tokens": _estimated_tokens(context_chars["reasoning"]),
-                },
-            )
+        _process_root(
+            root, by_id, acc, include_subagents=include_subagents, children_ids=children_ids
         )
+    totals = acc.totals
+    root_costs = acc.root_costs
+    model_agg = acc.model_agg
+    harness_agg = acc.harness_agg
+    day_cost = acc.day_cost
+    day_tokens = acc.day_tokens
+    day_cache = acc.day_cache
+    day_fresh = acc.day_fresh
+    top_sessions = acc.top_sessions
 
     totals.cache_hit_rate = _cache_hit_rate(
         float(totals.cache_read_tokens), float(totals.fresh_input_tokens)
@@ -478,21 +823,7 @@ def aggregate(
         min_cost=session_outlier_min_cost_usd,
     )
     n_roots = len(roots)
-    if n_roots == 0:
-        cost_outliers_state = "no-data"
-    elif n_roots < OUTLIER_MIN_ROOTS:
-        cost_outliers_state = "skipped:small-sample"
-        all_warnings.append(
-            WarningEntry(
-                session_id=None,
-                message=f"sample trop petit ({n_roots} sessions < {OUTLIER_MIN_ROOTS}), cost_outliers peu fiables",
-            )
-        )
-    elif n_roots < outlier_min_sessions:
-        # K6: MAD robuste sur log-cost — fiable dès 5 racines (état dédié).
-        cost_outliers_state = "computed:small-sample"
-    else:
-        cost_outliers_state = "computed"
+    cost_outliers_state = compute_cost_outliers_state(n_roots, outlier_min_sessions, all_warnings)
 
     # ---- by_model (normalized provider/model keys) ----
     by_model = [
@@ -523,57 +854,13 @@ def aggregate(
     selected = ordered_all[: max(0, top_sessions_limit)]
 
     # ---- tool usage (roots + children, window only) ----
-    tool_counts: dict[str, int] = defaultdict(int)
-    tool_chars: dict[str, int] = defaultdict(int)
-    argument_fingerprints: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    result_fingerprints: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    for u in usages:
-        for tool, count in u.tool_calls.items():
-            tool_counts[tool] += count
-            tool_chars[tool] += u.tool_arg_chars.get(tool, 0)
-        for tool, fingerprints in u.tool_arg_fingerprints.items():
-            for fingerprint, count in fingerprints.items():
-                argument_fingerprints[tool][fingerprint] += count
-        for tool, fingerprints in u.tool_result_fingerprints.items():
-            for fingerprint, count in fingerprints.items():
-                result_fingerprints[tool][fingerprint] += count
-    tool_usage = [
-        ToolUsage(
-            tool=t, call_count=tool_counts[t], estimated_tokens=_estimated_tokens(tool_chars[t])
-        )
-        for t in sorted(tool_counts)
-    ]
+    tool_usage, argument_fingerprints, result_fingerprints = _build_tool_usage(usages)
 
     # ---- skill usage + never loaded ----
-    skill_counts: dict[str, int] = defaultdict(int)
-    skill_sessions: dict[str, set] = defaultdict(set)
-    for u in usages:
-        for skill, count in u.skills_loaded.items():
-            skill_counts[skill] += count
-            skill_sessions[skill].add(u.session_id)
-    skill_usage = [
-        SkillUsage(skill=s, load_count=skill_counts[s], sessions_used_in=len(skill_sessions[s]))
-        for s in sorted(skill_counts)
-    ]
-    loaded = set(skill_counts)
-    skills_never_loaded = [s for s in catalog if s not in loaded]
+    skill_usage, skills_never_loaded = _build_skill_usage(usages, catalog)
 
     # ---- command usage (v5.22) ----
-    command_counts: dict[str, int] = defaultdict(int)
-    command_sessions: dict[str, set] = defaultdict(set)
-    for u in usages:
-        for turn in u.user_turns:
-            name = _command_name(turn)
-            if name is None:
-                continue
-            command_counts[name] += 1
-            command_sessions[name].add(u.session_id)
-    command_usage = [
-        CommandUsage(
-            command=c, call_count=command_counts[c], sessions_used_in=len(command_sessions[c])
-        )
-        for c in sorted(command_counts)
-    ]
+    command_usage = _build_command_usage(usages)
 
     # ---- skill similar pairs (v5.25) ----
     skill_similar_pairs = _skill_similar_pairs(catalog_entries, skill_similarity_min)
@@ -586,22 +873,13 @@ def aggregate(
         min_chars=user_prompt_repeat_min_chars,
     )
 
+    # ---- deterministic session classifications (P6) ----
+    session_classifications = classify_sessions(usages)
+    # De-noise: one aggregated review-unmeasurable warning per harness (not per session).
+    all_warnings.extend(_unmeasurable_warnings(session_classifications))
+
     # ---- subagent totals (children + orphans, spec §8) ----
-    sub_children = children + [u for u in usages if u.session_id in orphan_ids]
-    child_count = len(sub_children)
-    child_cost = round6(sum(c.cost_usd for c in sub_children))
-    by_agent: dict[str, dict] = defaultdict(lambda: {"count": 0, "cost": 0.0})
-    for c in sub_children:
-        agent = c.agent_type or "unknown"
-        by_agent[agent]["count"] += 1
-        by_agent[agent]["cost"] = round6(by_agent[agent]["cost"] + c.cost_usd)
-    subagent_totals = SubagentTotals(
-        child_session_count=child_count,
-        total_cost_usd=child_cost,
-        by_agent_type=[
-            AgentTypeUsage(a, d["count"], round6(d["cost"])) for a, d in sorted(by_agent.items())
-        ],
-    )
+    subagent_totals = _build_subagent_totals(children, usages, orphan_ids)
 
     return WeeklySummary(
         period=period,
@@ -623,6 +901,7 @@ def aggregate(
         skills_never_loaded=skills_never_loaded,
         skills_targets=skills_targets,
         user_prompt_repeats=user_prompt_repeats,
+        session_classifications=session_classifications,
         subagent_totals=subagent_totals,
         tool_argument_fingerprints={
             tool: dict(sorted(values.items()))

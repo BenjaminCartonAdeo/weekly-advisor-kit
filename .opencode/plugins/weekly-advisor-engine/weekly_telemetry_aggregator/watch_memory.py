@@ -230,6 +230,49 @@ def _is_full_snapshot(update: Mapping[str, Any]) -> bool:
     return any(key in update for key in ("history", "occurrences", "first_seen_week"))
 
 
+def _merge_entry_fields(
+    base: Mapping[str, Any] | None, incoming: Mapping[str, Any], entry: dict[str, Any]
+) -> dict[str, Any]:
+    """Champs scalaires : valeur entrante non vide, sinon repli sur la base."""
+    base_map = base or {}
+    for field in _MEMORY_FIELDS:
+        if field in ("first_seen_week", "last_seen_week"):
+            continue
+        entry[field] = incoming[field] if incoming[field] else base_map.get(field, entry[field])
+    return entry
+
+
+def _merge_seen_weeks(
+    base: Mapping[str, Any] | None, incoming: Mapping[str, Any]
+) -> tuple[str, str]:
+    """Bornes first/last_seen_week sur l'union des semaines connues."""
+    base_map = base or {}
+    weeks = [
+        value
+        for value in (
+            incoming["first_seen_week"],
+            incoming["last_seen_week"],
+            base_map.get("first_seen_week", ""),
+            base_map.get("last_seen_week", ""),
+        )
+        if value
+    ]
+    if not weeks:
+        return "", ""
+    return min(weeks, key=_week_key), max(weeks, key=_week_key)
+
+
+def _merge_occurrences(base: Mapping[str, Any] | None, incoming: Mapping[str, Any]) -> int:
+    """Semaine plus récente = nouvelle occurrence, sinon maximum des deux."""
+    base_map = base or {}
+    base_occ = int(base_map.get("occurrences", 0))
+    if incoming["last_seen_week"] and _week_key(incoming["last_seen_week"]) > _week_key(
+        base_map.get("last_seen_week", "")
+    ):
+        return base_occ + 1
+    return max(int(incoming["occurrences"]), base_occ)
+
+
 def _merge_snapshot(
     existing: Mapping[str, Any] | None, update: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -237,33 +280,9 @@ def _merge_snapshot(
 
     base = _normalized_entry(existing) if isinstance(existing, Mapping) else None
     incoming = _normalized_entry(update)
-    entry = _blank_entry(incoming["id"])
-    for field in _MEMORY_FIELDS:
-        if field in ("first_seen_week", "last_seen_week"):
-            continue
-        entry[field] = incoming[field] if incoming[field] else (base or {}).get(field, entry[field])
-    weeks = [
-        value
-        for value in (
-            incoming["first_seen_week"],
-            incoming["last_seen_week"],
-            (base or {}).get("first_seen_week", ""),
-            (base or {}).get("last_seen_week", ""),
-        )
-        if value
-    ]
-    entry["first_seen_week"] = min(weeks, key=_week_key) if weeks else ""
-    entry["last_seen_week"] = max(weeks, key=_week_key) if weeks else ""
-    base_occ = int((base or {}).get("occurrences", 0))
-    # Un squelette entrant porte toujours occurrences=1 : on n'incrémenterait
-    # jamais avec max(). Une semaine strictement plus récente = nouvelle
-    # occurrence ; sinon (semaine identique ou antérieure) on garde le maximum.
-    if incoming["last_seen_week"] and _week_key(incoming["last_seen_week"]) > _week_key(
-        (base or {}).get("last_seen_week", "")
-    ):
-        entry["occurrences"] = base_occ + 1
-    else:
-        entry["occurrences"] = max(int(incoming["occurrences"]), base_occ)
+    entry = _merge_entry_fields(base, incoming, _blank_entry(incoming["id"]))
+    entry["first_seen_week"], entry["last_seen_week"] = _merge_seen_weeks(base, incoming)
+    entry["occurrences"] = _merge_occurrences(base, incoming)
     entry["history"] = _merge_history((base or {}).get("history", []), incoming["history"])
     return entry
 

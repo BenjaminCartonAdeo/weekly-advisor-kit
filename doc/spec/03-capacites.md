@@ -68,10 +68,7 @@ configuration.
    source. Le coût estimé est **distinct** du coût facturé : les deux ne se somment jamais ; une
    session sans coût enregistré reste dans les totaux de tokens, son coût estimé ne figure que
    dans le champ « coûts estimés ».
-10. **Prompts utilisateur répétés** : les tours utilisateur sont normalisés (minuscules, espaces
-    aplatis, ponctuation finale tronquée) ; on compte les occurrences exactes puis les
-    quasi-doublons par similarité de séquence (ratio ≥ **0,9**). Une entrée est émise si le compte
-    est ≥ **3** et la longueur normalisée ≥ **80** caractères ; la liste est plafonnée à **20**.
+10. **Prompts utilisateur répétés** : les tours utilisateur sont d'abord filtrés (bruit : séparateurs répétés ≥10, commandes de contrôle seules, préfixe système, >2000 caractères, réponses y/n courtes, « continue to iterate » court) puis normalisés (minuscules, blocs de code → `CODE`, citations → `STR`, chemins → `PATH`, nombres → `NUM`, ponctuation → espace, stop-list ~75 mots FR/EN, tokens >1 caractère) ; l'empreinte est les **4 premiers tokens triés joints par `|`** (bucket map **O(n)**, plus de comparaisons O(n²)). Une entrée est émise si le compte d'empreinte identique est ≥ **3** ; la liste est plafonnée à **20**, tri stable (-count, session_id). Le prompt canonique est le plus court ≥20 caractères normalisés, le label est tronqué à 80, avec agrégats déterministes : sessions/harnais distincts, taux d'annulation, tours de correction moyens, first/last seen, ≤5 exemples, brouillon de skill markdown et gain estimé (répétitions ×2 min). Les artefacts de compaction (`▣█░│⏿`, `dcp |…removed…summary`) et les sessions enfants (`parent_id` non nul) sont exclus.
 11. **Invocation de commands** : tout tour utilisateur commençant par `/` est compté comme
     invocation de command, par command et par session.
 12. **Outliers de coût** : calcul robuste par **médiane + écart absolu médian (MAD)** sur les coûts
@@ -88,8 +85,10 @@ configuration.
     Les écritures de cache sont un coût, pas un « miss », et n'entrent pas au dénominateur.
 17. **Répartition par modèle** : clé normalisée, alias fusionnés.
 18. **Tri déterministe** de chaque liste (coût décroissant + identifiant en tranche pour le top
-    sessions ; alphabétique ailleurs). Montants arrondis à 6 décimales ; divisions par zéro → `null`.
-19. **Avertissements plafonnés à 50** entrées par run.
+     sessions ; alphabétique ailleurs). Montants arrondis à 6 décimales ; divisions par zéro → `null`.
+19. **Avertissements plafonnés à 50** entrées par run (un warning `review-unmeasurable:<harness> (N sessions)` agrégé par harnais, trié, au lieu d'un par session).
+20. **Classification déterministe (P6)** : chaque session reçoit sans LLM : `intent` (priorité `planning > debug > review > explore > implementation` par regex FR/EN + signaux outils), `spec_driven {is_spec, preuves[]}` (preuves `path:<x>`/`modal:<w>`/`list:*`/`command:/plan`), `production_review {review_pct, measured, reviewed, warning}` (gap >30 s), `prompt_maturity {score 0–100, grade A–F, 5 dims 0–20}` ; bloc `session_classifications` trié par `session_id`, additif, `schema_version` inchangée.
+21. **Règles d'audit déclaratives (P1)** : registre `rules/*.md` versionnées (frontmatter YAML `id,name,group,severity,scope,version,tags,thresholds` + sections `# Description / When Triggered ({{count}},{{pct}},{{extra.*}},{{thresholds.*}}) / How to Improve / Examples` + blocs `detect {scan/match/aggregate/check/examples/severity}` et `test {triggered|clean}`) ; DSL `scan/match/aggregate/check` évalué par AST whitelisté (fonctions `contains,containsAny,countAny,matches,length,count,countWhere,someWhere,everyWhere,ratio,sum,avg,min,max,first,field,text`, `extends` avec préfixe `+` merge key-wise) ; `finding` uniforme `{id,severity,group,occurrences,description{{pct}},suggestion,examples,details}` trié par `id` ; playground `debug-rule` read-only (`evaluate <rule-id|expression>`, `fields` catalogue typé + arités, `distributions` top N/min-max/sample_size/null_count).
 
 **Erreurs (fail-soft / fatal)**
 - Source de sessions indisponible ou en échec d'initialisation → avertissement + source sautée,
@@ -254,10 +253,10 @@ sessions examiner qualitativement — sans aucun jugement de l'orchestrateur dan
 4. **Prompts utilisateur répétés** (C1 règle 10) — couvre les sessions bon marché.
 5. **Outliers statistiques** de coût (C1 règle 12) — anormalement chères pour la baseline locale,
    même hors du top absolu.
-6. **Plafond dur** : au plus **8** sessions auditées par run (défaut). Les candidates au-delà sont
-   auditées dans l'ordre de priorité des signaux (top coût, outliers, boucle, cache, prompts
-   répétés) jusqu'à épuisement du plafond ; les non-auditées restent listées au rapport comme
-   « candidates non traitées ».
+6. **Code non relu** : session avec au moins une écriture mesurée et taux de relecture **0 %** (gap > **30 s** après une étape d'écriture `edit/write/multiedit/patch/apply_patch/create/notebookedit` jusqu'au tour utilisateur suivant ; timestamps absents → `null` + warning `review-unmeasurable:<harness>`, jamais 0 mensonger).
+7. **Maturité de prompt faible** : grade **F (<40)** sur 5 dimensions 0–20 (spécificité, contexte, contrainte, vérifiabilité, itérativité ; total 0–100, grades A≥80/B≥65/C≥50/D≥40/F<40).
+8. **Non-spec coûteuse** : session non guidée par spec (`is_spec=false` : absence de chemin `.md/.txt` + `spec|prd|plan|design|requirements`, de mots modaux `must/should/ensure/doit/doivent/exige`, de listes markdown ou de `/plan`) **et** coût ≥ **1,00 $**.
+9. **Plafond dur** : au plus **8** sessions auditées par run (défaut). Les candidates au-delà sont auditées dans l'ordre de priorité des signaux (top coût, outliers, boucle, cache, prompts répétés, non-relu, maturité-F, non-spec coûteuse) jusqu'à épuisement du plafond ; les non-auditées restent listées au rapport comme « candidates non traitées ».
 
 ---
 

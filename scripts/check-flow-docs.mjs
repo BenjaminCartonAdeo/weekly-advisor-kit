@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Contrat de flux docs ↔ code (G1, v6.0.p) — 7 surfaces vérifiées statiquement.
+ * Contrat de flux docs ↔ code (G1, v6.0.p) — 8 surfaces vérifiées statiquement.
  *
  *  1. Tools TS → sous-commandes CLI : chaque outil du plugin invoque une
  *     sous-commande réelle du moteur (aucun argv fantôme).
@@ -21,8 +21,34 @@
  *     `task: allow`, marqueurs WAVE/JOIN, contrat retour JSON du worker,
  *     référence agent dans la commande — dérive observée : phrase interdisant
  *     encore le dispatch en subagent côté commande).
+ *  8. Envelopes LLM : les exemples JSON embarqués dans les SKILL.md (marqués
+ *     `<!-- envelope-example: <id> -->`) respectent le contrat réellement
+ *     vérifié par le JOIN (miroir des schémas
+ *     `doc/architecture/schemas/<id>.schema.json` — dérive observée : prose
+ *     dupliquée qui dérive du validateur moteur).
+ *  9. Table branche→skill : la table du worker (§Pre-flight skills) est la
+ *     source unique — chaque skill listée existe sous `.opencode/skills/`, et
+ *     l'agent orchestrateur pointe vers le worker au lieu de dupliquer la
+ *     table (dérive observée : table recopiée agent/worker, divergence
+ *     silencieuse).
  *
  * Zéro dépendance (node stdlib). Lancé par la CI après pytest ; exit 0/1.
+ *
+ * **Migration v6.0.q (Task 6)**
+ *
+ * check-flow-docs.mjs lit désormais le **registre neutre** 
+ * `.opencode/plugins/weekly-advisor/tool-registry.ts` au lieu du fichier 
+ * d'entrée `.opencode/plugins/weekly-advisor.ts` (hardcodé, dupliquait le 
+ * contrat). La source de vérité est unique : le registre gèle les 19 outils 
+ * et les 18 sous-commandes CLI.
+ *
+ * Surfaces impactées :
+ * - Surface 1 : outils TS → sous-commandes CLI, lus depuis le registre
+ * - Surface 3 : artefacts (inchangé, source moteur)
+ * - Surface 4 : chaînage d'ordre (inchangé, source moteur)
+ * - Surface 5 : comptes de tests (inchangé, pytest)
+ * - Surface 6 : étapes commande ↔ agent (inchangé, markdown)
+ * - Surface 7-9 : doc cohérence (inchangé, markdown)
  */
 import fs from "node:fs"
 import path from "node:path"
@@ -30,7 +56,7 @@ import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
-const TS_FILE = path.join(ROOT, ".opencode", "plugins", "weekly-advisor.ts")
+const REGISTRY_FILE = path.join(ROOT, ".opencode", "plugins", "weekly-advisor", "tool-registry.ts")
 const ENGINE = path.join(ROOT, ".opencode", "plugins", "weekly-advisor-engine")
 const CLI_FILE = path.join(ENGINE, "weekly_telemetry_aggregator", "cli.py")
 const README_FILE = path.join(ROOT, "README.md")
@@ -120,7 +146,29 @@ export function tsCommands(src) {
   return cmds
 }
 
-/** Sous-commandes CLI : sous-parsers explicites ou entrées de la table déclarative `_SUBCOMMANDS`. */
+/** Commandes CLI du registre neutre: cliSubcommand défini dans ToolDefinition. */
+export function registryCLICommands(src) {
+  const cmds = new Set()
+  // Extraire cliSubcommand: "..." depuis les définitions d'outils
+  // (pas de faux positifs d'autres patterns, regarder juste les déclarations de champ)
+  const matches = [...src.matchAll(/cliSubcommand\s*:\s*"([a-z][a-z-]*)"/g)]
+  for (const m of matches) {
+    cmds.add(m[1])
+  }
+  // Ajouter les subcommands des specs qui sont transformés en cliSubcommand par simpleTool()
+  // Seul si le spec est utilisé (pas en commentaire)
+  const specMatches = [...src.matchAll(/(?<!\/\/).*?subcommand\s*:\s*"([a-z][a-z-]*)"/g)]
+  for (const m of specMatches) {
+    // Heuristique : si la ligne contient {, elle est probablement dans un tableau d'objet
+    const context = src.substring(Math.max(0, m.index - 50), m.index + 100)
+    if (/[{,]/.test(context)) {
+      cmds.add(m[1])
+    }
+  }
+  return cmds
+}
+
+/** Sous-commandes CLI (Python) : sous-parsers explicites ou entrées de la table déclarative. */
 function cliCommands(src) {
   const cmds = new Set()
   for (const m of src.matchAll(/sub\.add_parser\(\s*"([a-z][a-z-]+)"/g)) cmds.add(m[1])
@@ -158,14 +206,23 @@ function enginePythonFiles() {
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 
 if (isMain) {
-const tsSrc = read(TS_FILE)
+const registrySrc = read(REGISTRY_FILE)
 const cliSrc = read(CLI_FILE)
-const tsCmds = tsCommands(tsSrc)
+const tsCmds = registryCLICommands(registrySrc)
 const cliCmds = cliCommands(cliSrc)
 
-console.log("— Surfaces 1/2 : médiation TS ↔ CLI")
+console.log("— Surface 1 : médiation registre ↔ CLI")
 for (const cmd of [...tsCmds].sort()) {
-  ok(`outil TS → sous-commande "${cmd}" existe`, cliCmds.has(cmd))
+  ok(`registre → sous-commande "${cmd}" existe`, cliCmds.has(cmd))
+}
+
+// Verify registry has exactly 18 CLI commands (never empty scan)
+if (tsCmds.size === 0) {
+  failures += 1
+  console.log("FAIL registre — 18 sous-commandes trouvées — commandes: aucune")
+} else if (tsCmds.size !== 18) {
+  failures += 1
+  console.log(`FAIL registre — 18 sous-commandes trouvées — trouvé: ${tsCmds.size}`)
 }
 
 // ------------------------------------------------------------------ surface 2
@@ -212,12 +269,12 @@ function hasLiteral(files, needle) {
 
 // ------------------------------------------------------------------ surface 4
 
-// Dépendances d'ordre : documentées dans le TS (description SÉQUENTIEL) ET
-// présentes côté moteur (le handler lit l'artefact amont).
+// Dépendances d'ordre : documentées dans le registre neutre (description SÉQUENTIEL)
+// ET présentes côté moteur (le handler lit l'artefact amont).
 const DEPENDENCIES = [
   // weekly_watch_context décrit sa dépendance à l'écosystème (étape 2).
   [
-    "TS weekly_watch_context → SÉQUENTIEL weekly-ecosystem",
+    "registre weekly_watch_context → SÉQUENTIEL weekly-ecosystem",
     /weekly_watch_context[\s\S]{0,400}?weekly-ecosystem/,
     null,
   ],
@@ -225,16 +282,16 @@ const DEPENDENCIES = [
   ["moteur watch-context lit weekly-ecosystem (chaînage)", null, "weekly-ecosystem"],
   // weekly_report_assemble documente la consommation du draft.
   [
-    "TS weekly_report_assemble → relancer prep après draft",
+    "registre weekly_report_assemble → relancer prep après draft",
     /weekly_report_assemble[\s\S]{0,400}?relancer weekly_report_prep/,
     null,
   ],
   ["moteur assemble consomme weekly-report-draft", null, "weekly-report-draft"],
 ]
 console.log("— Surface 4 : chaînage d'ordre")
-for (const [label, tsRe, pyNeedle] of DEPENDENCIES) {
-  if (tsRe !== null) {
-    ok(label, tsRe.test(tsSrc))
+for (const [label, regexPattern, pyNeedle] of DEPENDENCIES) {
+  if (regexPattern !== null) {
+    ok(label, regexPattern.test(registrySrc))
   }
   if (pyNeedle !== null) {
     ok(label, hasLiteral(pyFiles, pyNeedle))
@@ -318,9 +375,153 @@ ok(
   /agent:\s*weekly-advisor\b/.test(frontmatter(commandSrc7)),
 )
 
+// ------------------------------------------------------------------ surface 8
+
+// Envelopes LLM : chaque SKILL.md producteur montre un exemple marqué
+// `<!-- envelope-example: <id> -->`. Le check extrait le bloc clôturé qui suit,
+// retire les commentaires jsonc (sans casser les `//` dans les chaînes, ex.
+// les URLs `https://…`), parse, puis contrôle les clés requises — le même
+// contrat que le schéma `doc/architecture/schemas/<id>.schema.json` et le
+// validateur moteur (report.py). Zéro dépendance : pas de validateur JSON
+// Schema externe, les contrôles sont codés en dur ci-dessous.
+const SKILLS_DIR = path.join(ROOT, ".opencode", "skills")
+const ENVELOPES = [
+  "weekly-quality-audit/audit-findings",
+  "weekly-watch-review/weekly-watch-findings-raw",
+  "harness-remediation/weekly-harness-remediation-proposals",
+]
+function stripJsonc(src) {
+  let out = ""
+  let inStr = false
+  let esc = false
+  for (let i = 0; i < src.length; i += 1) {
+    const c = src[i]
+    if (inStr) {
+      out += c
+      if (esc) esc = false
+      else if (c === "\\") esc = true
+      else if (c === '"') inStr = false
+    } else if (c === '"') {
+      inStr = true
+      out += c
+    } else if (c === "/" && src[i + 1] === "/") {
+      while (i < src.length && src[i] !== "\n") i += 1
+      out += "\n"
+    } else {
+      out += c
+    }
+  }
+  return out
+}
+function envelopeExample(skillSrc, id) {
+  const at = skillSrc.indexOf(`<!-- envelope-example: ${id}`)
+  if (at === -1) return { found: false }
+  const open = skillSrc.indexOf("```", at)
+  const openEnd = open === -1 ? -1 : skillSrc.indexOf("\n", open)
+  const close = openEnd === -1 ? -1 : skillSrc.indexOf("```", openEnd)
+  if (open === -1 || openEnd === -1 || close === -1) return { found: true, block: null }
+  return { found: true, block: skillSrc.slice(openEnd + 1, close) }
+}
+function isRecord(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v)
+}
+function checkEnvelope(id, value) {
+  if (id === "audit-findings") {
+    return (
+      isRecord(value) &&
+      value.schema_version === 1 &&
+      typeof value.session_id === "string" &&
+      typeof value.summary === "string" &&
+      value.summary.trim().length > 0 &&
+      Array.isArray(value.findings) &&
+      (value.rc === 0 || value.rc === 1) &&
+      Array.isArray(value.warnings)
+    )
+  }
+  if (id === "weekly-watch-findings-raw") {
+    return (
+      isRecord(value) &&
+      value.schema_version === 1 &&
+      Array.isArray(value.findings) &&
+      value.findings.every(
+        (f) =>
+          isRecord(f) &&
+          typeof f.category === "string" &&
+          typeof f.severity === "string" &&
+          typeof f.token_impact === "string",
+      )
+    )
+  }
+  // weekly-harness-remediation-proposals
+  const DECISIONS = new Set(["apply", "propose", "manual", "dismiss"])
+  return (
+    isRecord(value) &&
+    (value.schema_version === 1 || value.schema_version === 2) &&
+    typeof value.date === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(value.date) &&
+    Array.isArray(value.proposals) &&
+    value.proposals.every(
+      (p) =>
+        isRecord(p) &&
+        typeof p.rule === "string" &&
+        typeof p.path === "string" &&
+        DECISIONS.has(p.decision),
+    )
+  )
+}
+console.log("— Surface 8 : exemples d'envelopes conformes au contrat JOIN")
+for (const pair of ENVELOPES) {
+  const [skill, id] = pair.split("/")
+  const src = read(path.join(SKILLS_DIR, skill, "SKILL.md"))
+  const ex = envelopeExample(src, id)
+  ok(`SKILL ${skill} marque un exemple d'envelope "${id}"`, ex.found)
+  if (!ex.found) continue
+  let value = null
+  let parsed = false
+  if (ex.block !== null) {
+    try {
+      value = JSON.parse(stripJsonc(ex.block))
+      parsed = true
+    } catch {
+      parsed = false
+    }
+  }
+  ok(`exemple "${id}" parse comme JSON (commentaires jsonc ignorés)`, parsed, parsed ? "" : "bloc illisible")
+  if (parsed) ok(`exemple "${id}" respecte le contrat JOIN`, checkEnvelope(id, value))
+}
+
+// ------------------------------------------------------------------ surface 9
+
+// Table branche→skill : source unique = worker §Pre-flight skills. Le check
+// extrait les noms en backticks des lignes de table, vérifie que chaque skill
+// existe sous `.opencode/skills/`, et que l'agent pointe vers le worker sans
+// recopier la table.
+console.log("— Surface 9 : table branche→skill (source unique worker)")
+const preflightAt = workerSrc.indexOf("## Pre-flight skills")
+const mappingAt = workerSrc.indexOf("**Mapping rc**", preflightAt === -1 ? 0 : preflightAt)
+const tableZone = preflightAt !== -1 && mappingAt !== -1 ? workerSrc.slice(preflightAt, mappingAt) : ""
+const tableSkills = [...tableZone.matchAll(/^\|[^|\n]*\|([^|\n]*)\|/gm)]
+  .flatMap((m) => [...m[1].matchAll(/`([^`]+)`/g)].map((b) => b[1]))
+ok("worker §Pre-flight skills liste ≥1 skill en table", tableSkills.length > 0)
+for (const skill of tableSkills) {
+  ok(
+    `skill de branche "${skill}" existe sous .opencode/skills/`,
+    fs.existsSync(path.join(SKILLS_DIR, skill, "SKILL.md")),
+  )
+}
+const agentSrc9 = read(AGENT_FILE)
+ok(
+  "agent pointe vers weekly-advisor-worker.md (pas de table dupliquée)",
+  agentSrc9.includes("weekly-advisor-worker.md"),
+)
+ok(
+  "agent ne recopie pas la table branche→skill",
+  !agentSrc9.includes("| Branche | Skill(s) requise(s) |"),
+)
+
 console.log(
   failures === 0
-    ? "\nFLOW-DOCS OK — contrat de flux 7 surfaces vérifié"
+    ? "\nFLOW-DOCS OK — contrat de flux 9 surfaces vérifié"
     : `\n${failures} échec(s)`,
 )
 process.exit(failures === 0 ? 0 : 1)

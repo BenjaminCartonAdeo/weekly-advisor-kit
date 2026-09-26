@@ -98,6 +98,49 @@ _SECURITY_PARAPHRASE = {
 }
 
 
+def _parse_security_counts(security: dict | None) -> tuple[str, int, int, list[str]]:
+    """Normalise status/counts/rules (top-5, préfixe security/)."""
+    status = "pass"
+    critical_count = 0
+    blocking_count = 0
+    rules: list[str] = []
+    if not isinstance(security, dict):
+        return status, critical_count, blocking_count, rules
+    raw = str(security.get("status") or "pass").strip().lower()
+    status = raw if raw in {"pass", "warn", "fail"} else "pass"
+    try:
+        critical_count = max(0, int(security.get("critical_count") or 0))
+    except (TypeError, ValueError):
+        critical_count = 0
+    try:
+        blocking_count = max(0, int(security.get("blocking_count") or 0))
+    except (TypeError, ValueError):
+        blocking_count = 0
+    raw_rules = security.get("blocking_rules") or []
+    if isinstance(raw_rules, list):
+        seen: set[str] = set()
+        for r in raw_rules:
+            name = str(r or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            rules.append(name if "/" in name else f"security/{name}")
+        rules = rules[:5]
+    return status, critical_count, blocking_count, rules
+
+
+def _security_rules_list(rules: list[str]) -> str:
+    """Bloc <ul> des paraphrases génériques (≤200 caractères par ligne)."""
+    items = ["<ul>"]
+    for rule in rules:
+        short = str(rule).strip().lower().removeprefix("security/")
+        para = _SECURITY_PARAPHRASE.get(short, "Signal de sécurité — revue humaine requise.")
+        row = f"<li><code>{escape(rule)}</code> — {escape(para)}</li>"
+        items.append(row[:200] if len(row) > 200 else row)
+    items.append("</ul>")
+    return "\n".join(items)
+
+
 def _render_security_section(security: dict | None) -> Markup:
     """Section Sécurité repliée (HTML) — counts/rules only, warn-only.
 
@@ -108,31 +151,7 @@ def _render_security_section(security: dict | None) -> Markup:
     Retourne un ``<details id="security">`` replié par défaut (jamais open).
     """
     # <!-- ponytail: counts-only — aucun finding brut, paraphrases génériques -->
-    status = "pass"
-    critical_count = 0
-    blocking_count = 0
-    rules: list[str] = []
-    if isinstance(security, dict):
-        raw = str(security.get("status") or "pass").strip().lower()
-        status = raw if raw in {"pass", "warn", "fail"} else "pass"
-        try:
-            critical_count = max(0, int(security.get("critical_count") or 0))
-        except (TypeError, ValueError):
-            critical_count = 0
-        try:
-            blocking_count = max(0, int(security.get("blocking_count") or 0))
-        except (TypeError, ValueError):
-            blocking_count = 0
-        raw_rules = security.get("blocking_rules") or []
-        if isinstance(raw_rules, list):
-            seen: set[str] = set()
-            for r in raw_rules:
-                name = str(r or "").strip()
-                if not name or name in seen:
-                    continue
-                seen.add(name)
-                rules.append(name if "/" in name else f"security/{name}")
-            rules = rules[:5]
+    status, critical_count, blocking_count, rules = _parse_security_counts(security)
     badge = "badge-ok" if status == "pass" else "badge-warn"
     parts = [
         '<details id="security" class="security">',
@@ -149,15 +168,7 @@ def _render_security_section(security: dict | None) -> Markup:
             f" · blocking : <b>{blocking_count}</b>.</p>"
         )
         if rules:
-            parts.append("<ul>")
-            for rule in rules:
-                short = str(rule).strip().lower().removeprefix("security/")
-                para = _SECURITY_PARAPHRASE.get(
-                    short, "Signal de sécurité — revue humaine requise."
-                )
-                row = f"<li><code>{escape(rule)}</code> — {escape(para)}</li>"
-                parts.append(row[:200] if len(row) > 200 else row)
-            parts.append("</ul>")
+            parts.append(_security_rules_list(rules))
         parts.append("<p>Revue humaine requise — détails non affichés.</p>")
     parts.append("</div>")
     parts.append("</details>")

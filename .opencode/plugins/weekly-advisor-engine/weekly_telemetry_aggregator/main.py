@@ -22,6 +22,7 @@ from pathlib import Path
 from warnings import warn as _warn_user
 
 from .aggregator import _cap_warnings, aggregate, dedup_resumed_usages
+from .classifiers import _EDIT_WRITE_TOOLS
 from .config import TelemetryConfig, apply_lookback_override
 from .curation import build_catalog_from_skills
 from .draft_targets import DRAFT_HARNESS_TARGETS, describe_draft_target, resolve_draft_targets
@@ -230,6 +231,182 @@ def _audit_record(meta, status: str) -> dict:
     return record
 
 
+@dataclasses.dataclass(slots=True)
+class _SessionReads:
+    """Lectures brutes d'une session sur la fenêtre (build_usage)."""
+
+    steps: list
+    tool_calls: dict[str, int]
+    tool_arg_chars: dict[str, int]
+    skills: dict[str, int]
+    tool_arg_fps: dict[str, dict[str, int]]
+    tool_result_fps: dict[str, dict[str, int]]
+    turns: list[str]
+    context_chars: dict[str, int]
+    aggregates: dict | None
+
+
+def _usage_active_excluded(
+    meta,
+    run_time: datetime,
+    cfg: TelemetryConfig,
+    warnings: list[WarningEntry],
+    audit: list[dict] | None,
+) -> bool:
+    """Exclusion session active (télémétrie incomplète) — True = exclu."""
+    if not (
+        cfg.exclude_active_sessions
+        and meta.time_updated is not None
+        and meta.time_updated >= run_time - timedelta(minutes=ACTIVE_CUTOFF_MINUTES)
+    ):
+        return False
+    warnings.append(
+        WarningEntry(
+            session_id=meta.session_id,
+            message="session active exclue des totaux (télémétrie incomplète)",
+        )
+    )
+    if audit is not None:
+        audit.append(_audit_record(meta, "active"))
+    return True
+
+
+def _usage_advisor_excluded(meta, cfg: TelemetryConfig, audit: list[dict] | None) -> bool:
+    """Exclusion anti auto-pollution par titre (v5.12) — True = exclu, silencieux."""
+    if not (cfg.advisor_run_title and meta.title == cfg.advisor_run_title):
+        return False
+    if audit is not None:
+        audit.append(_audit_record(meta, "advisor"))
+    return True
+
+
+def _fetch_session_reads(
+    adapter,
+    meta,
+    start_ms: int,
+    end_ms: int,
+    warnings: list[WarningEntry],
+    audit: list[dict] | None,
+) -> _SessionReads | None:
+    """Reads brutes sur la fenêtre — None + warning/audit si lecture impossible."""
+    try:
+        steps = adapter.session_steps(meta.session_id, start_ms, end_ms)
+        tool_calls, tool_arg_chars, skills = adapter.session_tools(
+            meta.session_id, start_ms, end_ms
+        )
+        tool_arg_fps, tool_result_fps = adapter.session_tool_fingerprints(
+            meta.session_id, start_ms, end_ms
+        )
+        return _SessionReads(
+            steps=steps,
+            tool_calls=tool_calls,
+            tool_arg_chars=tool_arg_chars,
+            skills=skills,
+            tool_arg_fps=tool_arg_fps,
+            tool_result_fps=tool_result_fps,
+            turns=adapter.session_user_turns(meta.session_id, start_ms, end_ms),
+            context_chars=adapter.session_context_chars(meta.session_id, start_ms, end_ms),
+            aggregates=adapter.session_aggregates(meta.session_id),
+        )
+    except Exception as exc:  # noqa: BLE001 - one session must never kill the run (spec §8)
+        warnings.append(
+            WarningEntry(
+                session_id=meta.session_id,
+                message=f"session read failed: {exc}",
+                partial=True,  # telemetry gap → run is partial, not ok
+            )
+        )
+        if audit is not None:
+            audit.append(_audit_record(meta, "error"))
+        return None
+
+
+def _usage_no_steps_status(
+    adapter, meta, audit: list[dict] | None, warnings: list[WarningEntry]
+) -> None:
+    """Session sans steps : audit no-activity/unflushed + warning si unflushed."""
+    if audit is None:
+        return
+    status = (
+        "no-activity"
+        if adapter.has_telemetry_rows(meta.session_id)
+        else "unflushed"  # aucune ligne message/part en DB — client actif (K1)
+    )
+    audit.append(_audit_record(meta, status))
+    if status == "unflushed":
+        warnings.append(
+            WarningEntry(
+                session_id=meta.session_id,
+                message="session sans télémétrie persistée en DB (0 message/part — client actif ?)",
+            )
+        )
+
+
+def _session_part_timestamps(adapter, meta) -> tuple[list, list, list]:
+    """Timestamps (user, edit/write) + parts — parts vides si provider sans parts."""
+    try:
+        parts = adapter.session_parts(meta.session_id)
+    except Exception:  # noqa: BLE001 - parts are optional per provider
+        parts = []
+    user_turn_timestamps = sorted(p.ts for p in parts if p.kind == "user")
+    edit_write_timestamps = sorted(
+        p.ts for p in parts if p.kind == "tool" and (p.tool_name or "").lower() in _EDIT_WRITE_TOOLS
+    )
+    return user_turn_timestamps, edit_write_timestamps, parts
+
+
+def _usage_cost_warnings(
+    meta,
+    cfg: TelemetryConfig,
+    steps: list,
+    aggregates: dict | None,
+    parts: list,
+    reported_cost: float | None,
+    warnings: list[WarningEntry],
+) -> None:
+    """Cross-checks coût (missing-pricing, parts-lifetime, windowed-vs-lifetime)."""
+    missing = sorted({s.model for s in steps if s.cost is None})
+    for model in missing:
+        warnings.append(
+            WarningEntry(session_id=meta.session_id, message=f"missing-pricing:{model}")
+        )
+    if not reported_cost:
+        return
+    try:
+        lifetime = 0.0
+        for rec in parts:
+            if rec.kind == "step-finish" and rec.cost is not None:
+                lifetime += rec.cost
+        tolerance = cfg.cross_check_tolerance_pct
+        if abs(lifetime - reported_cost) > max(CROSS_CHECK_ABS, tolerance * reported_cost):
+            warnings.append(
+                WarningEntry(
+                    session_id=meta.session_id,
+                    message=f"cross-check mismatch: parts cost ${lifetime:.4f} vs session_v2 ${aggregates['cost']:.4f}",
+                    parts_cost=round6(lifetime),
+                    session_v2_cost=round6(aggregates["cost"]),
+                )
+            )
+    except Exception:  # noqa: BLE001 - cross-check is best-effort
+        pass
+    window_cost = sum(st.cost for st in steps if st.cost is not None)
+    if window_cost > reported_cost * (1.0 + cfg.cross_check_tolerance_pct) + CROSS_CHECK_ABS:
+        # v5.30 (4) : le coût FENÊTRÉ dépasse le lifetime session (enfants au coût non
+        # répercuté dans session.cost, ou compaction) — le cross-check parts-lifetime est
+        # aveugle à ce cas.
+        warnings.append(
+            WarningEntry(
+                session_id=meta.session_id,
+                message=(
+                    f"windowed cost ${window_cost:.4f} > lifetime ${reported_cost:.4f} "
+                    "(enfants/compaction non couverts par session.cost)"
+                ),
+                parts_cost=round6(window_cost),
+                session_v2_cost=round6(reported_cost),
+            )
+        )
+
+
 def build_usage(
     meta: SessionMeta | HarnessSession,
     adapter,
@@ -251,114 +428,29 @@ def build_usage(
     start_ms = _to_ms(period.start)
     end_ms = _to_ms(period.end)
 
-    if (
-        cfg.exclude_active_sessions
-        and meta.time_updated is not None
-        and meta.time_updated >= run_time - timedelta(minutes=ACTIVE_CUTOFF_MINUTES)
-    ):
-        warnings.append(
-            WarningEntry(
-                session_id=meta.session_id,
-                message="session active exclue des totaux (télémétrie incomplète)",
-            )
-        )
-        if audit is not None:
-            audit.append(_audit_record(meta, "active"))
+    if _usage_active_excluded(meta, run_time, cfg, warnings, audit):
         return None, False
-    if cfg.advisor_run_title and meta.title == cfg.advisor_run_title:
-        if audit is not None:
-            audit.append(_audit_record(meta, "advisor"))
+    if _usage_advisor_excluded(meta, cfg, audit):
         return None, False  # silent: excluded by design (v5.12)
 
-    try:
-        steps = adapter.session_steps(meta.session_id, start_ms, end_ms)
-        tool_calls, tool_arg_chars, skills = adapter.session_tools(
-            meta.session_id, start_ms, end_ms
-        )
-        tool_arg_fps, tool_result_fps = adapter.session_tool_fingerprints(
-            meta.session_id, start_ms, end_ms
-        )
-        turns = adapter.session_user_turns(meta.session_id, start_ms, end_ms)
-        context_chars = adapter.session_context_chars(meta.session_id, start_ms, end_ms)
-        aggregates = adapter.session_aggregates(meta.session_id)
-    except Exception as exc:  # noqa: BLE001 - one session must never kill the run (spec §8)
-        warnings.append(
-            WarningEntry(
-                session_id=meta.session_id,
-                message=f"session read failed: {exc}",
-                partial=True,  # telemetry gap → run is partial, not ok
-            )
-        )
-        if audit is not None:
-            audit.append(_audit_record(meta, "error"))
+    reads = _fetch_session_reads(adapter, meta, start_ms, end_ms, warnings, audit)
+    if reads is None:
         return None, True
+    steps = reads.steps
+    aggregates = reads.aggregates
 
     if not steps:
-        if audit is not None:
-            status = (
-                "no-activity"
-                if adapter.has_telemetry_rows(meta.session_id)
-                else "unflushed"  # aucune ligne message/part en DB — client actif (K1)
-            )
-            audit.append(_audit_record(meta, status))
-            if status == "unflushed":
-                warnings.append(
-                    WarningEntry(
-                        session_id=meta.session_id,
-                        message="session sans télémétrie persistée en DB (0 message/part — client actif ?)",
-                    )
-                )
+        _usage_no_steps_status(adapter, meta, audit, warnings)
         return None, False
 
-    missing = sorted({s.model for s in steps if s.cost is None})
-    for model in missing:
-        warnings.append(
-            WarningEntry(session_id=meta.session_id, message=f"missing-pricing:{model}")
-        )
+    user_turn_timestamps, edit_write_timestamps, parts = _session_part_timestamps(adapter, meta)
 
     # Cross-check: lifetime step-finish costs vs session_v2 aggregate (spec §8).
     reported_cost = (
         round6(aggregates["cost"]) if aggregates and aggregates.get("cost") is not None else None
     )
-    if reported_cost:
-        try:
-            lifetime = 0.0
-            for rec in adapter.session_parts(meta.session_id):
-                if rec.kind == "step-finish" and rec.cost is not None:
-                    lifetime += rec.cost
-            tolerance = cfg.cross_check_tolerance_pct
-            if abs(lifetime - reported_cost) > max(CROSS_CHECK_ABS, tolerance * reported_cost):
-                warnings.append(
-                    WarningEntry(
-                        session_id=meta.session_id,
-                        message=f"cross-check mismatch: parts cost ${lifetime:.4f} vs session_v2 ${aggregates['cost']:.4f}",
-                        parts_cost=round6(lifetime),
-                        session_v2_cost=round6(aggregates["cost"]),
-                    )
-                )
-        except Exception:  # noqa: BLE001 - cross-check is best-effort
-            pass
-
-    window_cost = sum(st.cost for st in steps if st.cost is not None)
-    if (
-        reported_cost
-        and window_cost > reported_cost * (1.0 + cfg.cross_check_tolerance_pct) + CROSS_CHECK_ABS
-    ):
-        # v5.30 (4) : le coût FENÊTRÉ dépasse le lifetime session (enfants au coût non
-        # répercuté dans session.cost, ou compaction) — le cross-check parts-lifetime est
-        # aveugle à ce cas.
-        warnings.append(
-            WarningEntry(
-                session_id=meta.session_id,
-                message=(
-                    f"windowed cost ${window_cost:.4f} > lifetime ${reported_cost:.4f} "
-                    "(enfants/compaction non couverts par session.cost)"
-                ),
-                parts_cost=round6(window_cost),
-                session_v2_cost=round6(reported_cost),
-            )
-        )
-    first_user = next((_truncate(t) for t in turns if t.strip()), None)
+    _usage_cost_warnings(meta, cfg, steps, aggregates, parts, reported_cost, warnings)
+    first_user = next((_truncate(t) for t in reads.turns if t.strip()), None)
     if audit is not None:
         audit.append(_audit_record(meta, "included"))
     return (
@@ -369,14 +461,16 @@ def build_usage(
             agent_type=meta.agent,
             parent_id=meta.parent_id,
             steps=steps,
-            tool_calls=tool_calls,
-            tool_arg_chars=tool_arg_chars,
-            tool_arg_fingerprints=tool_arg_fps,
-            tool_result_fingerprints=tool_result_fps,
-            skills_loaded=skills,
-            user_turns=turns,
-            context_chars=context_chars,
+            tool_calls=reads.tool_calls,
+            tool_arg_chars=reads.tool_arg_chars,
+            tool_arg_fingerprints=reads.tool_arg_fps,
+            tool_result_fingerprints=reads.tool_result_fps,
+            skills_loaded=reads.skills,
+            user_turns=reads.turns,
+            context_chars=reads.context_chars,
             first_user_text=first_user,
+            edit_write_timestamps=edit_write_timestamps,
+            user_turn_timestamps=user_turn_timestamps,
             reported_cost_usd_lifetime=reported_cost,
             harness=getattr(meta, "harness", "") or getattr(adapter, "harness", "") or "",
         ),
@@ -520,145 +614,121 @@ def _warn_fallback_local_db(cfg: TelemetryConfig) -> None:
     )
 
 
-def run(
-    cfg: TelemetryConfig,
-    *,
-    anchor: str | None = None,
-    top_sessions_limit: int | None = None,
-    include_subagents: bool | None = None,
-    fail_on_missing_telemetry: bool = False,
-    lookback_days: int | None = None,
-) -> int:
-    """Run the aggregation pipeline. Returns the process exit code (0/1/2)."""
-    run_time = _parse_anchor(anchor)
-    if top_sessions_limit is not None:
-        cfg.top_sessions_limit = max(0, top_sessions_limit)
-    if include_subagents is not None:
-        cfg.include_subagents = include_subagents
-    if fail_on_missing_telemetry:
-        cfg.fail_on_missing_telemetry = True
-    apply_lookback_override(cfg, lookback_days)
-
-    period = Period(start=run_time - timedelta(hours=cfg.window_hours()), end=run_time)
-    warnings: list[WarningEntry] = []
-    audit: list[dict] = []
-
-    # #12 : la sentinelle placeholders n'est plus réservée au doctor — la chaîne
-    # hebdo standard (run→…→assemble) n'y passe jamais. Warning visible (UserWarning
-    # + summary), non fatal : le run continue comme pour toute config exotique.
+def _run_placeholder_guard(cfg: TelemetryConfig, warnings: list[WarningEntry]) -> None:
+    """Sentinelle placeholders #12 — warning visible, non fatal, run continue."""
     placeholder_fields = _placeholder_fields(cfg)
     if placeholder_fields:
         message = _placeholder_message(placeholder_fields)
         _warn_user(message, stacklevel=2)
         warnings.append(WarningEntry(session_id=None, message=message))
 
-    print(
-        f"telemetry-aggregator: fenêtre {cfg.lookback_days} j [{period.start.isoformat()} → {period.end.isoformat()}]",
-        flush=True,
-    )
 
-    providers = build_providers(cfg)
-    if not providers:
-        # Repli rétrocompatible : aucune source active (sources désactivées,
-        # harnais absents) → comportement historique sur la base OpenCode locale.
-        _warn_fallback_local_db(cfg)
-        try:
-            _path, adapter = detect_db(cfg.opencode_db_path)
-        except DataSourceError as exc:
-            print(
-                f"telemetry-aggregator: FATAL: {exc} — lancer doctor", file=sys.stderr, flush=True
-            )
-            return EXIT_TOTAL_FAILURE
-        from .providers.implementations.opencode import OpenCodeSessionProvider
-
-        providers = [OpenCodeSessionProvider(_path, adapter)]
-
-    read_failed = False
-    usages: list[SessionUsage] = []
-    all_ids: set[str] = set()
+def _run_fallback_providers(cfg: TelemetryConfig) -> list[SessionProvider] | None:
+    """Repli rétrocompatible sur la base OpenCode locale — None si base illisible."""
+    _warn_fallback_local_db(cfg)
     try:
-        try:
-            # Fusion multi-sources : listing fenêtré + univers d'ids par provider.
-            windowed: list[tuple[SessionProvider, list]] = []
-            for provider in providers:
-                windowed.append((provider, provider.list_sessions(_to_ms(period.start))))
-                all_ids.update(m.session_id for m in provider.list_sessions(0))
-        except Exception as exc:  # noqa: BLE001
-            print(
-                f"telemetry-aggregator: FATAL: session listing failed: {exc}",
-                file=sys.stderr,
-                flush=True,
-            )
-            return EXIT_TOTAL_FAILURE
-        # Dédup déterministe des ids canoniques entre sources du même harnais :
-        # deux entrées session_sources pointant la même base listent les mêmes
-        # ids → sinon double comptage sessions/coûts/tokens. La PREMIÈRE source
-        # (ordre cfg.session_sources) gagne ; `all_ids` étant un set, l'univers
-        # ne peut de toute façon pas doubler.
-        dup_by_source: dict[int, int] = {}
-        seen_canonical: set[str] = set()
-        for idx, (provider, metas) in enumerate(windowed):
-            kept: list = []
-            for meta in metas:
-                if meta.session_id in seen_canonical:
-                    dup_by_source[idx] = dup_by_source.get(idx, 0) + 1
-                    continue
-                seen_canonical.add(meta.session_id)
-                kept.append(meta)
-            windowed[idx] = (provider, kept)
-        if dup_by_source:
-            message = " ; ".join(
-                f"{n} session(s) en doublon ignorée(s) depuis {windowed[i][0].harness} source #{i + 1}"
-                for i, n in sorted(dup_by_source.items())
-            )
-            _warn_user(message, stacklevel=2)
-            warnings.append(WarningEntry(session_id=None, message=message))
-        touched = sum(len(metas) for _, metas in windowed)
+        _path, adapter = detect_db(cfg.opencode_db_path)
+    except DataSourceError as exc:
+        print(f"telemetry-aggregator: FATAL: {exc} — lancer doctor", file=sys.stderr, flush=True)
+        return None
+    from .providers.implementations.opencode import OpenCodeSessionProvider
+
+    return [OpenCodeSessionProvider(_path, adapter)]
+
+
+def _run_list_windowed(
+    providers: list[SessionProvider], period: Period, all_ids: set[str]
+) -> list[tuple[SessionProvider, list]] | None:
+    """Listing fenêtré + univers d'ids — None si listing FATAL."""
+    try:
+        # Fusion multi-sources : listing fenêtré + univers d'ids par provider.
+        windowed: list[tuple[SessionProvider, list]] = []
+        for provider in providers:
+            windowed.append((provider, provider.list_sessions(_to_ms(period.start))))
+            all_ids.update(m.session_id for m in provider.list_sessions(0))
+        return windowed
+    except Exception as exc:  # noqa: BLE001
         print(
-            f"telemetry-aggregator: {touched} session(s) touchée(s) — lecture télémétrie…",
+            f"telemetry-aggregator: FATAL: session listing failed: {exc}",
+            file=sys.stderr,
             flush=True,
         )
-        for provider, metas in windowed:
-            for meta in metas:
-                if meta.time_updated is not None and meta.time_updated < period.start:
-                    continue
-                if meta.parent_id:
-                    # parent_id brut → canonique sur une COPIE (dataclasses.replace) :
-                    # les metas du provider restent intactes (#10). La fusion
-                    # racine/enfants (aggregate + selection audit) reste valable
-                    # multi-source ; tolérant à un parent déjà préfixé (jamais de
-                    # double préfixe).
-                    raw_parent = str(meta.parent_id)
-                    prefix = f"{provider.harness}:"
-                    canonical_parent = (
-                        raw_parent
-                        if raw_parent.startswith(prefix)
-                        else canonical_session_id(provider.harness, raw_parent)
-                    )
-                    meta = dataclasses.replace(meta, parent_id=canonical_parent)
-                usage, failed = build_usage(
-                    meta,
-                    provider,
-                    period=period,
-                    run_time=run_time,
-                    cfg=cfg,
-                    warnings=warnings,
-                    audit=audit,
+        return None
+
+
+def _run_dedup_windowed(
+    windowed: list[tuple[SessionProvider, list]], warnings: list[WarningEntry]
+) -> None:
+    """Dédup déterministe des ids canoniques — la PREMIÈRE source gagne."""
+    dup_by_source: dict[int, int] = {}
+    seen_canonical: set[str] = set()
+    for idx, (provider, metas) in enumerate(windowed):
+        kept: list = []
+        for meta in metas:
+            if meta.session_id in seen_canonical:
+                dup_by_source[idx] = dup_by_source.get(idx, 0) + 1
+                continue
+            seen_canonical.add(meta.session_id)
+            kept.append(meta)
+        windowed[idx] = (provider, kept)
+    if dup_by_source:
+        message = " ; ".join(
+            f"{n} session(s) en doublon ignorée(s) depuis {windowed[i][0].harness} source #{i + 1}"
+            for i, n in sorted(dup_by_source.items())
+        )
+        _warn_user(message, stacklevel=2)
+        warnings.append(WarningEntry(session_id=None, message=message))
+
+
+def _run_read_usages(
+    windowed: list[tuple[SessionProvider, list]],
+    period: Period,
+    run_time: object,
+    cfg: TelemetryConfig,
+    warnings: list[WarningEntry],
+    audit: list[dict],
+) -> tuple[list[SessionUsage], bool]:
+    """Boucle de lecture par meta — parent canonique + build_usage."""
+    usages: list[SessionUsage] = []
+    read_failed = False
+    for provider, metas in windowed:
+        for meta in metas:
+            if meta.time_updated is not None and meta.time_updated < period.start:
+                continue
+            if meta.parent_id:
+                # parent_id brut → canonique sur une COPIE (dataclasses.replace) :
+                # les metas du provider restent intactes (#10). La fusion
+                # racine/enfants (aggregate + selection audit) reste valable
+                # multi-source ; tolérant à un parent déjà préfixé (jamais de
+                # double préfixe).
+                raw_parent = str(meta.parent_id)
+                prefix = f"{provider.harness}:"
+                canonical_parent = (
+                    raw_parent
+                    if raw_parent.startswith(prefix)
+                    else canonical_session_id(provider.harness, raw_parent)
                 )
-                if failed:
-                    read_failed = True
-                if usage is not None:
-                    usages.append(usage)
-    finally:
-        for provider in providers:
-            provider.close()
+                meta = dataclasses.replace(meta, parent_id=canonical_parent)
+            usage, failed = build_usage(
+                meta,
+                provider,
+                period=period,
+                run_time=run_time,
+                cfg=cfg,
+                warnings=warnings,
+                audit=audit,
+            )
+            if failed:
+                read_failed = True
+            if usage is not None:
+                usages.append(usage)
+    return usages, read_failed
 
-    if read_failed and cfg.fail_on_missing_telemetry:
-        return EXIT_PARTIAL
 
-    # R3 (v6.1) : dédup des sessions reprises — une resume-fork copie le transcript
-    # sous un nouvel id avec timestamps d'origine → sinon double comptage sessions/
-    # coûts/tokens et 2 candidats d'audit pour une seule session logique.
+def _run_merge_resumed(
+    usages: list[SessionUsage], audit: list[dict], warnings: list[WarningEntry]
+) -> list[SessionUsage]:
+    """R3 (v6.1) : dédup resume-fork — marque audit + warnings."""
     usages, resumed_merges = dedup_resumed_usages(usages)
     for merge in resumed_merges:
         dropped_id = merge["dropped_session_id"]
@@ -672,31 +742,11 @@ def run(
                 message=f"session reprise fusionnée dans {merge['kept_session_id']} (dédup resume)",
             )
         )
+    return usages
 
-    print("telemetry-aggregator: agrégation…", flush=True)
-    catalog_names, catalog_count, catalog_entries = scan_skill_catalog(cfg.project_root)
-    summary = aggregate(
-        usages,
-        period=period,
-        generated_at=run_time,
-        top_sessions_limit=cfg.top_sessions_limit,
-        include_subagents=cfg.include_subagents,
-        skill_catalog=catalog_names,
-        skill_catalog_entries=catalog_entries,
-        skill_catalog_snapshot=build_catalog_from_skills(cfg.project_root),
-        warnings=warnings,
-        known_parent_ids=all_ids,
-        session_outlier_z=cfg.session_outlier_z,
-        session_outlier_min_cost_usd=cfg.session_outlier_min_cost_usd,
-        outlier_min_sessions=cfg.outlier_min_sessions,
-        user_prompt_repeat_min=cfg.user_prompt_repeat_min,
-        user_prompt_repeat_similarity=cfg.user_prompt_repeat_similarity,
-        user_prompt_repeat_min_chars=cfg.user_prompt_repeat_min_chars,
-        skill_similarity_min=cfg.skill_similarity_min,
-    )
-    summary.selection = _build_selection(
-        audit, cfg.audit_max_sessions, all_ids, period=getattr(summary, "period", None)
-    )
+
+def _run_selection_warnings(summary: object) -> None:
+    """Warnings fenêtre vide / 0 comptée — fusion capée dans summary."""
     extra_warnings: list[WarningEntry] = []
     if summary.selection["window_touched"] == 0:
         extra_warnings.append(
@@ -718,16 +768,16 @@ def run(
     if extra_warnings:
         summary.warnings = _cap_warnings([*summary.warnings, *extra_warnings])
 
-    # coûts estimés (champ first-class) : sessions sans aucun coût enregistré →
-    # estimation tokens × taux du harnais ; champ laissé à None (clé absente
-    # à la sérialisation) si rien à estimer.
+
+def _run_cost_estimates(summary: object, usages: list[SessionUsage], cfg: TelemetryConfig) -> None:
+    """Coûts estimés first-class — None si rien à estimer."""
     estimates = estimate_costs(usages, rates=_harness_cost_rates(cfg))
     if estimates:
         summary.cost_estimates = estimates
 
-    # v6.0.k (F1): every run gets its own UUID-scoped directory — artifacts of
-    # different runs (same anchor or not) can never collide or overwrite each
-    # other; the legacy --force flag (v6.0.p D2) had no meaning anymore.
+
+def _run_write_summary(cfg: TelemetryConfig, run_time: object, summary: object) -> Path:
+    """Activation run UUID + écriture summary + provenance — retourne out_path."""
     date = run_time.strftime("%Y-%m-%d")
     active = activate_run(cfg.output_dir, date, run_time)
     same_date_runs = sorted(
@@ -755,11 +805,117 @@ def run(
     provenance.setdefault("run_started_at", provenance.get("start_time"))
     summary_data["run_provenance"] = provenance
     write_json_atomic(out_path, summary_data)
+    return out_path
+
+
+def run(
+    cfg: TelemetryConfig,
+    *,
+    anchor: str | None = None,
+    top_sessions_limit: int | None = None,
+    include_subagents: bool | None = None,
+    fail_on_missing_telemetry: bool = False,
+    lookback_days: int | None = None,
+) -> int:
+    """Run the aggregation pipeline. Returns the process exit code (0/1/2)."""
+    run_time = _parse_anchor(anchor)
+    if top_sessions_limit is not None:
+        cfg.top_sessions_limit = max(0, top_sessions_limit)
+    if include_subagents is not None:
+        cfg.include_subagents = include_subagents
+    if fail_on_missing_telemetry:
+        cfg.fail_on_missing_telemetry = True
+    apply_lookback_override(cfg, lookback_days)
+
+    period = Period(start=run_time - timedelta(hours=cfg.window_hours()), end=run_time)
+    warnings: list[WarningEntry] = []
+    audit: list[dict] = []
+
+    _run_placeholder_guard(cfg, warnings)
+
+    print(
+        f"telemetry-aggregator: fenêtre {cfg.lookback_days} j [{period.start.isoformat()} → {period.end.isoformat()}]",
+        flush=True,
+    )
+
+    providers = build_providers(cfg)
+    if not providers:
+        fallback = _run_fallback_providers(cfg)
+        if fallback is None:
+            return EXIT_TOTAL_FAILURE
+        providers = fallback
+
+    read_failed = False
+    usages: list[SessionUsage] = []
+    all_ids: set[str] = set()
+    try:
+        windowed = _run_list_windowed(providers, period, all_ids)
+        if windowed is None:
+            return EXIT_TOTAL_FAILURE
+        # Dédup déterministe des ids canoniques entre sources du même harnais :
+        # deux entrées session_sources pointant la même base listent les mêmes
+        # ids → sinon double comptage sessions/coûts/tokens. La PREMIÈRE source
+        # (ordre cfg.session_sources) gagne ; `all_ids` étant un set, l'univers
+        # ne peut de toute façon pas doubler.
+        _run_dedup_windowed(windowed, warnings)
+        touched = sum(len(metas) for _, metas in windowed)
+        print(
+            f"telemetry-aggregator: {touched} session(s) touchée(s) — lecture télémétrie…",
+            flush=True,
+        )
+        usages, read_failed = _run_read_usages(windowed, period, run_time, cfg, warnings, audit)
+    finally:
+        for provider in providers:
+            provider.close()
+
+    if read_failed and cfg.fail_on_missing_telemetry:
+        return EXIT_PARTIAL
+
+    # R3 (v6.1) : dédup des sessions reprises — une resume-fork copie le transcript
+    # sous un nouvel id avec timestamps d'origine → sinon double comptage sessions/
+    # coûts/tokens et 2 candidats d'audit pour une seule session logique.
+    usages = _run_merge_resumed(usages, audit, warnings)
+
+    print("telemetry-aggregator: agrégation…", flush=True)
+    catalog_names, catalog_count, catalog_entries = scan_skill_catalog(cfg.project_root)
+    summary = aggregate(
+        usages,
+        period=period,
+        generated_at=run_time,
+        top_sessions_limit=cfg.top_sessions_limit,
+        include_subagents=cfg.include_subagents,
+        skill_catalog=catalog_names,
+        skill_catalog_entries=catalog_entries,
+        skill_catalog_snapshot=build_catalog_from_skills(cfg.project_root),
+        warnings=warnings,
+        known_parent_ids=all_ids,
+        session_outlier_z=cfg.session_outlier_z,
+        session_outlier_min_cost_usd=cfg.session_outlier_min_cost_usd,
+        outlier_min_sessions=cfg.outlier_min_sessions,
+        user_prompt_repeat_min=cfg.user_prompt_repeat_min,
+        user_prompt_repeat_similarity=cfg.user_prompt_repeat_similarity,
+        user_prompt_repeat_min_chars=cfg.user_prompt_repeat_min_chars,
+        skill_similarity_min=cfg.skill_similarity_min,
+    )
+    summary.selection = _build_selection(
+        audit, cfg.audit_max_sessions, all_ids, period=getattr(summary, "period", None)
+    )
+    _run_selection_warnings(summary)
+
+    # coûts estimés (champ first-class) : sessions sans aucun coût enregistré →
+    # estimation tokens × taux du harnais ; champ laissé à None (clé absente
+    # à la sérialisation) si rien à estimer.
+    _run_cost_estimates(summary, usages, cfg)
+
+    # v6.0.k (F1): every run gets its own UUID-scoped directory — artifacts of
+    # different runs (same anchor or not) can never collide or overwrite each
+    # other; the legacy --force flag (v6.0.p D2) had no meaning anymore.
+    out_path = _run_write_summary(cfg, run_time, summary)
 
     print(
         f"telemetry-aggregator: sessions={summary.totals.session_count} "
         f"tokens={summary.totals.total_tokens} cost=${summary.totals.total_cost_usd:.6f} "
-        f"warnings={len(summary.warnings)} run_dir={_abs(active.run_dir)} file={out_path}",
+        f"warnings={len(summary.warnings)} run_dir={_abs(out_path.parent)} file={out_path}",
         flush=True,
     )
     return EXIT_PARTIAL if any(w.partial for w in summary.warnings) else EXIT_OK
@@ -828,74 +984,62 @@ def _copilot_doctor_details(provider) -> list[str]:
     return []
 
 
-def doctor(
-    cfg: TelemetryConfig,
-    *,
-    cwd: Path | None = None,
-    opencode_bin: str = "opencode",
-    config_loaded: bool = False,
-) -> int:
-    """Diagnose the installation — reads/writes nothing but a probe file in output_dir."""
-    cwd = Path(cwd) if cwd is not None else Path.cwd()
-    problems: list[str] = []
-    warnings: list[str] = []
-
-    if cfg.project_root is None:
-        problems.append("project_root manquant dans la config")
-    else:
-        if not (cfg.project_root / ".opencode").is_dir():
-            problems.append(
-                f"project_root {cfg.project_root} ne contient pas .opencode/ — "
-                "adapter la config (clone : project_root = chemin absolu de votre repo)"
-            )
-        if not config_loaded:
-            try:
-                # layout kit : cwd = moteur (config lue au cwd) ≠ project_root (repo audité) —
-                # le vrai défaut est une config introuvable (cron lancé d'un dossier quelconque)
-                _cfg_nearby = (cwd / "weekly-telemetry-config.json").is_file()
-                _cfg_at_root = (cfg.project_root / "weekly-telemetry-config.json").is_file()
-                if not _cfg_nearby and not _cfg_at_root:
-                    warnings.append(
-                        f"config introuvable au cwd ({cwd}) ni au project_root — vérifier --dir du cron"
-                    )
-            except OSError:
-                warnings.append("project_root non résoluble — chemins à vérifier")
-
-    # Sentinelle d'installation : placeholders « /path/to/... » jamais substitués
-    # dans weekly-telemetry-config.json — le fatal générique ci-dessus n'est pas
-    # actionnable, on nomme le vrai défaut et les champs exacts à corriger.
-    _fields = _placeholder_fields(cfg)
-    if _fields:
-        problems.append(_placeholder_message(_fields))
-
-    # ses_f55 : session_sources avec type inconnu (ex. copilot-app) passait en
-    # warning fail-soft côté registry → coût 0.0 malgré tokens → alertes fausses.
-    # Doctor doit être strict : type inconnu = PROBLEM rc2, pas un warning muet.
+def _unknown_session_source_types(cfg: TelemetryConfig) -> tuple[list[str], list[str]]:
+    """Types session_sources inconnus du registre — ([], []) si registre illisible."""
     try:
         from .providers.registry import discover_provider_factories as _discover_factories
 
-        _supported = set(_discover_factories().keys())
-        _unknown: list[str] = []
-        for _src in cfg.session_sources:
-            if not isinstance(_src, dict):
-                _unknown.append(repr(_src))
+        supported = set(_discover_factories().keys())
+        unknown: list[str] = []
+        for src in cfg.session_sources:
+            if not isinstance(src, dict):
+                unknown.append(repr(src))
                 continue
-            if _src.get("enabled", True) is False:
+            if src.get("enabled", True) is False:
                 continue
-            _t = _src.get("type")
-            if not isinstance(_t, str) or _t not in _supported:
-                _unknown.append(repr(_t))
-        if _unknown:
-            problems.append(
-                f"session_sources contient des types inconnus {sorted(set(_unknown))}"
-                f" — types supportés: {sorted(_supported)} — corriger weekly-telemetry-config.json"
-            )
+            t = src.get("type")
+            if not isinstance(t, str) or t not in supported:
+                unknown.append(repr(t))
+        if unknown:
+            return sorted(set(unknown)), sorted(supported)
+        return [], sorted(supported)
     except Exception:  # pragma: no cover - diagnostic best-effort
-        pass
+        return [], []
 
-    # Garde-fou : un output_dir résolu sous .opencode/plugins/ signale un run
-    # lancé avec cwd = moteur du plugin — les artefacts (reports/, baselines)
-    # finissent dans le dépôt du plugin au lieu du projet audité (observé 24/08).
+
+def _doctor_project_root(
+    cfg: TelemetryConfig,
+    cwd: Path,
+    *,
+    config_loaded: bool,
+    problems: list[str],
+    warnings: list[str],
+) -> None:
+    """Contrôles project_root : présence .opencode/ + config localisable."""
+    if cfg.project_root is None:
+        problems.append("project_root manquant dans la config")
+        return
+    if not (cfg.project_root / ".opencode").is_dir():
+        problems.append(
+            f"project_root {cfg.project_root} ne contient pas .opencode/ — "
+            "adapter la config (clone : project_root = chemin absolu de votre repo)"
+        )
+    if not config_loaded:
+        try:
+            # layout kit : cwd = moteur (config lue au cwd) ≠ project_root (repo audité) —
+            # le vrai défaut est une config introuvable (cron lancé d'un dossier quelconque)
+            _cfg_nearby = (cwd / "weekly-telemetry-config.json").is_file()
+            _cfg_at_root = (cfg.project_root / "weekly-telemetry-config.json").is_file()
+            if not _cfg_nearby and not _cfg_at_root:
+                warnings.append(
+                    f"config introuvable au cwd ({cwd}) ni au project_root — vérifier --dir du cron"
+                )
+        except OSError:
+            warnings.append("project_root non résoluble — chemins à vérifier")
+
+
+def _doctor_output_dir_guard(cfg: TelemetryConfig, warnings: list[str]) -> None:
+    """Garde-fou : output_dir sous .opencode/plugins/ = run lancé depuis le moteur."""
     resolved_out = Path(_abs(cfg.output_dir)).resolve()
     parts = resolved_out.parts
     if (
@@ -909,6 +1053,11 @@ def doctor(
             "hors du plugin et relancer les étapes depuis la racine du projet"
         )
 
+
+def _doctor_opencode_version(
+    cfg: TelemetryConfig, opencode_bin: str, problems: list[str], warnings: list[str]
+) -> None:
+    """Binaire opencode : présence PATH + épinglage version minimale."""
     try:
         # Windows : shutil.which résout "opencode" → "opencode.cmd"/".exe" (un
         # argv nu n'est pas exécutable tel quel via subprocess sans shell).
@@ -933,10 +1082,14 @@ def doctor(
                 f"opencode {version} < {cfg.opencode_version_min} — épinglage du schéma non garanti"
             )
 
-    # Sources de sessions : itération générique sur les providers actifs du
-    # registre — aucun harnais connu en dur du doctor (un nouveau provider
-    # s'affiche ici sans modification de ce bloc). close() est garanti pour
-    # chaque provider (try/finally), même si check_schema() lève (#9).
+
+def _doctor_session_providers(
+    cfg: TelemetryConfig, problems: list[str], warnings: list[str]
+) -> bool:
+    """Itération générique sur les providers actifs — aucun harnais en dur.
+
+    Retourne True si dégradation partielle (≥1 source OK et ≥1 KO, #13).
+    """
     providers = build_providers(cfg)
     usable = 0
     for provider in providers:
@@ -982,11 +1135,11 @@ def doctor(
         print("doctor: sources de sessions: aucune disponible")
     # #13 : ≥1 source utilisable ET ≥1 source KO → dégradation partielle réelle,
     # signalée par EXIT_PARTIAL au lieu d'un 0 muet.
-    partial_sources = bool(providers) and 0 < usable < len(providers)
+    return bool(providers) and 0 < usable < len(providers)
 
-    # Cibles de drafting (cellule 2.1) : LE harnais cible effectif — override
-    # config > détection par marqueurs > défaut opencode ; [] = legacy. Un
-    # défaut faute de marqueur est signalé en warning (affiché en fin de run).
+
+def _doctor_draft_targets(cfg: TelemetryConfig, warnings: list[str]) -> None:
+    """Cibles de drafting (cellule 2.1) : override > marqueurs > défaut ; [] = legacy."""
     resolved = resolve_draft_targets(cfg.project_root, cfg.draft_targets)
     print(f"doctor: cibles de drafting: {describe_draft_target(resolved)}")
     if resolved.warning:
@@ -996,6 +1149,9 @@ def doctor(
     surface = resolve_remediation_surface(resolved.harnesses, resolved.mode)
     print(f"doctor: surface de remédiation 5.5: {surface.decision} — {surface.reason}")
 
+
+def _doctor_output_probe(cfg: TelemetryConfig, problems: list[str]) -> None:
+    """Probe d'écriture output_dir (seule écriture du doctor)."""
     try:
         cfg.output_dir.mkdir(parents=True, exist_ok=True)
         probe = cfg.output_dir / ".doctor-write-probe"
@@ -1005,15 +1161,18 @@ def doctor(
     except OSError as exc:
         problems.append(f"output_dir non accessible en écriture: {exc}")
 
+
+def _doctor_tool_presence(warnings: list[str]) -> None:
+    """Présence harness-eval/git au PATH (étapes dégradées si absents)."""
     for tool in ("harness-eval", "git"):
         if shutil.which(tool) is None:
             warnings.append(
                 f"{tool} absent du PATH (rien n'est lancé, mais l'étape correspondante sera dégradée)"
             )
 
-    # Version minimum (v6.1.a — plancher, pas un pin : les versions supérieures
-    # sont acceptées ; la compatibilité du format est garantie par la validation
-    # de structure du digest au chargement, spec §7).
+
+def _doctor_harness_eval_version(cfg: TelemetryConfig, warnings: list[str]) -> None:
+    """Version minimum harness-eval (v6.1.a — plancher acceptant les versions supérieures)."""
     if shutil.which("harness-eval") is not None and cfg.harness_eval_version:
         try:
             proc = subprocess.run(
@@ -1036,25 +1195,83 @@ def doctor(
         except (OSError, subprocess.TimeoutExpired):
             warnings.append("harness-eval --version indisponible")
 
-    if cfg.watch_repos:
-        if shutil.which("gh") is None:
+
+def _doctor_watch_repos(cfg: TelemetryConfig, warnings: list[str]) -> None:
+    """watch_repos : gh présent au PATH et authentifié."""
+    if not cfg.watch_repos:
+        return
+    if shutil.which("gh") is None:
+        warnings.append(
+            "watch_repos configuré mais gh absent du PATH — repos privés/renommés non suivis"
+        )
+        return
+    try:
+        proc = subprocess.run(
+            ["gh", "auth", "status", "--active"],
+            capture_output=True,
+            encoding="utf-8",
+            timeout=10,
+        )
+        if proc.returncode != 0:
             warnings.append(
-                "watch_repos configuré mais gh absent du PATH — repos privés/renommés non suivis"
+                "watch_repos configuré mais gh non authentifié — repos privés indisponibles (gh auth login)"
             )
-        else:
-            try:
-                proc = subprocess.run(
-                    ["gh", "auth", "status", "--active"],
-                    capture_output=True,
-                    encoding="utf-8",
-                    timeout=10,
-                )
-                if proc.returncode != 0:
-                    warnings.append(
-                        "watch_repos configuré mais gh non authentifié — repos privés indisponibles (gh auth login)"
-                    )
-            except (OSError, subprocess.TimeoutExpired):
-                warnings.append("gh auth status indisponible — vérifier l'authentification gh")
+    except (OSError, subprocess.TimeoutExpired):
+        warnings.append("gh auth status indisponible — vérifier l'authentification gh")
+
+
+def doctor(
+    cfg: TelemetryConfig,
+    *,
+    cwd: Path | None = None,
+    opencode_bin: str = "opencode",
+    config_loaded: bool = False,
+) -> int:
+    """Diagnose the installation — reads/writes nothing but a probe file in output_dir."""
+    cwd = Path(cwd) if cwd is not None else Path.cwd()
+    problems: list[str] = []
+    warnings: list[str] = []
+
+    _doctor_project_root(
+        cfg, cwd, config_loaded=config_loaded, problems=problems, warnings=warnings
+    )
+
+    # Sentinelle d'installation : placeholders « /path/to/... » jamais substitués
+    # dans weekly-telemetry-config.json — le fatal générique ci-dessus n'est pas
+    # actionnable, on nomme le vrai défaut et les champs exacts à corriger.
+    _fields = _placeholder_fields(cfg)
+    if _fields:
+        problems.append(_placeholder_message(_fields))
+
+    # ses_f55 : session_sources avec type inconnu (ex. copilot-app) passait en
+    # warning fail-soft côté registry → coût 0.0 malgré tokens → alertes fausses.
+    # Doctor doit être strict : type inconnu = PROBLEM rc2, pas un warning muet.
+    _unknown, _supported = _unknown_session_source_types(cfg)
+    if _unknown:
+        problems.append(
+            f"session_sources contient des types inconnus {_unknown}"
+            f" — types supportés: {_supported} — corriger weekly-telemetry-config.json"
+        )
+
+    _doctor_output_dir_guard(cfg, warnings)
+
+    _doctor_opencode_version(cfg, opencode_bin, problems, warnings)
+
+    # Sources de sessions : itération générique sur les providers actifs du
+    # registre — aucun harnais connu en dur du doctor (un nouveau provider
+    # s'affiche ici sans modification de ce bloc). close() est garanti pour
+    # chaque provider (try/finally), même si check_schema() lève (#9).
+    partial_sources = _doctor_session_providers(cfg, problems, warnings)
+
+    _doctor_draft_targets(cfg, warnings)
+
+    _doctor_output_probe(cfg, problems)
+
+    _doctor_tool_presence(warnings)
+
+    _doctor_harness_eval_version(cfg, warnings)
+
+    _doctor_watch_repos(cfg, warnings)
 
     for msg in warnings:
         print(f"doctor: WARNING: {msg}")

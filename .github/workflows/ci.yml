@@ -42,14 +42,15 @@ jobs:
       - name: Wheel content (template inclus)
         run: uv run python -c "import zipfile,glob,sys; names=zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist(); sys.exit(0 if any('templates/report_template.md.j2' in n for n in names) else 1)"
 
-      - name: Plugin TS (syntaxe)
-        run: node --check .opencode/plugins/weekly-advisor.ts
-        working-directory: .
-
       - name: Node 24 (type stripping TS natif)
         uses: actions/setup-node@v4
         with:
           node-version: "24"
+
+      - name: Plugin TS (dual-entrypoint validation)
+        run: |
+          node --experimental-strip-types -e "import('./.opencode/plugins/weekly-advisor.ts').then(m => { const p = m.default; if (!p || p.id !== 'weekly-advisor' || typeof p.server !== 'function' || typeof p.setup !== 'function') { console.error('bad dual entrypoint', Object.keys(p ?? {})); process.exit(1) } }).catch(e => { console.error('Error:', e.message); process.exit(1) })"
+        working-directory: .
 
       - name: Tests de contrat node (POSIX)
         # scripts/tests/*.test.mjs : contrats docs ↔ code (runner worker, exit,
@@ -62,4 +63,35 @@ jobs:
         # Mediation TS→CLI, handlers, artefacts par étape, chaînage d'ordre,
         # collecte pytest exécutable (documentation counts are advisory).
         run: node scripts/check-flow-docs.mjs
+        working-directory: .
+
+      - name: Smoke test — self-test (harness syntax + plugin structure)
+        # Validates harness loads correctly, plugin entry point exists,
+        # package constraint is declared. Runs in non-strict mode (skips missing binaries).
+        # This is the baseline self-test, always runs, cannot fail.
+        run: |
+          node scripts/smoke-dual-runtime.mjs --non-strict --quiet
+        working-directory: .
+
+      - name: Smoke test — V1/V2 compatibility (strict, if binaries provided)
+        # Optional: when V1 and V2 binaries are explicitly provisioned via env vars,
+        # run in strict mode to validate actual V1/V2 compatibility with the plugin.
+        # This requires OPENCODE_V1_BIN, OPENCODE_V2_BIN, and optionally expected versions.
+        # Skipped silently if binaries are not available.
+        # NOTE: if: gates are evaluated before step-level env:, so we gate in shell instead.
+        env:
+          # Map secrets/vars to env for shell access (no direct secret references in shell)
+          OPENCODE_V1_BIN: ${{ secrets.OPENCODE_V1_BIN || env.OPENCODE_V1_BIN || '' }}
+          OPENCODE_V2_BIN: ${{ secrets.OPENCODE_V2_BIN || env.OPENCODE_V2_BIN || '' }}
+          V1_EXPECTED_VERSION: ${{ vars.V1_EXPECTED_VERSION || '' }}
+          V2_EXPECTED_VERSION: ${{ vars.V2_EXPECTED_VERSION || '' }}
+        run: |
+          # Strict test — provision binaries and run compatibility validation
+          # This is an opt-in compatibility gate for dual-runtime validation
+          if [ -n "${OPENCODE_V1_BIN}" ] && [ -n "${OPENCODE_V2_BIN}" ]; then
+            node scripts/smoke-dual-runtime.mjs --strict --quiet
+          else
+            echo "V1/V2 binaries not provisioned; skipping strict compatibility check"
+          fi
+        shell: bash
         working-directory: .

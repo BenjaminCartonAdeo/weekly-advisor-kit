@@ -1,0 +1,8 @@
+{
+  "name": "weekly-advisor-kit",
+  "private": true,
+  "description": "Kit de distribution du pipeline weekly-advisor — plugin + agent + skills + commands + moteur",
+  "dependencies": {
+    "@opencode-ai/plugin": ">=1.18.29 <2.0.0"
+  }
+}

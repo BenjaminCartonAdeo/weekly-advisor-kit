@@ -1,0 +1,394 @@
+{
+  "$comment": "Contrat outil V1 gelé — weekly-advisor. Source : .opencode/plugins/weekly-advisor.ts. Toute divergence doit faire échouer scripts/tests/plugin-tool-contract.test.mjs puis être validée explicitement. Descriptions, aide de champ, timeouts, valeurs par défaut et messages d'erreur sont byte-for-byte (aucune reformulation).",
+  "contractVersion": "v1",
+  "source": ".opencode/plugins/weekly-advisor.ts",
+  "tools": [
+    {
+      "name": "weekly_preflight",
+      "description": "Pré-flight déterministe du kit avant boot agent. Échec: rc=3, aucun run.",
+      "fields": [],
+      "timeoutMs": 0,
+      "anchored": false,
+      "cliSubcommand": null
+    },
+    {
+      "name": "weekly_run",
+      "description": "Étape 1 du weekly-advisor : collecte télémétrique complète (run). Écrit weekly-summary-<date>.json. L'ancre est lue/créée/rafraîchie dans <output_dir>/anchor-last.txt.",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        },
+        {
+          "name": "lookback_days",
+          "kind": "number",
+          "required": false,
+          "description": "Override de run : fenêtre en jours (rare ; défaut = config)"
+        }
+      ],
+      "timeoutMs": 1800000,
+      "anchored": true,
+      "cliSubcommand": "run"
+    },
+    {
+      "name": "weekly_releases",
+      "description": "Étape 2 : veille écosystème (releases). Écrit weekly-ecosystem-<date>.json.",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        },
+        {
+          "name": "lookback_days",
+          "kind": "number",
+          "required": false,
+          "description": "Override de run : fenêtre en jours (rare ; défaut = config)"
+        }
+      ],
+      "timeoutMs": 900000,
+      "anchored": true,
+      "cliSubcommand": "releases"
+    },
+    {
+      "name": "weekly_watch_context",
+      "description": "Étape 2.5 : inventaire déterministe du worktree et crosswalk marché/existant. Écrit weekly-watch-context-<date>.json. SÉQUENTIEL : nécessite weekly-ecosystem-<date>.json de l'étape 2 — exécuter weekly_releases d'abord, jamais en parallèle.",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": true,
+      "cliSubcommand": "watch-context"
+    },
+    {
+      "name": "weekly_watch_distill",
+      "description": "Étape 2.2 : distillation déterministe de l'écosystème vers ~30 fiches candidates (scoring, screening sécurité, mémoire inter-run). Écrit watch-candidates-<date>.json et watch-memory-digest-<date>.json. SÉQUENTIEL : exécuter après weekly_releases, avant weekly_watch_context ; exit 2 = écosystème absent ou étape désactivée (config watch_distill.enabled) — dégradation attendue, le flux aval retombe sur l'écosystème complet.",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": true,
+      "cliSubcommand": "watch-distill"
+    },
+    {
+      "name": "weekly_watch_validate",
+      "description": "Étape 3.6 : valide les findings bruts de la veille contre l'inventaire déterministe. Écrit weekly-watch-findings-<date>.json.",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": true,
+      "cliSubcommand": "watch-validate"
+    },
+    {
+      "name": "weekly_audit_candidates",
+      "description": "Étape 3 (1/2) : sélection déterministe des sessions à auditer (audit-candidates) → weekly-audit-candidates-<date>.json (audited/unaudited, plafond audit_max_sessions).",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": true,
+      "cliSubcommand": "audit-candidates"
+    },
+    {
+      "name": "weekly_show_session",
+      "description": "Étape 3 : transcrit une session (show-session) et retourne le texte structuré. L'extrait est écrit à <run>/extracts/transcript-extract-<session_id>.md sous le run actif (<output_dir>/runs/current/extracts/, fallback legacy <output_dir>/extracts/) : faire Read sur CE FICHIER EXACT (chemin imprimé par le tool), JAMAIS sur le répertoire extracts/ lui-même (opencode Read ne liste pas les dirs). Appeler le tool AVANT toute lecture d'extraits. Utiliser après audit-candidates.",
+      "fields": [
+        {
+          "name": "session_id",
+          "kind": "string",
+          "required": true,
+          "description": "id de session (ses_...)"
+        },
+        {
+          "name": "include_children",
+          "kind": "boolean",
+          "required": false,
+          "description": "inclure les subagents"
+        }
+      ],
+      "timeoutMs": 300000,
+      "anchored": false,
+      "cliSubcommand": "show-session"
+    },
+    {
+      "name": "weekly_harness",
+      "description": "Étape 5 : lint de .opencode/ (harness-eval). Écrit weekly-harness-digest-<date>.json.",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 900000,
+      "anchored": true,
+      "cliSubcommand": "harness"
+    },
+    {
+      "name": "weekly_harness_remediate",
+      "description": "Étape 5.5 : analyse/applique les propositions harness via une gate déterministe. Dry-run par défaut ; aucun commit automatique.",
+      "fields": [
+        {
+          "name": "proposal_file",
+          "kind": "string",
+          "required": true,
+          "description": "chemin absolu du JSON de propositions"
+        },
+        {
+          "name": "mode",
+          "kind": "enum",
+          "required": false,
+          "description": "dry-run par défaut ; apply uniquement après toutes les gates",
+          "values": ["dry-run", "apply"]
+        },
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 900000,
+      "anchored": true,
+      "cliSubcommand": "harness-remediate"
+    },
+    {
+      "name": "weekly_insights",
+      "description": "Étape 6 : deltas, alertes et maintenance. Écrit weekly-insights-<date>.json.",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 300000,
+      "anchored": true,
+      "cliSubcommand": "insights"
+    },
+    {
+      "name": "weekly_draft_candidates",
+      "description": "Étape 4 (1/2) : candidats à l'auto-drafting (draft-candidates) → weekly-draft-candidates-<date>.json (skill-candidate / command-candidate / command-improvement, plafonné).",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": true,
+      "cliSubcommand": "draft-candidates"
+    },
+    {
+      "name": "weekly_report_prep",
+      "description": "Étape 7a (1/2) : prépare le brouillon de rapport (report-prep → weekly-report-draft-<date>.md).",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": true,
+      "cliSubcommand": "report-prep"
+    },
+    {
+      "name": "weekly_report_blocks_draft",
+      "description": "Étape 7a (2/2) : génère le brouillon auto des blocs (report-blocks-draft → weekly-report-blocks-auto-<date>.md).",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": true,
+      "cliSubcommand": "report-blocks-draft"
+    },
+    {
+      "name": "weekly_report_assemble",
+      "description": "Étape 7c : assemble le rapport final (report-assemble → weekly-report-<date>.md). ⚠ un assemble réussi consomme le draft : pour un nouvel assemble, relancer weekly_report_prep d'abord.",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": true,
+      "cliSubcommand": "report-assemble"
+    },
+    {
+      "name": "weekly_commit_draft",
+      "description": "Étape 4 : commit auto-rédigé d'un skill/command draft (commit-draft). Gate de portabilité (skill-verify) avant chaque commit : erreur → refus + fix manuel requis, warnings seuls → passage avec note, environnement défaillant (timeout/crash/sortie illisible) → refus. kind=command → gate non applicable (harness-eval 7.10.1 : skills uniquement), skip explicite avec note dans le résultat. 1 commit par écriture, pré-checks git intégrés.",
+      "fields": [
+        {
+          "name": "kind",
+          "kind": "enum",
+          "required": true,
+          "description": "",
+          "values": ["skill", "command"]
+        },
+        {
+          "name": "file",
+          "kind": "string",
+          "required": true,
+          "description": "chemin absolu du fichier draft"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": false,
+      "cliSubcommand": "commit-draft"
+    },
+    {
+      "name": "weekly_self_cost",
+      "description": "Étape 8 (annexe) : coût de la fenêtre du run (self-cost).",
+      "fields": [],
+      "timeoutMs": 120000,
+      "anchored": false,
+      "cliSubcommand": "self-cost"
+    },
+    {
+      "name": "weekly_doctor",
+      "description": "Diagnostic du kit : vérifie opencode, harness-eval, git, gh, DB et la config (doctor).",
+      "fields": [],
+      "timeoutMs": 120000,
+      "anchored": false,
+      "cliSubcommand": "doctor"
+    },
+    {
+      "name": "weekly_skill_curate",
+      "description": "Étape 6.6 : curation/décroissance des skills (skill-curate). Consomme les décisions de `weekly-coherence-review` (2.C) : applique archive/merge sur origin∈{weekly-*} (R4 curation/GC + R8 TTL). Protection stricte : JAMAIS origin=user (sans override). dry-run par défaut ; `apply=true` uniquement après validation humaine.",
+      "fields": [
+        {
+          "name": "coherence",
+          "kind": "string",
+          "required": false,
+          "description": "JSON: findings de cohérence (tag_action pertinents)"
+        },
+        {
+          "name": "catalog",
+          "kind": "string",
+          "required": false,
+          "description": "JSON: catalogue de skills (skill_id, metadata.origin/ttl_policy)"
+        },
+        {
+          "name": "usage",
+          "kind": "string",
+          "required": false,
+          "description": "JSON: usage_records pour TTL (fallback inter-run .watch-memory.jsonl)"
+        },
+        {
+          "name": "runs_seen",
+          "kind": "string",
+          "required": false,
+          "description": "runs consécutifs observés (décroissance)"
+        },
+        {
+          "name": "stale_days",
+          "kind": "string",
+          "required": false,
+          "description": "seuil obsolescence last_loaded (jours, défaut 90)"
+        },
+        {
+          "name": "apply",
+          "kind": "string",
+          "required": false,
+          "description": "'true' pour exécuter (sinon dry-run)"
+        },
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 900000,
+      "anchored": true,
+      "cliSubcommand": "skill-curate"
+    }
+  ],
+  "cliCommands": [
+    "run",
+    "releases",
+    "watch-context",
+    "watch-distill",
+    "watch-validate",
+    "audit-candidates",
+    "show-session",
+    "harness",
+    "harness-remediate",
+    "insights",
+    "draft-candidates",
+    "report-prep",
+    "report-blocks-draft",
+    "report-assemble",
+    "commit-draft",
+    "self-cost",
+    "doctor",
+    "skill-curate"
+  ],
+  "cliCommandsNotExposedAsTools": ["debug-rule"],
+  "defaults": {
+    "harness_remediate.mode": "dry-run",
+    "skill_curate.mode": "dry-run",
+    "skill_curate.stale_days": 90,
+    "show_session.include_children": false,
+    "commit_draft.gate_kind_command": "skipped",
+    "lookback_days": null
+  },
+  "errorMessages": {
+    "preflight_rc3": "weekly_preflight rc=3 — ${result.message}",
+    "preflight_kit_missing": "kit weekly-advisor introuvable depuis worktree=",
+    "cli_exit": "weekly_telemetry_aggregator ${args.join(\" \")} → exit ${err.code ?? \"?\"}",
+    "anchor_unreadable": "lecture de ${file} impossible: ${String(err)}",
+    "anchor_invalid": "ancre invalide dans ${file}: ${existing}",
+    "engine_missing": "moteur introuvable: ${engine} (structure du kit corrompue)",
+    "python_missing": "interpréteur Python introuvable (candidats testés: ${candidates.join(\", \")}) — définir WEEKLY_PYTHON ou créer le venv : uv sync --project .opencode/plugins/weekly-advisor-engine --extra dev",
+    "skill_verify_unavailable": "skill-verify indisponible (${why})",
+    "curate_json_invalid": "weekly_skill_curate ${label} JSON invalide: ${detail}",
+    "curate_json_staging_failed": "weekly_skill_curate ${label} JSON temporaire impossible: ${detail}",
+    "commit_blocked": "commit REFUSÉ par la gate de portabilité (skill-verify) — fix manuel requis",
+    "commit_unusable": "commit REFUSÉ — gate de portabilité non exécutable (environnement harness-eval défaillant)",
+    "commit_warnings_note": "note : gate portabilité — ${gate.warnings.length} warning(s) non bloquant(s)",
+    "commit_ignored_note": "⚠ gate portabilité ignorée (fail-soft) : ${gate.reason}",
+    "commit_skipped_note": "ℹ gate portabilité SKIPPED : ${gate.reason}",
+    "gate_skip_reason": "Gate portabilité non applicable aux commands (harness-eval 7.10.1 : skills uniquement) — commit autorisé sans gate.",
+    "gate_ignored_reason": "binaire harness-eval introuvable",
+    "gate_unreadable_reason": "sortie skill-verify illisible (JSON invalide)"
+  }
+}

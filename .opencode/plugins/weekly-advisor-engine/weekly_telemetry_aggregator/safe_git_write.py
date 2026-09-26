@@ -227,42 +227,60 @@ def _sync_kit_draft(cfg: TelemetryConfig, root: Path, file_path: Path) -> tuple[
     return True, f"synchro kit {rel} (HEAD {commit.stdout.strip().splitlines()[0][:10]})"
 
 
-def commit_draft(cfg: TelemetryConfig, file_path: Path, kind: str) -> tuple[bool, str]:
-    """Validate + pre-checks + scoped add + commit. Returns (ok, message)."""
+def _commit_draft_root(
+    cfg: TelemetryConfig, file_path: Path, kind: str
+) -> tuple[Path | None, str | None]:
+    """Garde-fous pré-commit : (root, None) si OK, (None, message) si refus."""
     if kind not in _MESSAGE_PREFIX:
-        return False, f"kind inconnu: {kind}"
-
+        return None, f"kind inconnu: {kind}"
     ok, msg = validate_draft(file_path, kind)
     if not ok:
-        return False, f"draft invalide — pas de commit: {msg}"
-
+        return None, f"draft invalide — pas de commit: {msg}"
     root = _repo_root(file_path)
     if root is None:
-        return False, "fichier hors dépôt git — pas de commit"
-
+        return None, "fichier hors dépôt git — pas de commit"
     ok, msg = _ensure_opencode_scope(root, file_path)
     if not ok:
-        return False, f"{msg} — pas de commit"
-
+        return None, f"{msg} — pas de commit"
     if cfg.project_root is not None and root.resolve() != cfg.project_root.resolve():
-        return False, f"cible hors du projet configuré ({cfg.project_root}) — pas de commit"
-
+        return None, f"cible hors du projet configuré ({cfg.project_root}) — pas de commit"
     branch = _run_git(root, "rev-parse", "--abbrev-ref", "HEAD")
     if branch.returncode != 0 or branch.stdout.strip() == "HEAD":
-        return False, "HEAD détaché — pas de commit auto"
-
+        return None, "HEAD détaché — pas de commit auto"
     for marker in ("rebase-merge", "rebase-apply", "MERGE_HEAD"):
         if (root / ".git" / marker).exists():
-            return False, f"{marker} détecté — rebase/merge en cours, fichier écrit non commité"
+            return None, f"{marker} détecté — rebase/merge en cours, fichier écrit non commité"
+    return root, None
+
+
+def _draft_commit_message(file_path: Path, kind: str, meta: dict) -> tuple[str, str]:
+    """Sujet + corps du commit draft (corps R4 pour kind == fix)."""
+    prefix = _MESSAGE_PREFIX[kind]
+    date = datetime.now(UTC).strftime("%Y-%m-%d")
+    name = draft_name(file_path, kind)
+    subject = f"{prefix}{name} (auto-rédigé, revue hebdo {date})"
+    if kind == "fix":
+        return subject, "Violation harness corrigée (triviale, R4)."
+    body = (
+        f"Source: sessions {_list_field(meta.get('source_sessions', 'n/a'))}\n"
+        f"Chevauchement détecté: {_list_field(meta.get('overlaps_with', 'aucun'))}\n"
+        f"Cible: agents {_list_field(meta.get('target_agents', 'aucune'))}"
+    )
+    return subject, body
+
+
+def commit_draft(cfg: TelemetryConfig, file_path: Path, kind: str) -> tuple[bool, str]:
+    """Validate + pre-checks + scoped add + commit. Returns (ok, message)."""
+    root, fail = _commit_draft_root(cfg, file_path, kind)
+    if root is None:
+        return False, fail or "refus pré-commit"
 
     add = _run_git(root, "add", "--", str(file_path))
     if add.returncode != 0:
         return False, f"git add échoué: {add.stderr.strip()}"
 
-    prefix = _MESSAGE_PREFIX[kind]
-    date = datetime.now(UTC).strftime("%Y-%m-%d")
     meta, _body, _err = frontmatter_blocks(file_path)
-    name = draft_name(file_path, kind)
+    subject, body = _draft_commit_message(file_path, kind, meta)
     commit = _run_git(
         root,
         "-c",
@@ -272,15 +290,9 @@ def commit_draft(cfg: TelemetryConfig, file_path: Path, kind: str) -> tuple[bool
         "commit",
         "--no-edit",
         "-m",
-        f"{prefix}{name} (auto-rédigé, revue hebdo {date})",
+        subject,
         "-m",
-        (
-            f"Source: sessions {_list_field(meta.get('source_sessions', 'n/a'))}\n"
-            f"Chevauchement détecté: {_list_field(meta.get('overlaps_with', 'aucun'))}\n"
-            f"Cible: agents {_list_field(meta.get('target_agents', 'aucune'))}"
-            if kind != "fix"
-            else "Violation harness corrigée (triviale, R4)."
-        ),
+        body,
         "--",
         str(file_path),
     )

@@ -158,6 +158,143 @@ def _safe_extra_root(pattern: str) -> bool:
     return _safe_pattern(normalised)
 
 
+def _dedup_exclude_patterns(config: HarnessIncludeConfig) -> list[str]:
+    """Exclusions obligatoires + configurées, dédupliquées, ordre conservé."""
+    exclude_patterns: list[str] = []
+    for pattern in [*DEFAULT_HARNESS_EXCLUDE_PATTERNS, *config.exclude_patterns]:
+        if pattern not in exclude_patterns:
+            exclude_patterns.append(pattern)
+    return exclude_patterns
+
+
+def _walk_opencode_files(root: Path) -> list[str]:
+    """Walk natif `.opencode/`, chemins relatifs triés."""
+    opencode_root = root / ".opencode"
+    return sorted(
+        (
+            f".opencode/{relative_path(path, opencode_root)}"
+            for path in _iter_regular_files(opencode_root)
+        ),
+        key=str,
+    )
+
+
+def _collect_extra_root_files(
+    root: Path, extra_roots: Sequence[str]
+) -> tuple[list[str], list[str], list[str]]:
+    """Valide les racines additionnelles et collecte leurs fichiers.
+
+    Renvoie ``(safe_roots, warnings, extra_files)``.
+    """
+    safe_roots: list[str] = []
+    seen_roots: set[str] = set()
+    warnings: list[str] = []
+    extra_files: list[str] = []
+    for candidate in extra_roots:
+        normalised = _normalise_pattern(str(candidate))
+        if not _safe_extra_root(normalised) or normalised in seen_roots:
+            if normalised not in seen_roots:
+                warnings.append(f"cible de projection additionnelle rejetée: {candidate!r}")
+            continue
+        seen_roots.add(normalised)
+        safe_roots.append(normalised)
+        extra_root_path = root / Path(*PurePosixPath(normalised).parts)
+        if not extra_root_path.is_dir():
+            warnings.append(
+                f"cible de projection absente du projet: {normalised} "
+                "(aucun fichier à projeter pour ce harnais)"
+            )
+            continue
+        extra_files.extend(
+            sorted(
+                (
+                    f"{normalised}/{relative_path(path, extra_root_path)}"
+                    for path in _iter_regular_files(extra_root_path)
+                ),
+                key=str,
+            )
+        )
+    return safe_roots, warnings, extra_files
+
+
+def _apply_exclusions(
+    all_files: list[str], exclude_patterns: list[str]
+) -> tuple[set[str], dict[str, int], list[str]]:
+    """Comptabilité des exclusions → (excluded_files, counts, unexcluded)."""
+    excluded_counts = {pattern: 0 for pattern in exclude_patterns}
+    excluded_files: set[str] = set()
+    unexcluded_files: list[str] = []
+    for rel_path in all_files:
+        matching_excludes = [pattern for pattern in exclude_patterns if _matches(rel_path, pattern)]
+        if not matching_excludes:
+            unexcluded_files.append(rel_path)
+            continue
+        excluded_files.add(rel_path)
+        for pattern in matching_excludes:
+            excluded_counts[pattern] += 1
+    return excluded_files, excluded_counts, unexcluded_files
+
+
+def _apply_include_patterns(
+    all_files: list[str], include_patterns: list[str], excluded_files: set[str]
+) -> tuple[set[str], dict[str, int]]:
+    """Matching allowlist → (included, counts)."""
+    included: set[str] = set()
+    included_counts = {pattern: 0 for pattern in include_patterns}
+    for pattern in include_patterns:
+        normalised = _normalise_pattern(pattern)
+        if not _safe_pattern(normalised):
+            continue
+        for rel_path in all_files:
+            if rel_path in excluded_files or rel_path in included:
+                continue
+            if not _matches(rel_path, normalised):
+                continue
+            included.add(rel_path)
+            included_counts[pattern] += 1
+    return included, included_counts
+
+
+def _include_extra_roots(
+    all_files: list[str],
+    safe_roots: list[str],
+    excluded_files: set[str],
+    included: set[str],
+) -> None:
+    """Inclusion large des racines additionnelles sauf exclusion explicite."""
+    for rel_path in all_files:
+        if rel_path in excluded_files or rel_path in included:
+            continue
+        if any(
+            rel_path == extra_root or rel_path.startswith(extra_root + "/")
+            for extra_root in safe_roots
+        ):
+            included.add(rel_path)
+
+
+def _unscoped_warnings(
+    unexcluded_files: list[str], included: set[str], profile: str, profile_known: bool
+) -> tuple[list[str], list[str]]:
+    """Surface .opencode non couverte → (unscoped, warnings)."""
+    unscoped = sorted(
+        rel_path
+        for rel_path in unexcluded_files
+        if rel_path == ".opencode" or rel_path.startswith(".opencode/")
+        if rel_path not in included
+    )
+    warnings: list[str] = []
+    if not profile_known:
+        warnings.append(
+            f"unknown harness include profile '{profile}' — no files selected; "
+            "configure harness_include.default_profile explicitly"
+        )
+    if unscoped:
+        preview = ", ".join(unscoped[:10])
+        suffix = f" (+{len(unscoped) - 10} more)" if len(unscoped) > 10 else ""
+        warnings.append(f"unscoped .opencode surface(s) not scanned: {preview}{suffix}")
+    return unscoped, warnings
+
+
 def resolve_harness_scope(
     project_root: Path,
     config: HarnessIncludeConfig,
@@ -184,106 +321,32 @@ def resolve_harness_scope(
     # These exclusions are mandatory even when a caller supplies custom
     # patterns: a broad custom include must not be able to re-expose vendor,
     # generated, or the engine's own source tree.
-    exclude_patterns: list[str] = []
-    for pattern in [*DEFAULT_HARNESS_EXCLUDE_PATTERNS, *config.exclude_patterns]:
-        if pattern not in exclude_patterns:
-            exclude_patterns.append(pattern)
+    exclude_patterns = _dedup_exclude_patterns(config)
 
     # The allowlist is deliberately rooted in `.opencode/`.  Walking the whole
     # application repository only to count files that can never be included
     # defeats the purpose of the projection and made the Adeo run spend minutes
     # traversing source trees and build artefacts.
-    opencode_root = root / ".opencode"
-    all_files = sorted(
-        (
-            f".opencode/{relative_path(path, opencode_root)}"
-            for path in _iter_regular_files(opencode_root)
-        ),
-        key=str,
-    )
+    all_files = _walk_opencode_files(root)
 
     # Extension multi-répertoires : mêmes sémantiques d'exclusion, chemins
     # relatifs au project_root conservés pour le remap du digest.
-    safe_roots: list[str] = []
-    seen_roots: set[str] = set()
-    warnings: list[str] = []
-    for candidate in extra_roots:
-        normalised = _normalise_pattern(str(candidate))
-        if not _safe_extra_root(normalised) or normalised in seen_roots:
-            if normalised not in seen_roots:
-                warnings.append(f"cible de projection additionnelle rejetée: {candidate!r}")
-            continue
-        seen_roots.add(normalised)
-        safe_roots.append(normalised)
-        extra_root_path = root / Path(*PurePosixPath(normalised).parts)
-        if not extra_root_path.is_dir():
-            warnings.append(
-                f"cible de projection absente du projet: {normalised} "
-                "(aucun fichier à projeter pour ce harnais)"
-            )
-            continue
-        all_files.extend(
-            sorted(
-                (
-                    f"{normalised}/{relative_path(path, extra_root_path)}"
-                    for path in _iter_regular_files(extra_root_path)
-                ),
-                key=str,
-            )
-        )
-    all_files.sort()
+    safe_roots, root_warnings, extra_files = _collect_extra_root_files(root, extra_roots)
+    warnings: list[str] = [*root_warnings]
+    all_files = sorted([*all_files, *extra_files])
 
-    excluded_counts = {pattern: 0 for pattern in exclude_patterns}
-    excluded_files: set[str] = set()
-    unexcluded_files: list[str] = []
-    for rel_path in all_files:
-        matching_excludes = [pattern for pattern in exclude_patterns if _matches(rel_path, pattern)]
-        if not matching_excludes:
-            unexcluded_files.append(rel_path)
-            continue
-        excluded_files.add(rel_path)
-        for pattern in matching_excludes:
-            excluded_counts[pattern] += 1
-
-    included: set[str] = set()
-    included_counts = {pattern: 0 for pattern in include_patterns}
-    for pattern in include_patterns:
-        normalised = _normalise_pattern(pattern)
-        if not _safe_pattern(normalised):
-            continue
-        for rel_path in all_files:
-            if rel_path in excluded_files or rel_path in included:
-                continue
-            if not _matches(rel_path, normalised):
-                continue
-            included.add(rel_path)
-            included_counts[pattern] += 1
+    excluded_files, excluded_counts, unexcluded_files = _apply_exclusions(
+        all_files, exclude_patterns
+    )
+    included, included_counts = _apply_include_patterns(all_files, include_patterns, excluded_files)
 
     # Racines additionnelles : inclusion large sauf exclusion explicite.
-    for rel_path in all_files:
-        if rel_path in excluded_files or rel_path in included:
-            continue
-        if any(
-            rel_path == extra_root or rel_path.startswith(extra_root + "/")
-            for extra_root in safe_roots
-        ):
-            included.add(rel_path)
+    _include_extra_roots(all_files, safe_roots, excluded_files, included)
 
-    unscoped = sorted(
-        rel_path
-        for rel_path in unexcluded_files
-        if rel_path == ".opencode" or rel_path.startswith(".opencode/")
-        if rel_path not in included
+    unscoped, scope_warnings = _unscoped_warnings(
+        unexcluded_files, included, profile, profile_known
     )
-    if not profile_known:
-        warnings.append(
-            f"unknown harness include profile '{profile}' — no files selected; "
-            "configure harness_include.default_profile explicitly"
-        )
-    if unscoped:
-        preview = ", ".join(unscoped[:10])
-        suffix = f" (+{len(unscoped) - 10} more)" if len(unscoped) > 10 else ""
-        warnings.append(f"unscoped .opencode surface(s) not scanned: {preview}{suffix}")
+    warnings.extend(scope_warnings)
 
     return HarnessScope(
         profile=profile,
@@ -355,31 +418,9 @@ def attach_component_paths(digest: dict[str, Any], scope: HarnessScope) -> None:
     if not isinstance(inspection, dict):
         return
 
-    uncategorized = inspection.get("uncategorized")
-    unclassified_paths = digest.get("uncategorized_files")
-    if isinstance(uncategorized, list) and isinstance(unclassified_paths, list):
-        for component, path in zip(uncategorized, unclassified_paths, strict=False):
-            if isinstance(component, dict) and "path" not in component and isinstance(path, str):
-                component["path"] = path
-
+    _attach_uncategorized_paths(digest, inspection)
     for section, directory in (("command", ".opencode/commands/"), ("claude_md", ".opencode/")):
-        components = inspection.get(section)
-        if not isinstance(components, list):
-            continue
-        for component in components:
-            if not isinstance(component, dict) or component.get("path"):
-                continue
-            name = component.get("name")
-            if not isinstance(name, str) or not name:
-                continue
-            candidates = [
-                path
-                for path in scope.included_files
-                if path.startswith(directory)
-                and Path(path).stem.casefold() == Path(name).stem.casefold()
-            ]
-            if len(candidates) == 1:
-                component["path"] = candidates[0]
+        _attach_section_paths(inspection, scope, section, directory)
 
 
 def _as_nonnegative_int(value: object) -> int | None:
@@ -400,20 +441,43 @@ def _first_count(data: Mapping[str, object], *keys: str) -> int | None:
     return None
 
 
-def harness_digest_counts(digest: Mapping[str, object]) -> dict[str, int | None]:
-    """Normalize scan metrics without confusing components with violations.
+def _attach_uncategorized_paths(digest: dict[str, Any], inspection: dict) -> None:
+    """Aligne ``inspection.uncategorized`` avec ``uncategorized_files`` (ordre 7.9.0)."""
+    uncategorized = inspection.get("uncategorized")
+    unclassified_paths = digest.get("uncategorized_files")
+    if isinstance(uncategorized, list) and isinstance(unclassified_paths, list):
+        for component, path in zip(uncategorized, unclassified_paths, strict=False):
+            if isinstance(component, dict) and "path" not in component and isinstance(path, str):
+                component["path"] = path
 
-    ``components_scanned`` describes scanner work, not lint failures.  Raw
-    findings count detailed finding records before de-duplication; unique
-    findings de-duplicate exact records while retaining their component/path
-    identity.  Failing summary ``rules`` with no detailed finding are counted
-    as unique fallback findings, matching the insights normalizer's intent.
-    """
-    metadata = digest.get("metadata")
-    metadata_map = metadata if isinstance(metadata, Mapping) else {}
-    inspection = digest.get("inspection")
-    inspection_map = inspection if isinstance(inspection, Mapping) else {}
 
+def _attach_section_paths(
+    inspection: dict, scope: HarnessScope, section: str, directory: str
+) -> None:
+    """Résout le path des composants d'une section depuis leur basename."""
+    components = inspection.get(section)
+    if not isinstance(components, list):
+        return
+    for component in components:
+        if not isinstance(component, dict) or component.get("path"):
+            continue
+        name = component.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        candidates = [
+            path
+            for path in scope.included_files
+            if path.startswith(directory)
+            and Path(path).stem.casefold() == Path(name).stem.casefold()
+        ]
+        if len(candidates) == 1:
+            component["path"] = candidates[0]
+
+
+def _digest_components(
+    inspection_map: Mapping[str, object],
+) -> list[tuple[str, Mapping[str, object]]]:
+    """Composants (path, mapping) des 3 sections d'inspection, index de repli inclus."""
     components: list[tuple[str, Mapping[str, object]]] = []
     for section in ("command", "claude_md", "uncategorized"):
         values = inspection_map.get(section)
@@ -423,7 +487,15 @@ def harness_digest_counts(digest: Mapping[str, object]) -> dict[str, int | None]
             if isinstance(component, Mapping):
                 path = str(component.get("path") or f"{section}[{index}]")
                 components.append((path, component))
+    return components
 
+
+def _digest_files_scanned(
+    digest: Mapping[str, object],
+    metadata_map: Mapping[str, object],
+    components: list[tuple[str, Mapping[str, object]]],
+) -> int | None:
+    """files_scanned : digest > metadata > chemins distincts des composants."""
     files = _first_count(digest, "files_scanned")
     if files is None:
         files = _first_count(metadata_map, "files_scanned")
@@ -434,7 +506,16 @@ def harness_digest_counts(digest: Mapping[str, object]) -> dict[str, int | None]
             if not path.startswith(("command[", "claude_md[", "uncategorized["))
         }
         files = len(paths) if paths else None
+    return files
 
+
+def _digest_components_scanned(
+    digest: Mapping[str, object],
+    metadata_map: Mapping[str, object],
+    inspection_map: Mapping[str, object],
+    components: list[tuple[str, Mapping[str, object]]],
+) -> int:
+    """components_scanned : digest > metadata > inspection > comptage local."""
     components_scanned = _first_count(digest, "components_scanned")
     if components_scanned is None:
         components_scanned = _first_count(metadata_map, "components_scanned")
@@ -442,11 +523,15 @@ def harness_digest_counts(digest: Mapping[str, object]) -> dict[str, int | None]
         components_scanned = _first_count(inspection_map, "components_scanned")
     if components_scanned is None:
         components_scanned = len(components)
+    return components_scanned
 
+
+def _accumulate_top_findings(
+    top_findings: object,
+) -> tuple[int, set[tuple[str, str, str, str]]]:
+    """Findings racine : compteur brut + enregistrements uniques."""
     raw_count = 0
     unique_records: set[tuple[str, str, str, str]] = set()
-
-    top_findings = digest.get("findings")
     if isinstance(top_findings, list):
         for index, finding in enumerate(top_findings):
             if not isinstance(finding, Mapping):
@@ -460,7 +545,15 @@ def harness_digest_counts(digest: Mapping[str, object]) -> dict[str, int | None]
                     str(finding.get("severity") or ""),
                 )
             )
+    return raw_count, unique_records
 
+
+def _accumulate_component_findings(
+    components: list[tuple[str, Mapping[str, object]]],
+) -> tuple[int, set[tuple[str, str, str, str]]]:
+    """Findings détaillés + règles en échec sans détail (repli unique)."""
+    raw_count = 0
+    unique_records: set[tuple[str, str, str, str]] = set()
     for path, component in components:
         detailed_rules: set[str] = set()
         findings = component.get("findings")
@@ -490,6 +583,34 @@ def harness_digest_counts(digest: Mapping[str, object]) -> dict[str, int | None]
                 rule = str(rule_entry.get("rule") or "unknown")
                 if rule not in detailed_rules:
                     unique_records.add((path, rule, "", ""))
+    return raw_count, unique_records
+
+
+def harness_digest_counts(digest: Mapping[str, object]) -> dict[str, int | None]:
+    """Normalize scan metrics without confusing components with violations.
+
+    ``components_scanned`` describes scanner work, not lint failures.  Raw
+    findings count detailed finding records before de-duplication; unique
+    findings de-duplicate exact records while retaining their component/path
+    identity.  Failing summary ``rules`` with no detailed finding are counted
+    as unique fallback findings, matching the insights normalizer's intent.
+    """
+    metadata = digest.get("metadata")
+    metadata_map = metadata if isinstance(metadata, Mapping) else {}
+    inspection = digest.get("inspection")
+    inspection_map = inspection if isinstance(inspection, Mapping) else {}
+
+    components = _digest_components(inspection_map)
+
+    files = _digest_files_scanned(digest, metadata_map, components)
+    components_scanned = _digest_components_scanned(
+        digest, metadata_map, inspection_map, components
+    )
+
+    raw_top, unique_top = _accumulate_top_findings(digest.get("findings"))
+    raw_comp, unique_comp = _accumulate_component_findings(components)
+    raw_count = raw_top + raw_comp
+    unique_records = unique_top | unique_comp
 
     findings_raw = _first_count(digest, "findings_raw")
     if findings_raw is None:
