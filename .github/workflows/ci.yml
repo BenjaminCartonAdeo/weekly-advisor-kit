@@ -42,14 +42,15 @@ jobs:
       - name: Wheel content (template inclus)
         run: uv run python -c "import zipfile,glob,sys; names=zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist(); sys.exit(0 if any('templates/report_template.md.j2' in n for n in names) else 1)"
 
-      - name: Plugin TS (syntaxe)
-        run: node --check .opencode/plugins/weekly-advisor.ts
-        working-directory: .
-
       - name: Node 24 (type stripping TS natif)
         uses: actions/setup-node@v4
         with:
           node-version: "24"
+
+      - name: Plugin TS (dual-entrypoint validation)
+        run: |
+          node --experimental-strip-types -e "import('./.opencode/plugins/weekly-advisor.ts').then(m => { const p = m.default; if (!p || p.id !== 'weekly-advisor' || typeof p.server !== 'function' || typeof p.setup !== 'function') { console.error('bad dual entrypoint', Object.keys(p ?? {})); process.exit(1) } }).catch(e => { console.error('Error:', e.message); process.exit(1) })"
+        working-directory: .
 
       - name: Tests de contrat node (POSIX)
         # scripts/tests/*.test.mjs : contrats docs ↔ code (runner worker, exit,
