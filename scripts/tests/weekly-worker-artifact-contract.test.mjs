@@ -36,12 +36,16 @@ test("audit retry and worker lifecycle are bounded", () => {
 
 test("audit skill requires a strict artifact envelope and bounded recovery", () => {
   const source = read(AUDIT)
+  const shared = read(GUARDRAILS)
   assert.match(source, /schema_version/i)
   assert.match(source, /summary[^\n]*(?:non-vide|non-empty)/i)
   assert.match(source, /findings[^\n]*(?:array|\[)/i)
   assert.match(source, /transcript-truncated:<session_id>/)
   assert.match(source, /complete[- ]enough[\s\S]{0,220}rc\s*[:=]\s*0|rc\s*[:=]\s*0[\s\S]{0,220}complete[- ]enough/i)
-  assert.match(source, /une seule retry|une seule relance|one bounded\s+retry/i)
+  // Bounded retry: inline wording OR delegation to shared guardrails skill
+  const boundedRetryInline = /une seule retry|une seule relance|one bounded\s+retry/i.test(source)
+  const boundedRetryShared = /weekly-safety-guardrails/.test(source) && /one bounded\s+retry|max_retry\s*[:=]\s*1/i.test(shared)
+  assert(boundedRetryInline || boundedRetryShared, "Must enforce bounded retry either inline or via weekly-safety-guardrails delegation")
   assert.match(source, /ne jamais inventer|never invent/i)
 })
 
@@ -59,11 +63,15 @@ test("watch review writes raw findings before validation and forbids invention",
 
 test("harness remediation requires proposals before apply and keeps security IDs blocking", () => {
   const source = read(REMEDIATION)
+  const shared = read(GUARDRAILS)
   assert.match(source, /raw|proposition/i)
   assert.match(source, /proposal.*(?:avant|before)|avant[\s\S]{0,220}proposal/i)
   assert.match(source, /weekly-harness-remediation-proposals-<date>\.json/)
   assert.match(source, /harness-remediate/)
-  assert.match(source, /une seule retry|une seule relance|one bounded\s+retry/i)
+  // Bounded retry: inline wording OR delegation to shared guardrails skill
+  const boundedRetryInline = /une seule retry|une seule relance|one bounded\s+retry/i.test(source)
+  const boundedRetryShared = /weekly-safety-guardrails/.test(source) && /one bounded\s+retry|max_retry\s*[:=]\s*1/i.test(shared)
+  assert(boundedRetryInline || boundedRetryShared, "Must enforce bounded retry either inline or via weekly-safety-guardrails delegation")
   assert.match(source, /ne jamais inventer|never invent/i)
   assert.match(source, /hors[- ]worktree|out-of-tree|out of tree/i)
   // Sécurité external-directory report-only : single-source `weekly-safety-guardrails`.
@@ -76,7 +84,11 @@ test("harness remediation requires proposals before apply and keeps security IDs
 
 test("drafting keeps recovery bounded and reports out-of-tree permission requests", () => {
   const source = read(DRAFTING)
-  assert.match(source, /une seule retry|une seule relance|one bounded retry/i)
+  const shared = read(GUARDRAILS)
+  // Bounded retry: inline wording OR delegation to shared guardrails skill
+  const boundedRetryInline = /une seule retry|une seule relance|one bounded retry/i.test(source)
+  const boundedRetryShared = /weekly-safety-guardrails/.test(source) && /one bounded\s+retry|max_retry\s*[:=]\s*1/i.test(shared)
+  assert(boundedRetryInline || boundedRetryShared, "Must enforce bounded retry either inline or via weekly-safety-guardrails delegation")
   assert.match(source, /ne jamais inventer|never invent/i)
   assert.match(source, /hors worktree|out-of-tree|out of tree/i)
   assert.match(source, /external[-_ ]directory|permission[^\n]*report-only|report-only/i)
