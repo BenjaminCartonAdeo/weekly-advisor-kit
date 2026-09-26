@@ -77,7 +77,7 @@ jobs:
         # run in strict mode to validate actual V1/V2 compatibility with the plugin.
         # This requires OPENCODE_V1_BIN, OPENCODE_V2_BIN, and optionally expected versions.
         # Skipped silently if binaries are not available.
-        if: env.OPENCODE_V1_BIN != '' && env.OPENCODE_V2_BIN != ''
+        # NOTE: if: gates are evaluated before step-level env:, so we gate in shell instead.
         env:
           # Map secrets/vars to env for shell access (no direct secret references in shell)
           OPENCODE_V1_BIN: ${{ secrets.OPENCODE_V1_BIN || env.OPENCODE_V1_BIN || '' }}
@@ -92,4 +92,5 @@ jobs:
           else
             echo "V1/V2 binaries not provisioned; skipping strict compatibility check"
           fi
+        shell: bash
         working-directory: .

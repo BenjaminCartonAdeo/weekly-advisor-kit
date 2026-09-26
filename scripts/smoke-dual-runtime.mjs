@@ -24,7 +24,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { execSync, spawnSync } from "node:child_process"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 // For testing: injectable subprocess execution
 let spawnSyncImpl = spawnSync
@@ -288,7 +288,8 @@ function checkPluginStructure() {
 /**
  * Verify registry: load TOOL_REGISTRY and CLI_COMMANDS via Node 24 type-stripping subprocess.
  * BLOCKER FIX #1: Use documented Node 24 loader to assert TOOL_REGISTRY.length===19 and CLI_COMMANDS.length===18.
- * In strict mode, registry/loader failure must FAIL. In non-strict, missing binary is explicit SKIPPED.
+ * In strict mode, registry/loader failure or parse failure must FAIL (exit 1).
+ * In non-strict, loader failure falls back to regex; record as SKIPPED with reason.
  */
 function checkRegistry() {
   log("\n[Registry]")
@@ -317,12 +318,11 @@ function checkRegistry() {
 
   // Attempt Node 24 type-stripping loader for TOOL_REGISTRY and CLI_COMMANDS counts
   try {
-    // Import pathToFileURL at top-level via dynamic import is not available in sync context.
-    // Use synchronous path→URL conversion with the file:// protocol.
-    const registryUrl = `file://${path.resolve(registryPath).replace(/\\/g, "/")}`
+    // Use pathToFileURL + JSON.stringify for safe URL encoding (handles quotes, #, ?, %, UNC)
+    const registryUrl = pathToFileURL(registryPath).href
     
     const loaderScript = `
-import { TOOL_REGISTRY, CLI_COMMANDS } from '${registryUrl}';
+import { TOOL_REGISTRY, CLI_COMMANDS } from ${JSON.stringify(registryUrl)};
 console.log(JSON.stringify({ toolCount: TOOL_REGISTRY.length, cliCount: CLI_COMMANDS.length }));
 `
     const result = spawnSyncImpl("node", ["--input-type=module", "--eval", loaderScript], {
@@ -331,10 +331,21 @@ console.log(JSON.stringify({ toolCount: TOOL_REGISTRY.length, cliCount: CLI_COMM
       stdio: ["pipe", "pipe", "pipe"],
     })
 
+    // Loader failure or non-zero status → in strict mode, FAIL immediately
     if (result.error || result.status !== 0) {
-      // Loader failed; fall back to file-based check
-      log(`  info: Node loader unavailable, using file-based check`)
+      const reason = `Node loader failed: ${result.error?.message || `exit ${result.status}`}`
+      log(`  error: ${reason}`)
+      recordCheck("Registry", false, null, reason)
+      if (isStrict) {
+        logError(`  FAIL`)
+        exitCode = 1
+      } else {
+        // Non-strict: record as SKIPPED, fall through to regex fallback
+        log(`  result: SKIPPED (falling back to file-based check)`)
+      }
+      // Continue to file-based check in non-strict mode
     } else {
+      // Loader succeeded; parse output
       try {
         const output = JSON.parse(result.stdout)
         const toolCount = output.toolCount || 0
@@ -360,45 +371,51 @@ console.log(JSON.stringify({ toolCount: TOOL_REGISTRY.length, cliCount: CLI_COMM
         recordCheck("Registry", true, null, null)
         return true
       } catch (parseErr) {
-        log(`  info: loader output parse failed, using file-based check`)
+        // JSON parse failed
+        const reason = `loader output parse failed: ${parseErr.message}`
+        log(`  error: ${reason}`)
+        recordCheck("Registry", false, null, reason)
+        if (isStrict) {
+          logError(`  FAIL`)
+          exitCode = 1
+          return false
+        } else {
+          // Non-strict: fall back to file-based check
+          log(`  result: SKIPPED (falling back to file-based check)`)
+        }
       }
     }
 
     // File-based fallback: verify TOOL_REGISTRY and CLI_COMMANDS are defined and exported.
-    const content = fs.readFileSync(registryPath, "utf8")
-    const hasTOOL_REGISTRY = /export\s+const\s+TOOL_REGISTRY:/m.test(content)
-    const hasCLI_COMMANDS = /export\s+const\s+CLI_COMMANDS:/m.test(content)
+    // Only used in non-strict mode after loader failure; in strict mode, already returned.
+    if (!isStrict) {
+      const content = fs.readFileSync(registryPath, "utf8")
+      const hasTOOL_REGISTRY = /export\s+const\s+TOOL_REGISTRY:/m.test(content)
+      const hasCLI_COMMANDS = /export\s+const\s+CLI_COMMANDS:/m.test(content)
 
-    if (!hasTOOL_REGISTRY) {
-      const reason = `TOOL_REGISTRY not exported from registry file`
-      log(`  error: ${reason}`)
-      recordCheck("Registry TOOL_REGISTRY", false, null, reason)
-      if (isStrict) {
-        logError(`  FAIL`)
-        exitCode = 1
-      } else {
+      if (!hasTOOL_REGISTRY) {
+        const reason = `TOOL_REGISTRY not exported from registry file`
+        log(`  error: ${reason}`)
+        recordCheck("Registry TOOL_REGISTRY", false, null, reason)
         log(`  result: SKIPPED`)
+        return false
       }
-      return false
+
+      if (!hasCLI_COMMANDS) {
+        const reason = `CLI_COMMANDS not exported from registry file`
+        log(`  error: ${reason}`)
+        recordCheck("Registry CLI_COMMANDS", false, null, reason)
+        log(`  result: SKIPPED`)
+        return false
+      }
+
+      log(`  ✓ TOOL_REGISTRY exported (file-based fallback)`)
+      log(`  ✓ CLI_COMMANDS exported (file-based fallback)`)
+      recordCheck("Registry", true, null, null)
+      return true
     }
 
-    if (!hasCLI_COMMANDS) {
-      const reason = `CLI_COMMANDS not exported from registry file`
-      log(`  error: ${reason}`)
-      recordCheck("Registry CLI_COMMANDS", false, null, reason)
-      if (isStrict) {
-        logError(`  FAIL`)
-        exitCode = 1
-      } else {
-        log(`  result: SKIPPED`)
-      }
-      return false
-    }
-
-    log(`  ✓ TOOL_REGISTRY exported`)
-    log(`  ✓ CLI_COMMANDS exported`)
-    recordCheck("Registry", true, null, null)
-    return true
+    return false
   } catch (err) {
     const reason = `registry check error: ${err.message}`
     log(`  error: ${reason}`)
@@ -420,6 +437,13 @@ function main() {
   if (isStrict && (!config.v1Bin || !config.v2Bin || config.v1Bin === config.v2Bin)) {
     logError("\n❌ STRICT MODE ERROR: Both OPENCODE_V1_BIN and OPENCODE_V2_BIN must be set and distinct")
     logError("   Set via env vars: export OPENCODE_V1_BIN=/path/to/v1; export OPENCODE_V2_BIN=/path/to/v2")
+    process.exit(3)
+  }
+
+  // BLOCKER FIX #4: Strict mode also requires BOTH expected versions to be set
+  if (isStrict && (!config.v1Expected || !config.v2Expected)) {
+    logError("\n❌ STRICT MODE ERROR: Both V1_EXPECTED_VERSION and V2_EXPECTED_VERSION must be set")
+    logError("   Set via env vars: export V1_EXPECTED_VERSION=1.19.5; export V2_EXPECTED_VERSION=2.0.0")
     process.exit(3)
   }
 
@@ -500,7 +524,6 @@ function main() {
 }
 
 // Only invoke main() if run as a script, not when imported for testing
-import { pathToFileURL } from "node:url"
 const scriptUrl = pathToFileURL(process.argv[1] ?? "").href
 if (import.meta.url === scriptUrl) {
   main()
