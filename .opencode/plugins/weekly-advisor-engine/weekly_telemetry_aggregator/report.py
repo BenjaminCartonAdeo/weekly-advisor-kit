@@ -1546,17 +1546,13 @@ def _check_dynamic_audit_artifact(
     """Un artefact d'audit dynamique : (clé, fiche) — None si clé déjà prise."""
     raw_declaration = str(declaration) if isinstance(declaration, str) else ""
     filename = _declared_run_filename(raw_declaration, out)
-    match = (
-        re.fullmatch(r"audit-findings-(.+)\.json", filename) if filename is not None else None
-    )
+    match = re.fullmatch(r"audit-findings-(.+)\.json", filename) if filename is not None else None
     key = filename or f"audit-findings-declaration-{taken}"
     path = out / filename if filename is not None else out / raw_declaration
     sid = match.group(1) if match else ""
     data, state = _json_file_state(path) if match else (None, "ill_readable")
     path_ok = bool(match and _canonical_audit_path(out, sid) == path)
-    envelope_reason = (
-        _audit_envelope_reason(data, sid) if path_ok and state == "present" else "ok"
-    )
+    envelope_reason = _audit_envelope_reason(data, sid) if path_ok and state == "present" else "ok"
     # Un artefact absent/illisible n'est jamais valide : sans le `state ==
     # "present"`, un audit manquant passait la gate en `present` (run 16/09).
     valid = bool(path_ok and state == "present" and envelope_reason == "ok")
@@ -1941,9 +1937,7 @@ def _curation_manifest_detail(manifest: object) -> dict:
     }
 
 
-def _parse_curation_manifest(
-    manifest: object, date: str | None
-) -> tuple[list[Mapping], bool, int]:
+def _parse_curation_manifest(manifest: object, date: str | None) -> tuple[list[Mapping], bool, int]:
     """Forme du manifeste : (decisions, is_dry_run, raw_rc) — ValueError(reason) sinon."""
     if not _artifact_contract_valid("skill-curate", manifest, date=date, allow_legacy_v1=True):
         raise ValueError("manifeste de curation malformé (schéma attendu absent ou invalide)")
@@ -2661,9 +2655,7 @@ def _assemble_html_gate(
             open_html_report(cfg, html_path)
         except Exception as exc:  # best effort; external permission is report-only
             if _is_external_permission_failure(cfg, exc):
-                warnings.append(
-                    "HTML auto-open permission refused outside worktree; report-only"
-                )
+                warnings.append("HTML auto-open permission refused outside worktree; report-only")
             else:
                 warnings.append(f"HTML auto-open failed: {type(exc).__name__}")
                 rc = max(rc, 1)

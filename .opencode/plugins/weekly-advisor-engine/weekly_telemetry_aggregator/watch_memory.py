@@ -238,9 +238,7 @@ def _merge_entry_fields(
     for field in _MEMORY_FIELDS:
         if field in ("first_seen_week", "last_seen_week"):
             continue
-        entry[field] = (
-            incoming[field] if incoming[field] else base_map.get(field, entry[field])
-        )
+        entry[field] = incoming[field] if incoming[field] else base_map.get(field, entry[field])
     return entry
 
 

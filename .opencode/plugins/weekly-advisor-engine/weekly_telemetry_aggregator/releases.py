@@ -319,9 +319,7 @@ def _collect_watch_sources(
     state_dir = cfg.output_dir / "watch-state"
     repos, lists, topics, rss_urls, radars = _partition_watch_entries(watch_entries)
     if repos:
-        run_source(
-            SOURCE_WATCH, lambda: _fetch_watch_repos(client, repos, start, end), sink_item
-        )
+        run_source(SOURCE_WATCH, lambda: _fetch_watch_repos(client, repos, start, end), sink_item)
     for repo in lists:
         source_id = f"watch:list:{repo}"
         counts_by_source.setdefault(source_id, 0)
@@ -1007,7 +1005,9 @@ def _process_watch_repo(
     except SourceError:
         return [], False
     display_name, description, html_url = _watch_repo_display_fields(repo, info)
-    repo_items = _watch_repo_release_items(display_name, html_url, description, releases, start, end)
+    repo_items = _watch_repo_release_items(
+        display_name, html_url, description, releases, start, end
+    )
     if not repo_items:
         # Aucune release émise pour ce repo → repli activité.
         repo_items = _watch_repo_activity_fallback(

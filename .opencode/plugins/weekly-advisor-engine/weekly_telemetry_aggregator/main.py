@@ -321,7 +321,9 @@ def _fetch_session_reads(
         return None
 
 
-def _usage_no_steps_status(adapter, meta, audit: list[dict] | None, warnings: list[WarningEntry]) -> None:
+def _usage_no_steps_status(
+    adapter, meta, audit: list[dict] | None, warnings: list[WarningEntry]
+) -> None:
     """Session sans steps : audit no-activity/unflushed + warning si unflushed."""
     if audit is None:
         return
@@ -441,9 +443,7 @@ def build_usage(
         _usage_no_steps_status(adapter, meta, audit, warnings)
         return None, False
 
-    user_turn_timestamps, edit_write_timestamps, parts = _session_part_timestamps(
-        adapter, meta
-    )
+    user_turn_timestamps, edit_write_timestamps, parts = _session_part_timestamps(adapter, meta)
 
     # Cross-check: lifetime step-finish costs vs session_v2 aggregate (spec §8).
     reported_cost = (
@@ -629,9 +629,7 @@ def _run_fallback_providers(cfg: TelemetryConfig) -> list[SessionProvider] | Non
     try:
         _path, adapter = detect_db(cfg.opencode_db_path)
     except DataSourceError as exc:
-        print(
-            f"telemetry-aggregator: FATAL: {exc} — lancer doctor", file=sys.stderr, flush=True
-        )
+        print(f"telemetry-aggregator: FATAL: {exc} — lancer doctor", file=sys.stderr, flush=True)
         return None
     from .providers.implementations.opencode import OpenCodeSessionProvider
 
@@ -771,18 +769,14 @@ def _run_selection_warnings(summary: object) -> None:
         summary.warnings = _cap_warnings([*summary.warnings, *extra_warnings])
 
 
-def _run_cost_estimates(
-    summary: object, usages: list[SessionUsage], cfg: TelemetryConfig
-) -> None:
+def _run_cost_estimates(summary: object, usages: list[SessionUsage], cfg: TelemetryConfig) -> None:
     """Coûts estimés first-class — None si rien à estimer."""
     estimates = estimate_costs(usages, rates=_harness_cost_rates(cfg))
     if estimates:
         summary.cost_estimates = estimates
 
 
-def _run_write_summary(
-    cfg: TelemetryConfig, run_time: object, summary: object
-) -> Path:
+def _run_write_summary(cfg: TelemetryConfig, run_time: object, summary: object) -> Path:
     """Activation run UUID + écriture summary + provenance — retourne out_path."""
     date = run_time.strftime("%Y-%m-%d")
     active = activate_run(cfg.output_dir, date, run_time)
@@ -1238,7 +1232,9 @@ def doctor(
     problems: list[str] = []
     warnings: list[str] = []
 
-    _doctor_project_root(cfg, cwd, config_loaded=config_loaded, problems=problems, warnings=warnings)
+    _doctor_project_root(
+        cfg, cwd, config_loaded=config_loaded, problems=problems, warnings=warnings
+    )
 
     # Sentinelle d'installation : placeholders « /path/to/... » jamais substitués
     # dans weekly-telemetry-config.json — le fatal générique ci-dessus n'est pas

@@ -338,9 +338,7 @@ def resolve_harness_scope(
     excluded_files, excluded_counts, unexcluded_files = _apply_exclusions(
         all_files, exclude_patterns
     )
-    included, included_counts = _apply_include_patterns(
-        all_files, include_patterns, excluded_files
-    )
+    included, included_counts = _apply_include_patterns(all_files, include_patterns, excluded_files)
 
     # Racines additionnelles : inclusion large sauf exclusion explicite.
     _include_extra_roots(all_files, safe_roots, excluded_files, included)
@@ -476,7 +474,9 @@ def _attach_section_paths(
             component["path"] = candidates[0]
 
 
-def _digest_components(inspection_map: Mapping[str, object]) -> list[tuple[str, Mapping[str, object]]]:
+def _digest_components(
+    inspection_map: Mapping[str, object],
+) -> list[tuple[str, Mapping[str, object]]]:
     """Composants (path, mapping) des 3 sections d'inspection, index de repli inclus."""
     components: list[tuple[str, Mapping[str, object]]] = []
     for section in ("command", "claude_md", "uncategorized"):
