@@ -6,7 +6,7 @@
  * les adaptateurs V1 et V2, et les tests de caractérisation partagent une seule
  * source de vérité. Toute logique d'exécution passe par {@link RuntimeApi}.
  *
- * Portée : contrat outil V1 actuel — 19 outils, 18 sous-commandes CLI appelées
+ * Portée : contrat outil V1 actuel — 21 outils, 19 sous-commandes CLI appelées
  * par ces outils. Toute divergence avec `scripts/fixtures/weekly-advisor-tool-contract.json`
  * doit faire échouer `scripts/tests/plugin-tool-contract.test.mjs`.
  */

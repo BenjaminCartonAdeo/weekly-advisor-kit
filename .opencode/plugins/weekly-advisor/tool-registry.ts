@@ -247,6 +247,77 @@ const HARNESS_SPEC: SimpleToolSpec = {
   timeoutMs: 900_000,
 }
 
+// ---------------------------------------------------------------------------
+// Descriptions mutualisées — fragments de contrat écrits UNE fois et composés
+// dans les descriptions qui les détiennent.
+//
+// Raison d'être (dérive du run cron 2026-10-01) : ces règles vivaient
+// uniquement dans `report.py` et dans les skills. Un agent qui n'avait que la
+// description de l'outil devait relire `report.py` par tranches — 10 lectures de
+// slicing sur ce seul run — pour reconstruire les contrats de section 4 et la
+// sémantique des codes de sortie. La description est le premier canal
+// (« l'agent n'a pas à deviner ») ; elle doit donc porter le contrat, pas un
+// renvoi.
+//
+// Conséquence de conception : un fragment partagé est seulement partagé s'il est
+// cité par au moins deux descriptions. `scripts/tests/plugin-v2.test.mjs`
+// (« parité des fragments partagés ») verrouille l'égalité **verbatim** entre
+// le fragment et chaque description qui l'utilise : on ne peut plus le reformuler
+// d'un côté et laisser l'autre obsolète.
+// ---------------------------------------------------------------------------
+
+/**
+ * Consumption du draft. Cité par `weekly_report_assemble` (qui consomme) et par
+ * `weekly_report_contract` (qui expose la règle sans rien écrire).
+ *
+* ⚠ CONTRAINTE CI : `scripts/check-flow-docs.mjs` surface 4 impose que la phrase
+ * « relancer weekly_report_prep » apparaisse dans les 400 caractères qui suivent
+ * la PREMIÈRE mention de `weekly_report_assemble` dans ce fichier. Le fragment se
+ * nomme donc lui-même, et la phrase le suit immédiatement : la fenêtre est
+ * portée par le TEXTE DU FRAGMENT, pas par ce commentaire, ni par une mention
+ * éparse plus bas dans la liste des outils. Le test « CI : la regex de
+ * check-flow-docs surface 4 » verrouille cet invariant.
+ */
+const DRAFT_CONSUMED_NOTE =
+  "⚠ `weekly_report_assemble` consomme le draft à chaque réussite : " +
+  "pour un nouvel assemble, relancer weekly_report_prep d'abord."
+
+/**
+ * Les deux fichiers de section 4, et lequel est lequel. Source de vérité :
+ * `_report_assemble_inner` (`weekly-report-blocks-auto-<date>.md` = filet de
+ * sécurité déterministe, `weekly-report-blocks-<date>.md` = prose agent 7b).
+ */
+const SECTION_4_FILES =
+  "Deux fichiers, deux rôles : `weekly-report-blocks-<date>.md` = ta prose agent (7b), " +
+  "validée par l'assemble ; `weekly-report-blocks-auto-<date>.md` = brouillon déterministe " +
+  "de repli, produit par weekly_report_blocks_draft, jamais validé."
+
+/**
+ * Contrat du fichier de section 4 écrit par l'agent (`weekly-report-blocks-<date>.md`).
+ * Chaque clause est appliquée par `validate_llm_blocks` / `_assemble_quality_block`
+ * — toute violation fait REJETER le bloc, qui retombe alors sur le brouillon auto.
+ */
+const SECTION_4_FILE_CONTRACT =
+  "CONTRAT DU FICHIER (validate_llm_blocks, violations ⇒ bloc rejeté ⇒ fallback auto) : " +
+  "≤ 60 lignes (cible ~40) ; ≥ 40 mots (config.py:190 blocks_min_words=40) ; " +
+  "tags de source `[F:<session_id_complet>#<category>]` — jamais un id tronqué, la balise " +
+  "doit résoudre exactement dans weekly-quality-findings-<date>.json —, `[A:<rule>]` pour " +
+  "chaque alerte (weekly-insights), `[M:<category>]` pour chaque constat de maintenance ; " +
+  "chaque finding de sévérité `high` doit être cité (sinon : coverage warning dans l'annexe) ; " +
+  "aucun chiffre libre dans le texte visible (seules dates ISO, pourcentages et versions " +
+  "sont tolérés) — le bloc ne cite que des catégories et des sévérités."
+
+/**
+ * Sémantique des codes de sortie des étapes de rapport. `rc=1` est une
+ * **dégradation visible**, pas un échec : c'est exactement la distinction que le
+ * rapport du 2026-10-01 n'a pas su faire (annoncé « Veille 265 nouveautés » alors
+ * que la branche veille rendait rc=1).
+ */
+const REPORT_RC_SEMANTICS =
+  "CODES DE SORTIE : rc=0 nominal ; rc=1 = dégradation warn-only, le livrable EST produit " +
+  "(rc=1 ≠ échec du pipeline) ; rc≥2 = échec, aucun livrable. " +
+  "Ne jamais convertir un rc=1 en « échec » ni le masquer dans le rapport."
+
 /** Outils simples de l'étape 6 (insights) à 7c (assemblage). */
 const REPORTING_SPECS: readonly SimpleToolSpec[] = [
   {
@@ -264,21 +335,84 @@ const REPORTING_SPECS: readonly SimpleToolSpec[] = [
   },
   {
     name: "weekly_report_prep",
-    description: "Étape 7a (1/2) : prépare le brouillon de rapport (report-prep → weekly-report-draft-<date>.md).",
+    description:
+      "Étape 7a (1/2) : rend le gabarit déterministe du rapport (report-prep → " +
+      "weekly-report-draft-<date>.md). " +
+      "PRODUIT : le draft, sections déterministes + le marqueur `<!-- QUALITY_BLOCK -->` " +
+      "(s'il manque, l'assemble sort en rc=2). " +
+      "CONSOMME : weekly-summary-<date>.json (obligatoire), plus les artefacts optionnels " +
+      "du run (insights, digest harness, findings qualité, ecosystem, contexte de veille) " +
+      "lus au gate `validate_required_artifacts`. " +
+      "NE FAIT PAS : n'écrit aucune prose — la section 4 reste le marqueur vide ; " +
+      "ne valide pas le bloc de constats (pas de gate anti-hallucination ici) ; " +
+      "ne produit pas le rapport final. " +
+      `rc : 0 nominal, 1 = résumé dégradé (livrable écrit), 2 = summary absente ou gate artefacts ≠ pass (rien). ${REPORT_RC_SEMANTICS}`,
     subcommand: "report-prep",
     timeoutMs: 120_000,
   },
   {
     name: "weekly_report_blocks_draft",
     description:
-      "Étape 7a (2/2) : génère le brouillon auto des blocs (report-blocks-draft → weekly-report-blocks-auto-<date>.md).",
+      "Étape 7a (2/2) : écrit le BROUILLON DÉTERMINISTE des blocs (report-blocks-draft → " +
+      "weekly-report-blocks-auto-<date>.md). Zéro LLM, zéro jugement : agrège alertes, " +
+      "maintenance, sessions coûteuses, findings qualité et règles harness. " +
+      "NE FAIT PAS : n'écrit pas `weekly-report-blocks-<date>.md` (c'est ta prose 7b, " +
+      "que ce tool n'a pas le droit de produire) ; ne valide rien — son propre contenu est " +
+      "explicitement marqué « brouillon automatique, revue humaine requise » et ne passe " +
+      "jamais la gate de prose. " +
+      `${SECTION_4_FILES} ` +
+      `${SECTION_4_FILE_CONTRACT} ` +
+      "Ce brouillon n'est que le filet de sécurité : pour que la section 4 soit marquée " +
+      "`prose agent (7b LLM)`, écris toi-même le fichier de prose et respecte le contrat ci-dessus. " +
+      `rc : 0 nominal, 1 = résumé dégradé (fichier écrit), 2 = summary absente (rien). ${REPORT_RC_SEMANTICS}`,
     subcommand: "report-blocks-draft",
+    timeoutMs: 120_000,
+  },
+  {
+    name: "weekly_report_blocks_check",
+    // `REPORT_RC_SEMANTICS` n'est délibérément PAS composé ici : ce fragment
+    // définit rc=1 comme une dégradation warn-only « le livrable EST produit ».
+    // Ici rc=1 signifie l'inverse — le bloc sera REJETÉ par l'assemble. Réutiliser
+    // le fragment dirait donc à l'agent l'inverse de la vérité ; les rc de ce
+    // check sont énoncés dans la description, sans vocabulaire « warn-only ».
+    description:
+      "Étape 7b.1 : VALIDE ta prose `weekly-report-blocks-<date>.md` (report-blocks-check) " +
+      "SANS la consommer. Même validateur que l'assemble (`validate_llm_blocks`) : verdict + " +
+      "liste NUMÉROTÉE des violations, chacune avec son numéro de ligne. " +
+      `CONTRÔLE : ${DRAFT_CONSUMED_NOTE} ` +
+      "C'est précisément pour cela que ce check existe : corriger un bloc rejeté ne coûte " +
+      "PAS un report-prep complet (run 2026-10-01 : 2 assemble ratés + 1 prep supplémentaire). " +
+      "APPELLE-LE après avoir écrit la prose (7b), AVANT l'assemble (7c), et réécris le " +
+      "fichier entre deux checks — il reste en place. " +
+      `${SECTION_4_FILES} ` +
+      `${SECTION_4_FILE_CONTRACT} ` +
+      "EN PLUS : le plancher de mots (contract.minWords) est appliqué ici comme par " +
+      "`_assemble_quality_block`, sinon ce check validerait un bloc que l'assemble rejette — " +
+      "le faux vert qu'on veut supprimer. " +
+      "rc : 0 conforme (assemblable tel quel) ; 1 = NON conforme, violations listées et le " +
+      "bloc sera rejeté par l'assemble (section 4 en `auto_draft_fallback`) ; " +
+      "2 = prose absente ou illisible (rien à valider). " +
+      "Les coverage warnings (`high` non cité) ne font PAS baisser le rc : ils signalent " +
+      "une omission, jamais une invention. " +
+      "RIEN N'EST ÉCRIT, RIEN N'EST SUPPRIMÉ : ni le bloc ni le draft ne sont touchés.",
+    subcommand: "report-blocks-check",
     timeoutMs: 120_000,
   },
   {
     name: "weekly_report_assemble",
     description:
-      "Étape 7c : assemble le rapport final (report-assemble → weekly-report-<date>.md). ⚠ un assemble réussi consomme le draft : pour un nouvel assemble, relancer weekly_report_prep d'abord.",
+      "Étape 7c : assemble le rapport final (report-assemble → weekly-report-<date>.md, " +
+      "+ `weekly-report-gates-<date>.json`). " +
+      `CONTRÔLE : ${DRAFT_CONSUMED_NOTE} ` +
+      "rc=1 ≠ échec du pipeline — ce sont des déGRADATIONS WARN-ONLY, le rapport EST écrit ; " +
+      "les 3 cas à connaître : (1) findings security/critical dans le digest harness → gate " +
+      "security.status=warn, rapport écrit ; (2) JOIN partiel (audit dynamique manquant) → " +
+      "rapport écrit sans ces sessions ; (3) rc=1 propagé du résumé (branche veille dégradée) " +
+      "ou du rendu HTML best-effort → rapport markdown écrit. " +
+      "rc≥2 = AUCUN rapport (draft absent/consommé, artefact requis manquant ou illisible, " +
+      "marqueur QUALITY_BLOCK absent, manifeste de curation malformé). " +
+      "État machine-readable de chaque gate : weekly-report-gates-<date>.json. " +
+      `${SECTION_4_FILE_CONTRACT}`,
     subcommand: "report-assemble",
     timeoutMs: 120_000,
   },
@@ -418,6 +552,58 @@ const HARNESS_REMEDIATE_TOOL: ToolDefinition = deepFreeze<ToolDefinition>({
     ),
 })
 
+/**
+ * Préfixe de la ligne de faits que le moteur (`safe_git_write.py`) pose sur la
+ * DEUXIÈME ligne d'un `commit-draft` réussi. Contrat inter-langages : la constante
+ * Python `COMMIT_DRAFT_RESULT_MARKER` porte exactement cette chaîne.
+ */
+const COMMIT_DRAFT_RESULT_MARKER = "commit-draft-result: "
+
+/**
+ * Faits d'un commit de draft. `sha` est le SHA **COMPLET** (40 hex) ; `short_sha`
+ * n'est que son affichage abrégé. Les deux sont exposés parce que la prose ne peut
+ * pas porter le complet : `git commit` écrit `[branche sha-court] sujet` sur sa
+ * première ligne, donc l'abréviation que l'agent y lisait n'était pas un SHA.
+ */
+type CommitDraftFacts = {
+  kind: string
+  file: string
+  sha: string
+  short_sha: string
+  branch: string
+  subject: string
+}
+
+/**
+ * Sépare la prose du retour `commit-draft` de sa ligne de faits.
+ *
+ * `null` sur TOUTE autre sortie — refus `KO`, refus de gate, erreur, JSON
+ * illisible, ou faits suivis d'une sortie inattendue : l'appelant rend alors la
+ * sortie du CLI telle quelle, octet pour octet. Le structuré n'apparaît donc que
+ * lorsqu'un commit a réellement eu lieu, ce qui est exactement la condition pour
+ * qu'il existe un commit à enregistrer. Aucun fait n'est jamais deviné.
+ */
+function splitCommitDraftResult(
+  cliOutput: string,
+): { facts: CommitDraftFacts; message: string } | null {
+  const lines = cliOutput.split("\n")
+  const at = lines.findIndex((line) => line.trimStart().startsWith(COMMIT_DRAFT_RESULT_MARKER))
+  if (at === -1) return null
+  // Les faits doivent être la dernière ligne : une sortie qui continue après
+  // ferait perdre de l'information, on rendrait alors le brut.
+  if (lines.slice(at + 1).some((line) => line.trim() !== "")) return null
+  try {
+    const facts = JSON.parse(
+      lines[at].trimStart().slice(COMMIT_DRAFT_RESULT_MARKER.length),
+    ) as CommitDraftFacts
+    if (typeof facts?.sha !== "string" || facts.sha === "") return null
+    if (typeof facts?.subject !== "string" || facts.subject === "") return null
+    return { facts, message: lines.slice(0, at).join("\n").trim() }
+  } catch {
+    return null
+  }
+}
+
 const COMMIT_DRAFT_TOOL: ToolDefinition = deepFreeze<ToolDefinition>({
   name: "weekly_commit_draft",
   description:
@@ -484,7 +670,16 @@ const COMMIT_DRAFT_TOOL: ToolDefinition = deepFreeze<ToolDefinition>({
       COMMIT_DRAFT_TIMEOUT_MS,
       signal,
     )
-    return note ? `${note}\n\n${result}` : result
+    const parsed = splitCommitDraftResult(result)
+    // Refus, gate ou sortie non structurée : la sortie brute du CLI EST le
+    // retour, note comprise — rien n'est réécrit, rien n'est masqué.
+    if (!parsed) return note ? `${note}\n\n${result}` : result
+    const { facts, message } = parsed
+    return JSON.stringify(
+      { ...facts, message, gate_note: note },
+      null,
+      2,
+    )
   },
 })
 
@@ -577,7 +772,148 @@ const SKILL_CURATE_TOOL: ToolDefinition = deepFreeze<ToolDefinition>({
 })
 
 /**
- * Les 19 outils dans l'ordre d'exposition du contrat V1 — l'ordre est figé par
+ * Contrat d'artefacts, exposé en JSON — **lecture seule**.
+ *
+ * Miroir gelé de trois symboles du moteur (`report.py`) :
+ * `_ARTIFACT_CONTRACTS`, `validate_required_artifacts`, `applicable_summary_rc`.
+ *
+ * **Read-only strict.** Aucun subprocess, aucune lecture de fichier, aucune écriture,
+ * aucun accès au `<output_dir>` : le handler ne fait qu'un `JSON.stringify` d'une
+ * constante en mémoire. Rien à nettoyer, rien à annuler — d'où `timeoutMs: 0` et
+ * l'absence de `cliSubcommand`, le même couple que `weekly_preflight` (invariant
+ * vérifié par `plugin-registry.test.mjs`). Ne pas y ajouter de lecture disque : le
+ * contrat doit rester disponible même quand le run et le moteur sont absents.
+ *
+ * Pourquoi l'exposer : ces trois symboles vivaient hors de portée de l'agent, qui
+ * devait relire `report.py` par tranches (10 lectures sur le run 2026-10-01) pour
+ * savoir quels artefacts sont requis, lesquels sont seulement optionnels, et ce
+ * que vaut un rc=1. Une description ne peut pas porter une liste de 13 noms
+ * d'artefacts et une table de gates ; un tool read-only si.
+ */
+export const REPORT_ARTIFACT_CONTRACT: Readonly<Record<string, unknown>> = deepFreeze({
+  /** `report.py::_ARTIFACT_CONTRACTS` — nom d'artefact → validateur de forme. */
+  artifactContracts: [
+    "weekly-summary",
+    "weekly-insights",
+    "weekly-harness-digest",
+    "weekly-ecosystem",
+    "weekly-quality-findings",
+    "weekly-watch-findings-raw",
+    "weekly-coherence-findings",
+    "weekly-audit-candidates",
+    "weekly-watch-context",
+    "weekly-watch-findings",
+    "watch-candidates",
+    "weekly-harness-remediation",
+    "weekly-timings",
+  ],
+  /** `report.py::validate_required_artifacts` — qui bloque, qui ne bloque pas. */
+  validateRequiredArtifacts: {
+    defaultRequired: ["weekly-summary"],
+    optionalNames: [
+      "weekly-insights",
+      "weekly-harness-digest",
+      "weekly-ecosystem",
+      "weekly-quality-findings",
+      "weekly-coherence-findings",
+      "skill-curate",
+      "weekly-audit-candidates",
+      "weekly-watch-context",
+      "weekly-watch-findings",
+      "weekly-watch-findings-raw",
+      "weekly-harness-remediation",
+      "weekly-harness-remediation-proposals",
+      "weekly-timings",
+    ],
+    rule:
+      "Une branche déclarée applicable dans weekly-timings-<date>.json devient REQUISE même " +
+      "si son producteur est normalement optionnel ; une branche désactivée reste visible dans " +
+      "`optional` et ne peut pas faire échouer la gate par simple absence.",
+    artifactStatuses: ["present", "absent", "ill_readable"],
+    gateStatus: ["pass", "incomplete"],
+    returnedKeys: [
+      "required",
+      "optional",
+      "artifacts",
+      "status",
+      "missing",
+      "ill_readable",
+      "optional_missing",
+      "optional_ill_readable",
+      "html",
+    ],
+    htmlStatuses: ["present", "absent", "ill_readable", "disabled"],
+    dynamicAudits:
+      "audit-findings-<session_id>.json déclarés dans le payload de jointure : requis (rc=2 " +
+      "s'ils manquent avec d'autres requis), mais un JOIN partiel (seuls les audits " +
+      "dynamiques manquent) donne rc=1 ET le rapport est écrit sans ces sessions.",
+  },
+  /** `report.py::applicable_summary_rc` — le rc du résumé, explié. */
+  applicableSummaryRc: {
+    returns: [2, 0, 1],
+    fatal:
+      "2 si le résumé n'est pas un objet, si son rc brut est ≥ 2, ou si un enregistrement de " +
+      "jointure porte rc ≥ 2 — un 2 n'est JAMAIS dégradé vers 0 ou 1.",
+    zero:
+      "0 quand tous les enregistrements de jointure sont non bloquants : transcript tronqué " +
+      "validé, entrée optionnelle récupérée, refus de permission externe au worktree. Ce sont " +
+      "des FAITS, pas des échecs.",
+    one:
+      "1 sinon :(summary ou branche) en partie dégradé. Le pipeline a produit son livrable — " +
+      "1 est un signal de qualité à remonter dans le rapport, pas un STOP.",
+  },
+  /** Rappel des trois gates qui expliquent un rc=1 à l'assemble. */
+  assembleWarnOnlyRc1: [
+    "security : findings security/critical dans le digest harness → gate status=warn, rapport écrit",
+    "jointure partielle : audit dynamique manquant → rapport écrit sans ces sessions",
+    "rc propagé : résumé dégradé (branche veille rc=1) ou rendu HTML best-effort en échec → rapport markdown écrit",
+  ],
+  section4: {
+    files: {
+      prose: "weekly-report-blocks-<date>.md",
+      autoDraft: "weekly-report-blocks-auto-<date>.md",
+    },
+    contract: {
+      maxLines: 60,
+      targetLines: 40,
+      minWords: 40,
+      minWordsSource: "config.py:190 blocks_min_words=40",
+      tags: {
+        "F:<session_id>#<category>": "finding qualité — id complet, jamais tronqué",
+        "A:<rule>": "alerte (weekly-insights)",
+        "M:<category>": "constat de maintenance (weekly-insights)",
+      },
+      mustCiteSeverity: "high",
+      forbidden: "chiffres libres dans le texte visible (tolérés : dates ISO, %, versions)",
+      onViolation: "bloc REJETÉ → fallback sur le brouillon auto, section marquée auto_draft_fallback",
+    },
+  },
+  draftConsumed: DRAFT_CONSUMED_NOTE,
+})
+
+const REPORT_CONTRACT_TOOL: ToolDefinition = deepFreeze<ToolDefinition>({
+  name: "weekly_report_contract",
+  description:
+    "Outil READ-ONLY : renvoie en JSON le contrat d'artefacts du rapport — " +
+    "required/optional par `validate_required_artifacts`, validateurs de forme " +
+    "(`_ARTIFACT_CONTRACTS`), sémantique du `rc` (`applicable_summary_rc`), les 3 cas " +
+    "warn-only rc=1 de l'assemble, et le contrat du fichier de section 4. " +
+    "RIEN N'EST ÉCRIT, aucun subprocess, aucun accès disque — appelable à tout moment, " +
+    "sans run ni moteur installés. " +
+    "À appeler AVANT d'écrire `weekly-report-blocks-<date>.md` (étape 7b) au lieu de " +
+    "deviner les tags, la taille et la couverture `high`, et AVANT d'interpréter un rc " +
+    "de veille ou d'assemble. " +
+    `${SECTION_4_FILES} ` +
+    `${SECTION_4_FILE_CONTRACT} ` +
+    `${REPORT_RC_SEMANTICS} ${DRAFT_CONSUMED_NOTE}`,
+  fields: [],
+  timeoutMs: 0,
+  anchored: false,
+  run: async (): Promise<string> => JSON.stringify(REPORT_ARTIFACT_CONTRACT),
+})
+
+/**
+ * Les 20 outils dans l'ordre d'exposition du contrat V1 — l'ordre est figé par
  * la fixture, pas choisi ici. Les groupes simples sont entrecoupés d'outils à
  * comportement propre : la composition est donc explicite, jamais un simple
  * `concat` de deux tableaux.
@@ -589,6 +925,7 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = deepFreeze([
   simpleTool(HARNESS_SPEC),
   HARNESS_REMEDIATE_TOOL,
   ...REPORTING_SPECS.map(simpleTool),
+  REPORT_CONTRACT_TOOL,
   COMMIT_DRAFT_TOOL,
   ...ANNEX_SPECS.map(simpleTool),
   SKILL_CURATE_TOOL,

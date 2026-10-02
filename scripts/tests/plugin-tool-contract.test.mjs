@@ -1,6 +1,6 @@
 // Caractérisation du contrat outil V1 de weekly-advisor.
 //
-// Ce test fige ce qui EXISTE : ordre des 19 outils, ordre des 18 sous-commandes
+// Ce test fige ce qui EXISTE : ordre des 21 outils, ordre des 19 sous-commandes
 // CLI appelées par ces outils, noms de champs, primitives, required/optional,
 // valeurs d'enum, descriptions (byte-for-byte), timeouts, ancrage, valeurs par
 // défaut et messages d'erreur. Toute modification du plugin doit faire échouer
@@ -44,7 +44,9 @@ const EXPECTED_TOOL_NAMES = [
   "weekly_draft_candidates",
   "weekly_report_prep",
   "weekly_report_blocks_draft",
+  "weekly_report_blocks_check",
   "weekly_report_assemble",
+  "weekly_report_contract",
   "weekly_commit_draft",
   "weekly_self_cost",
   "weekly_doctor",
@@ -65,6 +67,7 @@ const EXPECTED_CLI_COMMANDS = [
   "draft-candidates",
   "report-prep",
   "report-blocks-draft",
+  "report-blocks-check",
   "report-assemble",
   "commit-draft",
   "self-cost",
@@ -99,23 +102,23 @@ try {
 
 test("registry must load successfully", () => {
   assert.ok(registryLoadError === null, `Registry load failed: ${registryLoadError?.message}`)
-  assert.equal(REGISTRY_TOOLS.length, 19, "Registry must provide exactly 19 tools")
+  assert.equal(REGISTRY_TOOLS.length, 21, "Registry must provide exactly 21 tools")
 })
 
 // ---------------------------------------------------------------------------
 // Fixture
 // ---------------------------------------------------------------------------
 
-test("fixture exposes the 19 tools and the 18 CLI commands in frozen order", () => {
-  assert.equal(CONTRACT.tools.length, 19)
+test("fixture exposes the 21 tools and the 19 CLI commands in frozen order", () => {
+  assert.equal(CONTRACT.tools.length, 21)
   assert.deepEqual(
     CONTRACT.tools.map((tool) => tool.name),
     EXPECTED_TOOL_NAMES,
-    "ordre des 19 outils figé",
+    "ordre des 21 outils figé",
   )
-  assert.equal(new Set(CONTRACT.tools.map((tool) => tool.name)).size, 19, "noms uniques")
-  assert.deepEqual(CONTRACT.cliCommands, EXPECTED_CLI_COMMANDS, "ordre des 18 sous-commandes figé")
-  assert.equal(CONTRACT.cliCommands.length, 18)
+  assert.equal(new Set(CONTRACT.tools.map((tool) => tool.name)).size, 21, "noms uniques")
+  assert.deepEqual(CONTRACT.cliCommands, EXPECTED_CLI_COMMANDS, "ordre des 19 sous-commandes figé")
+  assert.equal(CONTRACT.cliCommands.length, 19)
   assert.deepEqual(
     CONTRACT.tools.filter((tool) => tool.cliSubcommand !== null).map((tool) => tool.cliSubcommand),
     CONTRACT.cliCommands,
@@ -159,7 +162,7 @@ test("CLI commands match the engine subcommand table", () => {
 // ---------------------------------------------------------------------------
 
 test("registry tools match fixture tool names and order", () => {
-  assert.equal(REGISTRY_TOOLS.length, 19, "registre : 19 outils")
+  assert.equal(REGISTRY_TOOLS.length, 21, "registre : 21 outils")
   assert.deepEqual(
     REGISTRY_TOOLS.map((t) => t.name),
     CONTRACT.tools.map((t) => t.name),

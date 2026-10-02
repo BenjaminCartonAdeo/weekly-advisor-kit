@@ -291,7 +291,7 @@ function checkPluginStructure() {
 
 /**
  * Verify registry: load TOOL_REGISTRY and CLI_COMMANDS via Node 24 type-stripping subprocess.
- * BLOCKER FIX #1: Use documented Node 24 loader to assert TOOL_REGISTRY.length===19 and CLI_COMMANDS.length===18.
+ * BLOCKER FIX #1: Use documented Node 24 loader to assert TOOL_REGISTRY.length===21 and CLI_COMMANDS.length===19.
  * In strict mode, registry/loader failure or parse failure must FAIL (exit 1).
  * In non-strict, loader failure falls back to regex; record as SKIPPED with reason.
  */
@@ -358,8 +358,8 @@ console.log(JSON.stringify({ toolCount: TOOL_REGISTRY.length, cliCount: CLI_COMM
         log(`  tools (loader): ${toolCount}`)
         log(`  CLI commands (loader): ${cliCount}`)
 
-        if (toolCount !== 19 || cliCount !== 18) {
-          const reason = `tool/command count mismatch: expected (19 tools, 18 CLI), got (${toolCount}, ${cliCount})`
+        if (toolCount !== 21 || cliCount !== 19) {
+          const reason = `tool/command count mismatch: expected (21 tools, 19 CLI), got (${toolCount}, ${cliCount})`
           log(`  error: ${reason}`)
           recordCheck("Registry", false, null, reason)
           if (isStrict) {
@@ -371,7 +371,7 @@ console.log(JSON.stringify({ toolCount: TOOL_REGISTRY.length, cliCount: CLI_COMM
           return false
         }
 
-        log(`  ✓ OK (19 tools, 18 CLI commands via loader)`)
+        log(`  ✓ OK (21 tools, 19 CLI commands via loader)`)
         recordCheck("Registry", true, null, null)
         return true
       } catch (parseErr) {

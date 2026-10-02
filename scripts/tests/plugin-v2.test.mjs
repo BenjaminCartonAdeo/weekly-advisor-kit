@@ -2,7 +2,7 @@
 // (`.opencode/plugins/weekly-advisor/adapters/v2.ts`).
 //
 // Ce test fige la couture V2 telle que l'hôte la voit : ce que `setup()`
-// enregistre (un hook de prompt, 19 outils), avec quelles formes (schéma JSON
+// enregistre (un hook de prompt, 21 outils), avec quelles formes (schéma JSON
 // d'entrée fermé, `{content}`, `ctx.location.project` réduit structurellement),
 // et ce qu'il ne fait pas (aucune commande en doublon, aucun import du SDK V1,
 // aucun log de prompt, aucun accès disque pendant `transform`).
@@ -27,6 +27,12 @@ import { fileURLToPath } from "node:url"
 import { register } from "node:module"
 
 import { makeCapturingKit, makeKit, useKitEnv } from "./helpers/fake-kit.mjs"
+import {
+  CLI_COMMANDS,
+  REPORT_ARTIFACT_CONTRACT,
+  TOOL_BY_NAME,
+  TOOL_REGISTRY,
+} from "../../.opencode/plugins/weekly-advisor/tool-registry.ts"
 
 // ---------------------------------------------------------------------------
 // Détecteur de chargement du SDK V1.
@@ -357,16 +363,16 @@ test("V2 : le hook de prompt ne journalise ni le prompt ni ses fichiers", async 
 })
 
 // ---------------------------------------------------------------------------
-// Enregistrement des 19 outils
+// Enregistrement des 21 outils
 // ---------------------------------------------------------------------------
 
-test("V2 : 19 outils enregistrés, noms et ordre conformes à la fixture", async () => {
+test("V2 : 21 outils enregistrés, noms et ordre conformes à la fixture", async () => {
   const kit = makeKit()
   const restore = useKitEnv(kit)
   try {
     const fake = await setupWith(kit)
-    assert.equal(EXPECTED.length, 19, "la fixture doit figer 19 outils")
-    assert.equal(fake.tools.length, 19)
+    assert.equal(EXPECTED.length, 21, "la fixture doit figer 21 outils")
+    assert.equal(fake.tools.length, 21)
     assert.deepEqual(fake.tools.map((tool) => tool.name), EXPECTED.map((tool) => tool.name))
     assert.deepEqual(await fake.ctx.tool.list(), EXPECTED.map((tool) => tool.name))
     assert.deepEqual(fake.transforms.length, 1, "un seul transform")
@@ -377,7 +383,7 @@ test("V2 : 19 outils enregistrés, noms et ordre conformes à la fixture", async
   }
 })
 
-test("V2 : schéma JSON d'entrée fermé et exact pour les 19 outils", async () => {
+test("V2 : schéma JSON d'entrée fermé et exact pour les 21 outils", async () => {
   const kit = makeKit()
   const restore = useKitEnv(kit)
   try {
@@ -657,7 +663,7 @@ test("V2 : métadonnées projet en objet — canonical prioritaire, directory en
   assert.equal(adapter.projectDirectory({ canonical: 42, directory: null }), undefined)
 
   // Projections non-objet : ignorées sans lever — un hôte exotique ne doit pas
-  // empêcher l'enregistrement des 19 outils.
+  // empêcher l'enregistrement des 21 outils.
   for (const projection of [undefined, null, "/tmp/une-chaine", ["/tmp/liste"], 7]) {
     assert.equal(
       adapter.projectDirectory(projection),
@@ -688,3 +694,178 @@ test("V2 : le point d'entrée prime sur un ctx.location et un projet V2 étrange
     fs.rmSync(foreign.root, { recursive: true, force: true })
   }
 })
+
+// ---------------------------------------------------------------------------
+// Parité des fragments de description partagés
+//
+// Les descriptions d'outils ne sont pas de la documentation : c'est le premier
+// canal par lequel un agent découvre les contrats du moteur. Le run cron du
+// 2026-10-01 a payé 10 lectures de `report.py` parce que les règles de section 4
+// et la sémantique des rc n'étaient portées par aucune description.
+//
+// Corollaire de conception : un fragment partagé (constante) doit apparaître
+// VERBATIM dans chaque description qui l'utilise. Un test de parité le verrouille,
+// sinon le mécanisme se dégrade en deux copies divergentes — exactement le défaut
+// qu'il prétend corriger.
+// ---------------------------------------------------------------------------
+
+const REGISTRY_FILE = path.join(ROOT, ".opencode", "plugins", "weekly-advisor", "tool-registry.ts")
+const ENGINE_REPORT = path.join(
+  ROOT,
+  ".opencode",
+  "plugins",
+  "weekly-advisor-engine",
+  "weekly_telemetry_aggregator",
+  "report.py",
+)
+const REGISTRY_SRC = fs.readFileSync(REGISTRY_FILE, "utf8")
+
+/** Extrait la valeur d'une constante `const X = <expr>` du registre. */
+function registryConst(name) {
+  const match = REGISTRY_SRC.match(new RegExp(`const ${name} =\\s*([\\s\\S]*?)\\n\\n`, "m"))
+  assert.ok(match, `constante ${name} introuvable dans tool-registry.ts`)
+  return match[1]
+}
+
+/** Concatène les littéraux d'une constante de description TS (lignes `"…" +`). */
+function descriptionLiteral(name) {
+  const expr = registryConst(name)
+  const parts = [...expr.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1])
+  assert.ok(parts.length > 0, `constante ${name} : aucun littéral de chaîne`)
+  return parts
+    .join("")
+    .replace(/\\`/g, "`")
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, "\\")
+}
+
+test("parité : chaque fragment partagé apparaît verbatim dans ≥ 2 descriptions", () => {
+  const descriptions = new Map(EXPECTED.map((tool) => [tool.name, tool.description]))
+  const SHARED = {
+    DRAFT_CONSUMED_NOTE: ["weekly_report_assemble", "weekly_report_contract"],
+    SECTION_4_FILES: ["weekly_report_blocks_draft", "weekly_report_contract"],
+    SECTION_4_FILE_CONTRACT: ["weekly_report_blocks_draft", "weekly_report_assemble", "weekly_report_contract"],
+    REPORT_RC_SEMANTICS: ["weekly_report_prep", "weekly_report_blocks_draft", "weekly_report_contract"],
+  }
+  for (const [name, owners] of Object.entries(SHARED)) {
+    assert.ok(owners.length >= 2, `${name} : un fragment « partagé » doit servir ≥ 2 descriptions`)
+    const literal = descriptionLiteral(name)
+    assert.ok(literal.length > 0, `${name} : fragment vide`)
+    for (const owner of owners) {
+      const description = descriptions.get(owner)
+      assert.ok(description, `${owner} : outil absent de la fixture`)
+      assert.ok(
+        description.includes(literal),
+        `${name} absent verbatim de la description de ${owner} — le fragment et sa copie divergent`,
+      )
+    }
+  }
+})
+
+test("parité : les fragments de section 4 énoncent les seuils vérifiés par le moteur", () => {
+  const contract = descriptionLiteral("SECTION_4_FILE_CONTRACT")
+  // `config.py:190` — blocks_min_words
+  assert.ok(contract.includes("40"), "le seuil de 40 mots doit rester dans le fragment")
+  assert.ok(contract.includes("60"), "le plafond de 60 lignes doit rester dans le fragment")
+  assert.ok(contract.includes("[F:"), "le tag de finding doit rester dans le fragment")
+  assert.ok(contract.includes("[A:"), "le tag d'alerte doit rester dans le fragment")
+  assert.ok(contract.includes("[M:"), "le tag de maintenance doit rester dans le fragment")
+  assert.ok(contract.includes("high"), "l'obligation de citer les findings high doit rester")
+  assert.ok(/jamais un id tronqué/.test(contract), "l'interdiction de tronquer l'id doit rester")
+})
+
+test("parité : les rc=1 warn-only de l'assemble sont énumérés, et rc=1 ≠ échec est dit", () => {
+  const assemble = descriptionsOf("weekly_report_assemble")
+  assert.match(assemble, /rc=1\s*≠\s*échec du pipeline/)
+  // Les trois cas documentés dans `_report_assemble_inner` / `_assemble_*`.
+  assert.match(assemble, /security/i, "cas warn-only sécurité")
+  assert.match(assemble, /JOIN partiel/i, "cas warn-only JOIN partiel")
+  assert.match(assemble, /rc=1 propagé/i, "cas warn-only rc propagé")
+  assert.match(assemble, /rc≥2\s*=\s*AUCUN rapport/, "rc≥2 doit rester le vrai échec")
+  const rcSemantics = descriptionsOf("weekly_report_contract")
+  assert.match(rcSemantics, /rc=1\s*≠\s*échec du pipeline/)
+  assert.equal(REPORT_ARTIFACT_CONTRACT.assembleWarnOnlyRc1.length, 3)
+})
+
+test("parité : weekly_report_contract est read-only strict (in-process, sans champ ni rc de CLI)", () => {
+  const tool = TOOL_BY_NAME.get("weekly_report_contract")
+  assert.ok(tool, "weekly_report_contract absent du registre")
+  assert.equal(tool.cliSubcommand, undefined, "aucune sous-commande : read-only in-process")
+  assert.equal(tool.timeoutMs, 0, "timeout nul : rien à annuler")
+  assert.deepEqual(tool.fields, [], "aucun champ : rien à valider")
+  assert.equal(tool.anchored, false, "l'ancre est irrelevante pour un contrat figé")
+  // 19 appels CLI pour 21 outils : les deux nouveaux tools in-process n'en ajoutent aucun.
+  assert.equal(CLI_COMMANDS.length, 19)
+  const inProc = TOOL_REGISTRY.filter((t) => t.cliSubcommand === undefined).map((t) => t.name)
+  assert.deepEqual(inProc, ["weekly_preflight", "weekly_report_contract"])
+})
+
+test("weekly_report_contract : le handler rend le contrat en JSON, sans effet de bord", async () => {
+  const kit = makeKit()
+  const restore = useKitEnv(kit)
+  try {
+    const fake = await setupWith(kit)
+    const tool = fake.tools.find((t) => t.name === "weekly_report_contract")
+    assert.ok(tool, "weekly_report_contract non enregistré")
+    const before = fs.readdirSync(kit.root, { recursive: true }).sort()
+    const payload = JSON.parse((await tool.execute({}, {})).content)
+    assert.deepEqual(payload, JSON.parse(JSON.stringify(REPORT_ARTIFACT_CONTRACT)))
+    const after = fs.readdirSync(kit.root, { recursive: true }).sort()
+    assert.deepEqual(after, before, "un tool read-only ne doit rien écrire")
+  } finally {
+    restore()
+    fs.rmSync(kit.root, { recursive: true, force: true })
+  }
+})
+
+test("parité : REPORT_ARTIFACT_CONTRACT suit les littéraux de report.py", () => {
+  const reportSrc = fs.readFileSync(ENGINE_REPORT, "utf8")
+  const contracts = reportSrc.match(/_ARTIFACT_CONTRACTS: dict\[str, Callable\[\[Mapping\], bool\]\] = \{([\s\S]*?)\n\}/)
+  assert.ok(contracts, "_ARTIFACT_CONTRACTS introuvable dans report.py")
+  const pyNames = [...contracts[1].matchAll(/"([a-z][a-z0-9-]*)":/g)].map((m) => m[1])
+  assert.deepEqual(
+    [...REPORT_ARTIFACT_CONTRACT.artifactContracts].sort(),
+    pyNames.sort(),
+    "artifactContracts a dérivé de _ARTIFACT_CONTRACTS",
+  )
+  // `validate_required_artifacts` : la liste `optional` du moteur.
+  const optional = reportSrc.match(/"optional": \(([\s\S]*?)\n\s{8}\),/)
+  assert.ok(optional, "liste optional de validate_required_artifacts introuvable")
+  const pyOptional = [...optional[1].matchAll(/"([a-z][a-z0-9-]*)",/g)].map((m) => m[1])
+  assert.deepEqual(
+    [...REPORT_ARTIFACT_CONTRACT.validateRequiredArtifacts.optionalNames].sort(),
+    pyOptional.sort(),
+    "optionalNames a dérivé de validate_required_artifacts",
+  )
+  // Un nom du moteur absent du tool laisserait l'agent sans gate à découvrir.
+  for (const name of [...pyNames, ...pyOptional]) {
+    assert.ok(
+      REPORT_ARTIFACT_CONTRACT.artifactContracts.includes(name) ||
+        REPORT_ARTIFACT_CONTRACT.validateRequiredArtifacts.optionalNames.includes(name),
+      `artefact moteur "${name}" absent du contrat exposé`,
+    )
+  }
+})
+
+test("CI : la regex de check-flow-docs surface 4 (draft consommé) reste satisfaite", () => {
+  // Copie littérale de la regex de `scripts/check-flow-docs.mjs` surface 4 : la
+  // CI échoue si « relancer weekly_report_prep » sort de la fenêtre de 400
+  // caractères qui suit la PREMIÈRE mention de `weekly_report_assemble`.
+  const gate = /weekly_report_assemble[\s\S]{0,400}?relancer weekly_report_prep/
+  assert.ok(gate.test(REGISTRY_SRC), "gate surface 4 (relancer weekly_report_prep) cassée")
+  // La fenêtre doit être portée par le TEXTE du fragment partagé, pas par son
+  // commentaire ni par une mention éparse plus bas : sinon le prochain refactor
+  // du commentaire casse la CI sans qu'aucun test ici ne l'ait vu venir.
+  const note = descriptionLiteral("DRAFT_CONSUMED_NOTE")
+  const named = note.indexOf("weekly_report_assemble")
+  const phrase = note.indexOf("relancer weekly_report_prep")
+  assert.ok(named >= 0, "DRAFT_CONSUMED_NOTE ne nomme pas weekly_report_assemble")
+  assert.ok(phrase > named, "la phrase doit suivre la mention, pas la précéder")
+  assert.ok(phrase - named < 400, "la phrase est hors de la fenêtre de 400 caractères")
+})
+
+function descriptionsOf(name) {
+  const tool = EXPECTED.find((t) => t.name === name)
+  assert.ok(tool, `${name} : outil absent de la fixture`)
+  return tool.description
+}

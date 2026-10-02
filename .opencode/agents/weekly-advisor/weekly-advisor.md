@@ -264,19 +264,22 @@ branche sont gérées par le worker lui-même (ex. worker V : 2.2 → 2.5 séque
 | **1.5.JOIN** | **Consolidation PRINCIPAL** : merge des K `audit-findings-*.json` → `weekly-quality-findings-<date>.json` (aucun re-LLM par session au merge) | `weekly-quality-findings-<date>.json` |
 | **1.H** | `weekly_harness` (pin 7.9.0 ; rc 0/1 = OK) | `weekly-harness-digest-<date>.json` |
 | **1.H** | **Skill `harness-remediation`** : analyse les findings, écrit la proposition requise puis appelle `weekly_harness_remediate` | proposal `weekly-harness-remediation-proposals-<date>.json` ; final `weekly-harness-remediation-<date>.json` |
-| **JOIN** | Orchestrateur : synthèse contrats T/V/H, merge rc, attente run-dir | `weekly-timings-<date>.json` |
+| **JOIN** | Orchestrateur : synthèse contrats T/V/H, merge rc, attente run-dir — puis **enregistrement des commits de draft** (§ Enregistrement des commits de draft) | `weekly-timings-<date>.json` |
 | **2.D** | **Skill `weekly-drafting`** (primaire F6, vérifiée avant dispatch) : `weekly_draft_candidates` → rédaction skills/commands + `weekly_commit_draft` (≤ plafond) | commits `skill:`/`command:` |
 | **2.I** | `weekly_insights` | `weekly-insights-<date>.json` |
 | **2.C** | **Skill `weekly-coherence-review`** (primaire F6, vérifiée avant dispatch) : état déclaratif vs usage réel | `weekly-coherence-findings-<date>.json` |
 | **2.6** | **Étape 6.6 `weekly_skill_curate`** [REQUIRED, séquentiel APRÈS WAVE 2 — branche WAVE 2.5] (dry-run par défaut ; `apply=true` après validation) : curation/GC (R4) + décroissance TTL (R8). Consomme `weekly-coherence-findings-<date>.json` de 2.C (décisions archive\|merge\|pin\|reference) ; protège `origin=user` | `skill-curate-<date>.json` (manifest apply) |
 | **7a** | `weekly_report_prep` puis `weekly_report_blocks_draft` (brouillon auto) | `weekly-report-draft-<date>.md` |
+| **7b.0** | `weekly_report_contract` — **read-only, appel AVANT d'écrire la prose** : contrat JSON des artefacts (required/optional), sémantique des rc, contrat du fichier de section 4. Ne jamais deviner ces règles, ne pas relire `report.py` | JSON (aucun fichier) |
 | **7b** | **Skill `weekly-report-prose`** : prose optionnelle (contrat anti-hallucination) | `weekly-report-blocks-<date>.md` |
-| **7c** | `weekly_report_assemble` → **signal du cron** ; génère le **rapport HTML** dans `<project_root>/reports/html/` (`weekly-report-latest.html` + copie datée) ; ⚠ un assemble réussi **supprime le draft** | `weekly-report-<date>.md` |
+| **7b.1** | `weekly_report_blocks_check` — **valide SANS consommer** : appel AVANT l'assemble (7c). Même validateur que l'assemble, verdict + violations numérotées avec leur ligne. ⚠ NE CONSOMME RIEN : corriger un bloc rejeté ne coûte pas un `report-prep` complet | JSON (aucune écriture) |
+| **7c** | `weekly_report_assemble` → **signal du cron** ; génère le **rapport HTML** dans `<project_root>/reports/html/` (`weekly-report-latest.html` + copie datée) ; ⚠ un assemble réussi **supprime le draft**. **rc=1 = warn-only, le rapport EST écrit** (sécurité présente / JOIN partiel / rc propagé de la veille) — ce n'est pas un échec du pipeline ; rc≥2 = aucun rapport | `weekly-report-<date>.md` |
 | **8** | `weekly_self_cost` (annexe) | texte |
 
 **Contrat de retour worker (obligatoire, dernière sortie)** : structure `{branch, rc, steps_done,
-warnings, artifacts, elapsed_s, skills_loaded}` définie dans `.opencode/agents/weekly-advisor/weekly-advisor-worker.md`
-— `skills_loaded` (F6) porte le résultat du pre-flight skills de la branche.
+warnings, artifacts, elapsed_s, skills_loaded, sha}` définie dans `.opencode/agents/weekly-advisor/weekly-advisor-worker.md`
+— `skills_loaded` (F6) porte le résultat du pre-flight skills de la branche ; `sha` (branche D)
+remonte les faits des drafts confirmés (§ Enregistrement des commits de draft).
 
 **Gating merge rc (JOIN)** :
 - Un seul rc=2 parmi les workers (ou crash) → STOP sans rapport.
@@ -323,6 +326,40 @@ les sessions.
 Chaque worker retourne `elapsed_s` + timings par step dans son contrat. Au join, l'orchestrateur
 écrit `weekly-timings-<date>.json` : `{branch: {step: ms}}` + durées wave/tail. Nouvel artefact
 écrit par l'agent — la liste fermée des fichiers agent-writable est étendue en conséquence.
+
+**Enregistrement des commits de draft** :
+Le rapport compte les drafts qu'il a lui-même produits. Le `git log` ne peut pas les voir au
+moment du rendu (les commits du run courant sont postérieurs à la fenêtre du run) : la source
+de vérité primaire est donc **l'enregistrement**, pas l'historique. Sans lui, le compteur de
+« commits auto-rédigés » reste structurellement nul et le rapport retombe sur le seul repli git.
+
+La branche D est la seule committer : c'est **son** contrat de retour qui porte les faits. Le
+retour structuré d'un `commit-draft` réussi expose `kind`, `file`, `sha` (**SHA complet**,
+40 hex), `short_sha`, `branch`, `subject`, plus `message` (la prose, pour l'œil) et `gate_note`
+le cas échéant. Le worker D les recopie dans le champ `sha` de son contrat, **un objet par
+commit réussi**. L'orchestrateur n'a plus qu'à **compléter `steps[]` de
+`weekly-timings-<date>.json` avec cette liste, avant le TAIL** :
+
+```json
+{ "branch": "D", "step": "commit-draft", "kind": "skill",
+  "file": "<chemin absolu du draft>", "sha": "<40 hex>", "short_sha": "<10 hex>",
+  "subject": "skill:<nom> (auto-rédigé, revue hebdo <YYYY-MM-DD>)", "date": "<YYYY-MM-DD du run>" }
+```
+
+Règles de cet enregistrement, aucune n'est optionnelle :
+- **Le structuré n'arrive que sur un commit RÉUSSI.** Un refus (`KO`), un refus de gate ou une
+  sortie illisible ne produit **aucune** entrée. Ne jamais compléter un manque depuis le `git log`,
+  ne jamais deviner un SHA, ne jamais déduire un `subject` du nom de fichier.
+- **`sha` vient de `sha`, jamais de `message` ni de `short_sha`.** La prose `… committé (HEAD …)`
+  n'affiche pas un SHA : `git commit` écrit `[branche sha-court] sujet` sur sa première ligne, et
+  elle en affiche donc les 10 premiers caractères. Le SHA complet est déjà dans le retour structuré :
+  **ne jamais aller lire `.git/refs/heads/…` à la main** (détour observé au run 2026-10-01).
+- `subject` est recopié tel quel : le rapport ne reconnaît un draft qu'à cette marque
+  (`auto-rédigé, revue hebdo`) et l'ignore sinon. Un `subject` absent ⇒ entrée non écrite.
+- L'étape **2.D est postérieure au JOIN** : cet enregistrement est donc un **complément** du même
+  artefact (append dans `steps[]`, jamais réécriture de ce que le JOIN a posé), effectué **avant le
+  TAIL** — donc avant toute lecture du rapport. Un run sans draft ⇒ `steps[]` vide ou absent, ce
+  qui est valide.
 
 Le rapport, les insights et les étapes suivantes lisent uniquement le findings final,
 jamais le fichier `weekly-watch-findings-raw-<date>.json`.
@@ -424,7 +461,16 @@ Exit : 0 = complet, 1 = partiel (warnings tolérés), **2 = fatal → stopper sa
 - Veille : les fiches **blocked-security ne sont jamais soumises au LLM** — exclues amont
   par le distill (2.2), elles ne réapparaissent que dans l'annexe du findings final (3.6)
 - Ne jamais modifier : bases SQLite, config du projet, CI/CD, contrats API
-- Lire les JSON en source de vérité ; incohérence/warning → le signaler au rapport, pas corriger
+- **Lire les JSON en source de vérité** ; incohérence/warning → le signaler au rapport, pas corriger
+- **Contrats : lire la description, pas les sources.** Les contrats d'artefacts (required/optional),
+  la sémantique des rc et le contrat du fichier de section 4 sont dans les descriptions d'outils et
+  dans `weekly_report_contract`. Ne PAS relire `report.py` par tranches pour les reconstruire
+  (10 lectures de slicing sur le run 2026-10-01) ni deviner les tags `[F:` / `[A:` / `[M:`,
+  les seuils (60 lignes, 40 mots) ou la couverture `high`.
+- **rc=1 n'est pas un échec.** Une branche qui rend rc=1 a produit son livrable ; c'est une
+  dégradation à nommer dans le rapport (gate summary, sécurité warn-only, JOIN partiel, HTML
+  best-effort), pas un STOP et pas un chiffre à masquer. Seul `rc >= 2` signifie « rien n'a été
+  produit ». Ne jamais annoncer un résultat de branche sans mentionner son rc s'il vaut 1.
 - Commit auto : uniquement drafting via `weekly_commit_draft` (scoped au fichier, identité config,
   jamais de secrets, jamais pendant rebase/merge) — rollback = `git revert --no-edit` (humain)
 - Fichiers écrits par l'agent : findings bruts `weekly-watch-findings-raw-<date>.json`, propositions

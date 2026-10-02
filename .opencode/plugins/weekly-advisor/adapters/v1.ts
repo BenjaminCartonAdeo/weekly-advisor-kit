@@ -16,7 +16,7 @@
  *
  * Correspondances gelées (cf. `scripts/fixtures/weekly-advisor-tool-contract.json`) :
  * - **ordre** : `Object.fromEntries` sur {@link TOOL_REGISTRY}, donc l'ordre
- *   d'enregistrement reste celui de la fixture (19 outils, ordre figé) ;
+ *   d'enregistrement reste celui de la fixture (21 outils, ordre figé) ;
  * - **champs** : un {@link FieldSpec} → un `tool.schema.<primitive>`, puis
  *   `.optional()` si et seulement si `required === false`, puis
  *   `.describe(description)` — ordre des appels identique à la source d'origine,
@@ -122,7 +122,7 @@ function buildArgs(fields: readonly FieldSpec[]): ToolArgs {
  * Traduit une entrée du registre neutre en outil `tool()` V1.
  *
  * @param definition outil gelé du registre
- * @param runtime capacités d'exécution, partagées par les 19 outils
+ * @param runtime capacités d'exécution, partagées par les 21 outils
  * @returns outil enregistré auprès d'opencode
  * @throws si l'outil n'a pas de handler — erreur d'adaptateur, jamais de silence
  */
@@ -143,7 +143,7 @@ function toV1Tool(definition: ToolDefinition, runtime: AbortableRuntimeApi) {
 }
 
 /**
- * Point d'entrée V1 : deux hooks de garde et les 19 outils.
+ * Point d'entrée V1 : deux hooks de garde et les 21 outils.
  *
  * Le pré-flight reste **fail-closed** et son message est gelé
  * (`weekly_preflight rc=3 — …`) : il est repris tel quel par la documentation et

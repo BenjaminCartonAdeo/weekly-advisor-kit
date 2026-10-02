@@ -92,7 +92,7 @@ test("the entrypoint loads no SDK statically: adapters are reached by dynamic im
   )
 })
 
-test("server registers the 19 tools in registry order with the frozen field order", async () => {
+test("server registers the 21 tools in registry order with the frozen field order", async () => {
   const hooks = await startServer({ worktree: "/tmp/not-a-weekly-kit", directory: "/tmp/not-a-weekly-kit" })
   assert.deepEqual(
     Object.keys(hooks.tool),

@@ -39,8 +39,8 @@
  * check-flow-docs.mjs lit désormais le **registre neutre** 
  * `.opencode/plugins/weekly-advisor/tool-registry.ts` au lieu du fichier 
  * d'entrée `.opencode/plugins/weekly-advisor.ts` (hardcodé, dupliquait le 
- * contrat). La source de vérité est unique : le registre gèle les 19 outils 
- * et les 18 sous-commandes CLI.
+ * contrat). La source de vérité est unique : le registre gèle les 21 outils 
+ * et les 19 sous-commandes CLI.
  *
  * Surfaces impactées :
  * - Surface 1 : outils TS → sous-commandes CLI, lus depuis le registre
@@ -216,13 +216,13 @@ for (const cmd of [...tsCmds].sort()) {
   ok(`registre → sous-commande "${cmd}" existe`, cliCmds.has(cmd))
 }
 
-// Verify registry has exactly 18 CLI commands (never empty scan)
+// Verify registry has exactly 19 CLI commands (never empty scan)
 if (tsCmds.size === 0) {
   failures += 1
-  console.log("FAIL registre — 18 sous-commandes trouvées — commandes: aucune")
-} else if (tsCmds.size !== 18) {
+  console.log("FAIL registre — 19 sous-commandes trouvées — commandes: aucune")
+} else if (tsCmds.size !== 19) {
   failures += 1
-  console.log(`FAIL registre — 18 sous-commandes trouvées — trouvé: ${tsCmds.size}`)
+  console.log(`FAIL registre — 19 sous-commandes trouvées — trouvé: ${tsCmds.size}`)
 }
 
 // ------------------------------------------------------------------ surface 2
@@ -287,6 +287,23 @@ const DEPENDENCIES = [
     null,
   ],
   ["moteur assemble consomme weekly-report-draft", null, "weekly-report-draft"],
+  // Chaînage 7a → 7b.1 → 7c : le check doit être déclaré ENTRE le brouillon et
+  // l'assemble, sinon il ne sert à rien — l'assemble consomme le draft et un
+  // rejet impose un prep complet. On verrouille l'ORDRE de DÉCLARATION des specs
+  // (donc l'ordre d'exposition et l'ordre des sous-commandes), pas la distance
+  // entre deux mentions de token : les tool specs sont à 1-2 kB les uns des
+  // autres, une fenêtre de 400 caractères ne peut pas les relier. Les deux
+  // fenêtres sont calées sur les deltas mesurés (1083 et 1954 caractères) avec
+  // une marge explicite, et le même ordre est documenté côté agent et côté
+  // commande lanceuse (surface 6).
+  [
+    "registre : ordre des specs blocks-draft → blocks-check → assemble",
+    /name: "weekly_report_blocks_draft"[\s\S]{0,4000}?name: "weekly_report_blocks_check"[\s\S]{0,4000}?name: "weekly_report_assemble"/,
+    null,
+  ],
+  // Le check valide sans consommer : ni le fichier de prose ni le draft ne sont
+  // supprimés par la sous-commande (seul l'assemble supprime le draft).
+  ["moteur blocks-check ne consomme pas le fichier de prose", null, "fichier NON consommé"],
 ]
 console.log("— Surface 4 : chaînage d'ordre")
 for (const [label, regexPattern, pyNeedle] of DEPENDENCIES) {
@@ -363,7 +380,12 @@ ok(
 for (const marker of ["WAVE 1", "WAVE 2", "JOIN"]) {
   ok(`orchestrateur documente la vague « ${marker} »`, agentSrc7.includes(marker))
 }
-const RETURN_FIELDS = ["branch", "rc", "steps_done", "warnings", "artifacts", "elapsed_s"]
+// `sha` n'est pas un champ d'état de branche comme les autres : c'est le canal par
+// lequel la branche D (seule committer) remonte à l'orchestrateur les FAITS de ses
+// drafts confirmés. Sans lui, l'enregistrement des commits de draft dans
+// `weekly-timings-<date>.json` n'a aucune source — le worker D détient les retours
+// `commit-draft` et l'orchestrateur ne voit que son contrat de retour.
+const RETURN_FIELDS = ["branch", "rc", "steps_done", "warnings", "artifacts", "elapsed_s", "sha"]
 for (const field of RETURN_FIELDS) {
   ok(
     `worker weekly-advisor-worker déclare le champ retour "${field}"`,

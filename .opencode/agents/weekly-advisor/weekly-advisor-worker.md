@@ -41,6 +41,13 @@ Inspiré du pattern context-manager : chaque worker reçoit un paquet minimal-co
    - `warnings` : liste des warnings non fatals rencontrés (ex. source indisponible, écoulement dépassé)
    - `artifacts` : fichiers créés par cette branche dans `runs/current/` (JSON findings, timings, extraits)
    - `elapsed_s` : temps total d'exécution en secondes
+   - `sha` : **branche D uniquement** — liste des faits de draft confirmés, **un objet par
+     commit RÉUSSI** : `{file, sha, short_sha, branch, subject}`. `sha` est le SHA COMPLET
+     recopié tel quel du retour structuré de l'outil, jamais la prose `message`, jamais
+     `short_sha`. `subject` porte la marque `auto-rédigé, revue hebdo` et n'est jamais
+     reconstruit. Un refus (`KO`), un refus de gate ou une sortie illisible n'ajoute
+     **aucune** entrée. Jamais une chaîne isolée à la place de la liste. Absent ou `[]`
+     sur toute autre branche.
    - `skills_loaded` : résultat du pre-flight skills F6 — `{ok, primary, secondary, missing}` (§ « Pre-flight skills (F6) »)
 
 ## Invariants appliqués
@@ -213,6 +220,15 @@ Dernière sortie du worker **AVANT toute autre sortie verbale** (résumé, logs,
   "warnings": [],
   "artifacts": ["weekly-draft-candidates-2026-08-25.json"],
   "elapsed_s": 420,
+  "sha": [
+    {
+      "file": "/abs/projet/.opencode/skills/mon-skill/SKILL.md",
+      "sha": "0123456789abcdef0123456789abcdef01234567",
+      "short_sha": "0123456789",
+      "branch": "feat/improvments",
+      "subject": "skill:mon-skill (auto-rédigé, revue hebdo 2026-08-25)"
+    }
+  ],
   "skills_loaded": {
     "ok": true,
     "missing": [],

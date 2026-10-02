@@ -14,7 +14,7 @@
  * `ctx.tool.transform`. Noms, descriptions, champs, required, enums, timeouts et
  * argv restent définis à un seul endroit, donc le comportement est identique en
  * V1 et en V2. Correspondances figées par
- * `scripts/fixtures/weekly-advisor-tool-contract.json` (19 outils, ordre gelé).
+ * `scripts/fixtures/weekly-advisor-tool-contract.json` (21 outils, ordre gelé).
  *
  * Trois différences avec V1, toutes dictées par la forme de l'hôte V2 :
  *
@@ -208,7 +208,7 @@ function pathValue(value: unknown): string | undefined {
  * pas garantie par un SDK en dépendance, la réduction est **structurelle** :
  * objet non nul, hors tableau, puis lecture des deux clés. Toute autre forme
  * (`undefined`, `null`, chaîne, tableau) donne `undefined` sans lever — un hôte
- * exotique ne doit pas empêcher l'enregistrement des 19 outils.
+ * exotique ne doit pas empêcher l'enregistrement des 21 outils.
  *
  * Exporté pour être figé par `scripts/tests/plugin-v2.test.mjs` : le repli est
  * le seul point où la forme réelle de `project` est lisible, et il n'est pas
@@ -286,7 +286,7 @@ function toV2Schema(definition: ToolDefinition): V2InputSchema {
  * callback de `transform` rejouable sans effet de bord.
  *
  * @param definition outil gelé du registre
- * @param runtime capacités d'exécution, partagées par les 19 outils
+ * @param runtime capacités d'exécution, partagées par les 21 outils
  * @returns outil enregistré auprès de l'hôte
  * @throws si l'outil n'a pas de handler — erreur d'adaptateur, jamais de silence
  */
@@ -300,7 +300,7 @@ function toV2Tool(definition: ToolDefinition, runtime: AbortableRuntimeApi): V2T
     description: definition.description,
     input: toV2Schema(definition),
     // `context` reste tolérant à l'absence : un hôte qui appellerait `execute`
-    // avec le seul `input` obtient `signal` indéfini, ce que les 19 handlers
+    // avec le seul `input` obtient `signal` indéfini, ce que les 21 handlers
     // acceptent déjà (le signal est facultatif de bout en bout).
     async execute(
       input: Readonly<Record<string, unknown>>,
@@ -316,7 +316,7 @@ function toV2Tool(definition: ToolDefinition, runtime: AbortableRuntimeApi): V2T
 // ---------------------------------------------------------------------------
 
 /**
- * Point d'entrée V2 : garde de pré-flight sur prompt + les 19 outils.
+ * Point d'entrée V2 : garde de pré-flight sur prompt + les 21 outils.
  *
  * Le pré-flight reste **fail-closed** et son message est gelé
  * (`weekly_preflight rc=3 — …`), identique à V1 : même texte, donc mêmes
@@ -360,7 +360,7 @@ export const setup = async (ctx: V2Context): Promise<void> => {
     runtime.preflightOrThrow()
   })
 
-  // Enregistrement : 19 outils, ordre du registre. Le callback ne fait que
+  // Enregistrement : 21 outils, ordre du registre. Le callback ne fait que
   // construire des objets — rejouable, synchrone, sans coût.
   await ctx.tool.transform((editor) => {
     for (const definition of TOOL_REGISTRY) editor.add(toV2Tool(definition, runtime))

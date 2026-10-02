@@ -36,8 +36,10 @@ Ordre figé des outils d'étapes (machine-vérifié contre le tableau de l'agent
 14. `weekly_skill_curate` — curation (dry-run par défaut)
 15. `weekly_report_prep` — préparation du brouillon de rapport
 16. `weekly_report_blocks_draft` — blocs auto
-17. `weekly_report_assemble` — assemblage du rapport
-18. `weekly_self_cost` — coût de la fenêtre
+17. `weekly_report_contract` — contrat d'artefacts (read-only, avant la prose)
+18. `weekly_report_blocks_check` — validation de la prose sans la consommer (avant l'assemble)
+19. `weekly_report_assemble` — assemblage du rapport (rc=1 = warn-only, rapport écrit)
+20. `weekly_self_cost` — coût de la fenêtre
 
 ## Règles
 

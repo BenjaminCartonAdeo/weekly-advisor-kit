@@ -86,8 +86,8 @@ async function runCaptured(name, input) {
 // Forme du registre face à la fixture
 // ---------------------------------------------------------------------------
 
-test("registre : 19 outils, ordre et noms gelés", () => {
-  assert.equal(TOOL_REGISTRY.length, 19)
+test("registre : 21 outils, ordre et noms gelés", () => {
+  assert.equal(TOOL_REGISTRY.length, 21)
   assert.deepEqual(TOOL_NAMES, CONTRACT.tools.map((tool) => tool.name))
 })
 
@@ -111,7 +111,7 @@ test("registre : correspondance exacte avec la fixture", () => {
 
 test("registre : sous-commandes CLI = celles appelées par les outils, dans l'ordre", () => {
   assert.deepEqual(CLI_COMMANDS, CONTRACT.cliCommands)
-  assert.equal(CLI_COMMANDS.length, 18)
+  assert.equal(CLI_COMMANDS.length, 19)
 })
 
 test("registre : valeurs par défaut = fixture", () => {
@@ -119,7 +119,7 @@ test("registre : valeurs par défaut = fixture", () => {
 })
 
 test("registre : index par nom total et sans doublon", () => {
-  assert.equal(TOOL_BY_NAME.size, 19)
+  assert.equal(TOOL_BY_NAME.size, 21)
   for (const tool of TOOL_REGISTRY) {
     assert.equal(TOOL_BY_NAME.get(tool.name), tool)
   }
@@ -511,7 +511,7 @@ test("handler : l'annulation atteint la gate de portabilité, puis le CLI", asyn
   }
 })
 
-test("handler : les 18 outils à sous-commande transmettent tous le signal au CLI", async () => {
+test("handler : les 19 outils à sous-commande transmettent tous le signal au CLI", async () => {
   const tmp = tempDir("wa-registry-sweep-")
   const draft = path.join(tmp, "SKILL.md")
   fs.writeFileSync(draft, "# draft\n")
@@ -549,7 +549,7 @@ test("handler : les 18 outils à sous-commande transmettent tous le signal au CL
       assert.equal(seen.timeoutMs, tool.timeoutMs, `${tool.name} : timeout inattendu`)
       covered.push(tool.name)
     }
-    assert.equal(covered.length, 18)
+    assert.equal(covered.length, 19)
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
   }

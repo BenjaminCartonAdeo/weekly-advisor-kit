@@ -6,7 +6,7 @@
  * 1. Exactly one default export in weekly-advisor.ts with keys id/server/setup
  * 2. No static value import (e.g. `@opencode-ai/plugin`, `@opencode/plugin`)
  *    in the entrypoint module name itself
- * 3. 19 registry tools and 18 CLI commands (never empty scan)
+ * 3. 21 registry tools and 19 CLI commands (never empty scan)
  * 4. Neutral tool surface is identical for V1 and V2 projections
  * 5. No duplicate command registration
  */
@@ -121,22 +121,22 @@ function analyzeEntrypoint(src) {
 // Tests
 // --------------------------------------------------------------------------
 
-test("registry exports 19 tools with unique names", () => {
+test("registry exports 21 tools with unique names", () => {
   const src = fs.readFileSync(REGISTRY, "utf8")
   const { toolNames } = analyzeRegistry(src)
-  assert.equal(toolNames.length, 19, `expected 19 tools, got ${toolNames.length}`)
+  assert.equal(toolNames.length, 21, `expected 21 tools, got ${toolNames.length}`)
   const unique = new Set(toolNames)
-  assert.equal(unique.size, 19, "tool names must be unique")
+  assert.equal(unique.size, 21, "tool names must be unique")
 })
 
-test("registry exports 18 CLI commands (non-empty)", () => {
+test("registry exports 19 CLI commands (non-empty)", () => {
   const src = fs.readFileSync(REGISTRY, "utf8")
   const { cliCommands } = analyzeRegistry(src)
-  assert.equal(cliCommands.length, 18, `expected 18 CLI commands, got ${cliCommands.length}`)
+  assert.equal(cliCommands.length, 19, `expected 19 CLI commands, got ${cliCommands.length}`)
   assert.ok(cliCommands.length > 0, "CLI commands scan must be non-empty")
   // Verify no duplicates
   const unique = new Set(cliCommands)
-  assert.equal(unique.size, 18, "CLI command names must be unique")
+  assert.equal(unique.size, 19, "CLI command names must be unique")
 })
 
 test("entrypoint has exactly one default export with keys id/server/setup", () => {
@@ -152,13 +152,13 @@ test("entrypoint does not have static @opencode-ai/@opencode value imports", () 
   assert.ok(!hasStaticValueImport, "entrypoint must not have static @opencode-ai/plugin or @opencode/plugin imports")
 })
 
-test("registry and entrypoint tool count matches (19 tools)", () => {
+test("registry and entrypoint tool count matches (21 tools)", () => {
   const registrySrc = fs.readFileSync(REGISTRY, "utf8")
   const { toolNames } = analyzeRegistry(registrySrc)
-  assert.equal(toolNames.length, 19, "registry must define exactly 19 tools")
+  assert.equal(toolNames.length, 21, "registry must define exactly 21 tools")
 })
 
-test("registry CLI commands match expected set (18 commands)", () => {
+test("registry CLI commands match expected set (19 commands)", () => {
   const src = fs.readFileSync(REGISTRY, "utf8")
   const { cliCommands } = analyzeRegistry(src)
   const expected = [
@@ -175,6 +175,7 @@ test("registry CLI commands match expected set (18 commands)", () => {
     "draft-candidates",
     "report-prep",
     "report-blocks-draft",
+    "report-blocks-check",
     "report-assemble",
     "commit-draft",
     "self-cost",
