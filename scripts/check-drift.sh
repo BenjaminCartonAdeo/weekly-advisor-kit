@@ -9,8 +9,8 @@
 #     présent SEULEMENT côté cible (compétence weekly orpheline).
 #
 # LIMITES — hors verdict, par conception :
-#   * une compétence NON weekly*, ou un répertoire hors des deux périmètre
-#     ci-dessous, n'est jamais comparé ;
+#   * une compétence NON weekly*, ou un répertoire hors du périmètre ci-dessous,
+#     n'est jamais comparé ;
 #   * les exclusions WA_EXCLUDES et les TOLÉRANCES listées plus bas.
 #   Une cible absente n'est pas une dérive : voir CIOC plus bas (exit 0).
 #
@@ -18,9 +18,24 @@
 #   kit   : <ce repo>                    (source de vérité)
 #   cible : dépôt qui exécute le cron    (ex. ../Adeo, cf. INSTALL.md §2.10)
 #
-# PÉRIMÈTRES COMPARÉS (identiques à scripts/sync-to-target.sh)
-#   1. .opencode/plugins/weekly-advisor-engine
-#   2. .opencode/skills/weekly*/
+# PÉRIMÈTRES COMPARÉS (identiques à scripts/sync-to-target.sh — 6 unités)
+#   1. .opencode/plugins/weekly-advisor-engine   (moteur Python)
+#   2. .opencode/skills/weekly*/                 (une skill par répertoire)
+#   3. .opencode/plugins/weekly-advisor          (plugin TypeScript)
+#   4. .opencode/agents/weekly-advisor           (agents markdown)
+#   5. .opencode/commands/weekly-review.md       (commande — unité FICHIER)
+#   6. .opencode/plugins/weekly-advisor.ts       (point d'entrée — unité FICHIER)
+#   Ces 6 unités = tout ce que le cron exécute pour la revue hebdomadaire.
+#   Un périmètre qui en oublie une ne se voit pas : le verdict reste vert sur
+#   du code périmé. C'est ce qui est arrivé avec les unités 3, 4 et 5, jamais
+#   gardées depuis l'introduction de ce script — puis avec l'unité 6, le
+#   FICHIER qu'OpenCode charge pour enregistrer ces outils. Une entrée périmée
+#   ne casse pas les 5 autres unités : elle casse le plugin entier, en silence.
+#
+# TYPE D'UNITÉ : `d` répertoire (comparaison récursive via find) ou `f` un seul
+# fichier. L'unité fichier est traitée explicitement : la faire passer par les
+# helpers directory-shaped (`[ -d ]`, find) comparerait deux listes vides et
+# renverrait « aligné » — un garde-fou qui ment.
 #
 # UNITÉS = UNION kit ∪ cible. Un répertoire weekly* présent seulement dans la
 # cible est comparé comme « en trop » : c'est précisément le cas que ce
@@ -65,10 +80,13 @@ trap cleanup EXIT
 # scripts/sync-to-target.sh (scripts/tests/sync-drift.test.mjs verrouille
 # l'égalité des deux déclarations).
 TARGET_DEFAULT="$(dirname -- "$ROOT")/Adeo"
-ENGINE_REL=".opencode/plugins/weekly-advisor-engine"
-SKILLS_REL=".opencode/skills"
 
 # Mêmes noms exclus que sync-to-target.sh (WA_EXCLUDES côté sync).
+# `node_modules` et `dist` valent aussi pour le plugin TypeScript (dépendances
+# installées en local, sortie de build) : les motifs sont lus par `find -name`,
+# donc sur le NOM DE BASE à n'importe quelle profondeur — jamais ancrés sur le
+# chemin relatif, sinon `^dist$` ne matche pas `dist/weekly_advisor-0.4.1-…whl`
+# et le wheel part en dérive à chaque build (régression déjà payée ici).
 WA_EXCLUDES=(
   __pycache__
   .ruff_cache
@@ -81,6 +99,15 @@ WA_EXCLUDES=(
   node_modules
   weekly-telemetry-config.json
 )
+
+# Les 6 unités du périmètre cron (cf. en-tête + unit_lines). Chemins relatifs à
+# la racine kit ET à la racine cible : mêmes noms des deux côtés.
+ENGINE_REL=".opencode/plugins/weekly-advisor-engine"
+PLUGIN_REL=".opencode/plugins/weekly-advisor"
+AGENTS_REL=".opencode/agents/weekly-advisor"
+COMMAND_REL=".opencode/commands/weekly-review.md"
+ENTRYPOINT_REL=".opencode/plugins/weekly-advisor.ts"
+SKILLS_REL=".opencode/skills"
 
 # Chemins tolérés : "<relatif au périmètre>|<libellé>". Déclarés ici pour que le
 # signal reste explicite même quand l'exclusion est appliquée en amont.
@@ -137,6 +164,37 @@ weekly_skill_names() {
   done
 }
 
+# Les unités du périmètre, une par ligne : "<type><TAB><chemin relatif>", où
+# <type> vaut `d` (répertoire) ou `f` (fichier unique). SOURCE UNIQUE de la
+# liste d'unités : ce corps doit être identique dans scripts/sync-to-target.sh
+# (verrouillé par le test « les deux scripts déclarent les mêmes unités »).
+unit_lines() {
+  printf 'd\t%s\n' "$ENGINE_REL"
+  local name
+  while read -r name; do
+    [ -n "$name" ] || continue
+    printf 'd\t%s\n' "$SKILLS_REL/$name"
+  done < <(weekly_skill_names)
+  printf 'd\t%s\n' "$PLUGIN_REL"
+  printf 'd\t%s\n' "$AGENTS_REL"
+  printf 'f\t%s\n' "$COMMAND_REL"
+  printf 'f\t%s\n' "$ENTRYPOINT_REL"
+}
+
+# Fichiers à comparer pour une unité, chemin relatif à l'unité, tri C :
+#   unité `d` → list_files (récursif, exclusions appliquées) ;
+#   unité `f` → le nom du fichier, ou RIEN s'il n'existe pas. Une absence
+#   produit une liste vide, donc l'autre côté apparaît en manquant : c'est ce qui
+#   rend la suppression du fichier visible au lieu d'être un verdict vert.
+unit_file_list() {
+  local unit=$1 kind=$2
+  case $kind in
+    d) list_files "$unit" ;;
+    f) [ -f "$unit" ] && printf '%s\n' "$(basename -- "$unit")" || : ;;
+    *) printf 'type d'"'"'unité inconnu : %s\n' "$kind" >&2; return 2 ;;
+  esac
+}
+
 # ─────────────────────────────────── usage ───────────────────────────────────
 TARGET="${WEEKLY_SYNC_TARGET:-$TARGET_DEFAULT}"
 while [ $# -gt 0 ]; do
@@ -181,15 +239,50 @@ signal_tolerated() {
   done
 }
 
+# Compare une unité : $1 = src kit, $2 = dst cible, $3 = type (`d`|`f`).
+# L'en-tête nomme l'unité, les lignes de dérive nomment le fichier RELATIF à
+# l'unité — sauf pour une unité fichier, dont le chemin relatif est l'unité.
 check_unit() {
-  local src=$1 dst=$2 label sl dl common count=0
+  local src=$1 dst=$2 kind=$3 label sl dl common count=0
   label=${src#"$ROOT/"}
   printf '── %s\n' "$label"
+
+  # ── unité fichier ────────────────────────────────────────────────────────
+  # Les quatre issues sont énumérées explicitement : aucune ne peut produire un
+  # verdict vert. C'est le point de rupture entre les helpers directory-shaped
+  # (`[ -d ]`, find) et une unité qui est un fichier.
+  if [ "$kind" = "f" ]; then
+    if [ ! -f "$src" ]; then
+      printf '   DRIFT en trop  : %s\n' "$label"
+      printf '      La cible contient ce fichier mais le kit ne l'"'"'a plus ; supprime-le côté cible ou restaure-le côté kit.\n'
+      drift=1; printf '\n'; return 0
+    fi
+    if [ ! -f "$dst" ]; then
+      printf '   DRIFT absent : %s\n' "$label"
+      printf '      La cible ne contient pas ce fichier (absent, ou pas un fichier).\n'
+      printf '      Corriger : bash scripts/sync-to-target.sh --apply\n'
+      drift=1; printf '\n'; return 0
+    fi
+    if cmp -s "$src" "$dst"; then
+      printf '   aligné\n\n'
+    else
+      printf '   DRIFT différent : %s\n' "$label"
+      printf '      Le fichier est présent des deux côtés mais son contenu diffère.\n'
+      drift=1; printf '\n'
+    fi
+    return 0
+  fi
+
+  # ── unité répertoire ─────────────────────────────────────────────────────
   # Unité présente SEULEMENT côté cible : le kit ne connaît pas ce répertoire
   # weekly*. Rien à comparer fichier à fichier — c'est une dérive de structure.
   if [ ! -d "$src" ]; then
     printf '   DRIFT en trop  : %s\n' "$label"
-    printf '      Ce répertoire weekly* n'"'"'existe pas dans le kit ; supprime-le ou ajoute la compétence côté kit.\n'
+    if [ "${label#"$SKILLS_REL"/}" != "$label" ]; then
+      printf '      Ce répertoire weekly* n'"'"'existe pas dans le kit ; supprime-le ou ajoute la compétence côté kit.\n'
+    else
+      printf '      Cette unité n'"'"'existe pas dans le kit ; supprime-la côté cible ou ajoute-la au kit.\n'
+    fi
     drift=1
     printf '\n'
     return 0
@@ -197,14 +290,17 @@ check_unit() {
   if [ ! -d "$dst" ]; then
     printf '   DRIFT absent : %s\n' "$label"
     printf '      La cible ne contient pas ce répertoire.\n'
+    printf '      Corriger : bash scripts/sync-to-target.sh --apply\n'
     drift=1
     printf '\n'
     return 0
   fi
   sl=$(mktemp); dl=$(mktemp)
   TMPFILES+=("$sl" "$dl")
-  list_files "$src" >"$sl"
-  list_files "$dst" >"$dl"
+  # Par unit_file_list, pas list_files direct : la liste comparée est alors
+  # produite par la même fonction que celle du plan de sync.
+  unit_file_list "$src" "$kind" >"$sl"
+  unit_file_list "$dst" "$kind" >"$dl"
   while read -r common; do
     printf '   DRIFT manquant : %s\n' "$common"
     count=$((count + 1))
@@ -230,11 +326,10 @@ check_unit() {
   printf '\n'
 }
 
-check_unit "$ROOT/$ENGINE_REL" "$TARGET/$ENGINE_REL"
-while read -r name; do
-  [ -n "$name" ] || continue
-  check_unit "$ROOT/$SKILLS_REL/$name" "$TARGET/$SKILLS_REL/$name"
-done < <(weekly_skill_names)
+while IFS=$'\t' read -r kind rel; do
+  [ -n "$rel" ] || continue
+  check_unit "$ROOT/$rel" "$TARGET/$rel" "$kind"
+done < <(unit_lines)
 
 if [ "$drift" -eq 0 ]; then
   printf 'OK : kit et cible alignés.\n'

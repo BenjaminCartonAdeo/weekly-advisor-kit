@@ -141,9 +141,22 @@ function argvLines(kit) {
     )
 }
 
-/** Répertoires de staging résiduels dans le tmpdir. */
+/** Répertoires de staging résiduels dans le tmpdir.
+ *
+ *  Préfixe restreint à ceux que le MOTEUR produit (`weekly-harness-*`, via
+ *  `main.py` et `harness_remediation.py`). Un balayage large `weekly-*` rendait
+ *  cette assertion pseudosatisfaisante et fausse : `node --test` exécute les
+ *  fichiers de test en PARALLÈLE et `plugin-preflight.test.mjs` crée
+ *  `weekly-coherence-*`/`weekly-catalog-*`/`weekly-usage-*`. L'assertion
+ *  échouait donc selon ce qui tournait à côté — un test qui dépend de l'état
+ *  global de la machine n'est pas une détection de fuite, c'est un faux positif.
+ *  ponytail: la fuite est mesurée par delta avant/après, pas par absence globale.
+ */
 function stagedLeftovers() {
-  return fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("weekly-")).sort()
+  return fs
+    .readdirSync(os.tmpdir())
+    .filter((name) => name.startsWith("weekly-harness-"))
+    .sort()
 }
 
 /** Schéma `input` attendu pour un outil de la fixture. */
@@ -578,6 +591,7 @@ test("V2 : le callback de transform est synchrone, rejouable et sans effet de bo
     const fake = await setupWith(kit)
     const transform = fake.transforms[0]
     const first = fake.tools
+    const stagedBefore = stagedLeftovers()
 
     for (let replay = 0; replay < 3; replay += 1) {
       const added = []
@@ -606,7 +620,7 @@ test("V2 : le callback de transform est synchrone, rejouable et sans effet de bo
     }
 
     assert.deepEqual(argvLines(kit), [], "aucun appel CLI pendant les rejeux")
-    assert.deepEqual(stagedLeftovers(), [], "aucun staging pendant les rejeux")
+    assert.deepEqual(stagedLeftovers(), stagedBefore, "aucun staging pendant les rejeux")
   } finally {
     restore()
     fs.rmSync(kit.root, { recursive: true, force: true })

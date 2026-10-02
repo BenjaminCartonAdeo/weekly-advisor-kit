@@ -6,14 +6,27 @@
 #   kit   : <ce repo>                    (source de vérité, où l'on code)
 #   cible : dépôt qui exécute le cron    (ex. ../Adeo, cf. INSTALL.md §2.10)
 #
-# PÉRIMÈTRES SYNCHRONISÉS (2, volontairement étroits)
+# PÉRIMÈTRES SYNCHRONISÉS (6 unités : 4 répertoires + 2 fichiers)
 #   1. .opencode/plugins/weekly-advisor-engine   (moteur Python)
 #   2. .opencode/skills/weekly*/                 (une skill par répertoire)
+#   3. .opencode/plugins/weekly-advisor          (plugin TypeScript)
+#   4. .opencode/agents/weekly-advisor           (agents markdown)
+#   5. .opencode/commands/weekly-review.md       (commande — unité FICHIER)
+#   6. .opencode/plugins/weekly-advisor.ts       (point d'entrée — unité FICHIER)
+#   Ces 6 unités constituent le périmètre du cron : tout ce que le cron exécute
+#   pour la revue hebdomadaire. Hors périmètre, le cron tourne sur du code que
+#   ce kit ne garantit pas.
 #
 # UNITÉS = UNION kit ∪ cible : un répertoire weekly* présent SEULEMENT côté
 # cible est planifié en DEL puis supprimé par --apply. Sans cela une
 # compétence weekly orpheline (renommage/archivage côté kit) resterait
 # indéfiniment dans le dépôt du cron.
+#
+# TYPE D'UNITÉ. Une unité `d` est un répertoire (comparaison récursive via
+# find), une unité `f` est UN SEUL fichier. Les deux existent : l'unité fichier
+# ne peut pas passer par les helpers directory-shaped (`find`, `[ -d ]`) — une
+# garde qui ne compare rien faute de fichier est pire que pas de garde, elle
+# certifie un alignement inexistant.
 #
 # SÛRETÉ
 #   --dry-run est le DÉFAUT : sans argument, ce script n'écrit RIEN. --apply est
@@ -69,11 +82,13 @@ trap cleanup EXIT
 # dans la cible du cron doublait la version embarquée et aurait créé une fausse
 # dérive au premier nettoyage de dist/.
 TARGET_DEFAULT="$(dirname -- "$ROOT")/Adeo"
-ENGINE_REL=".opencode/plugins/weekly-advisor-engine"
-SKILLS_REL=".opencode/skills"
 
 # Noms exclus du périmètre (arborescence + contenu). doit rester aligné avec
 # RSYNC_EXCLUDES ci-dessous et avec check-drift.sh.
+# `node_modules` et `dist` couvrent aussi le plugin TypeScript (dépendances
+# installées en local, sortie de build) : les motifs sont Lus par `find -name`,
+# donc sur le NOM DE BASE à n'importe quelle profondeur — jamais ancrés sur le
+# chemin relatif, sinon `^dist$` ne matche pas `dist/weekly_advisor-0.4.1-…whl`.
 WA_EXCLUDES=(
   __pycache__
   .ruff_cache
@@ -87,6 +102,15 @@ WA_EXCLUDES=(
   weekly-telemetry-config.json
 )
 
+# Les 6 unités du périmètre cron (cf. en-tête + unit_lines). Les chemins sont
+# relatifs à la racine kit ET à la racine cible : même nom des deux côtés.
+ENGINE_REL=".opencode/plugins/weekly-advisor-engine"
+PLUGIN_REL=".opencode/plugins/weekly-advisor"
+AGENTS_REL=".opencode/agents/weekly-advisor"
+COMMAND_REL=".opencode/commands/weekly-review.md"
+ENTRYPOINT_REL=".opencode/plugins/weekly-advisor.ts"
+SKILLS_REL=".opencode/skills"
+
 usage() {
   cat <<'EOF'
 sync-to-target.sh — copie le kit (source de vérité) vers la cible du cron.
@@ -97,7 +121,11 @@ sync-to-target.sh — copie le kit (source de vérité) vers la cible du cron.
   scripts/sync-to-target.sh --apply --target /chemin/cible
 
 Env : WEEKLY_SYNC_TARGET (racine de la cible ; défaut : <dirname du kit>/Adeo)
-Périmètres : .opencode/plugins/weekly-advisor-engine et .opencode/skills/weekly*/
+Périmètres (6 unités) :
+  .opencode/plugins/weekly-advisor-engine   .opencode/skills/weekly*/
+  .opencode/plugins/weekly-advisor          .opencode/agents/weekly-advisor
+  .opencode/commands/weekly-review.md       (unité fichier)
+  .opencode/plugins/weekly-advisor.ts       (unité fichier — point d'entrée)
 Codes : 0 succès, 1 erreur d'exécution, 2 usage invalide.
 EOF
 }
@@ -142,25 +170,65 @@ weekly_skill_names() {
   done
 }
 
+# Les unités du périmètre, une par ligne : "<type><TAB><chemin relatif>", où
+# <type> vaut `d` (répertoire) ou `f` (fichier unique). SOURCE UNIQUE de la
+# liste d'unités : ce corps doit être identique dans scripts/check-drift.sh
+# (verrouillé par le test « les deux scripts déclarent les mêmes unités »).
+unit_lines() {
+  printf 'd\t%s\n' "$ENGINE_REL"
+  local name
+  while read -r name; do
+    [ -n "$name" ] || continue
+    printf 'd\t%s\n' "$SKILLS_REL/$name"
+  done < <(weekly_skill_names)
+  printf 'd\t%s\n' "$PLUGIN_REL"
+  printf 'd\t%s\n' "$AGENTS_REL"
+  printf 'f\t%s\n' "$COMMAND_REL"
+  printf 'f\t%s\n' "$ENTRYPOINT_REL"
+}
+
+# Fichiers à comparer pour une unité, chemin relatif à l'unité, tri C :
+#   unité `d` → list_files (récursif, exclusions appliquées) ;
+#   unité `f` → le nom du fichier, ou RIEN s'il n'existe pas. Une absence
+#   produit une liste vide, donc l'autre côté apparaît en ADD/DEL : c'est ce qui
+#   rend la suppression du fichier visible au lieu d'être un verdict vert.
+unit_file_list() {
+  local unit=$1 kind=$2
+  case $kind in
+    d) list_files "$unit" ;;
+    f) [ -f "$unit" ] && printf '%s\n' "$(basename -- "$unit")" || : ;;
+    *) printf 'type d'"'"'unité inconnu : %s\n' "$kind" >&2; return 2 ;;
+  esac
+}
+
 # Plan de transfert $1 (src) → $2 (dst) : "ADD|UPD|DEL <chemin relatif>".
-# LC_ALL=C sur chaque comm : les listes sont triées en collation C (list_files),
+# $3 = type d'unité (`d`|`f`).
+# LC_ALL=C sur chaque comm : les listes sont triées en collation C (unit_file_list),
 # comm doit comparer dans la même collation.
 transfer_plan() {
-  local src=$1 dst=$2 sl dl common
+  local src=$1 dst=$2 kind=$3 sl dl common sbase dbase
   # Réarmé localement : transfer_plan tourne dans $( ... ), or bash n'y propage
   # pas le trap du script parent.
   local TMPFILES=()
   trap cleanup EXIT
+  # Base de comparaison = le répertoire qui CONTIENT les noms listés. Pour une
+  # unité `d` c'est l'unité elle-même ; pour une unité `f` c'est son parent —
+  # sinon `$src/$common` vaudrait `…/weekly-review.md/weekly-review.md`,
+  # inexistant, et TOUTE unité fichier serait annoncée UPD à chaque run.
+  sbase=$src; dbase=$dst
+  if [ "$kind" = "f" ]; then
+    sbase=$(dirname -- "$src"); dbase=$(dirname -- "$dst")
+  fi
   sl=$(mktemp); dl=$(mktemp)
   TMPFILES+=("$sl" "$dl")
-  # Source absente = unité orpheline : liste vide côté kit, donc tout le contenu
-  # cible sort en DEL (pas de find sur un chemin inexistant → pas de bruit).
-  if [ -d "$src" ]; then list_files "$src" >"$sl"; else : >"$sl"; fi
-  if [ -d "$dst" ]; then list_files "$dst" >"$dl"; else : >"$dl"; fi
+  # Unité absente du kit = orpheline : liste vide côté kit, donc tout le contenu
+  # cible sort en DEL (pas de list_files sur un chemin inexistant → pas de bruit).
+  unit_file_list "$src" "$kind" >"$sl" || : >"$sl"
+  unit_file_list "$dst" "$kind" >"$dl" || : >"$dl"
   LC_ALL=C comm -13 "$dl" "$sl" | sed 's/^/ADD /'
   LC_ALL=C comm -23 "$dl" "$sl" | sed 's/^/DEL /'
   LC_ALL=C comm -12 "$dl" "$sl" | while read -r common; do
-    if ! cmp -s "$src/$common" "$dst/$common"; then
+    if ! cmp -s "$sbase/$common" "$dbase/$common"; then
       printf 'UPD %s\n' "$common"
     fi
   done
@@ -204,49 +272,70 @@ fi
 printf '\n'
 
 # ──────────────────────────────── plan / apply ───────────────────────────────
-# Une « unité » = un répertoire source et son homologue cible.
+# Une « unité » = une entrée "<type><TAB><relatif>" et ses homologues kit/cible.
+# Types : `d` répertoire, `f` fichier unique.
 units=()
-units+=("$ROOT/$ENGINE_REL" "$TARGET/$ENGINE_REL")
-while read -r name; do
-  [ -n "$name" ] || continue
-  units+=("$ROOT/$SKILLS_REL/$name" "$TARGET/$SKILLS_REL/$name")
-done < <(weekly_skill_names)
+while IFS=$'\t' read -r kind rel; do
+  [ -n "$rel" ] || continue
+  units+=("$kind"$'\t'"$rel")
+done < <(unit_lines)
 
 total=0
-for ((i = 0; i < ${#units[@]}; i += 2)); do
-  src=${units[i]}; dst=${units[i + 1]}
-  label=${src#"$ROOT/"}
+for ((i = 0; i < ${#units[@]}; i += 1)); do
+  entry=${units[i]}
+  kind=${entry%%$'\t'*}
+  rel=${entry#*$'\t'}
+  src=$ROOT/$rel; dst=$TARGET/$rel; label=$rel
   printf '── %s\n' "$label"
-  plan=$(transfer_plan "$src" "$dst" || true)
+  plan=$(transfer_plan "$src" "$dst" "$kind" || true)
   if [ -z "$plan" ]; then
     printf '   (déjà aligné)\n\n'
     continue
   fi
-  # Unité orpheline : l'action utile est la suppression du répertoire, pas la
-  # liste de ses fichiers. On l'annonce explicitement (les lignes « - » suivent).
-  if [ ! -d "$src" ]; then
-    printf '   DEL %s (répertoire weekly* absent du kit)\n' "$label"
-  fi
-  while read -r action rel; do
+  # Unité orpheline : l'action utile est la suppression, pas la liste de ses
+  # fichiers. On l'annonce explicitement (les lignes « - » suivent).
+  case $kind in
+    d)
+      [ -d "$src" ] || printf '   DEL %s (répertoire weekly* absent du kit)\n' "$label" ;;
+    f)
+      [ -f "$src" ] || printf '   DEL %s (fichier absent du kit)\n' "$label" ;;
+  esac
+  while read -r action rel_file; do
     case $action in
-      ADD) printf '   + %s\n' "$rel" ;;
-      UPD) printf '   M %s\n' "$rel" ;;
-      DEL) printf '   - %s\n' "$rel" ;;
+      ADD) printf '   + %s\n' "$rel_file" ;;
+      UPD) printf '   M %s\n' "$rel_file" ;;
+      DEL) printf '   - %s\n' "$rel_file" ;;
     esac
     total=$((total + 1))
   done <<<"$plan"
   if [ "$MODE" = "apply" ]; then
-    if [ -d "$src" ]; then
-      mkdir -p "$dst"
-      # shellcheck disable=SC2046  # RSYNC_EXCLUDES est une liste d'arguments
-      rsync -a --delete $(rsync_excludes) "$src/" "$dst/"
-      printf '   → synchronisé\n'
-    else
-      # $dst est construit depuis le nom d'un répertoire weekly* trouvé sous
-      # $TARGET/$SKILLS_REL : le rm ne peut pas sortir de ce répertoire.
-      rm -rf -- "$dst"
-      printf '   → répertoire supprimé (absent du kit)\n'
-    fi
+    case $kind in
+      d)
+        if [ -d "$src" ]; then
+          mkdir -p "$dst"
+          # shellcheck disable=SC2046  # RSYNC_EXCLUDES est une liste d'arguments
+          rsync -a --delete $(rsync_excludes) "$src/" "$dst/"
+          printf '   → synchronisé\n'
+        else
+          # $dst est construit depuis le nom d'un répertoire weekly* trouvé sous
+          # $TARGET/$SKILLS_REL : le rm ne peut pas sortir de ce répertoire.
+          rm -rf -- "$dst"
+          printf '   → répertoire supprimé (absent du kit)\n'
+        fi ;;
+      f)
+        # Unité fichier : ni rsync ni --delete. Un `cp` idempotent suffit, et il
+        # n'a pas les hypothèses directory-shaped (`src/` récursif, --delete) à
+        # contourner — un `rsync -a src/ dst/` sur un fichier ne transférerait
+        # rien et laisserait la dérive invisible.
+        if [ -f "$src" ]; then
+          mkdir -p -- "$(dirname -- "$dst")"
+          cp -p -- "$src" "$dst"
+          printf '   → synchronisé\n'
+        else
+          rm -f -- "$dst"
+          printf '   → fichier supprimé (absent du kit)\n'
+        fi ;;
+    esac
   fi
   printf '\n'
 done

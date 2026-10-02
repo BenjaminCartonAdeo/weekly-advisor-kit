@@ -373,9 +373,33 @@ scripts/sync-to-target.sh --apply      # transfère (cible + rsync requis)
 scripts/check-drift.sh                 # verdict : 0 aligné, 1 dérive, 2 usage
 ```
 
-- **Périmètres** : `.opencode/plugins/weekly-advisor-engine` et
-  `.opencode/skills/weekly*/`. Rien d'autre n'est touché — ni `.venv`, ni
-  `reports/`, ni caches.
+- **Périmètres — 6 unités**, c'est-à-dire tout ce que le cron exécute pour la
+  revue hebdomadaire :
+
+  | # | Unité | Type |
+  |---|-------|------|
+  | 1 | `.opencode/plugins/weekly-advisor-engine` | répertoire |
+  | 2 | `.opencode/skills/weekly*/` | répertoire (une skill par répertoire) |
+  | 3 | `.opencode/plugins/weekly-advisor` | répertoire (plugin TypeScript) |
+  | 4 | `.opencode/agents/weekly-advisor` | répertoire (agents) |
+  | 5 | `.opencode/commands/weekly-review.md` | **fichier unique** |
+  | 6 | `.opencode/plugins/weekly-advisor.ts` | **fichier unique** (point d'entrée) |
+
+  Rien d'autre n'est touché — ni `.venv`, ni `reports/`, ni `node_modules/`, ni
+  `dist/`, ni caches. Les exclusions s'appliquent sur le **nom de base** à
+  n'importe quelle profondeur (pas de motif ancré sur le chemin relatif : un
+  `^dist$` ne matche pas `dist/weekly_advisor-0.4.1-py3-none-any.whl`).
+
+  Les unités n° 5 et 6 sont des fichiers, pas des répertoires : elles sont
+  traitées explicitement par les deux scripts. Une garde qui les comparerait via
+  les helpers répertoire comparerait deux listes vides et renverrait
+  « aligné ». L'unité n° 6 est le fichier qu'OpenCode charge pour enregistrer
+  les outils du plugin : une version périmée côté cible n'affecte pas les
+  unités 1-5, elle casse le plugin entier — silencieusement, verdict vert.
+  Les unités 3, 4 et 5 ont été ajoutées après coup — avant, `check-drift.sh`
+  pouvait répondre `OK` avec un plugin, des agents et une commande périmés côté
+  cron. Le test `INSTALL.md §2.10 documente les 6 unités réellement vérifiées`
+  verrouille cette table contre les scripts.
 - **Cible** : `WEEKLY_SYNC_TARGET` ou `--target <racine>` ; défaut
   `<dirname du kit>/Adeo`. Jamais codée en dur dans les scripts.
 - **Tolérances** : `weekly-telemetry-config.json` (valeurs `project_root` /
