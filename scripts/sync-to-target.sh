@@ -57,6 +57,17 @@ trap cleanup EXIT
 # Défaut UNIQUE de la cible : toute modification doit être répercutée à
 # l'identique dans scripts/check-drift.sh (scripts/tests/sync-drift.test.mjs
 # verrouille l'égalité des deux déclarations).
+# Noms exclus du périmètre (arborescence + contenu). Une seule liste alimente le
+# plan (find) et les --exclude du rsync : toute modification doit être
+# répercutée à l'identique dans scripts/check-drift.sh (le test
+# « les deux scripts déclarent la même cible par défaut et les mêmes exclusions »
+# verrouille l'égalité des deux déclarations).
+#
+# `dist` est ici parce que `uv build` écrit wheel + sdist dans l'arborescence du
+# moteur. Ces fichiers sont ignorés par git — donc invisibles dans un diff — mais
+# bien présents sur le disque, donc candidats au transfert. Déployer un wheel
+# dans la cible du cron doublait la version embarquée et aurait créé une fausse
+# dérive au premier nettoyage de dist/.
 TARGET_DEFAULT="$(dirname -- "$ROOT")/Adeo"
 ENGINE_REL=".opencode/plugins/weekly-advisor-engine"
 SKILLS_REL=".opencode/skills"
@@ -69,6 +80,7 @@ WA_EXCLUDES=(
   .pytest_cache
   "*.egg-info"
   .venv
+  dist
   reports
   .git
   node_modules

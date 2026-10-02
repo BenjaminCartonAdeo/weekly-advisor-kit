@@ -29,6 +29,7 @@ const EXCLUDES = [
   ".pytest_cache",
   "*.egg-info",
   ".venv",
+  "dist",
   "reports",
   ".git",
   "node_modules",
@@ -256,6 +257,34 @@ test("sync-to-target: --apply : cycle complet quand rsync est disponible", { ski
   )
 })
 
+test("un artefact de build (dist/) du kit n'est ni transféré ni compté comme dérive", () => {
+  // `uv build` écrit dist/ dans l'arborescence du moteur. C'est ignoré par git,
+  // donc invisible dans un diff — mais bien présent sur le disque, et donc
+  // candidat au transfert. Un wheel déployé dans la cible du cron n'est pas un
+  // défaut anodin : il double la version embarquée et crée une fausse dérive au
+  // premier nettoyage de dist/.
+  const base = tmpdir()
+  const target = buildTarget(path.join(base, "cible"))
+  const engine = path.join(target, ENGINE_REL)
+  fs.mkdirSync(path.join(engine, "dist"), { recursive: true })
+  fs.writeFileSync(path.join(engine, "dist", "weekly_advisor-0.4.1-py3-none-any.whl"), "binaire\n")
+
+  const plan = run(SYNC, ["--dry-run", "--target", target])
+  assert.equal(plan.status, 0, plan.output)
+  assert.ok(
+    !plan.output.includes("dist/"),
+    `le plan ne doit jamais mentionner dist/ :\n${plan.output}`,
+  )
+
+  const verdict = run(DRIFT, ["--target", target])
+  assert.equal(
+    verdict.status,
+    0,
+    `un dist/ côté cible ne doit pas créer une fausse dérive :\n${verdict.output}`,
+  )
+  assert.ok(!verdict.output.includes("dist/"), verdict.output)
+})
+
 test("les deux scripts déclarent la même cible par défaut et les mêmes exclusions", () => {
   const sync = fs.readFileSync(SYNC, "utf8")
   const drift = fs.readFileSync(DRIFT, "utf8")
@@ -271,4 +300,5 @@ test("les deux scripts déclarent la même cible par défaut et les mêmes exclu
   assert.ok(excludesOf(sync).includes("weekly-telemetry-config.json"))
   assert.ok(excludesOf(sync).includes("*.egg-info"))
   assert.ok(excludesOf(sync).includes(".venv"))
+  assert.ok(excludesOf(sync).includes("dist"), "dist/ est un artefact de build, jamais déployable")
 })

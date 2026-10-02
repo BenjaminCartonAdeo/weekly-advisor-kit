@@ -75,6 +75,7 @@ WA_EXCLUDES=(
   .pytest_cache
   "*.egg-info"
   .venv
+  dist
   reports
   .git
   node_modules
