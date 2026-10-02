@@ -360,6 +360,37 @@ rapporté un comptage (0, 0) et le run est sorti en `1`. Le registre charge
 aujourd'hui 19/18 via le même loader Node 24 — relancez le smoke strict pour un
 verdict à jour.
 
+### 2.10 Kit → cible du cron (sync + garde anti-drift)
+
+Quand le kit est développé **dans un dépôt** et que le cron tourne **dans un
+autre** (ex. `../Adeo`), le dépôt de développement reste la source de vérité et
+l'autre doit en être le reflet exact. Sans ça, le cron exécute un moteur
+obsolète sans aucun signal.
+
+```sh
+scripts/sync-to-target.sh              # plan de transfert — DÉFAUT, n'écrit rien
+scripts/sync-to-target.sh --apply      # transfère (cible + rsync requis)
+scripts/check-drift.sh                 # verdict : 0 aligné, 1 dérive, 2 usage
+```
+
+- **Périmètres** : `.opencode/plugins/weekly-advisor-engine` et
+  `.opencode/skills/weekly*/`. Rien d'autre n'est touché — ni `.venv`, ni
+  `reports/`, ni caches.
+- **Cible** : `WEEKLY_SYNC_TARGET` ou `--target <racine>` ; défaut
+  `<dirname du kit>/Adeo`. Jamais codée en dur dans les scripts.
+- **Tolérances** : `weekly-telemetry-config.json` (valeurs `project_root` /
+  `output_dir` propres au poste) et `weekly_advisor.egg-info/SOURCES.txt`
+  (artefact de build). Elles sont exclues du verdict **mais signalées** à chaque
+  run — une anomalie sur ces chemins reste visible.
+- **Quand les lancer** : `--dry-run` avant toute livraison dans la cible ;
+  `--apply` une fois le plan validé ; `check-drift.sh` systématiquement (en local
+  et en CI). `--apply` refuse de démarrer si la cible n'existe pas.
+- **CI** : `.github/workflows/ci.yml` exécute `check-drift.sh`. La cible n'existe
+  pas sur un runner GitHub → `SKIP` explicite, exit `0` (pas d'échec rouge). Pour
+  un contrôle réel en CI, il faut une étape de checkout de la cible et
+  `WEEKLY_SYNC_TARGET` pointant dessus.
+- **`rsync` requis uniquement pour `--apply`** : le plan s'affiche sans lui.
+
 ## 3. Mise à jour
 
 ```sh

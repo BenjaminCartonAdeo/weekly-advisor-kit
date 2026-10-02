@@ -95,3 +95,11 @@ jobs:
           fi
         shell: bash
         working-directory: .
+
+      - name: Garde anti-drift kit → cible (non bloquante si cible absente)
+        # Le kit est la source de vérité ; la cible du cron (ex. ../Adeo) doit le
+        # refléter. Sur un runner GitHub la cible n'existe pas → SKIP propre, exit 0.
+        # Pour un contrôle réel : WEEKLY_SYNC_TARGET=<racine cible> scripts/check-drift.sh
+        run: |
+          bash scripts/check-drift.sh
+        working-directory: .
