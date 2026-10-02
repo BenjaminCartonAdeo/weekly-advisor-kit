@@ -162,10 +162,10 @@
 - Proposées (aucune opération fs{% if curation_dry_run %}, dry-run{% endif %}) : **{{ skill_curate.proposed }}**
 - Ignorées (origin=user ou introuvables) : **{{ skill_curate.skipped }}**
 
-Actions: {% if curation_detail_local.by_action is defined and curation_detail_local.by_action %}{% for action, count in curation_detail_local.by_action.items() %}`{{ action }}`={{ count }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}voir décisions ci-dessous{% endif %}
+Actions: {% if curation_detail_local.by_action is defined and curation_detail_local.by_action %}{% for action, count in curation_detail_local.by_action.items() %}`{{ action }}`={{ count }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}voir décisions ci-dessous{% endif %}{{ "\n" }}
 
 {% for d in curation_detail_local.decisions|default([]) if d.status|default("") != "skipped" %}
-- `{{ d.action }}` `{{ d.skill_id }}` ({{ d.source }}) — {{ d.reason }}{% if d.status %} [{{ d.status }}]{% endif %}
+- `{{ d.action }}` `{{ d.skill_id }}` ({{ d.source }}) — {{ d.reason }}{% if d.status %} [{{ d.status }}]{% endif %}{{ "\n" }}
 {% endfor %}
 {% for d in curation_detail_local.skipped_details|default([]) %}
 - `skip` `{{ d.skill_id }}` ({{ d.source|default("curation") }}) — {{ d.reason }} [{{ d.status|default("skipped") }}]
@@ -197,7 +197,7 @@ Rien à curate (aucun signal de curation dans les findings de cohérence).
 {% if harness_top_rules %}
 Top règles violées :
 {% for r in harness_top_rules %}
-  - `{{ r.rule }}` — {{ r.count }} violation(s){% if r.delta is not none %} (Δ{% if r.delta >= 0 %}+{% endif %}{{ r.delta }} vs run précédent){% endif %}
+  - `{{ r.rule }}` — {{ r.count }} violation(s){% if r.delta is not none %} (Δ{% if r.delta >= 0 %}+{% endif %}{{ r.delta }} vs run précédent){% endif %}{{ "\n" }}
 {% endfor %}
 {% endif %}
 {% if harness_ignored_rules %}
@@ -284,7 +284,12 @@ Constats de maintenance (R1-R4) :
 {% if run_dir %}
 - Répertoire du run : `{{ run_dir }}/` (alias stable `runs/current/`)
 {% endif %}
-- Coût propre du pipeline (self-cost) : {{ "%.4f"|format(self_cost) if self_cost is not none else "non mesurable" }} ${% if self_cost is not none and self_cost == 0 %} (coût nul — modèle gratuit ou session non retrouvée){% endif %}{% if self_cost_tokens %}, {{ "{:,}".format(self_cost_tokens) }} tokens, {{ self_cost_api_calls }} appels API{% endif %}
+{% set sc_tokens_v = self_cost_tokens if self_cost_tokens is defined else none %}
+{% set sc_calls_v = self_cost_api_calls if self_cost_api_calls is defined else "n/a" %}
+{% set sc_cost_v = "%.4f"|format(self_cost) if self_cost is not none else "non mesurable" %}
+{% set sc_zero_v = " (coût nul — modèle gratuit ou session non retrouvée)" if self_cost is not none and self_cost == 0 else "" %}
+{% set sc_tail_v = (", {:,.0f} tokens, {} appels API".format(sc_tokens_v, sc_calls_v)) if sc_tokens_v else "" %}
+- Coût propre du pipeline (self-cost) : {{ sc_cost_v }} ${{ sc_zero_v }}{{ sc_tail_v }}
 - Commits auto-rédigés sur la fenêtre : {{ auto_commits|length }}
 {% for c in auto_commits[:10] %}
   - `{{ c.hash }}` {{ c.date }} {{ c.subject }}
@@ -297,13 +302,25 @@ Constats de maintenance (R1-R4) :
 - HEAD au run : `{{ head_commit.hash }}` {{ head_commit.date }} {{ head_commit.subject }}
 {% endif %}
 {% if dirty_files %}
-- Fichiers dirty au run ({{ dirty_files|length }}) :{% for f in dirty_files[:30] %} `{{ f }}`{% if not loop.last %},{% endif %}{% endfor %}{% if dirty_files|length > 30 %} _(+{{ dirty_files|length - 30 }} autres)_ {% endif %}
+- Fichiers dirty au run ({{ dirty_files|length }}) :
+{% for f in dirty_files[:8] %}
+  - `{{ f }}`
+{% endfor %}
+{% if dirty_files|length > 8 %}
+  - _(+{{ dirty_files|length - 8 }} autres)_
+{% endif %}
 {% endif %}
 {% if summary.skills_targets %}
 - **Skills auto-rédigés et cibles** :{% for name, agents in summary.skills_targets.items() %} `{{ name }}` → {{ agents|join(", ") }}{% if not loop.last %} ;{% endif %}{{ "\n" }}{% endfor %}
 {% endif %}
 {% if audit_candidates and audit_candidates.unaudited %}
-- **Candidates d'audit non traitées** (plafond {{ audit_candidates.limit }}) : {{ audit_candidates.unaudited|map(attribute='session_id')|join(", ") }}
+- **Candidates d'audit non traitées** (cap d'audit K = {{ audit_candidates.limit }} ; K = nombre de sessions auditées, pas un plafond sur cette liste) :
+{% for item in audit_candidates.unaudited[:8] %}
+  - `{{ item.session_id }}`
+{% endfor %}
+{% if audit_candidates.unaudited|length > 8 %}
+  - _(+{{ audit_candidates.unaudited|length - 8 }} autres)_
+{% endif %}
 {% endif %}
 {% if audit_worker_statuses %}
 - **Statuts workers** : {% for worker in audit_worker_statuses %}{{ worker.session_id }}={{ worker.worker_status or worker.status }}{% if worker.rc is defined and worker.rc != 0 %} (rc={{ worker.rc }}){% endif %}{% if worker.truncated %} (tronqué){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}

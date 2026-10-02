@@ -58,39 +58,174 @@ def _git_output(project_root: Path, *args: str) -> list[str] | None:
     return proc.stdout.splitlines()
 
 
+# Marqueur porté par le SUJET des commits produits par `commit-draft`
+# (`safe_git_write._draft_commit_message`). Source de vérité unique : le filtre
+# sujet ci-dessous et la lecture des résultats enregistrés s'y réfèrent.
+_DRAFT_COMMIT_MARKER = "auto-rédigé, revue hebdo"
+
+
 def _git_log_raw(project_root: Path, *args: str) -> list[str]:
     """Lines of `git log --grep=auto-rédigé, revue hebdo <args>`; [] on any failure."""
-    return _git_output(project_root, "log", "--grep=auto-rédigé, revue hebdo", *args) or []
+    return _git_output(project_root, "log", "--grep=" + _DRAFT_COMMIT_MARKER, *args) or []
 
 
 def _git_log(project_root: Path, since_iso: str, until_iso: str | None = None) -> list[dict]:
-    """Auto-redige commits inside the window: [{hash, date, subject}] (v6.0.l, E1).
+    """Auto-rédigé commits since ``since_iso``: [{hash, date, subject}].
 
-    Two v6.0.l fixes: the window is now bounded by ``--until`` (previously the
-    log ran from window start to *now*, so commits of later runs — even the
-    current run's own draft — were counted "sur la fenêtre"); and the match is
-    enforced on the **subject** in Python because ``--grep`` matches full commit
-    messages (a spec/doc commit whose body mentions the phrase was counted).
+    ``--grep`` matches the FULL commit message (body included), so a spec/doc
+    commit merely *mentioning* the phrase in its body was counted. The match is
+    therefore re-enforced on the **subject** (first line) in Python.
+
+    ``until_iso`` is an optional upper bound. It must NOT be the run's start
+    anchor: the drafts this run is about to report are committed *after* that
+    timestamp, so bounding the log at the anchor made `auto_commits` provably
+    return 0 at every run. Callers either omit it (bound = now, which covers the
+    run) or pass a timestamp that actually ends after the drafts.
+    ``since_iso=None`` omits the lower bound (used by the pending backlog query).
     """
-    args = ["--since=" + since_iso, "--format=%h|%ad|%s", "--date=short"]
+    args = ["--format=%h|%ad|%s", "--date=short"]
+    if since_iso:
+        args.insert(0, "--since=" + since_iso)
     if until_iso:
         args.append("--until=" + until_iso)
     rows = []
     for line in _git_log_raw(project_root, *args):
         parts = line.split("|", 2)
-        if len(parts) == 3 and "auto-rédigé, revue hebdo" in parts[2]:
+        if len(parts) == 3 and _DRAFT_COMMIT_MARKER in parts[2]:
             rows.append({"hash": parts[0], "date": parts[1], "subject": parts[2]})
     return rows
 
 
-def _pending_auto_commits(project_root: Path, cutoff_iso: str) -> int:
-    return len(
-        [
-            line
-            for line in _git_log_raw(project_root, "--before=" + cutoff_iso, "--format=%H")
-            if line.strip()
-        ]
+def _recorded_draft_commits(timings: object) -> list[dict]:
+    """Draft commits this run *recorded* in ``weekly-timings-<date>.json``.
+
+    FIX 6 : the report can never count the commits it drafted itself through the
+    git log, because those commits do not exist yet at render time — the log
+    bounded at the run's start anchor returns 0 by construction. The pipeline,
+    on the other hand, knows what `commit-draft` actually committed, and records
+    it in the timings artifact at JOIN time. That recorded result is the source
+    of truth here.
+
+    The scan is deliberately shape-agnostic (the artifact's exact layout is
+    written by the orchestrator, not the engine): any mapping carrying a
+    hash-like key AND a subject-like key whose subject contains
+    ``_DRAFT_COMMIT_MARKER`` is a recorded draft commit. Requiring the marker in
+    the subject keeps the scan self-validating — a record without it is not a
+    draft commit and is ignored rather than guessed at.
+    """
+    if not isinstance(timings, Mapping):
+        return []
+
+    hash_keys = ("hash", "sha", "commit", "commit_sha", "head")
+    subject_keys = ("subject", "message", "title")
+    date_keys = ("date", "committed_at", "at", "timestamp")
+
+    rows: list[dict] = []
+    seen: set[int] = set()
+
+    def walk(value: object) -> None:
+        if isinstance(value, Mapping):
+            identity = id(value)
+            if identity in seen:
+                return
+            seen.add(identity)
+            subject = next(
+                (str(value[k]) for k in subject_keys if value.get(k) not in (None, "")),
+                "",
+            )
+            if _DRAFT_COMMIT_MARKER in subject:
+                digest = next(
+                    (str(value[k]) for k in hash_keys if value.get(k) not in (None, "")),
+                    "",
+                )
+                if digest:
+                    rows.append(
+                        {
+                            "hash": digest,
+                            "date": next(
+                                (
+                                    str(value[k])
+                                    for k in date_keys
+                                    if value.get(k) not in (None, "")
+                                ),
+                                "",
+                            ),
+                            "subject": subject,
+                        }
+                    )
+            for nested in value.values():
+                walk(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                walk(nested)
+
+    walk(timings)
+    return rows
+
+
+def _merge_draft_commits(*groups: Iterable[Mapping[str, object]]) -> list[dict]:
+    """Union de lots de draft commits, dédupliquée par hash, ordre de 1re apparition.
+
+    La clé de dédup est le hash **court** (7 caractères) : `%h` de `_git_log` et
+    les 7 premiers caractères d'un SHA complet enregistré par l'orchestrateur
+    désignent le même commit. Une ligne sans hash n'est jamais dédupliquée (elle
+    reste comptée telle quelle) plutôt que d'être silencieusement absorbée.
+    """
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for group in groups:
+        for row in group:
+            key = str(row.get("hash") or "").strip()[:7]
+            if key:
+                if key in seen:
+                    continue
+                seen.add(key)
+            rows.append(dict(row))
+    return rows
+
+
+def _auto_commits(project_root: Path, since_iso: str, timings: object = None) -> list[dict]:
+    """Draft commits de la fenêtre §8 — UNION (enregistrés ∪ git log), pas un fallback.
+
+    FIX 6 : les résultats ENREGISTRÉS des appels `commit-draft` sont la seule
+    source capable de voir les drafts du run courant (ils n'existent pas encore
+    dans l'historique au moment du rendu). Le git log, lui, reste borné **par le
+    bas seulement** (`since_iso`) et sans borne haute : une borne haute posée sur
+    l'ancre de DÉBUT de run rendait ce décompte structurellement nul.
+
+    Choix de fusion (et non de filtrage de `recorded` sur `since_iso`) : les
+    enregistrements portent une date au format libre, parfois absente — les
+    filtrer risquerait de re-sous-compter les drafts du run, exactement le défaut
+    que FIX 6 corrige. Les fusionner comble donc le trou de l'autre côté : si
+    l'orchestrateur n'enregistre que les drafts du run courant, les drafts des
+    runs PRÉCÉDENTS tombant dans la même fenêtre restent comptés via le log.
+    """
+    return _merge_draft_commits(
+        _recorded_draft_commits(timings),
+        _git_log(project_root, since_iso),
     )
+
+
+def _pending_auto_commits(project_root: Path, cutoff_iso: str, timings: object = None) -> int:
+    """Draft commits en attente de revue — backlog CROSS-RUN (union, §8).
+
+    FIX 6 + FIX 7. « En attente de revue » est un backlog qui traverse les runs:
+    l'intérêt de la ligne est justement de compter ce qui traîne depuis les runs
+    PRÉCÉDENTS. Renvoyer `len(recorded)` dès que l'orchestrateur enregistre
+    hash+subject faisait s'effondrer le compteur sur le seul run courant (3 au
+    lieu de 40+). D'où l'union dédupliquée par hash des drafts enregistrés du run
+    et du git log borné par le haut (`cutoff_iso`, sans borne basse = tout
+    l'historique antérieur), le log restant le filet quand `recorded` est vide.
+
+    Le filtre sur le marqueur vit désormais dans `_git_log` (côté SUJET, pas
+    corps) : ne pas le re-tester ici, sous peine de suggérer à tort que cette
+    fonction filtre encore.
+    """
+    backlog = _merge_draft_commits(
+        _recorded_draft_commits(timings),
+        _git_log(project_root, None, cutoff_iso),
+    )
+    return len(backlog)
 
 
 def _head_commit(project_root: Path) -> dict | None:
@@ -1743,6 +1878,16 @@ def _security_rule_paraphrase(rule: object) -> str:
     return _SECURITY_RULE_PARAPHRASE.get(short, "Signal de sécurité — revue humaine requise.")
 
 
+def _coerce_non_negative_int(value: object) -> int | None:
+    """int ≥ 0 depuis un JSON, ou None si absent/illisible (jamais 0 par défaut)."""
+    if value is None:
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _render_security_section(security: dict | None) -> str:
     """Section Sécurité repliée (MD) — counts/rules only, warn-only.
 
@@ -1757,6 +1902,10 @@ def _render_security_section(security: dict | None) -> str:
     critical_count = 0
     blocking_count = 0
     blocking_rules: list[str] = []
+    by_rule: dict[str, int] = {}
+    blocking_by_rule: dict[str, int] = {}
+    findings_raw: int | None = None
+    findings_unique: int | None = None
     if isinstance(security, dict):
         raw_status = str(security.get("status") or "pass").strip().lower()
         status = raw_status if raw_status in {"pass", "warn", "fail"} else "pass"
@@ -1768,6 +1917,20 @@ def _render_security_section(security: dict | None) -> str:
             blocking_count = max(0, int(security.get("blocking_count") or 0))
         except (TypeError, ValueError):
             blocking_count = 0
+        for target, key in ((by_rule, "by_rule"), (blocking_by_rule, "blocking_by_rule")):
+            raw_counts = security.get(key)
+            if isinstance(raw_counts, Mapping):
+                for rule, count in raw_counts.items():
+                    try:
+                        target[str(rule)] = max(0, int(count))
+                    except (TypeError, ValueError):
+                        continue
+        for key in ("digest_findings_raw", "digest_findings_unique"):
+            value = _coerce_non_negative_int(security.get(key))
+            if key == "digest_findings_raw":
+                findings_raw = value
+            else:
+                findings_unique = value
         raw_rules = security.get("blocking_rules") or []
         if isinstance(raw_rules, list):
             seen: set[str] = set()
@@ -1791,11 +1954,48 @@ def _render_security_section(security: dict | None) -> str:
         lines.append(
             f"- Findings critical : **{critical_count}** · blocking : **{blocking_count}**."
         )
+        # FIX 8 : sans ces lignes, `critical_count = 1316` face à un digest
+        # déclarant `findings_raw = 32` / `findings_unique = 29` se lit comme un
+        # bug de comptage. Les trois chiffres ne sont pas le même population.
+        lines.append("- **Comptage** — les trois chiffres ci-dessous ne sont pas comparables :")
+        lines.append(
+            f"  - `critical_count` = **{critical_count}** : parcours récursif de tout le "
+            f"digest (y compris `inspection.*.findings`, même quand le tableau `findings` "
+            f"de premier niveau est vide)."
+        )
+        if findings_raw is not None or findings_unique is not None:
+            raw_txt = "n/a" if findings_raw is None else str(findings_raw)
+            uniq_txt = "n/a" if findings_unique is None else str(findings_unique)
+            lines.append(
+                f"  - digest `findings_raw` = **{raw_txt}** · `findings_unique` = "
+                f"**{uniq_txt}** : même population après déduplication harness-eval."
+            )
+        lines.append(
+            f"  - `blocking_count` = **{blocking_count}** : après application de l'allowlist "
+            f"des {len(_BLOCKING_SECURITY_RULES)} règles bloquantes."
+        )
+        lines.append(
+            "  - _Ne pas en déduire un delta : les trois sources ne comptent pas les mêmes objets._"
+        )
+        if by_rule:
+            lines.append("- Répartition des findings critical par règle (top 5) :")
+            for rule, count in list(by_rule.items())[:5]:
+                lines.append(f"  - `{rule}` — {count}")
         if blocking_rules:
             lines.append("- Règles bloquantes (top 5, intitulés seuls) :")
             for rule in blocking_rules:
                 row = f"  - `{rule}` — {_security_rule_paraphrase(rule)}"
                 lines.append(row[:200])
+        if blocking_by_rule:
+            lines.append("- Répartition des findings bloquants par règle :")
+            for rule, count in list(blocking_by_rule.items())[:5]:
+                lines.append(f"  - `{rule}` — {count}")
+        # Nommées explicitement : ces 3 règles sont l'allowlist bloquante du gate.
+        lines.append(
+            "- Règles bloquantes exactes (allowlist du gate) : "
+            + ", ".join(f"`{rule}`" for rule in sorted(_BLOCKING_SECURITY_RULES))
+            + "."
+        )
         lines.append("- Revue humaine requise — détails non affichés.")
     lines.append("</details>")
     return "\n".join(lines) + "\n"
@@ -2072,14 +2272,21 @@ def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> 
     coherence_findings = artifacts["coherence_findings"]
     skill_curate = artifacts["skill_curate"]
 
-    git_commits = _git_log(
+    # FIX 6 : les résultats ENREGISTRÉS des appels `commit-draft` sont FUSIONNÉS
+    # avec le git log, pas comptés à sa place. Borné par l'ancre de DÉBUT de run,
+    # `git log` ne peut structurellement pas voir les commits que ce run vient de
+    # drafter (ils sont postérieurs) : le décompte valait 0 à chaque run. Le log
+    # reste par ailleurs SANS borne haute (cf. `_auto_commits` / `_pending_auto_commits`).
+    timings = _load_json(out / f"weekly-timings-{date}.json")
+    git_commits = _auto_commits(
         cfg.project_root,
         _iso(run_time - timedelta(hours=cfg.window_hours())),
-        _iso(run_time),
+        timings,
     )
     pending = _pending_auto_commits(
         cfg.project_root,
         _iso(run_time - timedelta(weeks=cfg.review_window_weeks)),
+        timings,
     )
     head_commit = _head_commit(cfg.project_root)
     dirty_files = _dirty_files(cfg.project_root)
@@ -2157,6 +2364,12 @@ def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> 
         "dirty_files": dirty_files,
         "self_cost": info["cost"] if (info := _self_cost_value(cfg)) else None,
         "self_cost_tokens": (info or {}).get("tokens"),
+        # FIX 2 : aucune source de télémétrie du run ne publie un compteur
+        # d'appels API (`advisor_cost` ne renvoie que cost/session_id/tokens, et
+        # `api_calls` n'apparaît nulle part dans les artefacts du run). Le gabarit
+        # rendait donc une chaîne vide suivie d'un double espace. On rend
+        # explicitement "n/a" plutôt que d'inventer une valeur.
+        "self_cost_api_calls": "n/a",
     }
     return ctx
 
@@ -2494,15 +2707,68 @@ def _assemble_curation_gate(
     return rc, None
 
 
+def _security_counts_by_rule(findings: Iterable[Mapping]) -> dict[str, int]:
+    """Rule → count, tri déterministe (count décroissant puis nom croissant).
+
+    `rule` est normalisé comme `_is_blocking_security_rule` (minuscules, sans
+    préfixe `security/`) afin que les deux vues — répartition générale et
+    répartition bloquante — soient directement comparables.
+    """
+    counter: Counter[str] = Counter()
+    for finding in findings:
+        rule = str(finding.get("rule") or finding.get("id") or "").strip().lower()
+        rule = rule.removeprefix("security/")
+        if rule:
+            counter[rule] += 1
+    return dict(sorted(counter.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+def _digest_findings_counters(harness_digest: object) -> tuple[int | None, int | None]:
+    """(findings_raw, findings_unique) dédup par harness-eval, ou (None, None).
+
+    Le digest publie ces deux compteurs dans `harness_counts`. Ils sont la seule
+    référence pour expliquer l'écart avec `critical_count` : ce dernier compte un
+    parcours RÉCURSIF de tout le digest (`inspection.*.findings`), tandis que
+    `findings_unique` est le même population après déduplication harness-eval.
+    """
+    if not isinstance(harness_digest, Mapping):
+        return None, None
+    counts = harness_digest.get("harness_counts")
+    if not isinstance(counts, Mapping):
+        return None, None
+    out: list[int | None] = []
+    for key in ("findings_raw", "findings_unique"):
+        try:
+            out.append(max(0, int(counts.get(key) or 0)))
+        except (TypeError, ValueError):
+            out.append(None)
+    return out[0], out[1]
+
+
 def _assemble_security_gate(harness_digest: object) -> tuple[dict[str, object], str | None]:
-    """Gate sécurité warn-only → (security_gate, warning)."""
+    """Gate sécurité warn-only → (security_gate, warning).
+
+    FIX 8 : `critical_count` est un comptage RECURSIF de tout le digest (les
+    findings rattachés aux composants `inspection.*.findings` sont visités même
+    quand le tableau `findings` de premier niveau est vide), tandis que
+    `blocking_count` applique l'allowlist des 3 règles bloquantes. Les deux sont
+    donc volontairement NON comparables au `harness_counts.findings_raw` /
+    `findings_unique` du digest (32/29 sur le run réel) : `by_rule` et
+    `blocking_by_rule` sont publiés pour que l'écart soit vérifiable par le
+    lecteur au lieu d'être seulement Constat.
+    """
     critical_security = _critical_security_findings(harness_digest)
     blocking = _blocking_security_findings(harness_digest)
+    findings_raw, findings_unique = _digest_findings_counters(harness_digest)
     security_gate: dict[str, object] = {
         "status": "pass",
         "critical_count": len(critical_security),
         "blocking_count": len(blocking),
         "blocking_rules": sorted(_BLOCKING_SECURITY_RULES),
+        "by_rule": _security_counts_by_rule(critical_security),
+        "blocking_by_rule": _security_counts_by_rule(blocking),
+        "digest_findings_raw": findings_raw,
+        "digest_findings_unique": findings_unique,
     }
     if not critical_security:
         return security_gate, None

@@ -8,9 +8,11 @@ the agent never types a raw git command.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,6 +26,62 @@ _MESSAGE_PREFIX = {
 }
 _SKILL_ORIGINS = frozenset({"user", "bundled", "weekly-foreground", "weekly-background"})
 _SKILL_TTL_POLICIES = frozenset({"decay", "pin", "null", "none", ""})
+
+# Préfixe de la ligne de faits du retour `commit-draft` (v6.1). Une ligne, un
+# préfixe stable : le handler TypeScript la retrouve sans connaître le moteur et
+# l'agent n'a plus à deviner le SHA complet — surtout à relire `.git/refs` à la
+# main (détour observé au run 2026-10-01). La prose reste la ligne du dessus :
+# elle affiche le SHA COURT donné par `_head_sha`, la ligne de faits porte le SHA
+# COMPLET. Les deux ne doivent jamais se confondre (cf. `with_payload_line`).
+COMMIT_DRAFT_RESULT_MARKER = "commit-draft-result: "
+
+
+@dataclass(frozen=True)
+class DraftCommitResult:
+    """Ce que le moteur sait d'un `commit-draft` : la prose ET les faits.
+
+    `message` est la prose historique, gelée — lisible telle quelle, aucune
+    assertion existante n'en dépend. `sha` est le SHA **COMPLET** du commit :
+    c'est lui que le rapport (`_recorded_draft_commits`) et l'artefact
+    `weekly-timings-<date>.json` consomment. `subject` porte le marqueur
+    `auto-rédigé, revue hebdo` que le rapport exige pour reconnaître un draft.
+    """
+
+    ok: bool
+    kind: str
+    file: str
+    message: str
+    sha: str | None = None
+    branch: str | None = None
+    subject: str | None = None
+
+    @property
+    def short_sha(self) -> str | None:
+        """Abrégé du SHA complet, 10 hex — jamais recollé à la prose."""
+        return self.sha[:10] if self.sha else None
+
+    def payload(self) -> dict[str, str | None]:
+        """Faits structurés. Volontairement SANS `message` : la prose est déjà
+        dans le retour, la recopier ici ne ferait que doubler la ligne."""
+        return {
+            "kind": self.kind,
+            "file": self.file,
+            "sha": self.sha,
+            "short_sha": self.short_sha,
+            "branch": self.branch,
+            "subject": self.subject,
+        }
+
+    def with_payload_line(self) -> DraftCommitResult:
+        """Copie dont `message` porte les faits sur une SECONDE ligne marquée.
+
+        Réservé au succès : un refus n'a produit aucun commit, donc aucun fait à
+        enregistrer — et le rapport ne doit jamais pouvoir le compter.
+        """
+        line = COMMIT_DRAFT_RESULT_MARKER + json.dumps(
+            self.payload(), ensure_ascii=False, sort_keys=True
+        )
+        return replace(self, message=f"{self.message}\n{line}")
 
 
 def _run_git(cwd: Path, *args: str, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -224,33 +282,41 @@ def _sync_kit_draft(cfg: TelemetryConfig, root: Path, file_path: Path) -> tuple[
     )
     if commit.returncode != 0:
         return False, f"commit kit échoué: {commit.stderr.strip()}"
-    return True, f"synchro kit {rel} (HEAD {commit.stdout.strip().splitlines()[0][:10]})"
+    return True, f"synchro kit {rel} (HEAD {(_head_sha(kit) or '')[:10]})"
 
 
 def _commit_draft_root(
     cfg: TelemetryConfig, file_path: Path, kind: str
-) -> tuple[Path | None, str | None]:
-    """Garde-fous pré-commit : (root, None) si OK, (None, message) si refus."""
+) -> tuple[Path | None, str | None, str | None]:
+    """Garde-fous pré-commit : (root, None, branch) si OK, (None, message, None) si refus.
+
+    `branch` est résolu ici — le commit va l'écrire dans l'en-tête, autant le
+    garder plutôt que de relancer `git rev-parse` après coup.
+    """
     if kind not in _MESSAGE_PREFIX:
-        return None, f"kind inconnu: {kind}"
+        return None, f"kind inconnu: {kind}", None
     ok, msg = validate_draft(file_path, kind)
     if not ok:
-        return None, f"draft invalide — pas de commit: {msg}"
+        return None, f"draft invalide — pas de commit: {msg}", None
     root = _repo_root(file_path)
     if root is None:
-        return None, "fichier hors dépôt git — pas de commit"
+        return None, "fichier hors dépôt git — pas de commit", None
     ok, msg = _ensure_opencode_scope(root, file_path)
     if not ok:
-        return None, f"{msg} — pas de commit"
+        return None, f"{msg} — pas de commit", None
     if cfg.project_root is not None and root.resolve() != cfg.project_root.resolve():
-        return None, f"cible hors du projet configuré ({cfg.project_root}) — pas de commit"
+        return None, f"cible hors du projet configuré ({cfg.project_root}) — pas de commit", None
     branch = _run_git(root, "rev-parse", "--abbrev-ref", "HEAD")
     if branch.returncode != 0 or branch.stdout.strip() == "HEAD":
-        return None, "HEAD détaché — pas de commit auto"
+        return None, "HEAD détaché — pas de commit auto", None
     for marker in ("rebase-merge", "rebase-apply", "MERGE_HEAD"):
         if (root / ".git" / marker).exists():
-            return None, f"{marker} détecté — rebase/merge en cours, fichier écrit non commité"
-    return root, None
+            return (
+                None,
+                f"{marker} détecté — rebase/merge en cours, fichier écrit non commité",
+                None,
+            )
+    return root, None, branch.stdout.strip()
 
 
 def _draft_commit_message(file_path: Path, kind: str, meta: dict) -> tuple[str, str]:
@@ -269,15 +335,37 @@ def _draft_commit_message(file_path: Path, kind: str, meta: dict) -> tuple[str, 
     return subject, body
 
 
-def commit_draft(cfg: TelemetryConfig, file_path: Path, kind: str) -> tuple[bool, str]:
-    """Validate + pre-checks + scoped add + commit. Returns (ok, message)."""
-    root, fail = _commit_draft_root(cfg, file_path, kind)
+def _refused(kind: str, file_path: Path, message: str) -> DraftCommitResult:
+    """Refus : prose seule, aucun fait — aucun commit n'a eu lieu."""
+    return DraftCommitResult(ok=False, kind=kind, file=str(file_path), message=message)
+
+
+def _head_sha(root: Path) -> str | None:
+    """SHA COMPLET de HEAD, tel que git le connaît — jamais une découpe de sortie.
+
+    `git commit` écrit `[branche sha-court] sujet` sur sa première ligne : la
+    tronquer à 10 caractères donne `[master be`, pas un SHA. C'est exactement ce
+    que l'agent du run 2026-10-01 a pris pour une troncature, avant d'aller lire
+    `.git/refs/heads/…` à la main pour récupérer les vrais SHA. Elle sert
+    désormais aux DEUX sorties : la prose (tronquée à 10) comme la ligne de faits
+    (complète). Un seul point de vérité, aucun chemin ne peut réintroduire la
+    découpe.
+    """
+    proc = _run_git(root, "rev-parse", "HEAD")
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def commit_draft_detailed(cfg: TelemetryConfig, file_path: Path, kind: str) -> DraftCommitResult:
+    """Validate + pre-checks + scoped add + commit. Retour structuré (v6.1)."""
+    root, fail, branch = _commit_draft_root(cfg, file_path, kind)
     if root is None:
-        return False, fail or "refus pré-commit"
+        return _refused(kind, file_path, fail or "refus pré-commit")
 
     add = _run_git(root, "add", "--", str(file_path))
     if add.returncode != 0:
-        return False, f"git add échoué: {add.stderr.strip()}"
+        return _refused(kind, file_path, f"git add échoué: {add.stderr.strip()}")
 
     meta, _body, _err = frontmatter_blocks(file_path)
     subject, body = _draft_commit_message(file_path, kind, meta)
@@ -297,12 +385,36 @@ def commit_draft(cfg: TelemetryConfig, file_path: Path, kind: str) -> tuple[bool
         str(file_path),
     )
     if commit.returncode != 0:
-        return False, f"commit échoué: {commit.stderr.strip()}"
+        return _refused(kind, file_path, f"commit échoué: {commit.stderr.strip()}")
     sync_ok, sync_note = _sync_kit_draft(cfg, root, file_path)
-    msg = f"{file_path.name} committé (HEAD {commit.stdout.strip().splitlines()[0][:10]})"
+    # Le SHA affiché vient de `_head_sha` (source de vérité = git), JAMAIS d'une
+    # découpe de la sortie de `git commit` : sa première ligne est l'en-tête
+    # `[branche sha-court] sujet`, dont les 10 premiers caractères sont
+    # `[master 0d` — un fragment de décoration affiché à l'humain, pas un SHA.
+    # C'est ce faux jeton qui a envoyé l'agent du run 2026-10-01 vers `.git/refs`.
+    msg = f"{file_path.name} committé (HEAD {(_head_sha(root) or '')[:10]})"
     if sync_note:
         msg += f" ; {sync_note}"
-    return True, msg
+    return DraftCommitResult(
+        ok=True,
+        kind=kind,
+        file=str(file_path),
+        message=msg,
+        sha=_head_sha(root),
+        branch=branch,
+        subject=subject,
+    ).with_payload_line()
+
+
+def commit_draft(cfg: TelemetryConfig, file_path: Path, kind: str) -> tuple[bool, str]:
+    """Validate + pre-checks + scoped add + commit. Returns (ok, message).
+
+    Contrat historique conservé tel quel pour le CLI : la prose ne change pas.
+    Un succès porte en plus, sur une seconde ligne, les faits du commit
+    (`COMMIT_DRAFT_RESULT_MARKER`) — lisibles sans changer le mode d'emploi.
+    """
+    result = commit_draft_detailed(cfg, file_path, kind)
+    return result.ok, result.message
 
 
 def safe_git_move(src: Path, dst: Path) -> tuple[str, str | None]:

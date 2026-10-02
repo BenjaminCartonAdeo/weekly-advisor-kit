@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -2454,3 +2455,390 @@ def test_audit_envelope_rejects_empty_summary_and_sid_mismatch():
     bad_sid = _valid_audit_envelope(sid="ses_other")
     assert _audit_envelope_valid(bad_sid, "ses_f6ed03e11ffetdQstFHu2pb7B5") is False
     assert _audit_envelope_reason(bad_sid, "ses_f6ed03e11ffetdQstFHu2pb7B5") == "sid-mismatch"
+
+
+# =====================================================================
+# FIX 1-8 : défauts de rendu vérifiés sur le run réel 2026-10-01
+# (le rapport affirmait des choses fausses : « 30 commits en attente de
+# revue » alors que le run en a produit 3, « 5 518 397.0 tokens,  appels
+# API- », deux nombres collés sur une ligne).
+# =====================================================================
+
+
+def _git_repo(path: Path) -> Path:
+    """Repo git initialisé, prêt à recevoir des commits."""
+    import subprocess as sp
+
+    path.mkdir(parents=True, exist_ok=True)
+    for cmd in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "t@t"],
+        ["git", "config", "user.name", "T"],
+    ):
+        sp.run(cmd, cwd=path, check=True)
+    return path
+
+
+def _commit(
+    repo: Path, name: str, subject: str, body: str | None = None, when: str | None = None
+) -> str:
+    """Un commit ; `body` non nul crée un commit à corps multi-ligne.
+
+    `when` fixe la date de commit (auteur ET committer, format ISO git) : sans
+    elle, les bornes `--since`/`--until` des tests dépendent de l'horloge réelle.
+    """
+    import subprocess as sp
+
+    (repo / name).write_text(name, encoding="utf-8")
+    sp.run(["git", "add", "-A"], cwd=repo, check=True)
+    args = ["git", "commit", "-q", "-m", subject]
+    if body is not None:
+        args += ["-m", body]
+    env = None
+    if when is not None:
+        import os
+
+        env = {**os.environ, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when}
+    sp.run(args, cwd=repo, check=True, env=env)
+    return sp.run(
+        ["git", "rev-parse", "--short", "HEAD"], cwd=repo, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _prep_with_ctx(tmp_path: Path, monkeypatch, **overrides):
+    """report_prep sur un repo git dédié ; renvoie (draft_text, ctx)."""
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _cfg(tmp_path)
+    cfg.project_root = repo
+    cfg.html_report_dir = str(tmp_path / "html")
+    _write_summary(tmp_path)
+    if "self_cost" in overrides:
+        monkeypatch.setattr(
+            "weekly_telemetry_aggregator.report._self_cost_value",
+            lambda _cfg: overrides["self_cost"],
+        )
+    draft, ctx = report_prep(cfg, anchor=RUN.isoformat())
+    assert draft is not None and ctx is not None
+    return draft.read_text(encoding="utf-8"), ctx, cfg
+
+
+def _render_html(cfg, ctx) -> str:
+    """Rendu HTML via le chemin réel (render_html_report + security gate)."""
+    from weekly_telemetry_aggregator.html_report import render_html_report
+
+    dated = render_html_report(cfg, anchor=RUN.isoformat(), ctx=ctx, quality_block=None)
+    assert dated is not None
+    return dated.read_text(encoding="utf-8")
+
+
+def _html_visible(html: str) -> str:
+    """HTML sans le `<script type="application/json">` (payload machine lisible).
+
+    Le rapport HTML embarque le ctx COMPLET en JSON (usage machine, par design) :
+    les listes y sont donc non tronquées. Les assertions de cap portent sur le
+    balisage VISIBLE, pas sur la payload.
+    """
+    return re.sub(r'<script type="application/json"[^>]*>.*?</script>', "", html, flags=re.S)
+
+
+def test_self_cost_and_auto_commits_occupy_two_distinct_lines(tmp_path: Path, monkeypatch):
+    """FIX 1 : `trim_blocks=True` avaleait le newline du `{% endif %}` ligne-final.
+
+    Le self-cost et le compteur de commits se retrouvaient collés sur UNE seule
+    ligne. Vérifié sur les DEUX rendus (parité markdown/HTML stricte).
+    """
+    repo = _git_repo(tmp_path / "repo")
+    _commit(repo, "s.md", "skill:demo (auto-rédigé, revue hebdo 2026-08-14)")
+    text, ctx, cfg = _prep_with_ctx(tmp_path, monkeypatch, self_cost={"cost": 1.0, "tokens": 42.0})
+
+    lines = text.splitlines()
+    sc_idx = next(i for i, line in enumerate(lines) if "self-cost" in line)
+    sc_line, next_line = lines[sc_idx], lines[sc_idx + 1]
+    # le self-cost ne doit pas déborder sur la ligne des commits…
+    assert "Commits auto-rédigés" not in sc_line
+    # …et les commits doivent disposer de leur propre ligne
+    assert next_line.startswith("- Commits auto-rédigés sur la fenêtre")
+
+    html = _render_html(cfg, ctx)
+    assert "Commits auto-rédigés sur la fenêtre" in html
+    # HTML : le kpi self-cost et le compteur d'annexes sont deux blocs distincts
+    assert html.count("dont pipeline") == 1
+    assert "<p><b>Commits auto-rédigés sur la fenêtre" in html
+
+
+def test_self_cost_tokens_rendered_without_decimal(tmp_path: Path, monkeypatch):
+    """FIX 3 : `costing.py` somme des floats → `{:,}` rendait « 5 518 397.0 »."""
+    _value = {"cost": 1.2345, "tokens": 5518397.0, "session_id": "ses_x"}
+    text, _ctx, cfg = _prep_with_ctx(tmp_path, monkeypatch, self_cost=_value)
+    line = next(line for line in text.splitlines() if "self-cost" in line)
+    assert "5,518,397 tokens" in line
+    assert "5,518,397.0" not in line
+    html = _render_html(cfg, _ctx)
+    assert "5,518,397" in html
+    assert "5,518,397.0" not in html
+
+
+def test_self_cost_api_calls_absent_from_context_renders_na(tmp_path: Path, monkeypatch):
+    """FIX 2 : la clé n'est fournie par AUCUNE source du run → « n/a » explicite.
+
+    Le gabarit rendait une chaîne vide suivie d'un double espace («,  appels
+    API »). La valeur ne doit jamais être inventée : « n/a » est la réponse.
+    On retire la clé du ctx RÉEL pour provaquer le chemin de défense.
+    """
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+    from weekly_telemetry_aggregator import report as rp
+
+    _text, ctx, _cfg = _prep_with_ctx(
+        tmp_path, monkeypatch, self_cost={"cost": 1.0, "tokens": 100.0}
+    )
+    assert ctx["self_cost_api_calls"] == "n/a"  # context builder : source absente → n/a
+    ctx.pop("self_cost_api_calls")
+
+    env = Environment(
+        loader=FileSystemLoader(str(Path(rp.__file__).parent / "templates")),
+        autoescape=select_autoescape(("html",)),
+        trim_blocks=True,
+        lstrip_blocks=True,
+        keep_trailing_newline=True,
+    )
+    out = env.get_template("report_template.md.j2").render(**ctx)
+    line = next(line for line in out.splitlines() if "self-cost" in line)
+    assert "n/a appels API" in line
+    assert ",  appels" not in line  # plus de double espace
+
+
+def test_audit_unaudited_uses_explicit_cap_label_and_caps_list_at_eight(
+    tmp_path: Path, monkeypatch
+):
+    """FIX 4 : 15 ids rendus sous « plafond 8 » — le cap d'audit K n'est pas un
+    plafond sur `unaudited`. Libellé explicite + liste tronquée à 8 + reste."""
+    (tmp_path / f"weekly-audit-candidates-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "date": DATE,
+                "limit": 8,
+                "audited": [],
+                "worker_statuses": [],
+                "unaudited": [{"session_id": f"ses_{i:04d}"} for i in range(15)],
+            }
+        ),
+        encoding="utf-8",
+    )
+    text, _ctx, cfg = _prep_with_ctx(tmp_path, monkeypatch)
+    assert "cap d'audit K = 8" in text
+    assert "plafond 8" not in text  # l'ancien libellé trompeur a disparu
+    assert "(+7 autres)" in text  # 15 - 8 rendus
+    for i in range(8):
+        assert f"`ses_{i:04d}`" in text
+    assert "`ses_0008`" not in text  # plafonné à 8
+
+    html = _html_visible(_render_html(cfg, _ctx))
+    assert "cap d'audit K = 8" in html
+    assert "(+7 autres)" in html
+    assert "ses_0008" not in html  # plafonné à 8 dans le balisage visible
+
+
+def test_dirty_files_rendered_as_indented_sublist_capped_at_eight(tmp_path: Path, monkeypatch):
+    """FIX 5 : 30 chemins bruts sur une seule ligne → sous-liste indentée, cap 8."""
+    repo = _git_repo(tmp_path / "repo")
+    _commit(repo, "a.txt", "feat: base")
+    for i in range(20):
+        (repo / f"dirty{i:02d}.txt").write_text("wip", encoding="utf-8")
+
+    text, _ctx, cfg = _prep_with_ctx(tmp_path, monkeypatch)
+    lines = text.splitlines()
+    head_idx = next(i for i, line in enumerate(lines) if line.startswith("- Fichiers dirty au run"))
+    assert lines[head_idx].rstrip().endswith(":")
+    entries = [line for line in lines[head_idx + 1 :] if line.startswith("  - `?? dirty")]
+    assert len(entries) == 8  # capé, pas 20 sur une ligne
+    assert all(line.startswith("  - ") for line in entries)  # sous-liste indentée
+    assert "(+12 autres)" in "\n".join(lines[head_idx : head_idx + 12])
+
+    html = _html_visible(_render_html(cfg, _ctx))
+    assert "(+12 autres)" in html
+    assert "dirty08.txt" not in html  # plafonné à 8 dans le balisage visible
+
+
+def test_auto_commits_count_commits_drafted_after_the_anchor(tmp_path: Path, monkeypatch):
+    """FIX 6 (défaut structurel) : le rapport ne peut pas compter ses propres drafts.
+
+    Preuve du run réel 2026-10-01 : ancre 19:07:13Z, commits draftés à
+    19:18:54Z/19:19:23Z/19:19:35Z — soit APRÈS la borne. `git log --until=<ancre>`
+    renvoyait 0 à chaque run. Ici les 3 commits sont postérieurs à l'ancre et
+    doivent être comptés.
+    """
+    repo = _git_repo(tmp_path / "repo")
+    for i in range(3):
+        _commit(repo, f"d{i}.md", f"skill:demo{i} (auto-rédigé, revue hebdo {DATE})")
+
+    text, ctx, _cfg = _prep_with_ctx(tmp_path, monkeypatch)
+    assert len(ctx["auto_commits"]) == 3
+    assert "- Commits auto-rédigés sur la fenêtre : 3" in text
+
+
+def test_recorded_draft_commits_merged_with_git_log_not_short_circuited(
+    tmp_path: Path, monkeypatch
+):
+    """FIX 6 : les drafts ENREGISTRÉS sont unionnés au git log, jamais écartés.
+
+    Le pipeline sait ce qu'il a committé ; le git log ne le sait pas au moment
+    du rendu (aucun draft du run courant n'est encore dans l'historique). Le
+    `if recorded: return recorded` perdait en prime les drafts des runs
+    PRÉCÉDENTS qui tombent dans la fenêtre — d'où l'union, pas la précédence.
+    """
+    repo = _git_repo(tmp_path / "repo")
+    logged = _commit(
+        repo,
+        "d0.md",
+        "skill:depuis-git (auto-rédigé, revue hebdo 2026-08-14)",
+        when="2026-08-10T00:00:00+00:00",
+    )
+    (tmp_path / f"weekly-timings-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "branches": {"A": {"steps_done": ["a"]}},
+                "steps": [
+                    {
+                        "branch": "D",
+                        "step": "commit-draft",
+                        "hash": "abc1234",
+                        "date": DATE,
+                        "subject": "skill:from-timings (auto-rédigé, revue hebdo 2026-08-14)",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _text, ctx, _cfg = _prep_with_ctx(tmp_path, monkeypatch)
+    hashes = [c["hash"] for c in ctx["auto_commits"]]
+    assert hashes == ["abc1234", logged]  # le recorded + le log, pas l'un OU l'autre
+    # §8 : le backlog borne par cutoff (2026-07-15) ne voit que l'enregistrement
+    # ci-dessus — le commit du 2026-08-10 est postérieur à la borne haute.
+    assert ctx["pending_auto_commits"] == 1
+
+
+def test_auto_commits_keeps_previous_run_drafts_inside_the_window(tmp_path: Path, monkeypatch):
+    """MEDIUM : borne INFERIEURE manquante — les drafts des runs précédents
+    qui tombent dans la fenêtre §8 disparaissaient dès qu'un enregistrement
+    existait. Ancre 2026-08-12, fenêtre 7 jours (borne basse 2026-08-05)."""
+    repo = _git_repo(tmp_path / "repo")
+    # ordre décroissant de date : `git log --since` élague la traversée au premier
+    # commit plus ancien que la borne, donc HEAD doit être dans la fenêtre.
+    _commit(
+        repo,
+        "old.md",
+        "skill:hors-fenetre (auto-rédigé, revue hebdo 2026-01-01)",
+        when="2026-01-01T00:00:00+00:00",
+    )
+    _commit(
+        repo,
+        "prev.md",
+        "skill:run-precedent (auto-rédigé, revue hebdo 2026-08-06)",
+        when="2026-08-06T00:00:00+00:00",
+    )
+    (tmp_path / f"weekly-timings-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "steps": [
+                    {
+                        "step": "commit-draft",
+                        "hash": "abc1234",
+                        "date": DATE,
+                        "subject": "skill:run-courant (auto-rédigé, revue hebdo 2026-08-12)",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    _text, ctx, _cfg = _prep_with_ctx(tmp_path, monkeypatch)
+    subjects = [c["subject"] for c in ctx["auto_commits"]]
+    assert len(subjects) == 2  # courant (enregistré) + précédent (dans la fenêtre)
+    assert any("run-precedent" in s for s in subjects)
+    assert not any("hors-fenetre" in s for s in subjects)  # borné par le bas
+
+
+def test_pending_auto_commits_unions_recorded_with_cross_run_backlog(tmp_path: Path):
+    """HIGH : « en attente de revue » est un backlog CROSS-RUN, pas un compteur
+    du run courant. `if recorded: return len(recorded)` le faisait s'effondrer sur
+    le seul run (3 au lieu de 40+). Union dédupliquée par hash."""
+    from weekly_telemetry_aggregator.report import _pending_auto_commits
+
+    repo = _git_repo(tmp_path / "repo")
+    backlog = [
+        _commit(repo, f"old{i}.md", f"skill:backlog{i} (auto-rédigé, revue hebdo 2026-07-01)")
+        for i in range(3)
+    ]
+    timings = {
+        "steps": [
+            {
+                "step": "commit-draft",
+                "hash": "abc1234",
+                "date": "2026-08-12",
+                "subject": "skill:run-courant (auto-rédigé, revue hebdo 2026-08-12)",
+            }
+        ]
+    }
+    # cutoff large : les 3 commits antérieurs sont bien dans le backlog
+    assert _pending_auto_commits(repo, "2099-01-01T00:00:00Z", timings) == 4
+
+    # le même commit vu par les DEUX sources n'est compté qu'une fois (dédup par hash)
+    timings["steps"][0]["hash"] = backlog[0]
+    assert _pending_auto_commits(repo, "2099-01-01T00:00:00Z", timings) == 3
+
+
+def test_pending_auto_commits_ignores_marker_present_only_in_commit_body(tmp_path: Path):
+    """FIX 7 : `--grep` matche le CORPS complet → « 30 en attente de revue ».
+
+    Un commit dont le corps mentionne le motif mais dont le SUJET n'en parle pas
+    ne doit PAS être compté. Le filtre est appliqué une seule fois, dans
+    `_git_log` (côté sujet) : `_pending_auto_commits` ne le re-teste plus.
+    """
+    repo = _git_repo(tmp_path / "repo")
+    _commit(repo, "spec.md", "docs: note de spec", body="Voir aussi : auto-rédigé, revue hebdo")
+    _commit(repo, "feat.md", "feat: sans rapport", body="Mention: auto-rédigé, revue hebdo 2026")
+    _commit(repo, "vrai.md", "skill:legitime (auto-rédigé, revue hebdo 2026)")
+
+    from weekly_telemetry_aggregator.report import _pending_auto_commits
+
+    # cutoff très tardif : les 3 commits sont dans le backlog
+    pending = _pending_auto_commits(repo, "2099-01-01T00:00:00Z")
+    assert pending == 1  # seul le vrai draft compte, pas les 2 faux positifs
+
+
+def test_security_gate_exposes_by_rule_and_explains_count_ratio():
+    """FIX 8 : `critical_count` (parcours récursif) vs 32/29 (dedup) vs blocking."""
+    from weekly_telemetry_aggregator.report import _assemble_security_gate, _render_security_section
+
+    digest = {
+        "harness_counts": {"findings_raw": 32, "findings_unique": 29},
+        "inspection": {
+            "a": {
+                "findings": [
+                    {"rule": "security/mcp-tool-poisoning", "severity": "critical"},
+                    {"rule": "memory-write-unscoped", "severity": "critical"},
+                    {"rule": "unbounded-delegation", "severity": "critical"},
+                    {"rule": "security/autre-regle", "severity": "critical"},
+                ]
+            }
+        },
+    }
+    gate, _warning = _assemble_security_gate(digest)
+    assert gate["critical_count"] == 4
+    assert gate["blocking_count"] == 3
+    assert gate["by_rule"]["mcp-tool-poisoning"] == 1  # normalisation : préfixe security/ retiré
+    assert gate["by_rule"]["autre-regle"] == 1
+    assert gate["blocking_by_rule"] == {
+        "mcp-tool-poisoning": 1,
+        "memory-write-unscoped": 1,
+        "unbounded-delegation": 1,
+    }
+    assert (gate["digest_findings_raw"], gate["digest_findings_unique"]) == (32, 29)
+
+    md = _render_security_section(gate)
+    assert "not comparable" in md or "pas comparables" in md
+    assert "32" in md and "29" in md  # les compteurs du digest sont explicités
+    for rule in ("mcp-tool-poisoning", "memory-write-unscoped", "unbounded-delegation"):
+        assert rule in md  # les 3 règles bloquantes sont nommées explicitement
