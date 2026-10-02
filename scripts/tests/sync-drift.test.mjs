@@ -251,7 +251,7 @@ test("sync-to-target: --apply : cycle complet quand rsync est disponible", { ski
   )
   assert.match(
     fs.readFileSync(path.join(engine, "weekly-telemetry-config.json"), "utf8"),
-    /"project_root": "\/cible"/,
+    /"project_root":"\/cible"/,
     "l'exclusion protège la config par-deployment : elle ne doit pas être écrasée",
   )
 })

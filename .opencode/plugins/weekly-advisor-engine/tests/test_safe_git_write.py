@@ -19,7 +19,11 @@ from weekly_telemetry_aggregator.safe_git_write import (
 
 def _git(repo: Path, *args: str) -> str:
     proc = subprocess.run(
-        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
     )
     return proc.stdout.strip()
 
