@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Contrat de flux docs ↔ code (G1, v6.0.p) — 8 surfaces vérifiées statiquement.
+ * Contrat de flux docs ↔ code (G1, v6.0.p) — 9 surfaces vérifiées statiquement.
  *
  *  1. Tools TS → sous-commandes CLI : chaque outil du plugin invoque une
  *     sous-commande réelle du moteur (aucun argv fantôme).
