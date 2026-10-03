@@ -31,6 +31,8 @@
 {% set attention = (n_high > 0) or budget_breached %}
 {% set unscoped = harness_scope.get("unscoped_file_count") %}
 {% set self_cost_v = self_cost if self_cost is defined else none %}
+{% set self_cost_tokens_v = self_cost_tokens if self_cost_tokens is defined else none %}
+{% set self_cost_calls_v = self_cost_api_calls if self_cost_api_calls is defined else "n/a" %}
 {# ---- Macros de formatage fr-FR (sortie échappée par autoescape, sauf markup statique des macros) ---- #}
 {% macro usd(v) -%}
 {%- if v is none -%}<span class="muted">n/a</span>
@@ -350,7 +352,7 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
       <div class="kpi {{ 'crit' if total_cost is none else 'ok' }}">
         <div class="k-label">Coût total</div>
         <div class="k-value">{{ usd(total_cost) }}</div>
-        <div class="k-sub">{% if self_cost_v is not none %}dont pipeline&nbsp;: <b>{{ usd(self_cost_v) }}</b>{% else %}self-cost non mesuré{% endif %} · sur 7 j</div>
+        <div class="k-sub">{% if self_cost_v is not none %}dont pipeline&nbsp;: <b>{{ usd(self_cost_v) }}</b>{% if self_cost_tokens_v is not none %} · <b>{{ "{:,.0f}".format(self_cost_tokens_v) }}</b> tokens · {{ self_cost_calls_v }} appels API{% endif %}{% else %}self-cost non mesuré{% endif %} · sur 7 j</div>
       </div>
       <div class="kpi">
         <div class="k-label">Tokens</div>
@@ -817,11 +819,11 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
         {% set pending_v = pending_auto_commits if pending_auto_commits is defined else none %}
         {% if pending_v is not none %}<p><b>{{ pending_v }}</b> commit(s) auto-rédigé(s) en attente de revue.</p>{% endif %}
         {% if head_commit is defined and head_commit %}<p><b>HEAD au run :</b> <code>{{ head_commit.get("hash") }}</code> {{ head_commit.get("date") }} {{ head_commit.get("subject") }}</p>{% endif %}
-        {% if dirty_files is defined and dirty_files %}<p><b>Fichiers dirty au run ({{ dirty_files|length }}) :</b> <code>{{ dirty_files[:30]|join("`, `") }}{% if dirty_files|length > 30 %}…{% endif %}</code></p>{% endif %}
+        {% if dirty_files is defined and dirty_files %}<p><b>Fichiers dirty au run ({{ dirty_files|length }}) :</b></p><ul class="clean">{% for f in dirty_files[:8] %}<li><code>{{ f }}</code></li>{% endfor %}{% if dirty_files|length > 8 %}<li class="muted">(+{{ dirty_files|length - 8 }} autres)</li>{% endif %}</ul>{% endif %}
         {% if audit_candidates and (audit_candidates.get("unaudited") or []) %}
-        <p><b>Candidates d'audit non traitées (plafond {{ audit_candidates.get("limit", "n/a") }}) :</b>
-          {{ audit_candidates.unaudited|map(attribute="session_id")|join(", ") }}.</p>
-        {% endif %}
+        {% set unaudited_v = audit_candidates.unaudited %}
+        <p><b>Candidates d'audit non traitées</b> (cap d'audit K = {{ audit_candidates.get("limit", "n/a") }} ; K = nombre de sessions auditées, pas un plafond sur cette liste) :</p>
+          <ul class="clean">{% for item in unaudited_v[:8] %}<li><code>{{ item.session_id }}</code></li>{% endfor %}{% if unaudited_v|length > 8 %}<li class="muted">(+{{ unaudited_v|length - 8 }} autres)</li>{% endif %}</ul>{% endif %}
         {% if audit_worker_statuses %}
         <p><b>Statuts workers :</b>
           {% for worker in audit_worker_statuses %}{{ worker.session_id }}={{ worker.worker_status or worker.status }}{% if worker.rc is defined and worker.rc != 0 %} (rc={{ worker.rc }}){% endif %}{% if worker.truncated %} (tronqué){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}.</p>

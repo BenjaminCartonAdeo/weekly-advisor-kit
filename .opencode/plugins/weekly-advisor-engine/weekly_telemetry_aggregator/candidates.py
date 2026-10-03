@@ -15,6 +15,8 @@ import hashlib
 #: commande existante (v5.30, E : pattern coûteux lancé par une commande).
 _DRAFT_TYPES = {"skill-candidate", "command-candidate", "command-improvement"}
 _SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+#: Seuil de coût fenêtré ($) au-delà duquel une session non-spec-driven est priorisée (P6).
+_NON_SPEC_COST_MIN_USD = 1.0
 
 # Mots-clés heuristiques d'exclusion (R2 anti-learning) — DROP si présents.
 _ANTI_LEARNING_SECRET = ("secret", "password", "token", "api key", "credential")
@@ -206,6 +208,22 @@ def select_audit_candidates(
             _add(str(s.get("session_id") or ""), "cache-gap", s)
     for r in summary.get("user_prompt_repeats", []):
         _add(str(r.get("session_id") or ""), "repeated-prompts", r)
+    for sc in summary.get("session_classifications", []):
+        sid = str(sc.get("session_id") or "")
+        if not sid:
+            continue
+        measured = int(sc.get("production_review_measured") or 0)
+        pct = sc.get("production_review_pct")
+        if measured > 0 and pct is not None and float(pct) == 0.0:
+            _add(sid, "code-non-relu", sc)
+        if str(sc.get("prompt_maturity_grade") or "").upper() == "F":
+            _add(sid, "maturity-F", sc)
+        try:
+            cost = float(sc.get("cost_usd") or 0.0)
+        except (TypeError, ValueError):
+            cost = 0.0
+        if not sc.get("spec_driven") and cost >= _NON_SPEC_COST_MIN_USD:
+            _add(sid, "non-spec coûteuse", sc)
     return ordered
 
 

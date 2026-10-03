@@ -98,6 +98,135 @@ _SECURITY_PARAPHRASE = {
 }
 
 
+def _parse_security_counts(security: dict | None) -> tuple[str, int, int, list[str]]:
+    """Normalise status/counts/rules (top-5, préfixe security/)."""
+    status, critical_count, blocking_count, rules = _parse_security_head(security)
+    return status, critical_count, blocking_count, rules
+
+
+def _parse_security_head(security: dict | None) -> tuple[str, int, int, list[str]]:
+    """status/critical/blocking/rules — socle commun aux deux rendus."""
+    status = "pass"
+    critical_count = 0
+    blocking_count = 0
+    rules: list[str] = []
+    if not isinstance(security, dict):
+        return status, critical_count, blocking_count, rules
+    raw = str(security.get("status") or "pass").strip().lower()
+    status = raw if raw in {"pass", "warn", "fail"} else "pass"
+    try:
+        critical_count = max(0, int(security.get("critical_count") or 0))
+    except (TypeError, ValueError):
+        critical_count = 0
+    try:
+        blocking_count = max(0, int(security.get("blocking_count") or 0))
+    except (TypeError, ValueError):
+        blocking_count = 0
+    raw_rules = security.get("blocking_rules") or []
+    if isinstance(raw_rules, list):
+        seen: set[str] = set()
+        for r in raw_rules:
+            name = str(r or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            rules.append(name if "/" in name else f"security/{name}")
+        rules = rules[:5]
+    return status, critical_count, blocking_count, rules
+
+
+def _security_int(value: object) -> int | None:
+    """int ≥ 0 depuis un JSON, ou None si absent/illisible (jamais 0 par défaut)."""
+    if value is None:
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _security_rule_counts(security: dict | None, key: str) -> dict[str, int]:
+    """`by_rule` / `blocking_by_rule` du gate, ordre déterministe conservé."""
+    out: dict[str, int] = {}
+    if not isinstance(security, dict):
+        return out
+    raw = security.get(key)
+    if not isinstance(raw, dict):
+        return out
+    for rule, count in raw.items():
+        coerced = _security_int(count)
+        if coerced is not None:
+            out[str(rule)] = coerced
+    return out
+
+
+# FIXME 8 : allowlist bloquante du gate. Les trois règles sont nommées
+# explicitement dans le rendu (MD comme HTML) pour que le lecteur puisse
+# vérifier d'où vient `blocking_count`.
+_BLOCKING_RULES_HTML = ("mcp-tool-poisoning", "memory-write-unscoped", "unbounded-delegation")
+
+
+def _security_ratio_paragraph(
+    critical_count: int,
+    blocking_count: int,
+    findings_raw: int | None,
+    findings_unique: int | None,
+) -> str:
+    """Ligne expliquant pourquoi les trois comptes ne sont pas comparables.
+
+    Parité stricte avec la version markdown : `critical_count` est un parcours
+    récursif de tout le digest, `findings_raw`/`findings_unique` viennent de
+    harness-eval après déduplication, `blocking_count` applique l'allowlist.
+
+    Les seules valeurs interpolées sont des entiers déjà formatés : le balisage
+    ci-dessous est statique et n'est donc pas échappé.
+    """
+    items = [
+        f"<li><code>critical_count</code> = <b>{critical_count}</b> : parcours récursif de "
+        f"tout le digest (y compris <code>inspection.*.findings</code>, même quand le tableau "
+        f"<code>findings</code> de premier niveau est vide).</li>"
+    ]
+    if findings_raw is not None or findings_unique is not None:
+        raw_txt = "n/a" if findings_raw is None else str(findings_raw)
+        uniq_txt = "n/a" if findings_unique is None else str(findings_unique)
+        items.append(
+            f"<li>digest <code>findings_raw</code> = <b>{raw_txt}</b> · "
+            f"<code>findings_unique</code> = <b>{uniq_txt}</b> : même population après "
+            f"déduplication harness-eval.</li>"
+        )
+    items.append(
+        f"<li><code>blocking_count</code> = <b>{blocking_count}</b> : après application de "
+        f"l'allowlist des {len(_BLOCKING_RULES_HTML)} règles bloquantes.</li>"
+    )
+    return (
+        "<p><b>Comptage</b> — les trois chiffres ci-dessous ne sont pas comparables :</p>"
+        "<ul>" + "".join(items) + "</ul>"
+        "<p><i>Ne pas en déduire un delta : les trois sources ne comptent pas les mêmes "
+        "objets.</i></p>"
+    )
+
+
+def _security_rules_list(rules: list[str]) -> str:
+    """Bloc <ul> des paraphrases génériques (≤200 caractères par ligne)."""
+    items = ["<ul>"]
+    for rule in rules:
+        short = str(rule).strip().lower().removeprefix("security/")
+        para = _SECURITY_PARAPHRASE.get(short, "Signal de sécurité — revue humaine requise.")
+        row = f"<li><code>{escape(rule)}</code> — {escape(para)}</li>"
+        items.append(row[:200] if len(row) > 200 else row)
+    items.append("</ul>")
+    return "\n".join(items)
+
+
+def _security_exact_rules_paragraph() -> str:
+    """Les 3 règles bloquantes nommées explicitement (parité markdown)."""
+    return (
+        "<p>Règles bloquantes exactes (allowlist du gate) : "
+        + ", ".join(f"<code>{escape(r)}</code>" for r in _BLOCKING_RULES_HTML)
+        + ".</p>"
+    )
+
+
 def _render_security_section(security: dict | None) -> Markup:
     """Section Sécurité repliée (HTML) — counts/rules only, warn-only.
 
@@ -108,31 +237,7 @@ def _render_security_section(security: dict | None) -> Markup:
     Retourne un ``<details id="security">`` replié par défaut (jamais open).
     """
     # <!-- ponytail: counts-only — aucun finding brut, paraphrases génériques -->
-    status = "pass"
-    critical_count = 0
-    blocking_count = 0
-    rules: list[str] = []
-    if isinstance(security, dict):
-        raw = str(security.get("status") or "pass").strip().lower()
-        status = raw if raw in {"pass", "warn", "fail"} else "pass"
-        try:
-            critical_count = max(0, int(security.get("critical_count") or 0))
-        except (TypeError, ValueError):
-            critical_count = 0
-        try:
-            blocking_count = max(0, int(security.get("blocking_count") or 0))
-        except (TypeError, ValueError):
-            blocking_count = 0
-        raw_rules = security.get("blocking_rules") or []
-        if isinstance(raw_rules, list):
-            seen: set[str] = set()
-            for r in raw_rules:
-                name = str(r or "").strip()
-                if not name or name in seen:
-                    continue
-                seen.add(name)
-                rules.append(name if "/" in name else f"security/{name}")
-            rules = rules[:5]
+    status, critical_count, blocking_count, rules = _parse_security_counts(security)
     badge = "badge-ok" if status == "pass" else "badge-warn"
     parts = [
         '<details id="security" class="security">',
@@ -148,16 +253,43 @@ def _render_security_section(security: dict | None) -> Markup:
             f" Findings critical : <b>{critical_count}</b>"
             f" · blocking : <b>{blocking_count}</b>.</p>"
         )
-        if rules:
-            parts.append("<ul>")
-            for rule in rules:
-                short = str(rule).strip().lower().removeprefix("security/")
-                para = _SECURITY_PARAPHRASE.get(
-                    short, "Signal de sécurité — revue humaine requise."
+        parts.append(
+            _security_ratio_paragraph(
+                critical_count,
+                blocking_count,
+                _security_int(security.get("digest_findings_raw"))
+                if isinstance(security, dict)
+                else None,
+                _security_int(security.get("digest_findings_unique"))
+                if isinstance(security, dict)
+                else None,
+            )
+        )
+        by_rule = _security_rule_counts(security, "by_rule")
+        if by_rule:
+            parts.append("<p>Répartition des findings critical par règle (top 5) :</p>")
+            parts.append(
+                "<ul>"
+                + "".join(
+                    f"<li><code>{escape(rule)}</code> — {count}</li>"
+                    for rule, count in list(by_rule.items())[:5]
                 )
-                row = f"<li><code>{escape(rule)}</code> — {escape(para)}</li>"
-                parts.append(row[:200] if len(row) > 200 else row)
-            parts.append("</ul>")
+                + "</ul>"
+            )
+        blocking_by_rule = _security_rule_counts(security, "blocking_by_rule")
+        if blocking_by_rule:
+            parts.append("<p>Répartition des findings bloquants par règle :</p>")
+            parts.append(
+                "<ul>"
+                + "".join(
+                    f"<li><code>{escape(rule)}</code> — {count}</li>"
+                    for rule, count in list(blocking_by_rule.items())[:5]
+                )
+                + "</ul>"
+            )
+        if rules:
+            parts.append(_security_rules_list(rules))
+        parts.append(_security_exact_rules_paragraph())
         parts.append("<p>Revue humaine requise — détails non affichés.</p>")
     parts.append("</div>")
     parts.append("</details>")

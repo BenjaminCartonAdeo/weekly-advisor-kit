@@ -332,6 +332,73 @@ def test_build_usage_collects_tool_fingerprints():
     assert usage.tool_result_fingerprints == {"bash": {"def": 1}}
 
 
+def test_build_usage_populates_edit_and_user_timestamps():
+    """Régression P6.3 : les timestamps edit/write et user doivent être peuplés.
+
+    Sans ce câblage, `classify_production_review` retourne `review_pct=None` pour
+    toute session ayant de l'activité edit/write (champs déclarés mais jamais écrits).
+    """
+    from weekly_telemetry_aggregator.sqlite_reader import PartRecord
+
+    base = RUN_TIME - timedelta(minutes=30)
+    later = base + timedelta(seconds=40)
+
+    class TimestampAdapter:
+        name = "fake"
+
+        def session_steps(self, *a):
+            return [type("S", (), {"model": "m", "cost": 0.1})()]
+
+        def session_tools(self, *a):
+            return {"edit": 1}, {}, {}
+
+        def session_tool_fingerprints(self, *a):
+            return {}, {}
+
+        def session_user_turns(self, *a):
+            return ["fais"]
+
+        def session_context_chars(self, *a):
+            return {}
+
+        def session_aggregates(self, *a):
+            return None
+
+        def session_parts(self, *a):
+            return [
+                PartRecord(ts=base, kind="user", text="fais"),
+                PartRecord(ts=base + timedelta(seconds=5), kind="tool", tool_name="edit"),
+                PartRecord(ts=base + timedelta(seconds=10), kind="tool", tool_name="read"),
+                PartRecord(ts=later, kind="user", text="relis"),
+            ]
+
+    period = Period(start=RUN_TIME - timedelta(days=7), end=RUN_TIME)
+    warnings: list[WarningEntry] = []
+    usage, failed = build_usage(
+        type(
+            "M",
+            (),
+            {
+                "session_id": "s",
+                "time_updated": RUN_TIME - timedelta(hours=1),
+                "title": "T",
+                "directory": None,
+                "agent": None,
+                "parent_id": None,
+            },
+        )(),
+        TimestampAdapter(),
+        period=period,
+        run_time=RUN_TIME,
+        cfg=_cfg(Path("/tmp"), Path("/x.db")),
+        warnings=warnings,
+    )
+    assert failed is False
+    assert usage is not None
+    assert usage.user_turn_timestamps == [base, later]
+    assert usage.edit_write_timestamps == [base + timedelta(seconds=5)]
+
+
 def test_run_partial_only_on_read_failure(tmp_path: Path, monkeypatch):
     import weekly_telemetry_aggregator.main as main_mod
 

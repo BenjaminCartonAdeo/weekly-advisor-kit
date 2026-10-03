@@ -99,6 +99,7 @@ un id dans `previously_recommended` ou `recurrents` exige une justification renf
 
 ## 4. Schéma du fichier findings raw
 
+<!-- envelope-example: weekly-watch-findings-raw (miroir doc/architecture/schemas/weekly-watch-findings-raw.schema.json) -->
 ```jsonc
 {
   "schema_version": 1,
@@ -150,18 +151,16 @@ applique les garde-fous déterministes (coercitions, writer mémoire, annexe sé
 
 ### Gate raw → validate
 
-<!-- ponytail: une gate fichier suffit ; aucun payload parallèle à maintenir. -->
-
 Le raw est une entrée obligatoire, pas une suggestion : `watch-validate` ne peut être
 appelé **qu'après** l'écriture et la validation locale de
 `weekly-watch-findings-raw-<date>.json`. Vérifier au minimum `schema_version: 1` et un
 tableau `findings`; ne jamais valider un payload inline, absent ou partiellement lu.
 
-Si le raw manque, est illisible ou ne respecte pas cette forme, effectuer **one bounded
-retry** (`max_retry=1`, une seule recovery bornée, relecture ciblée du contexte
-disponible), puis arrêter la branche avec un signal bloquant non-sécu pour cette étape (exit 2 réservé à ce cas non-sécu ; un finding sécu reste en warn-only avec `rc: 1`, WARNING et rapport toujours écrit). Ne pas
-boucler, respawn, attendre indéfiniment ou inventer un finding pour permettre la
-validation. Le fichier final n'est pas écrit par ce skill : seul `watch-validate` peut
+Si le raw manque, est illisible ou ne respecte pas cette forme, appliquer la recovery
+bornée du skill partagé `weekly-safety-guardrails` (`max_retry=1`), puis arrêter la
+branche avec un signal bloquant non-sécu pour cette étape (exit 2 réservé à ce cas
+non-sécu ; un finding sécu reste en warn-only avec `rc: 1`, WARNING et rapport toujours
+écrit). Le fichier final n'est pas écrit par ce skill : seul `watch-validate` peut
 le produire après cette gate. Une recovery réussie peut être signalée comme
 `{status: "recovered", source: "watch", artifact: "weekly-watch-findings"}` ; elle
 reste nonblocking seulement si le raw/final observé est valide.

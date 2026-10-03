@@ -20,6 +20,8 @@ décroissante, `legacy/` inclus) — et résume-le pour une lecture rapide.
 6. **Cohérence** : tags action (delete/shrink/merge/recalibrate/reference) les plus
    prioritaires
 7. Si le rapport n'existe pas (aucun run) : le dire explicitement, ne rien inventer
+8. Dernière ligne : `WEEKLY_REPORT_RC=<0|1|2>` (0 rapport trouvé et récent ≤10j, 1 rapport
+   trouvé mais périmé >10j, 2 aucun rapport trouvé)
 
 ## Règles
 
@@ -30,3 +32,5 @@ décroissante, `legacy/` inclus) — et résume-le pour une lecture rapide.
 - Ne pas confondre rapport HTML et archive : le HTML (`weekly-report-latest.html`) est le
   signal canonique du dernier run complet ; les archives `runs/<date>-<uuid8>/` sont
   l'historique
+- Pour un audit de provenance/CI (drift commit, gates HTML/artefacts, matrice warnings),
+  voir `/cron-audit` — cette commande reste un simple résumé de lecture

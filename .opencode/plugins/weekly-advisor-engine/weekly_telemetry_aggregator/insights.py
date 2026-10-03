@@ -72,7 +72,224 @@ def _pct_delta(current: float | None, previous: float | None) -> float | None:
     return round((current - previous) / previous * 100, 1)
 
 
+# ------------------------------------------------------------------ compute helpers
+
+
+def _lint_delta_by_rule(
+    current_digest: dict | None,
+    previous_digest: dict | None,
+    harness_ignored_rules: list[str] | None,
+) -> dict | None:
+    """Deltas de violations par règle (None si digest manquant — jamais d'échec)."""
+    if current_digest is None or previous_digest is None:
+        return None
+    ignored = set(harness_ignored_rules or [])
+
+    def _rule_counts(digest: dict) -> dict:
+        counts: dict[str, int] = {}
+        for f in flatten_harness_findings(digest):
+            key = str(f.get("rule") or f.get("severity") or "unknown")
+            if key in ignored:
+                continue
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    cur_counts = _rule_counts(current_digest)
+    prev_counts = _rule_counts(previous_digest)
+    return {
+        r: cur_counts.get(r, 0) - prev_counts.get(r, 0)
+        for r in sorted(set(cur_counts) | set(prev_counts))
+    }
+
+
+def _collect_cost_discrepancies(current_summary: dict) -> list[dict]:
+    """Écarts cross-check structurés K7 (parts lifetime vs session_v2 lifetime)."""
+    discrepancies: list[dict] = []
+    for w in current_summary.get("warnings", []):
+        msg = w.get("message", "")
+        if "cross-check mismatch" not in msg:
+            continue
+        parts_cost = w.get("parts_cost")
+        session_v2_cost = w.get("session_v2_cost")
+        if parts_cost is None or session_v2_cost is None:
+            continue
+        discrepancies.append(
+            {
+                "session_id": w.get("session_id"),
+                "parts_cost_usd": parts_cost,
+                "session_v2_cost_usd": session_v2_cost,
+            }
+        )
+    return discrepancies
+
+
+def _month_cost(recent_summaries: list[dict], run_time: datetime) -> float:
+    """Coût cumulé 30j glissants (inclus current en tête de liste)."""
+    month_start = run_time - timedelta(days=30)
+    total = 0.0
+    for s in recent_summaries:
+        gen = parse_iso_ts(s.get("generated_at")) or run_time
+        if month_start <= gen <= run_time:
+            total += s.get("totals", {}).get("total_cost_usd", 0.0)
+    return total
+
+
+def _spike_baseline(recent_summaries: list[dict]) -> tuple[list[float], int]:
+    """Baseline quotidienne hors run courant (zéro ignoré)."""
+    costs: list[float] = []
+    days = 0
+    for s in recent_summaries[1:]:
+        for d in s.get("daily_totals", []):
+            cost = float(d.get("cost_usd", 0.0))
+            if cost == 0:
+                continue
+            costs.append(cost)
+            days += 1
+    return costs, days
+
+
+def _daily_spike_alerts(
+    current_summary: dict,
+    baseline: list[float],
+    z_min: float,
+) -> list[dict]:
+    """Un alert par jour courant anormal vs baseline (z robuste, borné)."""
+    alerts: list[dict] = []
+    if not baseline:
+        return alerts
+    for day in current_summary.get("daily_totals", []):
+        cost = float(day.get("cost_usd", 0.0))
+        if cost == 0:
+            continue
+        combined = baseline + [cost]
+        zmap = {round(c, 4): z for c, z in zip(combined, _robust_z_scores(combined), strict=False)}
+        raw_z = zmap.get(round(cost, 4), 0.0)
+        if raw_z >= z_min:
+            z = min(raw_z, DAILY_SPIKE_Z_CAP)
+            alerts.append(
+                {
+                    "rule": "daily_spike_z_min",
+                    "threshold": z_min,
+                    "observed": round(z, 2),
+                    "severity": "medium",
+                    "day": day.get("date"),
+                    "note": "MAD≈0, z borné" if raw_z > DAILY_SPIKE_Z_CAP else "",
+                }
+            )
+    return alerts
+
+
+def _budget_spike_alerts(
+    *,
+    current_cost: float | None,
+    recent_summaries: list[dict],
+    run_time: datetime,
+    current_summary: dict,
+    current_cache: float | None,
+    wow: float | None,
+    insights_cfg: InsightsConfig,
+) -> tuple[list[dict], int]:
+    """Alertes seuils budgets/spike/cache/WoW (extrait de compute L262-318, CCN-16).
+
+    Renvoie (alertes, spike_baseline_days) — les jours de baseline restent
+    exposés dans la sortie compute.
+    """
+    alerts: list[dict] = []
+    if current_cost is not None and current_cost > insights_cfg.weekly_budget_usd:
+        alerts.append(
+            {
+                "rule": "weekly_budget_usd",
+                "threshold": insights_cfg.weekly_budget_usd,
+                "observed": round(current_cost, 4),
+                "over_by": round(current_cost - insights_cfg.weekly_budget_usd, 4),
+                "severity": "high",
+                "recommended_action": (
+                    "budget hebdo dépassé — cibler les sessions top-coût "
+                    "(context-bloat, loops swarm silent-empty)"
+                ),
+            }
+        )
+
+    month_cost = _month_cost(recent_summaries, run_time)
+    if month_cost > insights_cfg.monthly_budget_usd:
+        alerts.append(
+            {
+                "rule": "monthly_budget_usd",
+                "threshold": insights_cfg.monthly_budget_usd,
+                "observed": round(month_cost, 4),
+                "over_by": round(month_cost - insights_cfg.monthly_budget_usd, 4),
+                "severity": "high",
+                "recommended_action": (
+                    "budget mensuel dépassé — cibler les sessions top-coût "
+                    "(context-bloat : relectures répétées ; loops swarm silent-empty)"
+                ),
+            }
+        )
+
+    baseline_costs, baseline_days = _spike_baseline(recent_summaries)
+    alerts.extend(
+        _daily_spike_alerts(current_summary, baseline_costs, insights_cfg.daily_spike_z_min)
+    )
+
+    if current_cache is not None and current_cache < insights_cfg.cache_hit_rate_min:
+        alerts.append(
+            {
+                "rule": "cache_hit_rate_min",
+                "threshold": insights_cfg.cache_hit_rate_min,
+                "observed": current_cache,
+                "severity": "medium",
+            }
+        )
+
+    if wow is not None and wow > insights_cfg.cost_wow_pct_max:
+        alerts.append(
+            {
+                "rule": "cost_wow_pct_max",
+                "threshold": insights_cfg.cost_wow_pct_max,
+                "observed": wow,
+                "severity": "medium",
+            }
+        )
+    return alerts, baseline_days
+
+
 # ------------------------------------------------------------------ pure compute
+
+
+def _agent_loop_findings(
+    current_summary: dict,
+    *,
+    loop_min_repeats: int,
+    loop_task_min_repeats: int,
+    ignored_findings: list[str],
+) -> list[dict]:
+    """Findings agent-loop : outil répété avec la même empreinte (extrait de compute, CCN-4)."""
+    findings: list[dict] = []
+    # F5: fingerprints are additive, so old summaries simply produce no finding.
+    arg_fingerprints = current_summary.get("tool_argument_fingerprints", {})
+    result_fingerprints = current_summary.get("tool_result_fingerprints", {})
+    for tool in sorted(set(arg_fingerprints) | set(result_fingerprints)):
+        arg_repeats = max((int(v) for v in (arg_fingerprints.get(tool) or {}).values()), default=0)
+        result_repeats = max(
+            (int(v) for v in (result_fingerprints.get(tool) or {}).values()), default=0
+        )
+        threshold = loop_task_min_repeats if tool == "task" else loop_min_repeats
+        repeats = max(arg_repeats, result_repeats)
+        if repeats < threshold or _ignored(ignored_findings, "agent-loop", tool):
+            continue
+        findings.append(
+            {
+                "session_id": None,
+                "category": "agent-loop",
+                "severity": "medium",
+                "description": f"outil '{tool}' répété avec la même empreinte ({repeats} occurrences)",
+                "evidence_summary": f"tool={tool}; repeats={repeats}; threshold={threshold}",
+                "recommendation": "inspecter les résultats et borner les re-spawns/lectures répétées",
+                "recommendation_type": "agent-loop",
+                "impact_order_of_magnitude": "medium",
+            }
+        )
+    return findings
 
 
 def compute(
@@ -112,47 +329,14 @@ def compute(
     )
 
     # ---- lint deltas (null if either digest missing — never fail insights) ----
-    lint_delta: dict | None = None
-    if current_digest is not None and previous_digest is not None:
-        ignored = set(harness_ignored_rules or [])
-
-        def _rule_counts(digest: dict) -> dict:
-            counts: dict[str, int] = {}
-            for f in flatten_harness_findings(digest):
-                key = str(f.get("rule") or f.get("severity") or "unknown")
-                if key in ignored:
-                    continue
-                counts[key] = counts.get(key, 0) + 1
-            return counts
-
-        cur_counts = _rule_counts(current_digest)
-        prev_counts = _rule_counts(previous_digest)
-        lint_delta = {
-            r: cur_counts.get(r, 0) - prev_counts.get(r, 0)
-            for r in sorted(set(cur_counts) | set(prev_counts))
-        }
+    lint_delta = _lint_delta_by_rule(current_digest, previous_digest, harness_ignored_rules)
 
     previous_run_date = None
     if previous_summary:
         previous_run_date = previous_summary["generated_at"][:10]
 
     # K7: écarts cross-check structurés (parts lifetime vs session_v2 lifetime).
-    cost_discrepancies: list[dict] = []
-    for w in current_summary.get("warnings", []):
-        msg = w.get("message", "")
-        if "cross-check mismatch" not in msg:
-            continue
-        parts_cost = w.get("parts_cost")
-        session_v2_cost = w.get("session_v2_cost")
-        if parts_cost is None or session_v2_cost is None:
-            continue
-        cost_discrepancies.append(
-            {
-                "session_id": w.get("session_id"),
-                "parts_cost_usd": parts_cost,
-                "session_v2_cost_usd": session_v2_cost,
-            }
-        )
+    cost_discrepancies = _collect_cost_discrepancies(current_summary)
 
     deltas = {
         "cost_wow_pct": _pct_delta(current_cost, previous_cost),
@@ -183,341 +367,60 @@ def compute(
             "digest harness absent — lint_violations_delta_by_rule à null, règle sautée"
         )
 
-    # ---- alerts ----
-    alerts: list[dict] = []
-    if current_cost is not None and current_cost > insights_cfg.weekly_budget_usd:
-        alerts.append(
-            {
-                "rule": "weekly_budget_usd",
-                "threshold": insights_cfg.weekly_budget_usd,
-                "observed": round(current_cost, 4),
-                "over_by": round(current_cost - insights_cfg.weekly_budget_usd, 4),
-                "severity": "high",
-                "recommended_action": (
-                    "budget hebdo dépassé — cibler les sessions top-coût "
-                    "(context-bloat, loops swarm silent-empty)"
-                ),
-            }
-        )
+    # ---- alerts (seuils budgets/spike/cache/WoW) ----
+    alerts, baseline_days = _budget_spike_alerts(
+        current_cost=current_cost,
+        recent_summaries=recent_summaries,
+        run_time=run_time,
+        current_summary=current_summary,
+        current_cache=current_cache,
+        wow=deltas["cost_wow_pct"],
+        insights_cfg=insights_cfg,
+    )
 
-    month_start = run_time - timedelta(days=30)
-    month_cost = 0.0
-    for s in recent_summaries:
-        gen = parse_iso_ts(s.get("generated_at")) or run_time
-        if month_start <= gen <= run_time:
-            month_cost += s.get("totals", {}).get("total_cost_usd", 0.0)
-    if month_cost > insights_cfg.monthly_budget_usd:
-        alerts.append(
-            {
-                "rule": "monthly_budget_usd",
-                "threshold": insights_cfg.monthly_budget_usd,
-                "observed": round(month_cost, 4),
-                "over_by": round(month_cost - insights_cfg.monthly_budget_usd, 4),
-                "severity": "high",
-                "recommended_action": (
-                    "budget mensuel dépassé — cibler les sessions top-coût "
-                    "(context-bloat : relectures répétées ; loops swarm silent-empty)"
-                ),
-            }
-        )
-
-    baseline_costs, baseline_days = [], 0
-    for s in recent_summaries[1:]:
-        for d in s.get("daily_totals", []):
-            cost = float(d.get("cost_usd", 0.0))
-            if cost == 0:
-                continue
-            baseline_costs.append(cost)
-            baseline_days += 1
-    if baseline_costs:
-        baseline_list = baseline_costs
-        # z of each current day vs the baseline distribution:
-        for day in current_summary.get("daily_totals", []):
-            cost = float(day.get("cost_usd", 0.0))
-            if cost == 0:
-                continue
-            combined = baseline_list + [cost]
-            zmap = {
-                round(c, 4): z for c, z in zip(combined, _robust_z_scores(combined), strict=False)
-            }
-            raw_z = zmap.get(round(cost, 4), 0.0)
-            if raw_z >= insights_cfg.daily_spike_z_min:
-                z = min(raw_z, DAILY_SPIKE_Z_CAP)
-                alerts.append(
-                    {
-                        "rule": "daily_spike_z_min",
-                        "threshold": insights_cfg.daily_spike_z_min,
-                        "observed": round(z, 2),
-                        "severity": "medium",
-                        "day": day.get("date"),
-                        "note": "MAD≈0, z borné" if raw_z > DAILY_SPIKE_Z_CAP else "",
-                    }
-                )
-
-    if current_cache is not None and current_cache < insights_cfg.cache_hit_rate_min:
-        alerts.append(
-            {
-                "rule": "cache_hit_rate_min",
-                "threshold": insights_cfg.cache_hit_rate_min,
-                "observed": current_cache,
-                "severity": "medium",
-            }
-        )
-
-    wow = deltas["cost_wow_pct"]
-    if wow is not None and wow > insights_cfg.cost_wow_pct_max:
-        alerts.append(
-            {
-                "rule": "cost_wow_pct_max",
-                "threshold": insights_cfg.cost_wow_pct_max,
-                "observed": wow,
-                "severity": "medium",
-            }
-        )
-
-    lint_total = _digest_violations(current_digest, harness_ignored_rules or [])
-    if (
-        current_digest is not None
-        and lint_total is not None
-        and lint_total > insights_cfg.lint_violations_max
-    ):
-        alerts.append(
-            {
-                "rule": "lint_violations_max",
-                "threshold": insights_cfg.lint_violations_max,
-                "observed": lint_total,
-                "unit": "findings",
-                "severity": "medium",
-            }
-        )
+    lint_max = _lint_max_alert(current_digest, harness_ignored_rules, insights_cfg)
+    if lint_max is not None:
+        alerts.append(lint_max)
 
     # ---- couverture lint (v6.0.n) : surfaces .opencode/ hors allowlist ----
-    digest_scope = (current_digest or {}).get("harness_scope") or {}
-    unscoped = digest_scope.get("unscoped_file_count")
-    inspected_total = (current_digest or {}).get("inspection", {}).get("summary", {}).get("total")
-    if (
-        current_digest is not None
-        and isinstance(unscoped, int)
-        and isinstance(inspected_total, int)
-        and inspected_total + unscoped > 0
-    ):
-        coverage = inspected_total / (inspected_total + unscoped)
-        if coverage < insights_cfg.lint_coverage_min:
-            alerts.append(
-                {
-                    "rule": "lint_coverage",
-                    "threshold": insights_cfg.lint_coverage_min,
-                    "observed": round(coverage, 2),
-                    "unit": "surfaces scannées",
-                    "note": f"{inspected_total} scannées, {unscoped} hors allowlist",
-                    "severity": "low",
-                }
-            )
+    lint_coverage = _lint_coverage_alert(current_digest, insights_cfg)
+    if lint_coverage is not None:
+        alerts.append(lint_coverage)
 
     # ---- maintenance R1-R4 (findings initialisés avant l'alerte cache K8) ----
-    findings: list[dict] = []
-    # F5: fingerprints are additive, so old summaries simply produce no finding.
-    arg_fingerprints = current_summary.get("tool_argument_fingerprints", {})
-    result_fingerprints = current_summary.get("tool_result_fingerprints", {})
-    for tool in sorted(set(arg_fingerprints) | set(result_fingerprints)):
-        arg_repeats = max((int(v) for v in (arg_fingerprints.get(tool) or {}).values()), default=0)
-        result_repeats = max(
-            (int(v) for v in (result_fingerprints.get(tool) or {}).values()), default=0
-        )
-        threshold = loop_task_min_repeats if tool == "task" else loop_min_repeats
-        repeats = max(arg_repeats, result_repeats)
-        if repeats < threshold or _ignored(ignored_findings, "agent-loop", tool):
-            continue
-        findings.append(
-            {
-                "session_id": None,
-                "category": "agent-loop",
-                "severity": "medium",
-                "description": f"outil '{tool}' répété avec la même empreinte ({repeats} occurrences)",
-                "evidence_summary": f"tool={tool}; repeats={repeats}; threshold={threshold}",
-                "recommendation": "inspecter les résultats et borner les re-spawns/lectures répétées",
-                "recommendation_type": "agent-loop",
-                "impact_order_of_magnitude": "medium",
-            }
-        )
+    findings = _agent_loop_findings(
+        current_summary,
+        loop_min_repeats=loop_min_repeats,
+        loop_task_min_repeats=loop_task_min_repeats,
+        ignored_findings=ignored_findings,
+    )
     # Observation-only architecture/config drift.  This intentionally emits a
     # report finding, not an alert that can block CI or trigger curation/apply.
-    current_arch = _architecture_observation(current_summary)
-    previous_arch = _architecture_observation(previous_summary)
-    drift_fields = _architecture_drift(current_arch, previous_arch)
-    drift_runs = 1 if drift_fields else 0
-    for summary in recent_summaries[1:]:
-        earlier = _architecture_observation(summary)
-        if not drift_fields or not _architecture_drift(current_arch, earlier):
-            break
-        drift_runs += 1
-    drift_threshold = max(1, int(architecture_drift_runs))
-    if drift_fields and drift_runs >= drift_threshold:
-        findings.append(
-            {
-                "session_id": None,
-                "category": "architecture-drift",
-                "severity": "low",
-                "description": "configuration/architecture observations changed: "
-                + ", ".join(drift_fields),
-                "evidence_summary": (
-                    f"watch-context fields={','.join(drift_fields)}; "
-                    f"consecutive_runs={drift_runs}/{drift_threshold}"
-                ),
-                "recommendation": "Review declared/observed/absent state and harness scope manually",
-                "recommendation_type": "architecture-drift",
-                "action": "recalibrate",
-                "observation_only": True,
-            }
-        )
-    consecutive_zero_write = 0
-    for s in recent_summaries:
-        if (s.get("totals", {}) or {}).get("cache_write_tokens", 0) == 0:
-            consecutive_zero_write += 1
-        else:
-            break
-    if consecutive_zero_write >= insights_cfg.cache_write_zero_runs:
-        alerts.append(
-            {
-                "rule": "cache_write_zero_runs",
-                "threshold": insights_cfg.cache_write_zero_runs,
-                "observed": consecutive_zero_write,
-                "severity": "medium",
-            }
-        )
-        findings.append(
-            {
-                "category": "fix-candidate",
-                "severity": "medium",
-                "description": (
-                    f"cache_write_tokens=0 sur {consecutive_zero_write} run(s) consécutif(s) — "
-                    "trou de télémétrie probable côté client"
-                ),
-                "recommendation": (
-                    "vérifier la persistance du cache du client OpenCode (config/checkpoint) "
-                    "avant d'interpréter les coûts"
-                ),
-                "recommendation_type": "cache-write-zero",
-                "target": None,
-            }
-        )
-    runs = [s.get("skills_never_loaded", []) for s in recent_summaries]
-    never_loaded_consecutive: dict[str, int] = {}
-    if current_summary.get("skills_never_loaded"):
-        for skill in sorted(current_summary["skills_never_loaded"]):
-            count = 0
-            for run_skills in runs:
-                if skill in run_skills:
-                    count += 1
-                else:
-                    break
-            never_loaded_consecutive[skill] = count
-            if count >= insights_cfg.never_loaded_runs_threshold and not _ignored(
-                ignored_findings, "skill-maintenance", skill
-            ):
-                overlap = bool(
-                    current_digest and current_digest.get("triggers", {}).get("overlaps")
-                )
-                severity = "high" if overlap else "medium"
-                targets = (current_summary.get("skills_targets") or {}).get(skill, [])
-                cible = f" (cible déclarée : {', '.join(targets)})" if targets else ""
-                findings.append(
-                    {
-                        "session_id": None,
-                        "category": "retire-candidate",
-                        "severity": severity,
-                        "description": f"skill '{skill}' jamais chargé sur {count} runs consécutifs"
-                        + cible
-                        + (" + chevauchement de déclencheurs" if overlap else ""),
-                        "evidence_summary": f"skills_never_loaded: {count}/{len(runs)} runs"
-                        + (" ; lint trigger-overlap présent" if overlap else ""),
-                        "recommendation": f"Retirer .opencode/skills/{skill}/SKILL.md après revue",
-                        "recommendation_type": "skill-maintenance",
-                        "impact_order_of_magnitude": "small",
-                    }
-                )
+    drift_finding = _architecture_drift_finding(
+        current_summary, previous_summary, recent_summaries, architecture_drift_runs
+    )
+    if drift_finding is not None:
+        findings.append(drift_finding)
+    zero_alert, zero_finding = _cache_write_zero_alerts(recent_summaries, insights_cfg)
+    if zero_alert is not None and zero_finding is not None:
+        alerts.append(zero_alert)
+        findings.append(zero_finding)
+    _retire, never_loaded_consecutive = _retire_candidates(
+        current_summary, recent_summaries, insights_cfg, ignored_findings, current_digest
+    )
+    findings.extend(_retire)
 
-    for pair in current_summary.get("skill_similar_pairs", []):
-        skills = list(pair.get("skills", []))
-        if not skills:
-            continue
-        target = skills[0]
-        if _ignored(ignored_findings, "skill-maintenance", target):
-            continue
-        findings.append(
-            {
-                "session_id": None,
-                "category": "merge-candidate",
-                "severity": "medium",
-                "description": f"skills '{skills[0]}' et '{skills[1]}' probablement redondants",
-                "evidence_summary": f"similarité difflib {pair.get('similarity', 0.0):.2f} ≥ {insights_cfg.skill_similarity_min if hasattr(insights_cfg, 'skill_similarity_min') else 0.8}",
-                "recommendation": "Fusion manuelle des deux SKILL.md après revue",
-                "recommendation_type": "skill-maintenance",
-                "impact_order_of_magnitude": "small",
-            }
-        )
+    _sim_min = (
+        insights_cfg.skill_similarity_min if hasattr(insights_cfg, "skill_similarity_min") else 0.8
+    )
+    findings.extend(_merge_candidates(current_summary, ignored_findings, _sim_min))
 
-    # token-risk (v6.0.q) : sessions top-coût dépassant le cap de tokens
-    # (drivers réels : context-bloat / loops swarm silent-empty).
-    token_cap = insights_cfg.session_token_cap
-    for s in current_summary.get("top_sessions_by_cost", []):
-        total = s.get("total_tokens") or 0
-        if total > token_cap:
-            sid = s.get("session_id")
-            if _ignored(ignored_findings, "token-risk", sid or ""):
-                continue
-            findings.append(
-                {
-                    "session_id": sid,
-                    "category": "token-risk",
-                    "severity": "medium",
-                    "description": (
-                        f"session {sid} : {total:,} tokens > cap {token_cap:,} "
-                        f"(coût ${s.get('cost_usd', 0.0):.2f})"
-                    ),
-                    "evidence_summary": f"top_sessions_by_cost: {total} tokens",
-                    "recommendation": (
-                        "réduire le context-bloat (lectures répétées de gros fichiers) "
-                        "et les loops swarm silent-empty (worker task_result vide)"
-                    ),
-                    "recommendation_type": "token-budget",
-                    "impact_order_of_magnitude": "medium",
-                }
-            )
+    findings.extend(_token_risk_findings(current_summary, insights_cfg, ignored_findings))
 
-    # R4/R5 from lint digest findings (v1: report only, never automatic)
-    trivial_kw = ("frontmatter", "description", "missing", "invalid")
-    seen_rules: set[str] = set()
-    if isinstance(current_digest, dict):
-        for f in flatten_harness_findings(current_digest):
-            if str(f.get("rule") or "") in set(harness_ignored_rules or []):
-                continue
-            if not isinstance(f, dict):
-                continue
-            rule = str(f.get("rule") or f.get("id") or "unknown")
-            message = str(f.get("message") or f.get("detail") or "")
-            if rule in seen_rules:
-                continue
-            seen_rules.add(rule)
-            low = any(k in rule.lower() or k in message.lower() for k in trivial_kw)
-            if _ignored(ignored_findings, "harness-fix", rule):
-                continue
-            findings.append(
-                {
-                    "session_id": None,
-                    "category": "fix-candidate",
-                    "severity": "low" if low else "medium",
-                    "description": f"violation harness '{rule}'"
-                    + ("" if not low else " (format triviale)"),
-                    "evidence_summary": message[:200] or f"{rule}: {f.get('severity', '')}",
-                    "recommendation": "Correction manuelle (R4: corrigeable en auto-fix v2 ; R5: jamais automatique)",
-                    "recommendation_type": "harness-fix",
-                    "impact_order_of_magnitude": "small",
-                }
-            )
+    findings.extend(_harness_fix_findings(current_digest, harness_ignored_rules, ignored_findings))
 
     stats = {
-        "runs_scanned": len(runs),
+        "runs_scanned": len(recent_summaries),
         "skills_in_catalog": current_summary.get("skill_catalog_count", DEFAULT_CATALOG_COUNT),
         "never_loaded_consecutive": dict(sorted(never_loaded_consecutive.items())),
         "spike_baseline_days": baseline_days,
@@ -533,6 +436,124 @@ def compute(
         "alerts": sorted(alerts, key=lambda a: (a["severity"] != "high", a["rule"])),
         "maintenance": {"findings": findings, "stats": stats},
     }
+
+
+def _lint_max_alert(
+    current_digest: dict | None,
+    harness_ignored_rules: list[str] | None,
+    insights_cfg: InsightsConfig,
+) -> dict | None:
+    """Alerte lint_violations_max, ou None si sous le seuil."""
+    lint_total = _digest_violations(current_digest, harness_ignored_rules or [])
+    if (
+        current_digest is not None
+        and lint_total is not None
+        and lint_total > insights_cfg.lint_violations_max
+    ):
+        return {
+            "rule": "lint_violations_max",
+            "threshold": insights_cfg.lint_violations_max,
+            "observed": lint_total,
+            "unit": "findings",
+            "severity": "medium",
+        }
+    return None
+
+
+def _lint_coverage_alert(current_digest: dict | None, insights_cfg: InsightsConfig) -> dict | None:
+    """Alerte lint_coverage (surfaces .opencode/ hors allowlist), ou None."""
+    digest_scope = (current_digest or {}).get("harness_scope") or {}
+    unscoped = digest_scope.get("unscoped_file_count")
+    inspected_total = (current_digest or {}).get("inspection", {}).get("summary", {}).get("total")
+    if (
+        current_digest is not None
+        and isinstance(unscoped, int)
+        and isinstance(inspected_total, int)
+        and inspected_total + unscoped > 0
+    ):
+        coverage = inspected_total / (inspected_total + unscoped)
+        if coverage < insights_cfg.lint_coverage_min:
+            return {
+                "rule": "lint_coverage",
+                "threshold": insights_cfg.lint_coverage_min,
+                "observed": round(coverage, 2),
+                "unit": "surfaces scannées",
+                "note": f"{inspected_total} scannées, {unscoped} hors allowlist",
+                "severity": "low",
+            }
+    return None
+
+
+def _architecture_drift_finding(
+    current_summary: dict,
+    previous_summary: dict | None,
+    recent_summaries: list[dict],
+    architecture_drift_runs: int,
+) -> dict | None:
+    """Finding architecture-drift observation-only, ou None si pas de dérive persistante."""
+    current_arch = _architecture_observation(current_summary)
+    previous_arch = _architecture_observation(previous_summary)
+    drift_fields = _architecture_drift(current_arch, previous_arch)
+    drift_runs = 1 if drift_fields else 0
+    for summary in recent_summaries[1:]:
+        earlier = _architecture_observation(summary)
+        if not drift_fields or not _architecture_drift(current_arch, earlier):
+            break
+        drift_runs += 1
+    drift_threshold = max(1, int(architecture_drift_runs))
+    if drift_fields and drift_runs >= drift_threshold:
+        return {
+            "session_id": None,
+            "category": "architecture-drift",
+            "severity": "low",
+            "description": "configuration/architecture observations changed: "
+            + ", ".join(drift_fields),
+            "evidence_summary": (
+                f"watch-context fields={','.join(drift_fields)}; "
+                f"consecutive_runs={drift_runs}/{drift_threshold}"
+            ),
+            "recommendation": "Review declared/observed/absent state and harness scope manually",
+            "recommendation_type": "architecture-drift",
+            "action": "recalibrate",
+            "observation_only": True,
+        }
+    return None
+
+
+def _cache_write_zero_alerts(
+    recent_summaries: list[dict], insights_cfg: InsightsConfig
+) -> tuple[dict | None, dict | None]:
+    """Couple (alerte, finding) cache_write_tokens=0, ou (None, None)."""
+    consecutive_zero_write = 0
+    for s in recent_summaries:
+        if (s.get("totals", {}) or {}).get("cache_write_tokens", 0) == 0:
+            consecutive_zero_write += 1
+        else:
+            break
+    if consecutive_zero_write >= insights_cfg.cache_write_zero_runs:
+        return (
+            {
+                "rule": "cache_write_zero_runs",
+                "threshold": insights_cfg.cache_write_zero_runs,
+                "observed": consecutive_zero_write,
+                "severity": "medium",
+            },
+            {
+                "category": "fix-candidate",
+                "severity": "medium",
+                "description": (
+                    f"cache_write_tokens=0 sur {consecutive_zero_write} run(s) consécutif(s) — "
+                    "trou de télémétrie probable côté client"
+                ),
+                "recommendation": (
+                    "vérifier la persistance du cache du client OpenCode (config/checkpoint) "
+                    "avant d'interpréter les coûts"
+                ),
+                "recommendation_type": "cache-write-zero",
+                "target": None,
+            },
+        )
+    return None, None
 
 
 def _digest_violations(digest: dict | None, ignored_rules: list[str] | None = None) -> int | None:
@@ -589,6 +610,152 @@ def flatten_harness_findings(digest: dict | None) -> list[dict]:
             }
         )
         finding_rules.add(str(rec["rule"]))
+    return out
+
+
+def _retire_candidates(
+    current_summary: dict,
+    recent_summaries: list[dict],
+    insights_cfg: InsightsConfig,
+    ignored_findings: list[str],
+    current_digest: dict | None,
+) -> tuple[list[dict], dict[str, int]]:
+    """R1 retire-candidates : skills jamais chargés N runs consécutifs."""
+    out: list[dict] = []
+    runs = [s.get("skills_never_loaded", []) for s in recent_summaries]
+    consecutive: dict[str, int] = {}
+    if current_summary.get("skills_never_loaded"):
+        for skill in sorted(current_summary["skills_never_loaded"]):
+            count = 0
+            for run_skills in runs:
+                if skill in run_skills:
+                    count += 1
+                else:
+                    break
+            consecutive[skill] = count
+            if count >= insights_cfg.never_loaded_runs_threshold and not _ignored(
+                ignored_findings, "skill-maintenance", skill
+            ):
+                overlap = bool(
+                    current_digest and current_digest.get("triggers", {}).get("overlaps")
+                )
+                severity = "high" if overlap else "medium"
+                targets = (current_summary.get("skills_targets") or {}).get(skill, [])
+                cible = f" (cible déclarée : {', '.join(targets)})" if targets else ""
+                out.append(
+                    {
+                        "session_id": None,
+                        "category": "retire-candidate",
+                        "severity": severity,
+                        "description": f"skill '{skill}' jamais chargé sur {count} runs consécutifs"
+                        + cible
+                        + (" + chevauchement de déclencheurs" if overlap else ""),
+                        "evidence_summary": f"skills_never_loaded: {count}/{len(runs)} runs"
+                        + (" ; lint trigger-overlap présent" if overlap else ""),
+                        "recommendation": f"Retirer .opencode/skills/{skill}/SKILL.md après revue",
+                        "recommendation_type": "skill-maintenance",
+                        "impact_order_of_magnitude": "small",
+                    }
+                )
+    return out, consecutive
+
+
+def _merge_candidates(
+    current_summary: dict, ignored_findings: list[str], min_similarity: float = 0.8
+) -> list[dict]:
+    """R2 merge-candidates : paires de skills probablement redondantes."""
+    out: list[dict] = []
+    for pair in current_summary.get("skill_similar_pairs", []):
+        skills = list(pair.get("skills", []))
+        if not skills:
+            continue
+        target = skills[0]
+        if _ignored(ignored_findings, "skill-maintenance", target):
+            continue
+        out.append(
+            {
+                "session_id": None,
+                "category": "merge-candidate",
+                "severity": "medium",
+                "description": f"skills '{skills[0]}' et '{skills[1]}' probablement redondants",
+                "evidence_summary": f"similarité difflib {pair.get('similarity', 0.0):.2f} ≥ {min_similarity}",
+                "recommendation": "Fusion manuelle des deux SKILL.md après revue",
+                "recommendation_type": "skill-maintenance",
+                "impact_order_of_magnitude": "small",
+            }
+        )
+    return out
+
+
+def _token_risk_findings(
+    current_summary: dict, insights_cfg: InsightsConfig, ignored_findings: list[str]
+) -> list[dict]:
+    """R3 token-risk : sessions top-coût au-delà du cap de tokens."""
+    out: list[dict] = []
+    token_cap = insights_cfg.session_token_cap
+    for s in current_summary.get("top_sessions_by_cost", []):
+        total = s.get("total_tokens") or 0
+        if total > token_cap:
+            sid = s.get("session_id")
+            if _ignored(ignored_findings, "token-risk", sid or ""):
+                continue
+            out.append(
+                {
+                    "session_id": sid,
+                    "category": "token-risk",
+                    "severity": "medium",
+                    "description": (
+                        f"session {sid} : {total:,} tokens > cap {token_cap:,} "
+                        f"(coût ${s.get('cost_usd', 0.0):.2f})"
+                    ),
+                    "evidence_summary": f"top_sessions_by_cost: {total} tokens",
+                    "recommendation": (
+                        "réduire le context-bloat (lectures répétées de gros fichiers) "
+                        "et les loops swarm silent-empty (worker task_result vide)"
+                    ),
+                    "recommendation_type": "token-budget",
+                    "impact_order_of_magnitude": "medium",
+                }
+            )
+    return out
+
+
+def _harness_fix_findings(
+    current_digest: dict | None,
+    harness_ignored_rules: list[str] | None,
+    ignored_findings: list[str],
+) -> list[dict]:
+    """R4/R5 harness-fix : violations digest, report-only jamais automatique."""
+    out: list[dict] = []
+    trivial_kw = ("frontmatter", "description", "missing", "invalid")
+    seen_rules: set[str] = set()
+    if isinstance(current_digest, dict):
+        for f in flatten_harness_findings(current_digest):
+            if str(f.get("rule") or "") in set(harness_ignored_rules or []):
+                continue
+            if not isinstance(f, dict):
+                continue
+            rule = str(f.get("rule") or f.get("id") or "unknown")
+            message = str(f.get("message") or f.get("detail") or "")
+            if rule in seen_rules:
+                continue
+            seen_rules.add(rule)
+            low = any(k in rule.lower() or k in message.lower() for k in trivial_kw)
+            if _ignored(ignored_findings, "harness-fix", rule):
+                continue
+            out.append(
+                {
+                    "session_id": None,
+                    "category": "fix-candidate",
+                    "severity": "low" if low else "medium",
+                    "description": f"violation harness '{rule}'"
+                    + ("" if not low else " (format triviale)"),
+                    "evidence_summary": message[:200] or f"{rule}: {f.get('severity', '')}",
+                    "recommendation": "Correction manuelle (R4: corrigeable en auto-fix v2 ; R5: jamais automatique)",
+                    "recommendation_type": "harness-fix",
+                    "impact_order_of_magnitude": "small",
+                }
+            )
     return out
 
 
@@ -654,6 +821,22 @@ def _artifacts_before(output_dir: Path, pattern: str, current_date: str) -> list
     return sorted(found)
 
 
+def _fallback_previous_artifact(
+    output_dir: Path, pattern: str, exclude_dir: Path | None = None
+) -> dict | None:
+    """Repli même-date hors run courant (back-to-back runs, tests, reruns — extrait de _discover_previous, CCN-3)."""
+    eligible = []
+    for path in _pattern_paths(output_dir, pattern):
+        if exclude_dir is not None and path.parent == exclude_dir:
+            continue
+        m = re.search(r"(\d{4}-\d{2}-\d{2})\.json$", path.name)
+        if m:
+            eligible.append((m.group(1), path))
+    if not eligible:
+        return None
+    return _load(sorted(eligible)[-1][1])
+
+
 def _discover_previous(
     pattern: str, current_date: str, output_dir: Path, exclude_dir: Path | None = None
 ) -> dict | None:
@@ -667,16 +850,76 @@ def _discover_previous(
     found = _artifacts_before(output_dir, pattern, current_date)
     if found:
         return _load(found[-1][1])
-    eligible = []
-    for path in _pattern_paths(output_dir, pattern):
-        if exclude_dir is not None and path.parent == exclude_dir:
-            continue
-        m = re.search(r"(\d{4}-\d{2}-\d{2})\.json$", path.name)
-        if m:
-            eligible.append((m.group(1), path))
-    if not eligible:
-        return None
-    return _load(sorted(eligible)[-1][1])
+    return _fallback_previous_artifact(output_dir, pattern, exclude_dir)
+
+
+def _validated_digest(out: Path, date: str) -> dict | None:
+    """Charge le digest harness du run et le dégrade à None si invalide (warnings stderr)."""
+    current_digest = _load(out / f"weekly-harness-digest-{date}.json")
+    for digest_problem in harness_digest_problems(current_digest):
+        print(
+            f"insights: WARNING: {digest_problem} — volet harness dégradé",
+            file=sys.stderr,
+            flush=True,
+        )
+        current_digest = None
+    return current_digest
+
+
+def _baseline_fallback(
+    previous: dict | None,
+    baseline_summary_path: str | None,
+    cfg: TelemetryConfig,
+    date: str,
+) -> tuple[dict | None, str | None]:
+    """Repli baseline explicite (P1.1) quand aucun previous découvert, ou (previous, None)."""
+    baseline_used: str | None = None
+    if previous is None and (baseline_summary_path or cfg.baseline_summary_path):
+        bp = Path(baseline_summary_path or cfg.baseline_summary_path or "").expanduser()
+        if bp.is_file():
+            loaded = _load(bp)
+            if loaded and str(loaded.get("generated_at", ""))[:10] < date:
+                previous, baseline_used = loaded, str(bp)
+    return previous, baseline_used
+
+
+def _collect_recent(root: Path, current: dict, date: str, limit: int = 8) -> list[dict]:
+    """Fenêtre recent_summaries (current + précédents, newest-first, cap limit)."""
+    recent = [current]
+    for _d, p in _artifacts_before(root, "weekly-summary-*.json", date)[::-1]:
+        if len(recent) >= limit:
+            break
+        loaded = _load(p)
+        if loaded is not None:
+            recent.append(loaded)
+    return recent
+
+
+def _persist_baseline(
+    out: Path,
+    date: str,
+    current_path: Path,
+    current_digest: dict | None,
+    previous: dict | None,
+    baseline_used: str | None,
+    data: dict,
+) -> None:
+    """Auto-baseline K11 (premier run) ou rattachement du baseline explicite."""
+    if baseline_used:
+        data["baseline_summary_file"] = baseline_used
+    elif previous is None:
+        data["baseline"] = "first-run"
+        write_json_atomic(
+            out / f"weekly-baseline-{date}.json",
+            {
+                "schema_version": 1,
+                "run_date": date,
+                "summary_file": current_path.name,
+                "digest_file": f"weekly-harness-digest-{date}.json"
+                if current_digest is not None
+                else None,
+            },
+        )
 
 
 def run(
@@ -708,34 +951,15 @@ def run(
         if state_summary is not None
         else _discover_previous("weekly-summary-*.json", date, root, exclude_dir=out)
     )
-    current_digest = _load(out / f"weekly-harness-digest-{date}.json")
-    for digest_problem in harness_digest_problems(current_digest):
-        print(
-            f"insights: WARNING: {digest_problem} — volet harness dégradé",
-            file=sys.stderr,
-            flush=True,
-        )
-        current_digest = None
+    current_digest = _validated_digest(out, date)
     previous_digest = (
         state_digest
         if state_digest is not None
         else _discover_previous("weekly-harness-digest-*.json", date, root, exclude_dir=out)
     )
-    baseline_used: str | None = None
-    if previous is None and (baseline_summary_path or cfg.baseline_summary_path):
-        bp = Path(baseline_summary_path or cfg.baseline_summary_path or "").expanduser()
-        if bp.is_file():
-            loaded = _load(bp)
-            if loaded and str(loaded.get("generated_at", ""))[:10] < date:
-                previous, baseline_used = loaded, str(bp)
+    previous, baseline_used = _baseline_fallback(previous, baseline_summary_path, cfg, date)
 
-    recent = [current]
-    for _d, p in _artifacts_before(root, "weekly-summary-*.json", date)[::-1]:
-        if len(recent) >= 8:
-            break
-        loaded = _load(p)
-        if loaded is not None:
-            recent.append(loaded)
+    recent = _collect_recent(root, current, date)
 
     data = compute(
         run_time=run_time,
@@ -753,22 +977,7 @@ def run(
             "aucun digest harness disponible (deltas lint à null, règle sautée)"
         ]
 
-    if baseline_used:
-        data["baseline_summary_file"] = baseline_used
-    elif previous is None:
-        # K11: auto-baseline — premier run tracé (pas de tendance possible).
-        data["baseline"] = "first-run"
-        write_json_atomic(
-            out / f"weekly-baseline-{date}.json",
-            {
-                "schema_version": 1,
-                "run_date": date,
-                "summary_file": current_path.name,
-                "digest_file": f"weekly-harness-digest-{date}.json"
-                if current_digest is not None
-                else None,
-            },
-        )
+    _persist_baseline(out, date, current_path, current_digest, previous, baseline_used, data)
 
     out_path = out / f"weekly-insights-{date}.json"
     write_json_atomic(out_path, data)

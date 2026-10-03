@@ -23,6 +23,33 @@ def _period():
     return Period(start=tzutc(2026, 8, 5, 0, 0), end=tzutc(2026, 8, 12, 0, 0))
 
 
+def test_review_unmeasurable_warning_aggregated_per_harness():
+    """Dé-bruitage P6.3 : un seul warning par harnais, pas un par session."""
+    period = _period()
+    usages = []
+    for i in range(4):
+        u = make_usage(
+            f"ses_oc_{i}", [make_step(f"ses_oc_{i}", period.start, cost=0.1)], tools={"edit": 1}
+        )
+        u.harness = "opencode"
+        usages.append(u)
+    for i in range(2):
+        u = make_usage(
+            f"ses_cc_{i}", [make_step(f"ses_cc_{i}", period.start, cost=0.1)], tools={"write": 1}
+        )
+        u.harness = "claude-code"
+        usages.append(u)
+
+    summary = aggregate(usages, period=period, generated_at=period.end)
+
+    review_warnings = [w for w in summary.warnings if w.message.startswith("review-unmeasurable")]
+    assert len(review_warnings) == 2
+    assert [w.message for w in review_warnings] == [
+        "review-unmeasurable:claude-code (2 sessions)",
+        "review-unmeasurable:opencode (4 sessions)",
+    ]
+
+
 def test_children_merged_once_into_root_totals():
     period = _period()
     root = make_usage(
@@ -584,3 +611,123 @@ def test_all_sessions_sorted_by_cost_desc_then_id():
     assert [s.session_id for s in summary.all_sessions] == ["b", "a", "c"]
     assert [s.session_id for s in summary.top_sessions_by_cost] == ["b"]  # top N restreint
     assert len(summary.all_sessions) == summary.totals.session_count == 3
+
+
+def test_is_noise_separators_system_and_bounds():
+    from weekly_telemetry_aggregator.aggregator import is_noise
+
+    assert is_noise("═" * 20)
+    assert is_noise("résultat\n" + "=" * 12)
+    assert is_noise("system: tu es un assistant")
+    assert is_noise("x" * 2001)
+    assert not is_noise("corrige le bug de parsing du fichier de config")
+
+
+def test_is_noise_control_turns_and_yesno():
+    from weekly_telemetry_aggregator.aggregator import is_noise
+
+    for control in ("continue", "try again", "yes", "no", "cancel", "abort", "stop", "retry"):
+        assert is_noise(control), control
+    assert is_noise("continue to iterate")
+    assert is_noise("y")
+    assert is_noise("n!")
+    assert is_noise("?!")
+    assert not is_noise("continue la refonte du module de facturation")
+
+
+def test_normalize_fingerprint_collapses_values_and_order():
+    from weekly_telemetry_aggregator.aggregator import normalize_fingerprint
+
+    a = normalize_fingerprint("Refactor le module 12 et le module 34 s'il te plaît")
+    b = normalize_fingerprint("Refactor le module 87 et le module 5 s'il te plaît")
+    assert a == b and a
+
+    assert normalize_fingerprint("alpha beta gamma delta") == normalize_fingerprint(
+        "delta gamma beta alpha"
+    )
+
+
+def test_normalize_fingerprint_code_strings_paths_and_empty():
+    from weekly_telemetry_aggregator.aggregator import normalize_fingerprint
+
+    assert normalize_fingerprint("```py\nprint(1)\n```") == normalize_fingerprint(
+        "```js\nconsole.log(2)\n```"
+    )
+    assert normalize_fingerprint('config "alpha" ici') == normalize_fingerprint('config "beta" ici')
+    assert normalize_fingerprint("ouvre /home/benjamin/dev/projet") == normalize_fingerprint(
+        "ouvre /tmp/autre/chemin"
+    )
+    assert normalize_fingerprint("!!! ??? ...") == ""
+    assert normalize_fingerprint("") == ""
+
+
+def test_prompt_repeat_groups_by_fingerprint():
+    from helpers import make_usage
+
+    from weekly_telemetry_aggregator.aggregator import _prompt_repeat_groups
+
+    turns = [
+        "Analyse le rapport numéro 12 et propose des actions concrètes pour le sprint en cours",
+        "Analyse le rapport numéro 34 et propose des actions concrètes pour le sprint en cours",
+        "Analyse le rapport numéro 78 et propose des actions concrètes pour le sprint en cours",
+    ]
+    usage = make_usage("s1", [], user_turns=turns)
+    out = _prompt_repeat_groups([usage], repeat_min=3, similarity=0.9, min_chars=20)
+    assert len(out) == 1
+    assert out[0].count == 3
+    assert out[0].sessions_distinct == 1
+    assert out[0].estimated_time_saved_mins == 6
+
+
+def test_prompt_repeat_groups_cap_and_sort_order():
+    from helpers import make_usage
+
+    from weekly_telemetry_aggregator.aggregator import _prompt_repeat_groups
+
+    usages = []
+    for i in range(25):
+        prompt = (
+            f"Tâche récurrente sujet{chr(97 + i)} à automatiser avec suffisamment de contenu "
+            "pour dépasser le seuil minimum de caractères de détection"
+        )
+        usages.append(make_usage(f"s{i:02d}", [], user_turns=[prompt, prompt, prompt]))
+    out = _prompt_repeat_groups(usages, repeat_min=3, similarity=0.9, min_chars=40)
+    assert len(out) == 20
+    keys = [(r.count, r.session_id) for r in out]
+    assert keys == sorted(keys, key=lambda k: (-k[0], k[1]))
+
+
+def test_prompt_repeat_groups_excludes_compaction_artifacts():
+    from helpers import make_usage
+
+    from weekly_telemetry_aggregator.aggregator import _prompt_repeat_groups
+
+    art = "▣ dcp | -1209.7k removed, +3.5k summary │█░░"
+    usage = make_usage("s1", [], user_turns=[art, art, art, art])
+    out = _prompt_repeat_groups([usage], repeat_min=3, similarity=0.9, min_chars=1)
+    assert out == []
+
+
+def test_user_prompt_repeat_enriched_fields():
+    from helpers import make_usage
+
+    from weekly_telemetry_aggregator.aggregator import _prompt_repeat_groups
+
+    prompt = "Optimise le pipeline de collecte avec un contenu assez long pour dépasser le seuil"
+    a = make_usage("s1", [], user_turns=[prompt, prompt])
+    a.harness = "opencode"
+    b = make_usage("s2", [], user_turns=[prompt])
+    b.harness = "claude"
+    out = _prompt_repeat_groups([a, b], repeat_min=3, similarity=0.9, min_chars=20)
+    assert len(out) == 1
+    rep = out[0]
+    assert rep.count == 3
+    assert rep.sessions_distinct == 2
+    assert rep.harnesses_distinct == 2
+    assert rep.cancel_rate == 0.0
+    assert rep.estimated_time_saved_mins == 6
+    assert rep.examples == [prompt]
+    assert "# Skill" in rep.skill_draft
+    assert "## When to use" in rep.skill_draft
+    assert "## Steps" in rep.skill_draft
+    assert "## Example prompts" in rep.skill_draft

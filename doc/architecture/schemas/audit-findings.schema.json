@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "audit-findings.schema.json",
+  "title": "audit-findings-<session_id>.json",
+  "description": "Envelope worker A (étape 3, skill weekly-quality-audit) : un fichier par session avant consolidation déterministe. Miroir exact de la gate JOIN `report._audit_envelope_reason` (schema_version==1, session_id égal au nom canonique du fichier, summary non-vide, findings/warnings tableaux, rc ∈ {0,1}). Schéma documentaire : clés principales contraintes, le reste libre.",
+  "type": "object",
+  "required": ["schema_version", "session_id", "summary", "findings", "rc", "warnings"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "summary": { "type": "string", "minLength": 1 },
+    "findings": { "type": "array" },
+    "rc": { "type": "integer", "enum": [0, 1] },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": true
+}

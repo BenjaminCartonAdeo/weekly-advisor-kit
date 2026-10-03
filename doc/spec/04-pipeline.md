@@ -42,10 +42,13 @@ parallèle.
 | `injection-manuelle` | copier-coller répété d'infos qui auraient pu venir d'un skill/command/MCP | transcript × usage de skills |
 | `sous-usage-skill` | tâche couverte par un skill existant faite manuellement | skills jamais chargés + transcript |
 | `sous-usage-command` | séquence de prompts longs répétée couverte par une command existante jamais invoquée | transcript (tours utilisateur) × scan des commands |
-| `command-candidat` | séquence de prompts longs répétée **≥ 3 fois**, aucune command existante ne la couvre | transcript (tours utilisateur) — détection qualitative |
+| `command-candidat` | séquence de prompts longs répétée **≥ 3 fois** (empreinte fingerprint `|`, voir C1 règle 10), aucune command existante ne la couvre | transcript (tours utilisateur) — détection qualitative + signal P3 |
 | `skill-candidat` | séquence de **5+** appels d'outils cohérente vers un même objectif, aucun skill existant ne la couvre | transcript × usage de skills |
 | `mauvais-modèle` | modèle coûteux pour une tâche simple (ou l'inverse, à l'origine de retries) | répartition par modèle × nature de la tâche |
 | `amélioration-command` | pattern coûteux lancé par une commande existante (premiers tours `/nom`) — la commande doit embarquer des garde-fous de coût | transcript (tours initiaux) × catégories coûteuses |
+| `non-spec-driven` | session coûteuse sans preuve de spec (pas de doc/plan, pas de mots modaux, pas de listes) | `spec_driven=false` + coût ≥1,00 $ (P6) |
+| `code-non-relu` | édition sans relecture mesurée | `production_review` measured>0 et pct 0 % (gap >30 s, P6) |
+| `low-maturity-prompt` | maturité de prompt faible | `prompt_maturity` grade F (<40, P6) |
 
 **Format d'un constat** : identifiant de session (canonique), catégorie, sévérité (haute/moyenne/
 basse), description, preuve résumée (**paraphrase**, pas de citation verbatim, ≤ ~200 caractères),

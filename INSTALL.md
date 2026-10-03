@@ -14,7 +14,7 @@ Temps total : ~10 min (hors run complet de test : ~8-12 min).
 
 | Binaire | Minimum | Installation | Vérification |
 |---|---|---|---|
-| `opencode` | ≥ 1.18 | `curl -fsSL https://opencode.ai/install \| bash` | `opencode --version` |
+| `opencode` | V1 ≥ 1.18.29 — ou V2 `2.*` (alpha) | `curl -fsSL https://opencode.ai/install \| bash` | `opencode --version` |
 | `uv` | — | `curl -LsSf https://astral.sh/uv/install.sh \| sh` | `uv --version` |
 | `harness-eval` | ≥ 7.9.0 | `uv tool install harness-eval` — paquet **PyPI**, pas npm | `harness-eval --version` (versions supérieures acceptées ; le doctor alerte sous le minimum ; absent → étape 5 fatale, gate de portabilité du drafting ignorée avec note ⚠) |
 | `git`, `python` | ≥ 3.11 | gestionnaire du poste | `git --version`, `python3 --version` |
@@ -22,6 +22,13 @@ Temps total : ~10 min (hors run complet de test : ~8-12 min).
 
 **Auth modèle** (une fois par poste) : `opencode auth login` — le modèle est passé par
 `--model` (cron, quickstart), jamais en dur dans l'agent.
+
+**Ligne d'opencode** : le kit est dual V1/V2 — V1 supporté `>= 1.18.29 < 2.0.0`
+(plancher déclaré dans `.opencode/package.json`, lockfile `1.18.32` ; les
+versions `1.18.25`–`1.18.28` ne sont **pas** supportées), V2 `2.*` (alpha) sans
+SDK en dépendance (types structurels). Le plugin charge paresseusement
+l'adaptateur de la ligne hôte (`server` → V1, `setup` → V2) ; voir §2.9 pour la
+validation smoke.
 
 ## 2. Étapes
 
@@ -235,7 +242,7 @@ run cron (mesuré v5.32).
 
 ```sh
 cd .opencode/plugins/weekly-advisor-engine
-uv run python -m pytest -q     # 660 tests — tout doit passer
+uv run python -m pytest -q     # 842 tests — tout doit passer
 cd ../../..
 opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"
@@ -316,6 +323,97 @@ schtasks /Create /SC WEEKLY /D LUN /ST 06:00 /TN weekly-advisor /TR "opencode ru
 
 - **WSL** : déjà couvert par la doc Linux (§2) — sous WSL, ignorez cette section et suivez
   les étapes POSIX (le venv sera en `.venv/bin/python`, détecté automatiquement).
+
+### 2.9 Compatibilité OpenCode V1/V2 (smoke harness)
+
+Validation des deux runtimes sans hôte (`scripts/smoke-dual-runtime.mjs`) :
+
+```sh
+OPENCODE_V1_BIN=/chemin/opencode-v1 OPENCODE_V2_BIN=/chemin/opencode-v2 \
+V1_EXPECTED_VERSION=1.19.5 V2_EXPECTED_VERSION=2.4.1 \
+node scripts/smoke-dual-runtime.mjs            # strict (défaut)
+```
+
+- **Env** : `OPENCODE_V1_BIN`, `OPENCODE_V2_BIN`, `V1_EXPECTED_VERSION`,
+  `V2_EXPECTED_VERSION`, `WEEKLY_KIT_ROOT` (racine du kit, sinon découverte
+  depuis cwd).
+- **Flags** : `--strict` (défaut), `--non-strict`, `--quiet`.
+- **Strict (défaut)** : les deux binaires et les deux versions attendues sont
+  **obligatoires** ; binaire manquant, binaires identiques ou version attendue
+  manquante → refus de démarrer, exit `3`. Tout check en échec → exit `1`.
+  Tout passe → exit `0`.
+- **Non-strict** : un binaire/version absent produit un verdict `SKIPPED`
+  explicite (jamais de `PASSED` silencieux), exit `0`.
+- Rapport écrit dans `reports/smoke-dual-runtime-report.json`.
+
+**CI** : `.github/workflows/ci.yml` exécute toujours le self-test `--non-strict`
+(il ne peut pas échouer — il ne prouve rien sur de vrais binaires V1/V2).
+L'étape stricte de compatibilité est **opt-in** : elle ne tourne que lorsque
+les binaires sont provisionnés (`OPENCODE_V1_BIN`/`OPENCODE_V2_BIN`), et la
+garde vit dans le shell (`shell: bash`) car un `if:` d'étape GitHub Actions ne
+voit pas l'`env:` d'étape — **le CI ne prouve donc pas la compatibilité V1/V2**.
+
+**État de validation réelle** : un run strict avec de vrais binaires a été
+exécuté le 2026-09-26 — V1 `1.19.5`, V2 `2.4.1` : identification des binaires,
+point d'entrée et contrainte de package passés ; le check registre a alors
+rapporté un comptage (0, 0) et le run est sorti en `1`. Le registre charge
+aujourd'hui 19/18 via le même loader Node 24 — relancez le smoke strict pour un
+verdict à jour.
+
+### 2.10 Kit → cible du cron (sync + garde anti-drift)
+
+Quand le kit est développé **dans un dépôt** et que le cron tourne **dans un
+autre** (ex. `../Adeo`), le dépôt de développement reste la source de vérité et
+l'autre doit en être le reflet exact. Sans ça, le cron exécute un moteur
+obsolète sans aucun signal.
+
+```sh
+scripts/sync-to-target.sh              # plan de transfert — DÉFAUT, n'écrit rien
+scripts/sync-to-target.sh --apply      # transfère (cible + rsync requis)
+scripts/check-drift.sh                 # verdict : 0 aligné, 1 dérive, 2 usage
+```
+
+- **Périmètres — 6 unités**, c'est-à-dire tout ce que le cron exécute pour la
+  revue hebdomadaire :
+
+  | # | Unité | Type |
+  |---|-------|------|
+  | 1 | `.opencode/plugins/weekly-advisor-engine` | répertoire |
+  | 2 | `.opencode/skills/weekly*/` | répertoire (une skill par répertoire) |
+  | 3 | `.opencode/plugins/weekly-advisor` | répertoire (plugin TypeScript) |
+  | 4 | `.opencode/agents/weekly-advisor` | répertoire (agents) |
+  | 5 | `.opencode/commands/weekly-review.md` | **fichier unique** |
+  | 6 | `.opencode/plugins/weekly-advisor.ts` | **fichier unique** (point d'entrée) |
+
+  Rien d'autre n'est touché — ni `.venv`, ni `reports/`, ni `node_modules/`, ni
+  `dist/`, ni caches. Les exclusions s'appliquent sur le **nom de base** à
+  n'importe quelle profondeur (pas de motif ancré sur le chemin relatif : un
+  `^dist$` ne matche pas `dist/weekly_advisor-0.4.1-py3-none-any.whl`).
+
+  Les unités n° 5 et 6 sont des fichiers, pas des répertoires : elles sont
+  traitées explicitement par les deux scripts. Une garde qui les comparerait via
+  les helpers répertoire comparerait deux listes vides et renverrait
+  « aligné ». L'unité n° 6 est le fichier qu'OpenCode charge pour enregistrer
+  les outils du plugin : une version périmée côté cible n'affecte pas les
+  unités 1-5, elle casse le plugin entier — silencieusement, verdict vert.
+  Les unités 3, 4 et 5 ont été ajoutées après coup — avant, `check-drift.sh`
+  pouvait répondre `OK` avec un plugin, des agents et une commande périmés côté
+  cron. Le test `INSTALL.md §2.10 documente les 6 unités réellement vérifiées`
+  verrouille cette table contre les scripts.
+- **Cible** : `WEEKLY_SYNC_TARGET` ou `--target <racine>` ; défaut
+  `<dirname du kit>/Adeo`. Jamais codée en dur dans les scripts.
+- **Tolérances** : `weekly-telemetry-config.json` (valeurs `project_root` /
+  `output_dir` propres au poste) et `weekly_advisor.egg-info/SOURCES.txt`
+  (artefact de build). Elles sont exclues du verdict **mais signalées** à chaque
+  run — une anomalie sur ces chemins reste visible.
+- **Quand les lancer** : `--dry-run` avant toute livraison dans la cible ;
+  `--apply` une fois le plan validé ; `check-drift.sh` systématiquement (en local
+  et en CI). `--apply` refuse de démarrer si la cible n'existe pas.
+- **CI** : `.github/workflows/ci.yml` exécute `check-drift.sh`. La cible n'existe
+  pas sur un runner GitHub → `SKIP` explicite, exit `0` (pas d'échec rouge). Pour
+  un contrôle réel en CI, il faut une étape de checkout de la cible et
+  `WEEKLY_SYNC_TARGET` pointant dessus.
+- **`rsync` requis uniquement pour `--apply`** : le plan s'affiche sans lui.
 
 ## 3. Mise à jour
 

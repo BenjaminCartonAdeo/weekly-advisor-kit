@@ -28,55 +28,75 @@ from .sqlite_reader import DataSourceError, detect_db
 _EPOCH = datetime.min.replace(tzinfo=UTC)
 
 
+def _active_providers(cfg: TelemetryConfig) -> list:
+    """Providers actifs, avec repli historique sur la base OpenCode locale."""
+    providers = build_providers(cfg)
+    if providers:
+        return providers
+    # Repli historique : DataSourceError préservée quand la base manque
+    # (contrat consommé par self_cost et report._self_cost_value).
+    warnings.warn(
+        "aucune source de sessions active — repli sur la base OpenCode locale "
+        f"({cfg.opencode_db_path})",
+        stacklevel=2,
+    )
+    _path, adapter = detect_db(cfg.opencode_db_path)
+    from .providers.implementations.opencode import OpenCodeSessionProvider
+
+    return [OpenCodeSessionProvider(_path, adapter)]
+
+
+def _find_by_title(providers: list, title: str):
+    """Première session dont le titre matche, sinon None."""
+    for provider in providers:
+        meta = provider.find_session_by_title(title)
+        if meta is not None:
+            return meta
+    return None
+
+
+def _find_latest_advisor(providers: list, found):
+    """Repli v5.30 (E) : session weekly-advisor la plus récente, toutes sources."""
+    for provider in providers:
+        for m in provider.list_sessions(0):
+            if not (m.agent and "weekly-advisor" in m.agent):
+                continue
+            if found is None or (m.time_updated or _EPOCH) > (found.time_updated or _EPOCH):
+                found = m
+    return found
+
+
+def _advisor_record(providers: list, found) -> dict | None:
+    """Dict coût/session/tokens depuis le provider propriétaire, sinon None."""
+    owner = next(p for p in providers if p.harness == found.harness)
+    agg = owner.session_aggregates(found.session_id)
+    if agg is None:
+        return None
+    tokens = sum(
+        float(agg.get(key) or 0.0)
+        for key in (
+            "tokens_input",
+            "tokens_output",
+            "tokens_reasoning",
+            "tokens_cache_read",
+            "tokens_cache_write",
+        )
+    )
+    return {"cost": agg["cost"], "session_id": found.session_id, "tokens": tokens}
+
+
 def advisor_cost(cfg: TelemetryConfig) -> dict | None:
     """Advisor session info: cost, session_id (canonique), tokens; None sinon."""
-    providers = build_providers(cfg)
-    if not providers:
-        # Repli historique : DataSourceError préservée quand la base manque
-        # (contrat consommé par self_cost et report._self_cost_value).
-        warnings.warn(
-            "aucune source de sessions active — repli sur la base OpenCode locale "
-            f"({cfg.opencode_db_path})",
-            stacklevel=2,
-        )
-        _path, adapter = detect_db(cfg.opencode_db_path)
-        from .providers.implementations.opencode import OpenCodeSessionProvider
-
-        providers = [OpenCodeSessionProvider(_path, adapter)]
+    providers = _active_providers(cfg)
     try:
-        found = None
-        for provider in providers:
-            meta = provider.find_session_by_title(cfg.advisor_run_title)
-            if meta is not None:
-                found = meta
-                break
+        found = _find_by_title(providers, cfg.advisor_run_title)
         if found is None:
-            # v5.30 (E) : fallback — session la plus récente de l'agent weekly-advisor,
-            # toutes sources confondues (le titre du run peut différer du
-            # advisor_run_title si le prompt cron change).
-            for provider in providers:
-                for m in provider.list_sessions(0):
-                    if not (m.agent and "weekly-advisor" in m.agent):
-                        continue
-                    if found is None or (m.time_updated or _EPOCH) > (found.time_updated or _EPOCH):
-                        found = m
+            # Le titre du run peut différer de advisor_run_title
+            # si le prompt cron change.
+            found = _find_latest_advisor(providers, None)
         if found is None:
             return None
-        owner = next(p for p in providers if p.harness == found.harness)
-        agg = owner.session_aggregates(found.session_id)
-        if agg is None:
-            return None
-        tokens = sum(
-            float(agg.get(key) or 0.0)
-            for key in (
-                "tokens_input",
-                "tokens_output",
-                "tokens_reasoning",
-                "tokens_cache_read",
-                "tokens_cache_write",
-            )
-        )
-        return {"cost": agg["cost"], "session_id": found.session_id, "tokens": tokens}
+        return _advisor_record(providers, found)
     finally:
         for provider in providers:
             provider.close()
