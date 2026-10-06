@@ -639,3 +639,236 @@ def test_watch_validate_memory_file_follows_config(tmp_path: Path):
     assert rc == 0
     assert (tmp_path / "custom-memory.jsonl").is_file()
     assert not (tmp_path / "watch-memory.jsonl").exists()
+
+
+# ============================================================ P2 debug-rule (playground read-only)
+
+DEBUG_RULE_DATE = RUN_TIME.strftime("%Y-%m-%d")
+DEBUG_SUMMARY = {
+    "schema_version": 2,
+    "period": {"start": "2026-08-05T00:00:00Z", "end": "2026-08-12T00:00:00Z"},
+    "generated_at": "2026-08-12T00:00:00Z",
+    "totals": {"cost_usd": 1.5, "sessions": 3},
+    "by_model": [
+        {"model": "m1", "cost_usd": 1.0},
+        {"model": "m2", "cost_usd": 0.5},
+    ],
+    "findings": [
+        {
+            "description": "leaked API key in the build log",
+            "recommendation_type": "skill-candidate",
+        }
+    ],
+    "session_classifications": [
+        {"session_id": "s1", "classification": "coding"},
+        {"session_id": "s2", "classification": "coding"},
+    ],
+}
+
+
+def _debug_seed_summary(tmp_path: Path) -> Path:
+    """Summary daté à la racine (mode legacy) pour exercer `debug-rule`."""
+    (tmp_path / f"weekly-summary-{DEBUG_RULE_DATE}.json").write_text(
+        json.dumps(DEBUG_SUMMARY), encoding="utf-8"
+    )
+    return _write_config(tmp_path, tmp_path / "opencode.db")
+
+
+def test_debug_rule_subcommand_parses():
+    parser = build_parser()
+    args = parser.parse_args(["debug-rule", "evaluate", "anti-learning", "--config", "nope.json"])
+    assert args.action == "evaluate"
+    assert args.target == "anti-learning"
+    assert args.rules_dir is None
+    assert args.top == 10
+    assert callable(args.func)
+
+    args = parser.parse_args(["debug-rule", "distributions", "by_model", "--top", "3"])
+    assert args.action == "distributions"
+    assert args.target == "by_model"
+    assert args.top == 3
+
+
+def test_debug_rule_fields_lists_typed_fields_and_dsl_functions(tmp_path: Path, capsys):
+    conf = _debug_seed_summary(tmp_path)
+    rc = main(["debug-rule", "fields", "--config", str(conf), "--anchor", RUN_TIME.isoformat()])
+    out = capsys.readouterr().out
+    assert rc == 0
+    data = json.loads(out)
+    assert data["action"] == "fields"
+    assert data["schema_version"] == 2
+    by_path = {field["path"]: field for field in data["fields"]}
+    assert by_path["totals.cost_usd"]["types"] == ["float"]
+    assert by_path["by_model[].model"]["types"] == ["str"]
+    assert by_path["by_model[].cost_usd"]["types"] == ["float"]
+    functions = {func["name"]: func for func in data["dsl_functions"]}
+    assert functions["contains"]["arity"] == "2"
+    assert functions["first"]["arity"] == "1..3"
+    assert functions["sum"]["arity"] == "1..2"
+    assert "someWhere" in functions
+
+
+def test_debug_rule_fields_missing_run_returns_2(tmp_path: Path, capsys):
+    conf = _write_config(tmp_path, tmp_path / "nope.db")
+    rc = main(["debug-rule", "fields", "--config", str(conf), "--anchor", RUN_TIME.isoformat()])
+    assert rc == 2
+    assert "summary inexistante" in capsys.readouterr().err
+
+
+def test_debug_rule_distributions_reports_sample_size_and_range(tmp_path: Path, capsys):
+    conf = _debug_seed_summary(tmp_path)
+    rc = main(
+        [
+            "debug-rule",
+            "distributions",
+            "by_model",
+            "--top",
+            "5",
+            "--config",
+            str(conf),
+            "--anchor",
+            RUN_TIME.isoformat(),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    data = json.loads(out)
+    assert data["action"] == "distributions"
+    rows = {row["path"]: row for row in data["fields"]}
+    model = rows["by_model[].model"]
+    assert model["sample_size"] == 2
+    assert model["numeric"] is False
+    assert model["top"] == [["m1", 1], ["m2", 1]]
+    cost = rows["by_model[].cost_usd"]
+    assert cost["sample_size"] == 2
+    assert cost["numeric"] is True
+    assert cost["min"] == 0.5
+    assert cost["max"] == 1.0
+
+
+def test_debug_rule_evaluate_rule_id_returns_uniform_finding(tmp_path: Path, capsys):
+    conf = _debug_seed_summary(tmp_path)
+    rc = main(
+        [
+            "debug-rule",
+            "evaluate",
+            "anti-learning",
+            "--config",
+            str(conf),
+            "--anchor",
+            RUN_TIME.isoformat(),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    data = json.loads(out)
+    assert data["mode"] == "rule"
+    finding = data["finding"]
+    assert finding["id"] == "anti-learning"
+    assert finding["occurrences"] == 1
+    for key in (
+        "id",
+        "severity",
+        "group",
+        "occurrences",
+        "description",
+        "suggestion",
+        "examples",
+        "details",
+    ):
+        assert key in finding
+
+
+def test_debug_rule_evaluate_direct_expression(tmp_path: Path, capsys):
+    conf = _debug_seed_summary(tmp_path)
+    rc = main(
+        [
+            "debug-rule",
+            "evaluate",
+            "count(session_classifications) >= 2",
+            "--config",
+            str(conf),
+            "--anchor",
+            RUN_TIME.isoformat(),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    data = json.loads(out)
+    assert data["mode"] == "expression"
+    finding = data["finding"]
+    assert finding["id"] == "expr:count(session_classifications) >= 2"
+    assert finding["details"]["truthy"] is True
+    assert finding["details"]["result"] is True
+
+
+def test_debug_rule_evaluate_unknown_expression_returns_2(tmp_path: Path, capsys):
+    conf = _debug_seed_summary(tmp_path)
+    rc = main(
+        [
+            "debug-rule",
+            "evaluate",
+            "unknown_name",
+            "--config",
+            str(conf),
+            "--anchor",
+            RUN_TIME.isoformat(),
+        ]
+    )
+    assert rc == 2
+    assert "unknown DSL name" in capsys.readouterr().err
+
+
+def test_debug_rule_evaluate_custom_rules_dir(tmp_path: Path, capsys):
+    conf = _debug_seed_summary(tmp_path)
+    rules_dir = tmp_path / "rules"
+    rules_dir.mkdir()
+    (rules_dir / "custom.md").write_text(
+        """---
+id: debug-custom
+name: Debug custom
+group: debug
+severity: low
+scope: findings
+---
+# Description
+
+{{count}} finding(s) with a leaked key.
+
+# When Triggered
+
+at least one finding contains the marker
+
+# How to Improve
+
+Rotate the key.
+
+```detect
+scan: findings
+match: contains(text, "leaked API key")
+aggregate:
+  occurrences: count(matched)
+check:
+  triggered: count(matched) >= 1
+```
+""",
+        encoding="utf-8",
+    )
+    rc = main(
+        [
+            "debug-rule",
+            "evaluate",
+            "debug-custom",
+            "--rules-dir",
+            str(rules_dir),
+            "--config",
+            str(conf),
+            "--anchor",
+            RUN_TIME.isoformat(),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    data = json.loads(out)
+    assert data["finding"]["id"] == "debug-custom"
+    assert data["finding"]["occurrences"] == 1

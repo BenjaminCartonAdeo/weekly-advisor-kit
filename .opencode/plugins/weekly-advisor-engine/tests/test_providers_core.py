@@ -227,3 +227,199 @@ def test_close_releases_source(seeded_db: Path):
     provider.close()
     with pytest.raises(sqlite3.ProgrammingError):  # connexion fermée → interdit
         provider._adapter.conn.execute("SELECT 1")  # noqa: SLF001 — assertion de cycle de vie
+
+
+# --- B2 / B3 : canal résultat et tours user (schéma part lié à message) -------
+
+
+def _linkable_db(path: Path, *, texts: list[tuple[str, str]], tools: list[tuple[str, str]]):
+    """opencode.db avec le lien `part.message_id` → `message.id` (schéma réel).
+
+    `seed_v1_file` omet `id`/`message_id` : sans ce jointure, le rôle du message
+    parent d'une part est indécidable et B3 ne peut pas s'exécuter. Ce helper crée
+    le lien explicite pour exercer le chemin nominal.
+    """
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE session_v2 (
+            id TEXT PRIMARY KEY, parent_id TEXT, title TEXT, model TEXT, agent TEXT,
+            directory TEXT, cost REAL, tokens_input REAL, tokens_output REAL,
+            tokens_reasoning REAL, tokens_cache_read REAL, tokens_cache_write REAL,
+            time_created INTEGER, time_updated INTEGER
+        );
+        CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, data TEXT, time_created INTEGER);
+        CREATE TABLE part (
+            id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+            data TEXT, time_created INTEGER
+        );
+        CREATE TABLE migration (id INTEGER PRIMARY KEY);
+        """
+    )
+    conn.execute("INSERT INTO migration (id) VALUES (1)")
+    conn.execute(
+        "INSERT INTO session_v2 (id, parent_id, title, model, cost, tokens_input, "
+        "tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write, "
+        "time_created, time_updated) VALUES ('ses_1', NULL, 't', NULL, 0, 0, 0, 0, 0, 0, 0, ?)",
+        (int(RUN_TIME.timestamp() * 1000),),
+    )
+    base = int(RUN_TIME.timestamp() * 1000) - 60_000
+    for i, (role, text) in enumerate(texts):
+        mid = f"msg_{i}"
+        conn.execute(
+            "INSERT INTO message (id, session_id, data, time_created) VALUES (?,?,?,?)",
+            (mid, "ses_1", json.dumps({"role": role}), base + i),
+        )
+        conn.execute(
+            "INSERT INTO part (id, message_id, session_id, data, time_created) VALUES (?,?,?,?,?)",
+            (
+                f"prt_{i}",
+                mid,
+                "ses_1",
+                json.dumps({"type": "text", "text": text}),
+                base + i,
+            ),
+        )
+    for j, (tool, output) in enumerate(tools):
+        conn.execute(
+            "INSERT INTO part (id, message_id, session_id, data, time_created) VALUES (?,?,?,?,?)",
+            (
+                f"prt_t{j}",
+                None,
+                "ses_1",
+                json.dumps(
+                    {
+                        "type": "tool",
+                        "state": {"name": tool, "input": {"n": j}, "output": output},
+                    }
+                ),
+                base + 100 + j,
+            ),
+        )
+    conn.commit()
+    conn.close()
+    return path
+
+
+def test_user_turns_exclude_assistant_narration_and_json_payloads(tmp_path: Path):
+    """B3 : seuls les tours `role == "user"` et non-JSON survivent.
+
+    Mesuré sur le run 2026-10-03 : `data.type == "text"` couvre 852 parts assistant
+    et 425 parts user — lire le type seul comptait la narration comme prompt humain.
+    """
+    db = _linkable_db(
+        tmp_path / "opencode.db",
+        texts=[
+            ("user", "Lance la revue hebdomadaire"),
+            ("assistant", "J'utilise `graphify` pour situer les composants"),
+            ("assistant", '{"verdict":"block","reason":"contexte json invalide"}'),
+            ("user", '{"verdict":"safe","reason":"patch update"}'),
+            ("user", "   "),
+            ("user", "explique moi ce que ça changerait"),
+        ],
+        tools=[],
+    )
+    provider = _provider_for(db)
+    try:
+        assert provider.session_user_turns("ses_1", 0, WINDOW_END_MS) == [
+            "Lance la revue hebdomadaire",
+            "explique moi ce que ça changerait",
+        ]
+    finally:
+        provider.close()
+
+
+def test_user_turns_keep_json_quoted_but_not_object_payload(tmp_path: Path):
+    """B3 : un tour JSON-sérialisé STRING est une intention (commande client), pas un blob.
+
+    Le client sérialise `/swarmx test: …` en `"/swarmx test: …"` : le retirer sur la
+    seule présence de guillemets ferait perdre la seule commande slash du corpus.
+    """
+    db = _linkable_db(
+        tmp_path / "opencode.db",
+        texts=[
+            ("user", "\"/swarmx test: réponds JUSTE 'ok'\""),
+            ("user", '["a", "b"]'),
+            ("user", "mets à jour le schema et ajoute {" + '"x": 1' + "} dedans"),
+        ],
+        tools=[],
+    )
+    provider = _provider_for(db)
+    try:
+        turns = provider.session_user_turns("ses_1", 0, WINDOW_END_MS)
+    finally:
+        provider.close()
+    assert turns == [
+        "\"/swarmx test: réponds JUSTE 'ok'\"",
+        'mets à jour le schema et ajoute {"x": 1} dedans',
+    ]
+
+
+def test_user_turns_fallback_without_part_message_link(seeded_db: Path):
+    """B3 fail-open : sans `part.message_id`, le rôle est indécidable → tours bruts.
+
+    On ne perd pas tous les tours en silence ; le canal reste simplement non filtré,
+    et `command_usage_state` (B5.2) distingue alors « non mesuré » de « mesuré vide ».
+    """
+    provider = _provider_for(seeded_db)
+    try:
+        assert provider.session_user_turns("ses_1", 0, WINDOW_END_MS) == ["Lance la revue"]
+        assert provider._adapter._part_has_message_id is False  # noqa: SLF001 — branche de repli
+    finally:
+        provider.close()
+
+
+def test_tool_fingerprints_drop_status_boilerplate_from_result_channel(tmp_path: Path):
+    """B2 : 'Edit applied successfully.' ne crée AUCUN bucket résultat.
+
+    Le canal arguments garde un bucket par appel (344 buckets pour 344 appels sur le
+    run 2026-10-03) ; le canal résultat n'en garde qu'un, de cardinal = nombre
+    d'appels. Une sortie constante ne prouve aucune répétition.
+    """
+    db = _linkable_db(
+        tmp_path / "opencode.db",
+        texts=[],
+        tools=[
+            ("edit", "Edit applied successfully."),
+            ("edit", "Edit applied successfully."),
+            ("edit", "Edit applied successfully."),
+            ("write", "Wrote file successfully."),
+            ("compress", "Compressed 2 messages into [Compressed conversation section]."),
+            ("glob", "No files found"),
+            ("read", "<path>/home/benjamin/dev/a.py</path>"),
+            ("todowrite", '[{"content": "un todo"}]'),
+        ],
+    )
+    provider = _provider_for(db)
+    try:
+        args, results = provider.session_tool_fingerprints("ses_1", 0, WINDOW_END_MS)
+    finally:
+        provider.close()
+    # aucun bucket pour les statuts constants / à cardinal 1
+    for tool in ("edit", "write", "compress", "glob"):
+        assert tool not in results, tool
+    # les payloads réels survivent
+    assert len(results["read"]) == 1
+    assert len(results["todowrite"]) == 1
+    # le canal arguments est INTACT : 3 appels edit = 3 empreintes distinctes
+    assert len(args["edit"]) == 3
+    assert list(args["edit"].values()) == [1, 1, 1]
+
+
+def test_tool_fingerprints_keep_structured_outputs(tmp_path: Path):
+    """B2 : une sortie structurée n'est jamais un statut, même courte."""
+    db = _linkable_db(
+        tmp_path / "opencode.db",
+        texts=[],
+        tools=[
+            ("edit", {"file": "a.py", "edits": 1}),
+            ("bash", {"stdout": "", "exit": 0}),
+        ],
+    )
+    provider = _provider_for(db)
+    try:
+        _args, results = provider.session_tool_fingerprints("ses_1", 0, WINDOW_END_MS)
+    finally:
+        provider.close()
+    assert len(results["edit"]) == 1
+    assert len(results["bash"]) == 1

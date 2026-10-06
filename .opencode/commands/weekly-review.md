@@ -1,20 +1,6 @@
 ---
 description: "Lance la revue hebdo complète — orchestration parallèle en waves de subagents, même chaîne que le cron, spec v6.1. Use when the full weekly review has to be triggered."
 agent: weekly-advisor
-metadata:
-  authored_by: opencode-weekly-advisor
-  authored_at: "2026-09-12T00:00:00Z"
-  origin: weekly-background
-  write_context: "cost guardrails + HTML deliverable gate + bounded context"
-  confidence: medium
-  source_sessions: ["ses_f784c329effeIaiD4j27H1aZ8x", "ses_f8838dd93ffeHLiRc64XE1yIsz", "ses_f6ecd75aeffe8Be388kKb4djkQ"]
-  overlaps_with: []
-  target_agents: []
-  last_verified_at: null
-  verification: none
-  usage: { last_loaded: null, load_count: 0 }
-  ttl_policy: decay
-# model: décidé par le poste (--model <votre-modèle>) — sinon défaut de la config (l'agent n'impose plus de modèle)
 ---
 
 # Revue hebdomadaire
@@ -50,8 +36,10 @@ Ordre figé des outils d'étapes (machine-vérifié contre le tableau de l'agent
 14. `weekly_skill_curate` — curation (dry-run par défaut)
 15. `weekly_report_prep` — préparation du brouillon de rapport
 16. `weekly_report_blocks_draft` — blocs auto
-17. `weekly_report_assemble` — assemblage du rapport
-18. `weekly_self_cost` — coût de la fenêtre
+17. `weekly_report_contract` — contrat d'artefacts (read-only, avant la prose)
+18. `weekly_report_blocks_check` — validation de la prose sans la consommer (avant l'assemble)
+19. `weekly_report_assemble` — assemblage du rapport (rc=1 = warn-only, rapport écrit)
+20. `weekly_self_cost` — coût de la fenêtre
 
 ## Règles
 

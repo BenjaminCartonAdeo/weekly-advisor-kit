@@ -14,6 +14,10 @@
 {% set harness_top_rules = (harness_top_rules or []) %}
 {% set watch_findings = (watch_findings or {}) %}
 {% set watch_f = (watch_findings.get("findings") or []) %}
+{# C9 : familles par `category` (pré-calculées par `report._group_watch_findings`).
+   Repli sur `watch_f` quand le ctx ne porte pas la projection (rendu direct d'un
+   ctx de test) — la section reste alors rendue comme avant. #}
+{% set watch_groups = (watch_groups if watch_groups is defined and watch_groups else []) %}
 {% set curation_detail_source = curation_detail if curation_detail is defined and curation_detail else {} %}
 {% set curation_detail = {"decisions": (curation_detail_source.get("decisions") or (skill_curate.get("decisions") or []) if skill_curate is defined and skill_curate else []), "skipped_details": (curation_detail_source.get("skipped_details") or []), "by_action": (curation_detail_source.get("by_action") or {}), "mode": curation_detail_source.get("mode"), "dry_run": curation_detail_source.get("dry_run")} %}
 {% set coherence_items = (coherence_items if coherence_items is defined else ((coherence_findings.get("findings") or []) if coherence_findings is defined else [])) %}
@@ -31,6 +35,12 @@
 {% set attention = (n_high > 0) or budget_breached %}
 {% set unscoped = harness_scope.get("unscoped_file_count") %}
 {% set self_cost_v = self_cost if self_cost is defined else none %}
+{% set self_cost_tokens_v = self_cost_tokens if self_cost_tokens is defined else none %}
+{% set self_cost_calls_v = self_cost_api_calls if self_cost_api_calls is defined else "n/a" %}
+{# E4 : la valeur live est antérieure à l'étape 8 → on le dit, sinon deux chiffres coexistent.
+   Libellé statique (aucune donnée) → |safe garde l'apostrophe littérale, donc la même
+   chaîne que le rendu markdown (parité stricte des deux rendus). #}
+{% set self_cost_phase_v = (" · mesuré à l'assemblage"|safe) if self_cost_v is not none and self_cost_phase is defined and self_cost_phase == "assemble" else "" %}
 {# ---- Macros de formatage fr-FR (sortie échappée par autoescape, sauf markup statique des macros) ---- #}
 {% macro usd(v) -%}
 {%- if v is none -%}<span class="muted">n/a</span>
@@ -58,7 +68,7 @@
 {% macro toggle(sec_id, expanded) -%}<button class="toggle" aria-expanded="{{ 'true' if expanded else 'false' }}" aria-controls="{{ sec_id }}-body" aria-label="Replier ou déplier la section"></button>{%- endmacro %}
 {% macro alert_label(rule) -%}
 {%- if rule == "monthly_budget_usd" -%}budget mensuel dépassé
-{%- elif rule == "daily_spike_z_min" -%}pic de coût journalier
+{%- elif rule == "daily_spike" -%}pic de coût journalier
 {%- elif rule == "lint_violations_max" -%}violations harness
 {%- elif rule == "lint_coverage" -%}couverture scan partielle
 {%- else -%}{{ rule }}
@@ -82,7 +92,7 @@
 {%- if item.get("repo_url") %}<a href="{{ item.get("repo_url") }}" target="_blank" rel="noopener noreferrer"><b>{{ item.get("name") }}</b> ↗</a>
 {%- elif "/" in (item.get("name") or "") %}<a href="https://github.com/{{ item.get("name") }}" target="_blank" rel="noopener noreferrer"><b>{{ item.get("name") }}</b> ↗</a>
 {%- else %}<b>{{ item.get("name") }}</b>{% endif %}
-— {{ (item.get("description") or "")[:160] }}
+— {{ item.get("description_plain") or item.get("description_short") or item.get("description") or "" }}
 {%- endmacro %}
 {% macro alert_observation(a) -%}
 <dt>Seuil</dt><dd>{{ a.get("threshold", "n/a") }}</dd>
@@ -350,7 +360,7 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
       <div class="kpi {{ 'crit' if total_cost is none else 'ok' }}">
         <div class="k-label">Coût total</div>
         <div class="k-value">{{ usd(total_cost) }}</div>
-        <div class="k-sub">{% if self_cost_v is not none %}dont pipeline&nbsp;: <b>{{ usd(self_cost_v) }}</b>{% else %}self-cost non mesuré{% endif %} · sur 7 j</div>
+        <div class="k-sub">{% if self_cost_v is not none %}dont pipeline&nbsp;: <b>{{ usd(self_cost_v) }}</b>{% if self_cost_tokens_v is not none %} · <b>{{ "{:,.0f}".format(self_cost_tokens_v) }}</b> tokens · {{ self_cost_calls_v }} appels API{% endif %}{{ self_cost_phase_v }}{% else %}self-cost non mesuré{% endif %} · sur 7 j</div>
       </div>
       <div class="kpi">
         <div class="k-label">Tokens</div>
@@ -379,15 +389,28 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
       <div class="kpi">
         <div class="k-label">Écosystème scanné</div>
         <div class="k-value">{{ new_items|length }}</div>
-        <div class="k-sub">{% if new_items %}actif{% else %}non activé{% endif %}</div>
+        <div class="k-sub">{% if new_items %}détectés — liste exhaustive ci-dessous{% else %}non activé{% endif %}</div>
       </div>
     </div>
+    {# D4 : parité de la Synthèse markdown — faits opérationnels, pas un compteur de veille. #}
+    {% set syn_audit = (audit_candidates if audit_candidates is defined and audit_candidates else none) %}
+    {% set syn_dirty = (dirty_files if dirty_files is defined else []) %}
+    {% set syn_pend = (pending_auto_commits if pending_auto_commits is defined else none) %}
+    {% set syn_curate = (skill_curate if skill_curate is defined and skill_curate else none) %}
+    {% if syn_audit or syn_pend is not none or syn_dirty or syn_curate or self_cost_v is not none %}
+    <div class="meta-chips">
+      {% if syn_audit %}<span class="meta-chip"><span class="dot"></span>Audit : <strong>{{ syn_audit.audited|length }}</strong> auditées · <strong>{{ syn_audit.unaudited|length }}</strong> non traitées (cap K = {{ syn_audit.limit }})</span>{% endif %}
+      {% if syn_pend is not none or syn_dirty %}<span class="meta-chip"><span class="dot"></span>Friction dépôt : <strong>{{ syn_pend if syn_pend is not none else "n/a" }}</strong> commit(s) en attente de revue · <strong>{{ syn_dirty|length }}</strong> fichier(s) dirty</span>{% endif %}
+      {% if syn_curate %}<span class="meta-chip"><span class="dot"></span>Curation : <strong>{{ syn_curate.applied }}</strong> appliquée(s) / <strong>{{ syn_curate.proposed }}</strong> proposée(s) / <strong>{{ syn_curate.skipped }}</strong> ignorée(s){{ " (dry-run)" if syn_curate.dry_run else "" }}</span>{% endif %}
+      {% if self_cost_v is not none %}<span class="meta-chip"><span class="dot"></span>Self-cost : <strong>{{ usd(self_cost_v) }}</strong>{% if self_cost_tokens_v is not none %} · <strong>{{ intfr(self_cost_tokens_v) }}</strong> tokens{% endif %}{{ self_cost_phase_v }}</span>{% endif %}
+    </div>
+    {% endif %}
     {% if tns and tns|length > 0 %}
     <div class="next-steps">
       <strong>Prochaines actions — Top {{ tns|length }} (Toi / Pipeline / Agent)</strong>
       <ol>
         {% for step in tns %}
-        <li><b>{{ step.get("actor", "Agent") }}</b> — {{ step.get("text", step.get("detail", "")) }} {% if step.get("severity") %}<span class="badge badge-{{ 'crit' if step.severity|lower in ('high','critical') else ('warn' if step.severity|lower in ('medium','warning') else 'info') }}">{{ step.severity|upper }}</span>{% endif %} <span class="muted">({{ step.get("source","?") }}{% if step.get("count") %} · {{ step.get("count") }}×{% endif %})</span></li>
+        <li><b>{{ step.get("actor", "Agent") }}</b> — {{ step.get("text_plain") or step.get("text", step.get("detail", "")) }} {% if step.get("severity") %}<span class="badge badge-{{ 'crit' if step.severity|lower in ('high','critical') else ('warn' if step.severity|lower in ('medium','warning') else 'info') }}">{{ step.severity|upper }}</span>{% endif %} <span class="muted">({{ step.get("source","?") }}{% if step.get("count") %} · {{ step.get("count") }}×{% endif %})</span></li>
         {% endfor %}
       </ol>
     </div>
@@ -591,6 +614,8 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
         {% endfor %}
       </tbody>
     </table></div>
+    {# D6(i) : `Appels` (total des appels de l'outil) vs `peak`/`total` du §7 (bucket d'arguments identiques) — divergence assumée. #}
+    <p class="muted">⚠ <code>Appels</code> = <b>total des appels</b> sur la fenêtre. Les constats <i>agent-loop</i> publient <b>deux</b> nombres par outil (<code>tool_argument_fingerprints</code>) : <code>peak</code> = <b>plus gros pic d'empreintes d'arguments identiques dans UNE seule session</b>, <code>total</code> = total du <i>même</i> bucket sur la fenêtre (outil cron : <code>total=13 peak=1</code> ; boucle d'agent : <code>total=13 peak=13</code>). Les chiffres sont censés diverger de la colonne <code>Appels</code>, l'écart n'est pas une erreur de décompte. Le canal « résultat identique » (<code>tool_result_fingerprints</code>) n'entre pas dans ce calcul — il est vide depuis le filtre boilerplate.</p>
     {% else %}<p class="muted">Aucune activité outil mesurée sur la fenêtre.</p>{% endif %}
     <h3>Skills chargés</h3>
     {% if skill_usage %}
@@ -629,10 +654,10 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     <h3>Cohérence de l'environnement (passe critique)</h3>
     {% for f in coherence_items %}
     <div class="card info">
-      <h4><span class="badge badge-info">{{ (f.get("tag") or f.get("category") or "?")|upper }}</span></h4>
+      <h4>{% if f.get("subject") %}<code>{{ f.subject }}</code> {% endif %}<span class="badge badge-info">{{ (f.get("tag") or f.get("category") or "?")|upper }}</span>{% if f.dup and f.dup > 1 %} <b>&times;{{ f.dup }}</b>{% endif %}</h4>
       <dl class="fields">
         <dt>Constat</dt><dd>{{ f.get("description") }}</dd>
-        {% if f.get("evidence_summary") %}<dt>Preuve</dt><dd>{{ f.evidence_summary[:160] }}</dd>{% endif %}
+        {% if f.get("evidence_short") %}<dt>Preuve</dt><dd>{{ f.evidence_short }}</dd>{% endif %}
         <dt>Action</dt><dd>{{ f.get("recommendation") }}</dd>
       </dl>
     </div>
@@ -694,7 +719,9 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     {% set hb_share = (hb_always * 100 / (hb_always + hb_demand))|round(1) if (hb_always + hb_demand) else 0 %}
     <h3>Budget de contexte harness</h3>
     <div class="kpi-grid">
-      <div class="kpi {{ 'ok' if hb_share < 5 else '' }}"><div class="k-label">Toujours chargé</div><div class="k-value">{{ hb_always }}</div><div class="k-sub">part <b>{{ "%d"|format(hb_share) }}%</b> — bande cible &lt;5%</div></div>
+      {# D7 : la tuile « toujours chargé » est une métrique morte quand always_loaded == 0
+         (bande cible 0% affichée en permanence) — on ne l'affiche que si la valeur existe. #}
+      {% if hb_always > 0 %}<div class="kpi {{ 'ok' if hb_share < 5 else '' }}"><div class="k-label">Toujours chargé</div><div class="k-value">{{ hb_always }}</div><div class="k-sub">part <b>{{ "%d"|format(hb_share) }}%</b> — bande cible &lt;5%</div></div>{% endif %}
       <div class="kpi"><div class="k-label">À la demande</div><div class="k-value">{{ hb_demand }}</div><div class="k-sub">tokens</div></div>
       {% if harness_budget.get("heaviest") %}<div class="kpi"><div class="k-label">Plus lourd</div><div class="k-value" style="font-size:1.1rem">{{ harness_budget.get("heaviest") }}</div></div>{% endif %}
     </div>
@@ -718,14 +745,35 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
   <details class="annex" id="annex-f">
     <summary>{{ secnum("F") }} Écosystème &amp; veille</summary>
     <div class="annex-body" id="annex-f-body">
-    {% if watch_f %}
+    {% if watch_groups %}
+    <h3>Recommandations (regard critique — jamais d'installation automatique)</h3>
+    {% for g in watch_groups %}
+    <div class="card {{ 'crit' if (g.severity or 'info')|lower in ('high','critical') else ('warn' if (g.severity or 'info')|lower in ('medium','warning') else 'info') }}">
+      <h4>{% if g.severity %}{{ sev_badge(g.severity) }}{% endif %} {{ g.category }} &times;{{ g.count }}{% if g.distinct != g.count %} <span class="muted">({{ g.distinct }} distincts)</span>{% endif %}
+        {%- if g.repo_url %} <a href="{{ g.repo_url }}" target="_blank" rel="noopener noreferrer">↗</a>{% endif %}</h4>
+      <ul class="clean">
+        {% for f in g.members %}
+        <li>{{ sev_badge(f.get("severity")) }} {{ f.get("description") }} → {{ f.get("recommendation") }}
+          {% if f.evidence_short %}<span class="muted">(preuve : {{ f.evidence_short }})</span>{% endif %}
+          {%- if f.dup and f.dup > 1 %} <b>&times;{{ f.dup }}</b>{% endif %}</li>
+        {% endfor %}
+      </ul>
+      <div class="owner">Propriétaire : <b>Toi</b> (décision humaine — jamais automatique)</div>
+    </div>
+    {% endfor %}
+    {% elif watch_f %}
     <h3>Recommandations (regard critique — jamais d'installation automatique)</h3>
     {% for f in watch_f %}
     <div class="card {{ 'crit' if (f.get('severity') or 'info')|lower in ('high','critical') else ('warn' if (f.get('severity') or 'info')|lower in ('medium','warning') else 'info') }}">
       <h4>{{ sev_badge(f.get("severity")) }} {{ f.get("category") }}
         {%- if f.get("subject") and f.subject.get("repo_url") %} <a href="{{ f.subject.get('repo_url') }}" target="_blank" rel="noopener noreferrer">↗</a>{% endif %}</h4>
       <dl class="fields">
-        {% if f.get("evidence_summary") %}<dt>Preuve</dt><dd>{{ f.evidence_summary[:180] }}</dd>{% endif %}
+        {# Repli sans `watch_groups` : ce sont des findings BRUTS, donc non projetés —
+           pas de champ `evidence_short`, donc pas de ligne « Preuve » — exactement ce
+           que rend le jumeau markdown (§6, qui lit `watch_groups`). La coupe de
+           `evidence_summary` à 180 caractères qui vivait ici coupait la prose en
+           plein mot ; la troncature a une source unique (`report.truncate_text`). #}
+        {% if f.get("evidence_short") %}<dt>Preuve</dt><dd>{{ f.evidence_short }}</dd>{% endif %}
         <dt>Action</dt><dd>{{ f.get("recommendation") }}</dd>
       </dl>
       <div class="owner">Propriétaire : <b>Toi</b> (décision humaine — jamais automatique)</div>
@@ -734,7 +782,7 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     {% endif %}
     {% if new_items %}
     <details class="disc">
-      <summary><span class="count-pill">{{ new_items|length }}</span> &nbsp;Nouveautés écosystème — déplier</summary>
+      <summary><span class="count-pill">{{ new_items|length }}</span> &nbsp;Nouveautés écosystème — <b>{{ new_items|length }} détectées, toutes listées</b> (déplier)</summary>
       <div class="disc-body">
         {% for cat, items in new_items|groupby("category", default="autre") %}
         <h4>{{ cat }} ({{ items|length }})</h4>
@@ -784,31 +832,69 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     <p><strong>Baseline</strong> : first-run — aucun run précédent exploitable, deltas WoW non calculés ce run.</p>
     {% endif %}
     {% set maintenance = (maintenance or {}) %}
-    {% if maintenance.get("findings") %}
+    {# `maint_sorted` = projection dédupliquée du markdown (§7, C5/C6/C7) ; on y
+       retombe sur `maintenance.findings` si le ctx ne la porte pas. #}
+    {% set maint = (maint_sorted if maint_sorted is defined and maint_sorted else (maintenance.get("findings") or [])) %}
+    {% if maint %}
     <details class="disc">
-      <summary><span class="count-pill">{{ maintenance.findings|length }} constats</span> &nbsp;maintenance (R1-R4) — déplier</summary>
+      <summary><span class="count-pill">{{ maint|length }} constats</span> &nbsp;maintenance (R1-R4) — déplier</summary>
       <div class="disc-body"><ul class="clean">
-        {% for f in maintenance.findings %}
-        <li>{{ sev_badge(f.get("severity")) }} {{ f.get("description") }} → {{ f.get("recommendation") }}
-          {% if f.get("evidence_summary") %}<span class="muted">(preuve : {{ f.evidence_summary[:120] }})</span>{% endif %}</li>
+        {% for f in maint %}
+        <li>{{ sev_badge(f.get("severity")) }}{% if f.category %} <span class="badge badge-info">{{ f.category|upper }}</span>{% endif %}{% if f.get("subject") %} <code>{{ f.subject }}</code>{% endif %} {{ f.get("description") }} → {{ f.get("recommendation") }}
+          {% if f.get("evidence_short") %}<span class="muted">(preuve : {{ f.evidence_short }})</span>{% endif %}
+          {%- if f.dup and f.dup > 1 %} <b>&times;{{ f.dup }}</b>{% endif %}</li>
         {% endfor %}
       </ul></div>
     </details>
     {% endif %}
     {% set wg = (warnings_grouped or []) %}
+    {% set wg_occ = warnings_occurrences if (warnings_occurrences is defined and warnings_occurrences is not none) else ((summary or {}).get("warnings") or [])|length %}
     {% if wg %}
-    <h3>Warnings pipeline ({{ ((summary or {}).get("warnings") or [])|length }})</h3>
+    <h3>Warnings pipeline ({{ wg_occ }})</h3>
     <details class="disc">
       <summary><span class="count-pill">{{ wg|length }}</span> &nbsp;warnings pipeline — déplier</summary>
       <div class="disc-body"><ul class="clean">
         {% for g in wg %}
         <li><b>×{{ g.get("count") }}</b> {{ g.get("message") }}
-          {% if g.get("count", 0) > 1 %}<code>{{ (g.get("session_ids") or [])[:6]|join("`, `") }}{% if (g.get("session_ids") or [])|length > 6 %}…{% endif %}</code>{% endif %}</li>
+          {% if g.get("count", 0) > 1 and (g.get("session_ids") or []) %}<code>{{ (g.get("session_ids") or [])[:6]|join(", ") }}{% if (g.get("session_ids") or [])|length > 6 %}…{% endif %}</code>{% endif %}</li>
         {% endfor %}
       </ul></div>
     </details>
     {% endif %}
+    {# C11 / D5 : candidats de drafting + cible hors périmètre NOMMÉE. Aucune écriture
+       fs ici non plus : le rapport nomme, il ne redresse pas un second pipeline. #}
+    {% set drf = (drafting if (drafting is defined and drafting) else none) %}
+    {% if drf and drf.candidates %}
+    <h3>Drafting — candidats de l'étape 4</h3>
+    <p class="muted">Cible du run : <code>{{ drafting_project_root if (drafting_project_root is defined and drafting_project_root) else "project_root non déclaré" }}</code>. Le rapport <b>nomme</b> les cibles hors périmètre (D5) — il n'en crée pas de seconde instance et n'écrit aucun fichier.</p>
+    <ul class="clean">
+      {% for r in drf.candidates %}
+      <li><code>{{ r.get("recommendation_type") }}</code>{% if r.get("severity") %} <span class="badge badge-info">{{ r.severity|upper }}</span>{% endif %}{% if r.get("action") %} — action <code>{{ r.action }}</code>{% endif %}{% if r.get("skill_id") %} (<code>{{ r.skill_id }}</code>){% endif %} : {{ r.get("description_short") }}
+        {%- if r.get("in_scope") is sameas false %} → cible <code>{{ r.get("target") }}</code> — <b>hors périmètre du projet</b>
+        {%- elif r.get("in_scope") is none %} → cible <b>non résolue</b> (session absente de la summary du run)
+        {%- endif %}</li>
+      {% endfor %}
+    </ul>
+    {% if drf.out_of_scope_count %}
+    <div class="callout warn"><b>Hors périmètre</b> : {{ drf.out_of_scope_count }} candidat(s) sur {{ drf.candidates|length }} visent <code>{{ drf.out_of_scope_targets|join(", ") }}</code> — le travail de ces sessions n'est pas projetable ici ; le rattacher au projet (<code>draft_targets</code>) est une décision humaine.</div>
+    {% endif %}
+    {% if drf.unknown_scope_count %}
+    <div class="callout"><b>Cible non résolue</b> : {{ drf.unknown_scope_count }} candidat(s) dont la session ne figure pas dans la summary du run — ni comptés dans le projet, ni comme hors périmètre.</div>
+    {% endif %}
+    {% elif draft_candidates is defined and draft_candidates %}
+    <h3>Drafting — aucune cible</h3>
+    <p class="muted"><code>weekly-draft-candidates-{{ date }}.json</code> existe mais ne contient aucun candidat.</p>
+    {% endif %}
     <h3>Annexes</h3>
+    {# C8 : inventaire RÉEL du run dir (projeté en Python), pas une liste de noms en dur. #}
+    {% set ra = (run_artifacts if (run_artifacts is defined and run_artifacts) else []) %}
+    {% if ra %}
+    <p><b>Artefacts du run ({{ run_artifacts_total|default(ra|length) }}) :</b>
+      <ul class="clean">{% for a in ra[:run_artifacts_shown|default(ra|length)] %}<li><code>{{ a.get("name") }}</code>{% if a.get("status") != "present" %} <span class="muted">({{ a.get("status") }})</span>{% elif a.get("required") %} <span class="muted">(requis)</span>{% endif %}</li>{% endfor %}{% if run_artifacts_total|default(ra|length) > run_artifacts_shown|default(ra|length) %}<li class="muted">(+{{ run_artifacts_total|default(ra|length) - run_artifacts_shown|default(ra|length) }} autres — liste tronquée)</li>{% endif %}</ul>
+    </p>
+    {% else %}
+    <p class="muted">Artefacts du run : aucun fichier dans le répertoire du run.</p>
+    {% endif %}
     <details class="disc">
       <summary><span class="count-pill">annexes</span> &nbsp;commits auto-rédigés &amp; candidats d'audit non traités — déplier</summary>
       <div class="disc-body">
@@ -817,11 +903,11 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
         {% set pending_v = pending_auto_commits if pending_auto_commits is defined else none %}
         {% if pending_v is not none %}<p><b>{{ pending_v }}</b> commit(s) auto-rédigé(s) en attente de revue.</p>{% endif %}
         {% if head_commit is defined and head_commit %}<p><b>HEAD au run :</b> <code>{{ head_commit.get("hash") }}</code> {{ head_commit.get("date") }} {{ head_commit.get("subject") }}</p>{% endif %}
-        {% if dirty_files is defined and dirty_files %}<p><b>Fichiers dirty au run ({{ dirty_files|length }}) :</b> <code>{{ dirty_files[:30]|join("`, `") }}{% if dirty_files|length > 30 %}…{% endif %}</code></p>{% endif %}
+        {% if dirty_files is defined and dirty_files %}<p><b>Fichiers dirty au run ({{ dirty_files|length }}) :</b></p><ul class="clean">{% for f in dirty_files[:8] %}<li><code>{{ f }}</code></li>{% endfor %}{% if dirty_files|length > 8 %}<li class="muted">(+{{ dirty_files|length - 8 }} autres)</li>{% endif %}</ul>{% endif %}
         {% if audit_candidates and (audit_candidates.get("unaudited") or []) %}
-        <p><b>Candidates d'audit non traitées (plafond {{ audit_candidates.get("limit", "n/a") }}) :</b>
-          {{ audit_candidates.unaudited|map(attribute="session_id")|join(", ") }}.</p>
-        {% endif %}
+        {% set unaudited_v = audit_candidates.unaudited %}
+        <p><b>Candidates d'audit non traitées</b> (cap d'audit K = {{ audit_candidates.get("limit", "n/a") }} ; K = nombre de sessions auditées, pas un plafond sur cette liste) :</p>
+          <ul class="clean">{% for item in unaudited_v[:8] %}<li><code>{{ item.session_id }}</code></li>{% endfor %}{% if unaudited_v|length > 8 %}<li class="muted">(+{{ unaudited_v|length - 8 }} autres)</li>{% endif %}</ul>{% endif %}
         {% if audit_worker_statuses %}
         <p><b>Statuts workers :</b>
           {% for worker in audit_worker_statuses %}{{ worker.session_id }}={{ worker.worker_status or worker.status }}{% if worker.rc is defined and worker.rc != 0 %} (rc={{ worker.rc }}){% endif %}{% if worker.truncated %} (tronqué){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}.</p>
@@ -842,12 +928,15 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
       <thead><tr><th>Session</th><th>Harnais</th><th class="num">Coût ($)</th><th class="num">Tokens</th><th>Titre</th></tr></thead>
       <tbody>
         {% for s in allss %}
-        <tr data-h="{{ s.get('harness') or '' }}" data-q="{{ (((s.get('title_or_topic') or s.get('session_id') or '')|string)[:80] ~ ' ' ~ (s.get('session_id') or ''))|lower|e }}">
+        {# Pas de coupe `[:80]` (jumeau markdown l. 379) : la troncature a une source
+           unique (`report.truncate_text` → `title_short`). Couper un titre en plein
+           mot ici alors que le markdown ne le fait pas était une divergence de rendu. #}
+        <tr data-h="{{ s.get('harness') or '' }}" data-q="{{ ((s.get('title_short') or s.get('title_or_topic') or s.get('session_id') or '')|string|lower) ~ ' ' ~ (s.get('session_id') or '') }}">
           <td><code>{{ s.get("session_id") }}</code></td>
           <td>{{ s.get("harness") or "n/a" }}</td>
           <td class="num">{{ usd(s.get("cost_usd")) }}</td>
           <td class="num">{{ compact(s.get("total_tokens")) }}</td>
-          <td>{{ ((s.get("title_or_topic") or s.get("session_id") or "")|string)[:80] }}</td>
+          <td>{{ s.get("title_short") or ((s.get("title_or_topic") or s.get("session_id") or ""))|string }}</td>
         </tr>
         {% endfor %}
       </tbody>

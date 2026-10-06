@@ -10,11 +10,15 @@ from weekly_telemetry_aggregator.config import (
     HarnessIncludeConfig,
 )
 from weekly_telemetry_aggregator.draft_targets import (
+    DRAFT_HARNESS_LAYOUTS,
     DRAFT_TARGET_PRIORITY,
+    HARNESS_CATEGORY_AGENTS,
+    HARNESS_CATEGORY_COMMANDS,
     HARNESS_CLAUDE_CODE,
     HARNESS_CODEX,
     HARNESS_COPILOT_CLI,
     HARNESS_OPENCODE,
+    MODE_DEFAULT,
     MODE_LEGACY,
     ResolvedDraftTarget,
 )
@@ -229,22 +233,47 @@ def test_projection_copies_extra_roots_with_project_relative_paths(tmp_path: Pat
 
 
 def test_harness_extra_roots_mapping():
-    """Un harnais → ses répertoires additionnels ; legacy = toutes cibles."""
-    assert harness_extra_roots(ResolvedDraftTarget("detected", (HARNESS_OPENCODE,))) == ()
-    assert harness_extra_roots(ResolvedDraftTarget("detected", (HARNESS_CLAUDE_CODE,))) == (
+    """Un harnais → ses répertoires additionnels ; legacy = toutes cibles.
+
+    `MODE_DEFAULT` et non « detected » : depuis A2 le mode « detected » n'existe
+    plus (le mode n'entre pas dans le calcul des extra roots).
+    """
+    assert harness_extra_roots(ResolvedDraftTarget(MODE_DEFAULT, (HARNESS_OPENCODE,))) == ()
+    assert harness_extra_roots(ResolvedDraftTarget(MODE_DEFAULT, (HARNESS_CLAUDE_CODE,))) == (
         ".claude/skills",
     )
-    assert harness_extra_roots(ResolvedDraftTarget("detected", (HARNESS_COPILOT_CLI,))) == (
+    assert harness_extra_roots(ResolvedDraftTarget(MODE_DEFAULT, (HARNESS_COPILOT_CLI,))) == (
         ".github/prompts",
         ".github/skills",
     )
-    assert harness_extra_roots(ResolvedDraftTarget("detected", (HARNESS_CODEX,))) == (".agents",)
+    assert harness_extra_roots(ResolvedDraftTarget(MODE_DEFAULT, (HARNESS_CODEX,))) == (".agents",)
     assert harness_extra_roots(ResolvedDraftTarget(MODE_LEGACY, DRAFT_TARGET_PRIORITY)) == (
         ".agents",
         ".claude/skills",
         ".github/prompts",
         ".github/skills",
     )
+
+
+def test_harness_extra_roots_excludes_commands_and_agents_categories():
+    """Parité A1 : les extra roots valent exactement les racines `skills`.
+
+    `commands`/`agents` sont des destinations d'injection, pas des racines à
+    scanner : les fusionner ferait remonter `.opencode/commands` ou
+    `.claude/agents` dans le périmètre, donc remonterait des fichiers déjà
+    couverts (opencode) ou hors surface auditée (les autres). Exception
+    documentée : chez copilot `.github/prompts` est à la fois racine skills et
+    destination commands — elle reste donc une extra root, via `skills`.
+    """
+    for harness in DRAFT_HARNESS_LAYOUTS:
+        layout = DRAFT_HARNESS_LAYOUTS[harness]
+        resolved = ResolvedDraftTarget(MODE_DEFAULT, (harness,))
+        skills = set(layout.skills) - {".opencode/skills"}
+        assert set(harness_extra_roots(resolved)) == skills
+        for category in (HARNESS_CATEGORY_COMMANDS, HARNESS_CATEGORY_AGENTS):
+            for directory in getattr(layout, category):
+                if directory not in layout.skills:
+                    assert directory not in harness_extra_roots(resolved)
 
 
 # ---- cellule 2.2 : injection du contenu engine + orphelins --------------------

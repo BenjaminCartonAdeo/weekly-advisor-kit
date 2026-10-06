@@ -1,0 +1,418 @@
+{
+  "$comment": "Contrat outil V1 gelé — weekly-advisor. Source : .opencode/plugins/weekly-advisor.ts. Toute divergence doit faire échouer scripts/tests/plugin-tool-contract.test.mjs puis être validée explicitement. Descriptions, aide de champ, timeouts, valeurs par défaut et messages d'erreur sont byte-for-byte (aucune reformulation).",
+  "contractVersion": "v1",
+  "source": ".opencode/plugins/weekly-advisor.ts",
+  "tools": [
+    {
+      "name": "weekly_preflight",
+      "description": "Pré-flight déterministe du kit avant boot agent. Échec: rc=3, aucun run.",
+      "fields": [],
+      "timeoutMs": 0,
+      "anchored": false,
+      "cliSubcommand": null
+    },
+    {
+      "name": "weekly_run",
+      "description": "Étape 1 du weekly-advisor : collecte télémétrique complète (run). Écrit weekly-summary-<date>.json. L'ancre est lue/créée/rafraîchie dans <output_dir>/anchor-last.txt.",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        },
+        {
+          "name": "lookback_days",
+          "kind": "number",
+          "required": false,
+          "description": "Override de run : fenêtre en jours (rare ; défaut = config)"
+        }
+      ],
+      "timeoutMs": 1800000,
+      "anchored": true,
+      "cliSubcommand": "run"
+    },
+    {
+      "name": "weekly_releases",
+      "description": "Étape 2 : veille écosystème (releases). Écrit weekly-ecosystem-<date>.json.",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        },
+        {
+          "name": "lookback_days",
+          "kind": "number",
+          "required": false,
+          "description": "Override de run : fenêtre en jours (rare ; défaut = config)"
+        }
+      ],
+      "timeoutMs": 900000,
+      "anchored": true,
+      "cliSubcommand": "releases"
+    },
+    {
+      "name": "weekly_watch_context",
+      "description": "Étape 2.5 : inventaire déterministe du worktree et crosswalk marché/existant. Écrit weekly-watch-context-<date>.json. SÉQUENTIEL : nécessite weekly-ecosystem-<date>.json de l'étape 2 — exécuter weekly_releases d'abord, jamais en parallèle.",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": true,
+      "cliSubcommand": "watch-context"
+    },
+    {
+      "name": "weekly_watch_distill",
+      "description": "Étape 2.2 : distillation déterministe de l'écosystème vers ~30 fiches candidates (scoring, screening sécurité, mémoire inter-run). Écrit watch-candidates-<date>.json et watch-memory-digest-<date>.json. SÉQUENTIEL : exécuter après weekly_releases, avant weekly_watch_context ; exit 2 = écosystème absent ou étape désactivée (config watch_distill.enabled) — dégradation attendue, le flux aval retombe sur l'écosystème complet.",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": true,
+      "cliSubcommand": "watch-distill"
+    },
+    {
+      "name": "weekly_watch_validate",
+      "description": "Étape 3.6 : valide les findings bruts de la veille contre l'inventaire déterministe. Écrit weekly-watch-findings-<date>.json.",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": true,
+      "cliSubcommand": "watch-validate"
+    },
+    {
+      "name": "weekly_audit_candidates",
+      "description": "Étape 3 (1/2) : sélection déterministe des sessions à auditer (audit-candidates) → weekly-audit-candidates-<date>.json (audited/unaudited, plafond audit_max_sessions).",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": true,
+      "cliSubcommand": "audit-candidates"
+    },
+    {
+      "name": "weekly_show_session",
+      "description": "Étape 3 : transcrit une session (show-session) et retourne le texte structuré. L'extrait est écrit à <run>/extracts/transcript-extract-<session_id>.md sous le run actif (<output_dir>/runs/current/extracts/, fallback legacy <output_dir>/extracts/) : faire Read sur CE FICHIER EXACT (chemin imprimé par le tool), JAMAIS sur le répertoire extracts/ lui-même (opencode Read ne liste pas les dirs). Appeler le tool AVANT toute lecture d'extraits. Utiliser après audit-candidates.",
+      "fields": [
+        {
+          "name": "session_id",
+          "kind": "string",
+          "required": true,
+          "description": "id de session (ses_...)"
+        },
+        {
+          "name": "include_children",
+          "kind": "boolean",
+          "required": false,
+          "description": "inclure les subagents"
+        }
+      ],
+      "timeoutMs": 300000,
+      "anchored": false,
+      "cliSubcommand": "show-session"
+    },
+    {
+      "name": "weekly_harness",
+      "description": "Étape 5 : lint de .opencode/ (harness-eval). Écrit weekly-harness-digest-<date>.json.",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 900000,
+      "anchored": true,
+      "cliSubcommand": "harness"
+    },
+    {
+      "name": "weekly_harness_remediate",
+      "description": "Étape 5.5 : analyse/applique les propositions harness via une gate déterministe. Dry-run par défaut ; aucun commit automatique.",
+      "fields": [
+        {
+          "name": "proposal_file",
+          "kind": "string",
+          "required": true,
+          "description": "chemin absolu du JSON de propositions"
+        },
+        {
+          "name": "mode",
+          "kind": "enum",
+          "required": false,
+          "description": "dry-run par défaut ; apply uniquement après toutes les gates",
+          "values": ["dry-run", "apply"]
+        },
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 900000,
+      "anchored": true,
+      "cliSubcommand": "harness-remediate"
+    },
+    {
+      "name": "weekly_insights",
+      "description": "Étape 6 : deltas, alertes et maintenance. Écrit weekly-insights-<date>.json.",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 300000,
+      "anchored": true,
+      "cliSubcommand": "insights"
+    },
+    {
+      "name": "weekly_draft_candidates",
+      "description": "Étape 4 (1/2) : candidats à l'auto-drafting (draft-candidates) → weekly-draft-candidates-<date>.json (skill-candidate / command-candidate / command-improvement, plafonné).",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": true,
+      "cliSubcommand": "draft-candidates"
+    },
+    {
+      "name": "weekly_report_prep",
+      "description": "Étape 7a (1/2) : rend le gabarit déterministe du rapport (report-prep → weekly-report-draft-<date>.md). PRODUIT : le draft, sections déterministes + le marqueur `<!-- QUALITY_BLOCK -->` (s'il manque, l'assemble sort en rc=2). CONSOMME : weekly-summary-<date>.json (obligatoire), plus les artefacts optionnels du run (insights, digest harness, findings qualité, ecosystem, contexte de veille) lus au gate `validate_required_artifacts`. NE FAIT PAS : n'écrit aucune prose — la section 4 reste le marqueur vide ; ne valide pas le bloc de constats (pas de gate anti-hallucination ici) ; ne produit pas le rapport final. rc : 0 nominal, 1 = résumé dégradé (livrable écrit), 2 = summary absente ou gate artefacts ≠ pass (rien). CODES DE SORTIE : rc=0 nominal ; rc=1 = dégradation warn-only, le livrable EST produit (rc=1 ≠ échec du pipeline) ; rc≥2 = échec, aucun livrable. Ne jamais convertir un rc=1 en « échec » ni le masquer dans le rapport.",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": true,
+      "cliSubcommand": "report-prep"
+    },
+    {
+      "name": "weekly_report_blocks_draft",
+      "description": "Étape 7a (2/2) : écrit le BROUILLON DÉTERMINISTE des blocs (report-blocks-draft → weekly-report-blocks-auto-<date>.md). Zéro LLM, zéro jugement : agrège alertes, maintenance, sessions coûteuses, findings qualité et règles harness. NE FAIT PAS : n'écrit pas `weekly-report-blocks-<date>.md` (c'est ta prose 7b, que ce tool n'a pas le droit de produire) ; ne valide rien — son propre contenu est explicitement marqué « brouillon automatique, revue humaine requise » et ne passe jamais la gate de prose. Deux fichiers, deux rôles : `weekly-report-blocks-<date>.md` = ta prose agent (7b), validée par l'assemble ; `weekly-report-blocks-auto-<date>.md` = brouillon déterministe de repli, produit par weekly_report_blocks_draft, jamais validé. CONTRAT DU FICHIER (validate_llm_blocks, violations ⇒ bloc rejeté ⇒ fallback auto) : ≤ 60 lignes (cible ~40) ; ≥ 40 mots (config.py:190 blocks_min_words=40) ; tags de source `[F:<session_id_complet>#<category>]` — jamais un id tronqué, la balise doit résoudre exactement dans weekly-quality-findings-<date>.json —, `[A:<rule>]` pour chaque alerte (weekly-insights), `[M:<category>]` pour chaque constat de maintenance ; chaque finding de sévérité `high` doit être cité (sinon : coverage warning dans l'annexe) ; aucun chiffre libre dans le texte visible (seules dates ISO, pourcentages et versions sont tolérés) — le bloc ne cite que des catégories et des sévérités ; la 1re ligne non vide ne doit PAS être un titre Markdown — commence par une phrase ou un `###` de sous-rubrique, jamais `##` (le gabarit fournit déjà le titre de la section 4). Ce brouillon n'est que le filet de sécurité : pour que la section 4 soit marquée `prose agent (7b LLM)`, écris toi-même le fichier de prose et respecte le contrat ci-dessus. rc : 0 nominal, 1 = résumé dégradé (fichier écrit), 2 = summary absente (rien). CODES DE SORTIE : rc=0 nominal ; rc=1 = dégradation warn-only, le livrable EST produit (rc=1 ≠ échec du pipeline) ; rc≥2 = échec, aucun livrable. Ne jamais convertir un rc=1 en « échec » ni le masquer dans le rapport.",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": true,
+      "cliSubcommand": "report-blocks-draft"
+    },
+    {
+      "name": "weekly_report_blocks_check",
+      "description": "Étape 7b.1 : VALIDE ta prose `weekly-report-blocks-<date>.md` (report-blocks-check) SANS la consommer. Même validateur que l'assemble (`validate_llm_blocks`) : verdict + liste NUMÉROTÉE des violations, chacune avec son numéro de ligne. CONTRÔLE : ⚠ `weekly_report_assemble` consomme le draft à chaque réussite : pour un nouvel assemble, relancer weekly_report_prep d'abord. C'est précisément pour cela que ce check existe : corriger un bloc rejeté ne coûte PAS un report-prep complet (run 2026-10-01 : 2 assemble ratés + 1 prep supplémentaire). APPELLE-LE après avoir écrit la prose (7b), AVANT l'assemble (7c), et réécris le fichier entre deux checks — il reste en place. Deux fichiers, deux rôles : `weekly-report-blocks-<date>.md` = ta prose agent (7b), validée par l'assemble ; `weekly-report-blocks-auto-<date>.md` = brouillon déterministe de repli, produit par weekly_report_blocks_draft, jamais validé. CONTRAT DU FICHIER (validate_llm_blocks, violations ⇒ bloc rejeté ⇒ fallback auto) : ≤ 60 lignes (cible ~40) ; ≥ 40 mots (config.py:190 blocks_min_words=40) ; tags de source `[F:<session_id_complet>#<category>]` — jamais un id tronqué, la balise doit résoudre exactement dans weekly-quality-findings-<date>.json —, `[A:<rule>]` pour chaque alerte (weekly-insights), `[M:<category>]` pour chaque constat de maintenance ; chaque finding de sévérité `high` doit être cité (sinon : coverage warning dans l'annexe) ; aucun chiffre libre dans le texte visible (seules dates ISO, pourcentages et versions sont tolérés) — le bloc ne cite que des catégories et des sévérités ; la 1re ligne non vide ne doit PAS être un titre Markdown — commence par une phrase ou un `###` de sous-rubrique, jamais `##` (le gabarit fournit déjà le titre de la section 4). EN PLUS : le plancher de mots (contract.minWords) est appliqué ici comme par `_assemble_quality_block`, sinon ce check validerait un bloc que l'assemble rejette — le faux vert qu'on veut supprimer. rc : 0 conforme (assemblable tel quel) ; 1 = NON conforme, violations listées et le bloc sera rejeté par l'assemble (section 4 en `auto_draft_fallback`) ; 2 = prose absente ou illisible (rien à valider). Les coverage warnings (`high` non cité) ne font PAS baisser le rc : ils signalent une omission, jamais une invention. RIEN N'EST ÉCRIT, RIEN N'EST SUPPRIMÉ : ni le bloc ni le draft ne sont touchés.",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": true,
+      "cliSubcommand": "report-blocks-check"
+    },
+    {
+      "name": "weekly_report_assemble",
+      "description": "Étape 7c : assemble le rapport final (report-assemble → weekly-report-<date>.md, + `weekly-report-gates-<date>.json`). CONTRÔLE : ⚠ `weekly_report_assemble` consomme le draft à chaque réussite : pour un nouvel assemble, relancer weekly_report_prep d'abord. rc=1 ≠ échec du pipeline — ce sont des déGRADATIONS WARN-ONLY, le rapport EST écrit ; les 3 cas à connaître : (1) findings security/critical dans le digest harness → gate security.status=warn, rapport écrit ; (2) JOIN partiel (audit dynamique manquant) → rapport écrit sans ces sessions ; (3) rc=1 propagé du résumé (branche veille dégradée) ou du rendu HTML best-effort → rapport markdown écrit. rc≥2 = AUCUN rapport (draft absent/consommé, artefact requis manquant ou illisible, marqueur QUALITY_BLOCK absent, manifeste de curation malformé). État machine-readable de chaque gate : weekly-report-gates-<date>.json. CONTRAT DU FICHIER (validate_llm_blocks, violations ⇒ bloc rejeté ⇒ fallback auto) : ≤ 60 lignes (cible ~40) ; ≥ 40 mots (config.py:190 blocks_min_words=40) ; tags de source `[F:<session_id_complet>#<category>]` — jamais un id tronqué, la balise doit résoudre exactement dans weekly-quality-findings-<date>.json —, `[A:<rule>]` pour chaque alerte (weekly-insights), `[M:<category>]` pour chaque constat de maintenance ; chaque finding de sévérité `high` doit être cité (sinon : coverage warning dans l'annexe) ; aucun chiffre libre dans le texte visible (seules dates ISO, pourcentages et versions sont tolérés) — le bloc ne cite que des catégories et des sévérités ; la 1re ligne non vide ne doit PAS être un titre Markdown — commence par une phrase ou un `###` de sous-rubrique, jamais `##` (le gabarit fournit déjà le titre de la section 4).",
+      "fields": [
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": true,
+      "cliSubcommand": "report-assemble"
+    },
+    {
+      "name": "weekly_report_contract",
+      "description": "Outil READ-ONLY : renvoie en JSON le contrat d'artefacts du rapport — required/optional par `validate_required_artifacts`, validateurs de forme (`_ARTIFACT_CONTRACTS`), sémantique du `rc` (`applicable_summary_rc`), les 3 cas warn-only rc=1 de l'assemble, et le contrat du fichier de section 4. RIEN N'EST ÉCRIT, aucun subprocess, aucun accès disque — appelable à tout moment, sans run ni moteur installés. À appeler AVANT d'écrire `weekly-report-blocks-<date>.md` (étape 7b) au lieu de deviner les tags, la taille et la couverture `high`, et AVANT d'interpréter un rc de veille ou d'assemble. Deux fichiers, deux rôles : `weekly-report-blocks-<date>.md` = ta prose agent (7b), validée par l'assemble ; `weekly-report-blocks-auto-<date>.md` = brouillon déterministe de repli, produit par weekly_report_blocks_draft, jamais validé. CONTRAT DU FICHIER (validate_llm_blocks, violations ⇒ bloc rejeté ⇒ fallback auto) : ≤ 60 lignes (cible ~40) ; ≥ 40 mots (config.py:190 blocks_min_words=40) ; tags de source `[F:<session_id_complet>#<category>]` — jamais un id tronqué, la balise doit résoudre exactement dans weekly-quality-findings-<date>.json —, `[A:<rule>]` pour chaque alerte (weekly-insights), `[M:<category>]` pour chaque constat de maintenance ; chaque finding de sévérité `high` doit être cité (sinon : coverage warning dans l'annexe) ; aucun chiffre libre dans le texte visible (seules dates ISO, pourcentages et versions sont tolérés) — le bloc ne cite que des catégories et des sévérités ; la 1re ligne non vide ne doit PAS être un titre Markdown — commence par une phrase ou un `###` de sous-rubrique, jamais `##` (le gabarit fournit déjà le titre de la section 4). CODES DE SORTIE : rc=0 nominal ; rc=1 = dégradation warn-only, le livrable EST produit (rc=1 ≠ échec du pipeline) ; rc≥2 = échec, aucun livrable. Ne jamais convertir un rc=1 en « échec » ni le masquer dans le rapport. ⚠ `weekly_report_assemble` consomme le draft à chaque réussite : pour un nouvel assemble, relancer weekly_report_prep d'abord.",
+      "fields": [],
+      "timeoutMs": 0,
+      "anchored": false,
+      "cliSubcommand": null
+    },
+    {
+      "name": "weekly_commit_draft",
+      "description": "Étape 4 : commit auto-rédigé d'un skill/command draft (commit-draft). Gate de portabilité (skill-verify) avant chaque commit : erreur → refus + fix manuel requis, warnings seuls → passage avec note, environnement défaillant (timeout/crash/sortie illisible) → refus. kind=command → gate non applicable (harness-eval 7.10.1 : skills uniquement), skip explicite avec note dans le résultat. 1 commit par écriture, pré-checks git intégrés.",
+      "fields": [
+        {
+          "name": "kind",
+          "kind": "enum",
+          "required": true,
+          "description": "",
+          "values": ["skill", "command"]
+        },
+        {
+          "name": "file",
+          "kind": "string",
+          "required": true,
+          "description": "chemin absolu du fichier draft"
+        }
+      ],
+      "timeoutMs": 120000,
+      "anchored": false,
+      "cliSubcommand": "commit-draft"
+    },
+    {
+      "name": "weekly_self_cost",
+      "description": "Étape 8 (annexe) : coût de la fenêtre du run (self-cost).",
+      "fields": [],
+      "timeoutMs": 120000,
+      "anchored": false,
+      "cliSubcommand": "self-cost"
+    },
+    {
+      "name": "weekly_doctor",
+      "description": "Diagnostic du kit : vérifie opencode, harness-eval, git, gh, DB et la config (doctor).",
+      "fields": [],
+      "timeoutMs": 120000,
+      "anchored": false,
+      "cliSubcommand": "doctor"
+    },
+    {
+      "name": "weekly_skill_curate",
+      "description": "Étape 6.6 : curation/décroissance des skills (skill-curate). Consomme les décisions de `weekly-coherence-review` (2.C) : applique archive/merge sur origin∈{weekly-*} (R4 curation/GC + R8 TTL). Protection stricte : JAMAIS origin=user (sans override). dry-run par défaut ; `apply=true` uniquement après validation humaine.",
+      "fields": [
+        {
+          "name": "coherence",
+          "kind": "string",
+          "required": false,
+          "description": "JSON: findings de cohérence (tag_action pertinents)"
+        },
+        {
+          "name": "catalog",
+          "kind": "string",
+          "required": false,
+          "description": "JSON: catalogue de skills (skill_id, metadata.origin/ttl_policy)"
+        },
+        {
+          "name": "usage",
+          "kind": "string",
+          "required": false,
+          "description": "JSON: usage_records pour TTL (fallback inter-run .watch-memory.jsonl)"
+        },
+        {
+          "name": "runs_seen",
+          "kind": "string",
+          "required": false,
+          "description": "runs consécutifs observés (décroissance)"
+        },
+        {
+          "name": "stale_days",
+          "kind": "string",
+          "required": false,
+          "description": "seuil obsolescence last_loaded (jours, défaut 90)"
+        },
+        {
+          "name": "apply",
+          "kind": "string",
+          "required": false,
+          "description": "'true' pour exécuter (sinon dry-run)"
+        },
+        {
+          "name": "anchor",
+          "kind": "string",
+          "required": false,
+          "description": "ISO-8601 override (rare)"
+        }
+      ],
+      "timeoutMs": 900000,
+      "anchored": true,
+      "cliSubcommand": "skill-curate"
+    }
+  ],
+  "cliCommands": [
+    "run",
+    "releases",
+    "watch-context",
+    "watch-distill",
+    "watch-validate",
+    "audit-candidates",
+    "show-session",
+    "harness",
+    "harness-remediate",
+    "insights",
+    "draft-candidates",
+    "report-prep",
+    "report-blocks-draft",
+    "report-blocks-check",
+    "report-assemble",
+    "commit-draft",
+    "self-cost",
+    "doctor",
+    "skill-curate"
+  ],
+  "cliCommandsNotExposedAsTools": ["debug-rule"],
+  "defaults": {
+    "harness_remediate.mode": "dry-run",
+    "skill_curate.mode": "dry-run",
+    "skill_curate.stale_days": 90,
+    "show_session.include_children": false,
+    "commit_draft.gate_kind_command": "skipped",
+    "lookback_days": null
+  },
+  "errorMessages": {
+    "preflight_rc3": "weekly_preflight rc=3 — ${result.message}",
+    "preflight_kit_missing": "kit weekly-advisor introuvable depuis worktree=",
+    "cli_exit": "weekly_telemetry_aggregator ${args.join(\" \")} → exit ${err.code ?? \"?\"}",
+    "anchor_unreadable": "lecture de ${file} impossible: ${String(err)}",
+    "anchor_invalid": "ancre invalide dans ${file}: ${existing}",
+    "engine_missing": "moteur introuvable: ${engine} (structure du kit corrompue)",
+    "python_missing": "interpréteur Python introuvable (candidats testés: ${candidates.join(\", \")}) — définir WEEKLY_PYTHON ou créer le venv : uv sync --project .opencode/plugins/weekly-advisor-engine --extra dev",
+    "skill_verify_unavailable": "skill-verify indisponible (${why})",
+    "curate_json_invalid": "weekly_skill_curate ${label} JSON invalide: ${detail}",
+    "curate_json_staging_failed": "weekly_skill_curate ${label} JSON temporaire impossible: ${detail}",
+    "commit_blocked": "commit REFUSÉ par la gate de portabilité (skill-verify) — fix manuel requis",
+    "commit_unusable": "commit REFUSÉ — gate de portabilité non exécutable (environnement harness-eval défaillant)",
+    "commit_warnings_note": "note : gate portabilité — ${gate.warnings.length} warning(s) non bloquant(s)",
+    "commit_ignored_note": "⚠ gate portabilité ignorée (fail-soft) : ${gate.reason}",
+    "commit_skipped_note": "ℹ gate portabilité SKIPPED : ${gate.reason}",
+    "gate_skip_reason": "Gate portabilité non applicable aux commands (harness-eval 7.10.1 : skills uniquement) — commit autorisé sans gate.",
+    "gate_ignored_reason": "binaire harness-eval introuvable",
+    "gate_unreadable_reason": "sortie skill-verify illisible (JSON invalide)"
+  }
+}

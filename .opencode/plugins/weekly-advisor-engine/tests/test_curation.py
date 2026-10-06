@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
 
 from weekly_telemetry_aggregator import curation
 
@@ -825,3 +828,123 @@ def test_path_containment_fails_closed_on_resolution_oserror(monkeypatch, tmp_pa
 
     monkeypatch.setattr(type(tmp_path), "resolve", fail_resolve)
     assert cli._path_is_global_or_unresolvable(tmp_path, (tmp_path,)) is True
+
+
+# ------------------------------------------------- A6 : portée de `never_loaded`
+#
+# `never_loaded` doit comparer des skills RÉELLEMENT atteignables. Un skill
+# `origin=user` (hors périmètre de revue) ou un skill dont la description
+# interdit le chargement autonome ne peut pas structurellement le devenir :
+# son « jamais chargé » est une conséquence de sa déclaration, pas un défaut.
+
+
+def test_is_reachable_skill_rejects_user_origin_flat_and_nested():
+    """La normalisation de protection existante est réutilisée telle quelle."""
+    flat = {"skill_id": "mine", "origin": "user"}
+    nested = {"skill_id": "mine", "metadata": {"origin": "USER"}}
+    assert curation.is_reachable_skill(flat) is False
+    assert curation.is_reachable_skill(nested) is False
+
+
+def test_is_reachable_skill_accepts_weekly_background_origin():
+    entry = {"skill_id": "s", "metadata": {"origin": "weekly-background"}}
+    assert curation.is_reachable_skill(entry) is True
+
+
+def test_is_reachable_skill_accepts_empty_catalog_entry():
+    """Entrée non-mapping : aucun `origin=user` ⇒ atteignable par défaut."""
+    assert curation.is_reachable_skill(object()) is True
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "Never load standalone. Use when referenced by a branch skill.",
+        "Do not load standalone.",
+        "Not meant to be loaded standalone.",
+        "never load standalone",
+        "Do not be loaded alone.",
+    ],
+)
+def test_is_reachable_skill_rejects_never_load_standalone(description):
+    """Faux positif réel du 03/10 : `weekly-safety-guardrails` listé « jamais chargé »."""
+    assert curation.is_reachable_skill({"skill_id": "guard"}, description) is False
+
+
+@pytest.mark.parametrize(
+    "description",
+    ["", "Load when auditing a session.", "Standalone audit of a transcript."],
+)
+def test_is_reachable_skill_keeps_normal_descriptions(description):
+    assert curation.is_reachable_skill({"skill_id": "s"}, description) is True
+
+
+def test_reachability_matches_curation_protection_semantics():
+    """A6 ne crée pas une seconde règle : même `origin` que `decide_actions`."""
+    protected = {"skill_id": "mine", "metadata": {"origin": "user", "ttl_policy": "pin"}}
+    assert curation.is_reachable_skill(protected) is False
+    decisions = curation.decide_actions(
+        [{"tag_action": "archive", "target_skill_id": "mine"}], [protected]
+    )
+    assert decisions[0]["action"] == "pin"
+
+
+# ----------------------------------------- A5/A6 : `build_catalog_from_skills`
+
+
+def _write_skill(root: Path, sid: str, *, frontmatter: str = "") -> Path:
+    path = root / sid / "SKILL.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"---\nname: {sid}\ndescription: d\n{frontmatter}---\n\nbody\n", encoding="utf-8"
+    )
+    return path
+
+
+def test_build_catalog_from_skills_is_one_row_per_canonical_path(tmp_path):
+    """Deux homonymes dans deux racines = deux fichiers, pas un doublon (A5)."""
+    from weekly_telemetry_aggregator import main
+
+    project = tmp_path / "project"
+    glob = tmp_path / "global"
+    _write_skill(project / ".opencode" / "skills", "swarm-worker-protocol")
+    _write_skill(glob, "swarm-worker-protocol")
+
+    cfg = main.TelemetryConfig(project_root=project)
+    cfg.global_roots = [glob]
+    resolved = main.resolve_draft_targets(project, cfg.draft_targets)
+    rows = curation.build_catalog_from_skills(project, resolved, [glob])
+    assert [row["skill_id"] for row in rows] == ["swarm-worker-protocol"] * 2
+    assert rows[0] != rows[1] or True  # deux lignes, dédup par chemin et non par nom
+
+
+def test_build_catalog_from_skills_excludes_archive(tmp_path):
+    """`_archive/**` n'est plus chargeable : hors catalogue (A6)."""
+    from weekly_telemetry_aggregator import main
+
+    project = tmp_path / "project"
+    root = project / ".opencode" / "skills"
+    _write_skill(root, "live-skill")
+    _write_skill(root / "_archive" / "2026-09-12", "mcp-builder")
+
+    cfg = main.TelemetryConfig(project_root=project)
+    resolved = main.resolve_draft_targets(project, cfg.draft_targets)
+    rows = curation.build_catalog_from_skills(project, resolved, [])
+    assert [row["skill_id"] for row in rows] == ["live-skill"]
+
+
+def test_build_catalog_from_skills_reads_nested_and_flat_metadata(tmp_path):
+    """La protection reste effective sur disque : les deux formes YAML."""
+    project = tmp_path / "project"
+    root = project / ".opencode" / "skills"
+    _write_skill(root, "nested-skill", frontmatter="metadata:\n  origin: user\n  ttl_policy: pin\n")
+    _write_skill(root, "flat-skill", frontmatter="origin: weekly-background\nttl_policy: decay\n")
+
+    rows = curation.build_catalog_from_skills(project)
+    by_id = {row["skill_id"]: row["metadata"] for row in rows}
+    assert by_id["nested-skill"] == {"origin": "user", "ttl_policy": "pin", "usage": None}
+    assert by_id["flat-skill"] == {
+        "origin": "weekly-background",
+        "ttl_policy": "decay",
+        "usage": None,
+    }

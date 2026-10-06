@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from helpers import make_step, make_usage, tzutc
+from helpers import active_run_file, make_step, make_usage, seed_v1_file, tzutc
 
 from weekly_telemetry_aggregator.aggregator import aggregate
 from weekly_telemetry_aggregator.config import TelemetryConfig
@@ -846,7 +848,15 @@ def test_report_context_normalizes_coherence_and_curation_details(tmp_path: Path
 
     ctx = build_report_context(_cfg(tmp_path), anchor=RUN.isoformat())
     assert ctx is not None
-    assert ctx["coherence_items"] == [{"tag": "drift", "description": "x"}]
+    # ADAPTÉ (C7) : `coherence_items` est désormais la projection DÉDUPLIQUÉE, chaque
+    # entrée porte son multiplicateur `dup` (1 = constat unique). L'égalité stricte
+    # d'avant ne peut plus tenir ; on vérifie que le finding est inchangé + `dup`.
+    # `subject` n'est PAS ajouté ici : aucun nom de skill n'est déductible de
+    # `{"tag": "drift", "description": "x"}`.
+    assert len(ctx["coherence_items"]) == 1
+    item = ctx["coherence_items"][0]
+    assert (item["tag"], item["description"], item["dup"]) == ("drift", "x", 1)
+    assert "subject" not in item
     assert [d["skill_id"] for d in ctx["curation_detail"]["decisions"]] == ["x"]
     assert [d["skill_id"] for d in ctx["curation_detail"]["skipped_details"]] == ["u"]
 
@@ -891,6 +901,97 @@ def test_report_markdown_renders_skipped_decision_once(tmp_path: Path):
     assert "`skip` `protected-skill`" in text
 
 
+def test_template_curation_and_top_rules_blocks_have_no_blank_lines(tmp_path: Path):
+    """v6.0.m : `{{ "\\n" }}` + `{% endfor %}` sur sa propre ligne = 1 ligne VIDE par itération.
+
+    Le moteur rend avec `trim_blocks=True` + `lstrip_blocks=True` : le `{{ "\\n" }}"`
+    en fin de ligne de corps s'AJOUTE au saut de ligne de la ligne suivante et émet
+    deux sauts. Sur le run 2026-10-03 le bloc Curation faisait 99 lignes pour 36
+    décisions (46 lignes vides, 33 % de la §5).
+
+    Correctif : remonter `{% endfor %}` sur la ligne du corps (convention déjà
+    employée par la boucle voisine §7). Supprimer le `{{ "\\n" }}` serait FAUX : la
+    ligne de corps se termine alors par `{% endif %}` et trim_blocks mange son saut
+    de ligne → toutes les décisions se collent sur une seule.
+
+    Ce test verrouille, pour les deux boucles concernées (décisions de curation,
+    top règles harness) : N lignes rendues == N itérations, zéro ligne vide entre
+    elles et juste après la dernière.
+    """
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    decisions = [
+        {
+            "action": action,
+            "skill_id": f"weekly-{action}-{i}",
+            "source": "weekly-usage",
+            "reason": f"décision {action} #{i}",
+            "status": "applied",
+        }
+        for i, action in enumerate(["archive", "archive", "merge", "improve"], start=1)
+    ]
+    (tmp_path / f"skill-curate-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "applied": 4,
+                "proposed": 0,
+                "skipped": 0,
+                "summary": {"by_action": {"archive": 2, "merge": 1, "improve": 1}},
+                "decisions": decisions,
+                "skipped_details": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    rules = [
+        {"rule": "no-print", "severity": "error", "message": "x"},
+        {"rule": "frontmatter", "severity": "error", "message": "y"},
+    ]
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "inspection": {
+                    "summary": {"errors": 2, "warnings": 0},
+                    "uncategorized": [{"findings": rules}],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    draft, _context = report_prep(cfg, anchor=RUN.isoformat())
+    assert draft is not None
+    text = draft.read_text(encoding="utf-8")
+
+    def _bullets(anchor: str, stop: str) -> list[str]:
+        block = text.split(anchor, 1)[1].split(stop, 1)[0]
+        return block.splitlines()
+
+    curation = _bullets("#### Curation (WAVE 2.5", "- Inspection")
+    rendered_decisions = [line for line in curation if line.startswith("- `")]
+    assert len(rendered_decisions) == len(decisions) == 4
+    assert [
+        d["skill_id"] in line for d, line in zip(decisions, rendered_decisions, strict=True)
+    ] == [True] * 4
+
+    top = _bullets("Top règles violées :", "- Budget tokens")
+    rendered_rules = [line for line in top if line.startswith("  - `")]
+    assert len(rendered_rules) == len(rules) == 2
+    assert all(f"`{r['rule']}`" in line for r, line in zip(rules, rendered_rules, strict=True))
+
+    # ZÉRO ligne vide (ni vide ni seulement-espace) entre les itérations : c'est
+    # exactement ce que le `{{ "\n" }}` redondant insérait (1 par itération).
+    for block_lines, bullets in ((curation, rendered_decisions), (top, rendered_rules)):
+        blanks = [i for i, line in enumerate(block_lines) if not line.strip()]
+        first, last = block_lines.index(bullets[0]), block_lines.index(bullets[-1])
+        assert [i for i in blanks if first < i <= last] == []
+        # au plus UNE ligne de séparation avant la 1re itération (jamais deux)
+        lead = 0
+        while first - lead - 1 >= 0 and not block_lines[first - lead - 1].strip():
+            lead += 1
+        assert lead <= 1, block_lines
+
+
 def test_report_assemble_injects_blocks(tmp_path: Path):
     _write_summary(tmp_path)
     cfg = _cfg(tmp_path)
@@ -910,6 +1011,128 @@ def test_report_assemble_injects_blocks(tmp_path: Path):
     assert "<!-- QUALITY_BLOCK -->" not in text
     assert warnings == []
     assert not (tmp_path / f"weekly-report-draft-{DATE}.md").exists()  # draft removed
+
+
+#: (catégorie, sévérité, effectif) — ordre d'ENTRÉE volontairement à l'INVERSE de l'ordre
+#: de rendu attendu (catégories décroissantes, sévérité décroissantes) : sans tri, les
+#: assertions d'ordre échouent.
+_MAINT_DISTRIBUTION = [
+    ("token-risk", "high", 5),
+    ("token-risk", "medium", 20),
+    ("token-risk", "low", 5),
+    ("merge-candidate", "high", 1),
+    ("merge-candidate", "medium", 5),
+    ("merge-candidate", "low", 4),
+    ("fix-candidate", "high", 2),
+    ("fix-candidate", "medium", 6),
+    ("fix-candidate", "low", 3),
+    ("agent-loop", "high", 3),
+    ("agent-loop", "medium", 4),
+    ("agent-loop", "low", 2),
+]
+
+#: Ordre de rendu ATTENDU — écrit en dur (catégories A-Z, puis high > medium > low) pour
+#: ne pas refléter la clé de tri de l'implémentation.
+_MAINT_EXPECTED_ORDER = [
+    ("agent-loop", "high", 3),
+    ("agent-loop", "medium", 4),
+    ("agent-loop", "low", 2),
+    ("fix-candidate", "high", 2),
+    ("fix-candidate", "medium", 6),
+    ("fix-candidate", "low", 3),
+    ("merge-candidate", "high", 1),
+    ("merge-candidate", "medium", 5),
+    ("merge-candidate", "low", 4),
+    ("token-risk", "high", 5),
+    ("token-risk", "medium", 20),
+    ("token-risk", "low", 5),
+]
+
+
+def test_report_section_7_sorts_maintenance_findings_by_category_then_severity(tmp_path: Path):
+    """§7 : liste PLATE triée (catégorie A-Z puis sévérité décroissante), rien ne disparaît.
+
+    Régression (v6.0.l → B1) : le regroupement par (catégorie, sévérité) — compteur +
+    3 exemples + « (+N autres) » — condensait l'information et a été rejeté. La section 7
+    reste une ligne par constat, seule l'ORDRE change. Ce test verrouille :
+
+      1. le nombre de constats rendus ÉGALE le nombre en entrée (60) ;
+      2. chaque ligne conserve sa preuve ET sa recommandation ;
+      3. l'ordre rendu est (catégorie alphabétique croissante, sévérité décroissante) ;
+      4. deux rendus successifs produisent exactement le même texte ;
+      5. la catégorie EST VISIBLE dans la ligne rendue (sinon le tri est invisible
+         pour le lecteur et la liste paraît non triée).
+    """
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    findings = [
+        {
+            "session_id": f"ses_{category}_{severity}_{i}",
+            "category": category,
+            "severity": severity,
+            "description": f"constat {category}/{severity}/{i}",
+            "recommendation": "réduire le context-bloat et borner les re-spawns",
+            "evidence_summary": f"cat={category}; n={i}",
+        }
+        for category, severity, count in _MAINT_DISTRIBUTION
+        for i in range(count)
+    ]
+    assert len(findings) == 60
+    (tmp_path / f"weekly-insights-{DATE}.json").write_text(
+        json.dumps({"alerts": [], "maintenance": {"findings": findings}}),
+        encoding="utf-8",
+    )
+
+    draft, ctx = report_prep(cfg, anchor=RUN.isoformat())
+    assert draft is not None and ctx is not None
+    text = draft.read_text(encoding="utf-8")
+
+    section_7 = text.split("## 7.", 1)[1].split("## 8.", 1)[0]
+    lines_7 = [line for line in section_7.splitlines() if line.strip()]
+    rendered = [line for line in lines_7 if line.startswith("- **[")]
+
+    # (1) conservation : une ligne par constat, aucune condensation ni plafonnement.
+    # Une section 7 de ~60 lignes est le format ATTENDU, pas un défaut à corriger.
+    assert len(rendered) == len(findings) == 60
+    assert len(lines_7) == 63  # 3 lignes d'en-tête (titre, alertes, « Constats ») + 60 constats
+    assert "constat(s) au total" not in section_7  # plus de compteur global
+    assert "autres)" not in section_7  # plus de « (+N autres) »
+    assert sorted(
+        re.findall(r"- \*\*\[\w+\]\*\* \[[\w-]+\] (constat [\w/-]+)", section_7)
+    ) == sorted(f["description"] for f in findings)
+
+    # (2) preuve + recommandation conservées sur CHAQUE ligne rendue
+    for line in rendered:
+        assert "→ réduire le context-bloat et borner les re-spawns" in line
+        assert re.search(r" — preuve : cat=[\w-]+; n=\d+$", line), line
+
+    # (2b) la catégorie EST ÉCRITE dans la ligne — sans elle le tri par catégorie est
+    # invisible au lecteur : c'est le but de la ligne que le bracketed cat corresponde
+    # au constat rendu (clé de trie du gabarit : `- **[SEV] [category] desc`).
+    for line in rendered:
+        m = re.match(r"^- \*\*\[(\w+)\]\*\* \[([\w-]+)\] constat ([\w-]+)/(\w+)/(\d+) ", line)
+        assert m, line
+        assert (m.group(1), m.group(2)) == (m.group(4).upper(), m.group(3))
+
+    # (3) ordre : catégorie alphabétique croissante, puis sévérité décroissante
+    parsed = re.findall(
+        r"^- \*\*\[(\w+)\]\*\* \[([\w-]+)\] constat ([\w-]+)/\w+/\d+ ", section_7, re.MULTILINE
+    )
+    assert parsed == [
+        (severity.upper(), category, category)
+        for category, severity, count in _MAINT_EXPECTED_ORDER
+        for _ in range(count)
+    ]
+
+    # (4) tri stable : deux rendus successifs donnent le même texte
+    draft_again, _ = report_prep(cfg, anchor=RUN.isoformat())
+    assert draft_again is not None
+    assert draft_again.read_text(encoding="utf-8") == text
+
+    # garde-fou d'implémentation : `_sort_maintenance_findings` renvoie une NOUVELLE liste,
+    # `insights` reste partagé avec `report_blocks_draft` (brouillon de la section 4).
+    assert ctx["maint_sorted"] is not ctx["insights"]["maintenance"]["findings"]
+    assert ctx["insights"]["maintenance"]["findings"] == findings  # ordre d'entrée intact
 
 
 # ============================================================ v5.28 (P5.1/P5.2)
@@ -1069,6 +1292,233 @@ def test_report_prep_renders_synthese_audit_and_watch(tmp_path: Path):
     assert "## 6. Veille — recommandations & nouveautés" in text
     assert "adeo/ai-skills" in text
     assert "github:watch-repos" in text
+
+
+def _write_audit_candidates(tmp_path: Path, *, audited: int = 2, unaudited: int = 1) -> None:
+    (tmp_path / f"weekly-audit-candidates-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "audited": [{"session_id": f"ses_ok_{i}"} for i in range(audited)],
+                "unaudited": [{"session_id": f"ses_todo_{i}"} for i in range(unaudited)],
+                "limit": 5,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_skill_curate(tmp_path: Path, *, dry_run: bool = True) -> None:
+    (tmp_path / f"skill-curate-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "rc": 0,
+                "mode": "dry-run" if dry_run else "apply",
+                "dry_run": dry_run,
+                "date": DATE,
+                "applied": 0,
+                "proposed": 17,
+                "skipped": 2,
+                "decisions": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_report_synthese_carries_operational_facts(tmp_path: Path, monkeypatch):
+    """D4 : la Synthèse porte les faits opérationnels, plus un compteur de veille.
+
+    Motif : le run 2026-10-03 spending une puce « Veille : 282 nouveautés » alors
+    que les 4 faits qui décident de la semaine (couverture d'audit, commits en
+    attente de revue, curation, self-cost) n'étaient qu'au §8. Le compteur de
+    veille reste au §6, annoté (D8) — la Synthèse ne le duplique plus.
+    """
+    _write_summary(tmp_path)
+    _write_ecosystem(tmp_path)
+    _write_audit_candidates(tmp_path)
+    _write_skill_curate(tmp_path)
+    monkeypatch.setattr(
+        "weekly_telemetry_aggregator.report._pending_auto_commits", lambda *a, **k: 28
+    )
+    monkeypatch.setattr(
+        "weekly_telemetry_aggregator.report._dirty_files", lambda *a, **k: ["a.py", "b.py", "c.py"]
+    )
+
+    draft, _ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None
+    synthese = draft.read_text(encoding="utf-8").split("## Synthèse", 1)[1].split("## 1.", 1)[0]
+
+    assert "**Couverture d'audit** : 2 session(s) auditée(s)" in synthese
+    assert "1 candidate(s) non traitée(s) (cap d'audit K = 5)" in synthese
+    assert "**Friction dépôt** : 28 commit(s) auto-rédigé(s) en attente de revue" in synthese
+    assert "3 fichier(s) dirty au run" in synthese
+    assert "**Curation skills** : 0 appliquée(s) / 17 proposée(s) / 2 ignorée(s)" in synthese
+    assert "dry-run" in synthese
+    # le compteur de veille a quitté la Synthèse (le §6 en reste l'unique source)
+    assert "nouveautés" not in synthese
+
+
+def test_report_warnings_pipeline_counts_grouped_entities(tmp_path: Path):
+    """D5(c) : compteur d'ENTITÉS groupées + multiplicateur dominant, pas le total brut.
+
+    Motif : 40 warnings nltk sont souvent 3 messages répétés ; afficher
+    `warnings|length` laisse croire à 40 problèmes distincts. Le regroupement
+    existe déjà dans le contexte (`warnings_grouped`) — on ne le recalcule pas.
+    """
+    _write_summary(tmp_path)
+    p = tmp_path / f"weekly-summary-{DATE}.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data["warnings"] = [
+        *({"message": "cache miss massif", "session_id": f"ses_{i}"} for i in range(3)),
+        *({"message": "source opencode indisponible", "session_id": f"ses_w{i}"} for i in range(5)),
+    ]
+    p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    draft, _ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None
+    text = draft.read_text(encoding="utf-8")
+    assert (
+        "- Warnings pipeline : 2 entité(s) groupée(s) sur 8 occurrence(s)"
+        " — multiplicateur dominant ×5" in text
+    )
+
+
+def test_report_tool_table_explains_appels_vs_repeats(tmp_path: Path):
+    """D6(i) : renvoi explicite sous la table Outils.
+
+    Motif : `edit 344 appels` (§3) vs le bucket d'arguments identiques du §7 se
+    lisaient comme un bug de décompte. Depuis le pic intra-session, le §7 publie
+    DEUX nombres par outil — `peak` (plus gros pic d'appels identiques dans une
+    seule session) et `total` (total du même bucket sur la fenêtre) : `edit
+    total=341 peak=12` contre `glob total=76 peak=9`. On choisit le renvoi (et non
+    le remplacement de colonne) : la colonne `Appels` reste le total, et afficher
+    les buckets à côté ne ferait que déplacer le chiffre trompeur.
+    `tool_result_fingerprints` n'est pas promis : il est vide depuis le filtre
+    boilerplate.
+    """
+    _write_summary(tmp_path)
+    p = tmp_path / f"weekly-summary-{DATE}.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data["tool_usage"] = [
+        {"tool": "edit", "call_count": 344, "estimated_input_tokens": 10000},
+        {"tool": "glob", "call_count": 151, "estimated_input_tokens": 3000},
+    ]
+    data["tool_argument_fingerprints"] = {
+        "edit": {"fp-a": {"total": 341, "peak": 12}, "fp-b": {"total": 3, "peak": 1}},
+        "glob": {"fp-a": {"total": 76, "peak": 9}},
+    }
+    data["tool_result_fingerprints"] = {}
+    p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    draft, _ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None
+    text = draft.read_text(encoding="utf-8")
+    # la donnée brute reste affichée telle quelle
+    assert "| edit | 344 | 10000 |" in text
+    # et le renvoi explicitant la contradiction
+    assert "`Appels` ≠ `peak`/`total` du §7 — divergence assumée" in text
+    assert "total des appels" in text
+    assert "plus gros pic d'empreintes d'arguments identiques dans UNE seule session" in text
+    assert "tool_argument_fingerprints" in text
+    # la paire qui discrimine une boucle d'un outil cron est nommée explicitement
+    assert "total=13 peak=1" in text
+    assert "total=13 peak=13" in text
+    # le canal résultat vide est nommé comme tel, pas promis comme une métrique
+    assert "tool_result_fingerprints" in text
+    assert "vide par construction" in text
+
+
+def test_report_section7_maintenance_header_explains_repeats(tmp_path: Path):
+    """D6(i) : le §7 rappelle la même sémantique à l'endroit où la preuve apparaît."""
+    _write_summary(tmp_path)
+    (tmp_path / f"weekly-insights-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "alerts": [],
+                "maintenance": {
+                    "findings": [
+                        {
+                            "session_id": None,
+                            "category": "agent-loop",
+                            "severity": "medium",
+                            "description": "outil 'edit' répété avec la même empreinte",
+                            "evidence_summary": "max_peak=12; max_total=341",
+                            "recommendation": "inspecter les résultats",
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    draft, _ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None
+    section_7 = draft.read_text(encoding="utf-8").split("## 7.", 1)[1].split("## 8.", 1)[0]
+    assert "`peak` = **plus gros pic d'appels identiques dans une seule session**" in section_7
+    assert "max_peak=12; max_total=341" in section_7  # la preuve n'est pas amputée
+    assert "outil cron (`total = N`, `peak = 1`)" in section_7
+
+
+def test_report_section6_annotates_new_items_sampling(tmp_path: Path):
+    """D8 : total annoncé et liste affichée sont dérivés de la MÊME coupe.
+
+    Motif : le §6 annonçait 282 nouveautés puis en listait 5, sans dire que
+    c'était un échantillon. La limite est une variable (`eco_limit`) et le
+    libellé est calculé depuis `eco_shown` — la divergence devient impossible.
+    """
+    _write_summary(tmp_path)
+    (tmp_path / f"weekly-ecosystem-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "new_items": [
+                    {
+                        "name": f"owner/rl-{i}",
+                        "category": "repo",
+                        "found_via": ["github:api"],
+                        "description_short": f"changement {i}",
+                    }
+                    for i in range(9)
+                ],
+                "core_changes": [],
+                "counts_by_source": {},
+                "counts_by_category": {},
+                "watch_repos": [],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    draft, _ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None
+    text = draft.read_text(encoding="utf-8")
+    section_6 = text.split("## 6.", 1)[1].split("## 7.", 1)[0]
+    assert (
+        "- Nouveautés détectées : 9 — 5 listée(s) ci-dessous (échantillon,"
+        " +4 autres non listées)" in section_6
+    )
+    # ...et la liste en compte exactement 5
+    rendered = [line for line in section_6.splitlines() if line.startswith("- **owner/rl-")]
+    assert len(rendered) == 5
+    assert "owner/rl-8" not in section_6  # le 9e n'est pas listé (et c'est annoncé)
+
+
+def test_report_section6_announces_exhaustive_list_when_under_limit(tmp_path: Path):
+    """D8 : sous la limite, le libellé dit « liste exhaustive » — pas « échantillon »."""
+    _write_summary(tmp_path)
+    _write_ecosystem(tmp_path)  # 1 nouveauté
+    draft, _ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None
+    text = draft.read_text(encoding="utf-8")
+    section_6 = text.split("## 6.", 1)[1].split("## 7.", 1)[0]
+    assert "Nouveautés détectées : 1 — 1 listée(s) ci-dessous (liste exhaustive)" in section_6
 
 
 def test_report_prep_no_audit_when_empty_selection(tmp_path: Path):
@@ -1329,6 +1779,267 @@ def test_assemble_falls_back_to_auto_when_no_llm_block(tmp_path: Path):
     assert "brouillon automatique" in text
 
 
+#: Bloc de prose valide ET long, avec deux bandes résolubles : 1 finding high
+#: (`_write_band_findings`) et `observed` = 30.0 (insights).
+_BAND_PROSE = (
+    "La semaine concentrate l'essentiel des constats sur une seule session, qui est "
+    "revenue en boucle sur le meme point de controle a plusieurs reprises sans que "
+    "l'ecart ne soit rattrape par une relecture [F:s1#loop]. Le budget hebdomadaire "
+    "est au-dessus du seuil : le depassement [N:30.0 dollars] doit etre arbitre avant "
+    "la prochaine iteration [A:weekly_budget_usd].\n"
+)
+
+
+def _write_band_artifacts(tmp_path: Path) -> None:
+    """1 finding high + 1 alerte `observed` = 30.0 : deux bandes résolubles."""
+    _write_findings(
+        tmp_path,
+        [
+            {
+                "session_id": "s1",
+                "category": "loop",
+                "severity": "high",
+                "description": "d",
+                "recommendation": "r",
+            }
+        ],
+    )
+    (tmp_path / f"weekly-insights-{DATE}.json").write_text(
+        json.dumps(
+            {"alerts": [{"rule": "weekly_budget_usd", "observed": 30.0, "severity": "high"}]}
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_assemble_resolves_number_band_in_markdown_and_publishes_the_index(tmp_path: Path):
+    """C2 + C3 de bout en bout : bande résolue en chiffre, index publié dans le gates."""
+    _write_summary(tmp_path)
+    _write_auto_blocks(tmp_path)
+    _write_band_artifacts(tmp_path)
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"weekly-report-blocks-{DATE}.md").write_text(_BAND_PROSE, encoding="utf-8")
+    report_prep(cfg, anchor=RUN.isoformat())
+
+    final_path, _warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+
+    assert rc == 0
+    text = final_path.read_text(encoding="utf-8")
+    assert "Statut section 4 : prose agent (7b LLM)" in text, text[:400]
+    # le lecteur voit le chiffre, pas le marqueur
+    assert "[N:" not in text
+    assert "30.0 dollars" in text
+    gates = json.loads((tmp_path / f"weekly-report-gates-{DATE}.json").read_text(encoding="utf-8"))
+    assert gates["prose"]["validated"] is True
+    assert gates["number_bands"]["scalars"]["alerts[0].observed"] == 30.0
+    assert gates["number_bands"]["counts"]["findings_total"] == 1
+
+
+def test_assemble_rejects_prose_with_an_unresolved_number_band(tmp_path: Path):
+    """C2 de bout en bout : une bande sans scalaire derrière → refus, fallback, index publié."""
+    _write_summary(tmp_path)
+    _write_auto_blocks(tmp_path)
+    _write_band_artifacts(tmp_path)
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"weekly-report-blocks-{DATE}.md").write_text(
+        _BAND_PROSE.replace("[N:30.0 dollars]", "[N:19 findings]"), encoding="utf-8"
+    )
+    report_prep(cfg, anchor=RUN.isoformat())
+
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+
+    assert rc == 0
+    text = final_path.read_text(encoding="utf-8")
+    assert "bande de chiffre non résolue [N:19 findings]" in text
+    assert "brouillon automatique" in text
+    # le footer de statut cite nommément la violation : on vérifie le CORPS de la
+    # section 4, pas la ligne qui raconte le rejet.
+    assert "[N:19 findings]" not in text.split("*Statut section 4 :")[0]
+    assert any("rejeté" in w for w in warnings)
+    gates = json.loads((tmp_path / f"weekly-report-gates-{DATE}.json").read_text(encoding="utf-8"))
+    assert gates["prose"]["validated"] is False
+    # l'index est publié même quand la prose est rejetée : il décrit les artefacts
+    assert gates["number_bands"]["counts"]["findings_total"] == 1
+
+
+def test_assemble_rejects_prose_with_a_markdown_heading(tmp_path: Path):
+    """C1 de bout en bout : le `###` de l'agent ne survit plus dans le rapport."""
+    _write_summary(tmp_path)
+    _write_auto_blocks(tmp_path)
+    _write_band_artifacts(tmp_path)
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"weekly-report-blocks-{DATE}.md").write_text(
+        "### Saturation de contexte\n" + _BAND_PROSE, encoding="utf-8"
+    )
+    report_prep(cfg, anchor=RUN.isoformat())
+
+    final_path, _warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+
+    assert rc == 0
+    text = final_path.read_text(encoding="utf-8")
+    assert "titre Markdown interdit" in text
+    assert "brouillon automatique" in text
+    # le footer cite la violation ; le corps de la section 4, lui, ne doit contenir
+    # ni le titre rendu ni sa version littérale `<p>###…</p>`.
+    assert "### Saturation de contexte" not in text.split("*Statut section 4 :")[0]
+    gates = json.loads((tmp_path / f"weekly-report-gates-{DATE}.json").read_text(encoding="utf-8"))
+    assert gates["prose"]["validated"] is False
+
+
+def test_assemble_rejects_prose_with_a_written_out_count(tmp_path: Path):
+    """C4 de bout en bout : « huit sessions » est refusé comme « 8 sessions »."""
+    _write_summary(tmp_path)
+    _write_auto_blocks(tmp_path)
+    _write_band_artifacts(tmp_path)
+    cfg = _cfg(tmp_path)
+    (tmp_path / f"weekly-report-blocks-{DATE}.md").write_text(
+        _BAND_PROSE.replace(
+            "Le budget hebdomadaire",
+            "Huit sessions ont ete activees, dont une seule a produit un constat. "
+            "Le budget hebdomadaire",
+        ),
+        encoding="utf-8",
+    )
+    report_prep(cfg, anchor=RUN.isoformat())
+
+    final_path, _warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+
+    assert rc == 0
+    text = final_path.read_text(encoding="utf-8")
+    assert "nombre écrit interdit" in text
+    assert "Huit sessions" not in text.split("*Statut section 4 :")[0]
+
+
+def _section_4_headings(text: str) -> list[str]:
+    """Titres de niveau 1 ou 2 dans la zone section 4 (entre `## 4.` et `## 5.`).
+
+    Zone prise telle que rendue, statut de section compris : c'est elle que voit un
+    relecteur, pas le fichier -auto- pris isolément.
+    """
+    zone = re.split(r"^## 5\. ", text, maxsplit=1, flags=re.M)[0]
+    head = re.search(r"^## 4\. ", zone, flags=re.M)
+    assert head is not None, "section 4 absente du rapport"
+    return re.findall(r"^#{1,2} .*$", zone[head.start() :], flags=re.M)
+
+
+def test_section_4_has_one_heading_on_the_auto_draft_fallback(tmp_path: Path):
+    """Invariant : UN SEUL titre de niveau 1/2 dans la section 4 — celui du gabarit.
+
+    Le fichier -auto- est une file de repli : `report_assemble` l'injecte VERBATIM
+    sous le `## 4.` du gabarit et ne le valide jamais. Un titre H1 dedans (le cas
+    avant le correctif) produisait deux H2 dans chaque rapport tombé sur le chemin
+    de repli — c'est-à-dire le chemin par défaut.
+    """
+    _write_summary(tmp_path)
+    _write_auto_blocks(tmp_path)
+    cfg = _cfg(tmp_path)
+    report_prep(cfg, anchor=RUN.isoformat())
+    final_path, _warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert rc == 0
+    text = final_path.read_text(encoding="utf-8")
+
+    headings = _section_4_headings(text)
+
+    assert len(headings) == 1, headings
+    assert headings[0].startswith("## 4. Constats qualitatifs")
+    # Les sous-rubriques survivent, mais en `###`.
+    assert "### Recommandations" in text
+
+
+def test_section_4_has_one_heading_when_prose_is_used(tmp_path: Path):
+    """Même invariant sur le chemin prose — et le `###` de l'agent n'est plus possible.
+
+    Avant C1, la prose pouvait porter des `###` qui « ne comptaient pas » dans
+    l'invariant. C1 les refuse à l'écriture (ils ne rendaient que dans le
+    markdown, le HTML affichait littéralement `<p>###…</p>`), donc l'invariant
+    tient désormais par construction sur ce chemin. Le cas du `###` rejeté est
+    couvert par `test_assemble_rejects_prose_with_a_markdown_heading`.
+    """
+    _write_summary(tmp_path)
+    _write_auto_blocks(tmp_path)
+    cfg = _cfg(tmp_path)
+    _write_findings(
+        tmp_path,
+        [
+            {
+                "session_id": "s1",
+                "category": "loop",
+                "severity": "high",
+                "recommendation_type": "skill-candidate",
+                "description": "d",
+                "recommendation": "r",
+            }
+        ],
+    )
+    (tmp_path / f"weekly-report-blocks-{DATE}.md").write_text(
+        "Saturation de contexte : la semaine est dominée par une session en boucle de "
+        "travail intensif avec de nombreux appels répétés sur le même point [F:s1#loop]. "
+        "La maintenance signale des skills probablement redondants et recommande une "
+        "fusion manuelle après revue [M:merge-candidate]. Le budget hebdomadaire est "
+        "dépassé, alerte à traiter en priorité [A:weekly_budget_usd].\n",
+        encoding="utf-8",
+    )
+    (tmp_path / f"weekly-insights-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "alerts": [
+                    {
+                        "rule": "weekly_budget_usd",
+                        "threshold": 25.0,
+                        "observed": 30.0,
+                        "severity": "high",
+                    }
+                ],
+                "maintenance": {
+                    "findings": [{"category": "merge-candidate", "severity": "medium"}]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_prep(cfg, anchor=RUN.isoformat())
+    final_path, _warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert rc == 0
+    text = final_path.read_text(encoding="utf-8")
+    assert "Statut section 4 : prose agent (7b LLM)" in text
+
+    headings = _section_4_headings(text)
+
+    assert len(headings) == 1, headings
+    assert headings[0].startswith("## 4. Constats qualitatifs")
+
+
+def test_pending_auto_commits_label_is_ordered_not_oldest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Le gabarit ne connaît que le NOMBRE de commits en attente.
+
+    « (du plus vieux que <date>) » prétendait dater le plus ancien — une information
+    que le contexte ne contient pas. « (antérieurs au <date>) » ne ment pas.
+    """
+    other = tzutc(2026, 10, 3)
+    other_date = "2026-10-03"
+    period = Period(start=tzutc(2026, 9, 26), end=other)
+    usage = make_usage("r", [make_step("r", tzutc(2026, 9, 27, 10), cost=0.5)], title="S")
+    (tmp_path / f"weekly-summary-{other_date}.json").write_text(
+        json.dumps(
+            summary_to_dict(aggregate([usage], period=period, generated_at=other)),
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "weekly_telemetry_aggregator.report._pending_auto_commits", lambda *a, **k: 3
+    )
+
+    draft, _context = report_prep(_cfg(tmp_path), anchor=other.isoformat())
+
+    assert draft is not None
+    text = draft.read_text(encoding="utf-8")
+    assert "en attente de revue (antérieurs au 2026-10-03)" in text
+    assert "du plus vieux que" not in text
+
+
 def test_validate_llm_blocks_high_coverage_warning():
     from weekly_telemetry_aggregator.report import validate_llm_blocks
 
@@ -1391,6 +2102,239 @@ def test_validate_llm_blocks_allows_dates_percent_versions():
     # un coût libre reste interdit
     violations2, _ = validate_llm_blocks("coût de 39$ cette semaine.\n", None, None)
     assert any("chiffres" in v for v in violations2)
+
+
+#: Findings/insights minimaux pour les checks de bande : 3 findings dont 1 high,
+#: 1 alerte dont `observed` = 30,0, 2 constats de maintenance.
+_BAND_FINDINGS = {
+    "findings": [
+        {"session_id": "s1", "category": "loop", "severity": "high"},
+        {"session_id": "s2", "category": "qualite", "severity": "medium"},
+        {"session_id": "s3", "category": "outil", "severity": "low"},
+    ]
+}
+_BAND_INSIGHTS = {
+    "alerts": [{"rule": "weekly_budget_usd", "observed": 30.0, "threshold": 25.0}],
+    "maintenance": {
+        "findings": [
+            {"category": "merge-candidate", "severity": "medium"},
+            {"category": "stale-skill", "severity": "low"},
+        ]
+    },
+}
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "###Foo",  # pas d'espace : `^#{1,6}\s` ne suffit pas, il faut la garde startswith
+        "#Foo",
+        "### Saturation de contexte",  # première ligne, niveau 3 : les deux checks
+        "#### Sous-titre",
+        "#",
+    ],
+)
+def test_validate_llm_blocks_rejects_any_markdown_heading(heading):
+    """C1 : le bloc qualitatif est de la prose, pas du markdown structuré.
+
+    Régression du run 2026-10-03 : quatre `###` de l'agent passaient la
+    validation et le HTML les affichait littéralement (`<p>###…</p>`), le
+    markdown les rendait en titres — deux sémantiques pour un seul bloc.
+    """
+    from weekly_telemetry_aggregator.report import validate_llm_blocks
+
+    violations, _ = validate_llm_blocks(
+        f"{heading}\nUne session est revenue en boucle sur le même point.\n", None, None
+    )
+
+    assert any("titre Markdown interdit" in v for v in violations), violations
+
+
+def test_validate_llm_blocks_allows_inline_hash_and_prose_without_heading():
+    """La garde `#` ne doit pas casser la prose : un `#` en milieu de ligne est normal."""
+    from weekly_telemetry_aggregator.report import validate_llm_blocks
+
+    violations, _ = validate_llm_blocks(
+        "Le contrôle de sortie a été contourné, motifs #4 et #5 sur la même séquence.\n",
+        None,
+        None,
+    )
+
+    assert not any("titre Markdown interdit" in v for v in violations), violations
+
+
+def test_validate_llm_blocks_accepts_a_resolved_number_band():
+    """C2 : `[N:3 findings]` résout (3 = nombre de findings) et ne viole rien.
+
+    Le nombre est Closé dans la bande : le check « chiffres interdits » ne doit
+    pas le voir comme un chiffre libre, sinon la bande serait inutilisable.
+    """
+    from weekly_telemetry_aggregator.report import validate_llm_blocks
+
+    violations, _ = validate_llm_blocks(
+        "Les [N:3 findings] de la semaine se concentrent sur une seule session [F:s1#loop].\n",
+        _BAND_FINDINGS,
+        _BAND_INSIGHTS,
+    )
+
+    assert not any("chiffres" in v for v in violations), violations
+    assert not any("bande" in v for v in violations), violations
+
+
+def test_validate_llm_blocks_accepts_a_count_band_from_derived_counts():
+    """C2 : une cardinalité dérivée est résolvable — 2 = constats de maintenance."""
+    from weekly_telemetry_aggregator.report import validate_llm_blocks
+
+    violations, _ = validate_llm_blocks(
+        "La maintenance remonte [N:2 constats] de fusion [M:merge-candidate].\n",
+        _BAND_FINDINGS,
+        _BAND_INSIGHTS,
+    )
+
+    assert not any("bande" in v for v in violations), violations
+
+
+def test_validate_llm_blocks_accepts_a_decimal_band():
+    """C2 : un scalaire flottant des artefacts résout aussi (observed = 30,0)."""
+    from weekly_telemetry_aggregator.report import validate_llm_blocks
+
+    violations, _ = validate_llm_blocks(
+        "Le budget observé est de [N:30.0 dollars] [A:weekly_budget_usd].\n",
+        _BAND_FINDINGS,
+        _BAND_INSIGHTS,
+    )
+
+    assert not any("bande" in v for v in violations), violations
+
+
+@pytest.mark.parametrize(
+    ("band", "expected"),
+    [
+        ("[N:19 findings]", "non résolue"),
+        ("[N:999 findings]", "non résolue"),
+        ("[N:4 findings]", "non résolue"),  # aucun scalaire 4 dans ces artefacts
+        ("[N:]", "mal formée"),
+        ("[N:dix-neuf findings]", "non numérique"),
+        ("[N:beaucoup de findings]", "non numérique"),
+    ],
+)
+def test_validate_llm_blocks_rejects_unresolved_number_band(band, expected):
+    """C2 : pas d'assouplissement « petits entiers autorisés » (D2)."""
+    from weekly_telemetry_aggregator.report import validate_llm_blocks
+
+    violations, _ = validate_llm_blocks(
+        f"Le décompte annoncé est {band} sur la semaine.\n", _BAND_FINDINGS, _BAND_INSIGHTS
+    )
+
+    assert any(expected in v for v in violations), violations
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "Huit sessions ont tourné en boucle cette semaine.",
+        "dix-neuf findings sont attribués à la même session [F:s1#loop].",
+        "Quatre-vingt-dix violations harness ont été relevées.",
+        "La semaine compte vingt skill jamais chargés.",
+    ],
+)
+def test_validate_llm_blocks_rejects_written_out_counts(phrase):
+    """C4 : la forme écrite est le contournement du check « chiffres ».
+
+    « 8 sessions » est refusé, « huit sessions » passait : même affirmation,
+    aucun contrôle. La règle est ancrée sur une unité comptable, donc
+    « une alerte » et « un constat » restent de la prose valide.
+    """
+    from weekly_telemetry_aggregator.report import validate_llm_blocks
+
+    violations, _ = validate_llm_blocks(f"{phrase}\n", _BAND_FINDINGS, _BAND_INSIGHTS)
+
+    assert any("nombre écrit interdit" in v for v in violations), violations
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "Un constat de boucle a été relevé sur la session de revue [F:s1#loop].",
+        "Une alerte de budget est ouverte [A:weekly_budget_usd].",
+        "Quatre skillsmerged restent à vérifier [M:merge-candidate].",
+        "Le rapport couvre cent pour cent des sessions de la semaine.",
+        "La hausse est due à deux causes indépendantes [M:stale-skill].",
+    ],
+)
+def test_validate_llm_blocks_allows_ambiguous_small_numbers_in_prose(phrase):
+    """C4 ne doit pas tuer le français normal : « un/une/deux » sans cue de décompte."""
+    from weekly_telemetry_aggregator.report import validate_llm_blocks
+
+    violations, _ = validate_llm_blocks(f"{phrase}\n", _BAND_FINDINGS, _BAND_INSIGHTS)
+
+    assert not any("nombre écrit interdit" in v for v in violations), violations
+
+
+def test_validate_llm_blocks_rejects_small_number_with_a_counting_cue():
+    """C4 : « sur quatre sessions » EST un décompte, le cue le révèle."""
+    from weekly_telemetry_aggregator.report import validate_llm_blocks
+
+    violations, _ = validate_llm_blocks(
+        "Le contrôle a été contourné sur quatre sessions de la semaine [F:s1#loop].\n",
+        _BAND_FINDINGS,
+        _BAND_INSIGHTS,
+    )
+
+    assert any("nombre écrit interdit" in v for v in violations), violations
+
+
+def test_number_band_index_publishes_scalars_and_counts():
+    """C2 : l'index doit rendre le refus auditables (scalaires + cardinances)."""
+    from weekly_telemetry_aggregator.report import number_band_index
+
+    index = number_band_index(_BAND_FINDINGS, _BAND_INSIGHTS)
+
+    assert index["counts"]["findings_total"] == 3
+    assert index["counts"]["findings_high"] == 1
+    assert index["counts"]["alerts_total"] == 1
+    assert index["counts"]["maintenance_total"] == 2
+    assert index["scalars"]["alerts[0].observed"] == 30.0
+    assert index["scalars"]["alerts[0].threshold"] == 25.0
+    assert index["scalars_total"] == len(index["scalars"]) == 2
+    # les booléens ne sont pas des nombres
+    assert all(isinstance(v, float) for v in index["scalars"].values())
+
+
+def test_resolve_number_bands_renders_arabic_and_drops_the_marker():
+    """C3 : le rendu montre le chiffre, plus le marqueur `[N:…]`."""
+    from weekly_telemetry_aggregator.html_report import resolve_number_bands
+
+    resolved = resolve_number_bands("Le décompte est [N:3 findings] cette semaine.\n")
+
+    assert resolved == "Le décompte est 3 findings cette semaine.\n"
+    assert "[N:" not in resolved
+    # idempotent : le rendu HTML puis le rendu markdown ne doivent pas diverger
+    assert resolve_number_bands(resolved) == resolved
+
+
+def test_resolve_number_bands_leaves_non_numeric_bands_untouched():
+    """Un `[N:…]` illisible n'est pas réécrit : on ne fabrique pas de texte."""
+    from weekly_telemetry_aggregator.html_report import resolve_number_bands
+
+    text = "Un décompte invalide [N:dix-neuf findings] reste tel quel.\n"
+
+    assert resolve_number_bands(text) == text
+
+
+def test_html_render_quality_block_resolves_band_and_keeps_escaping():
+    """C3 côté HTML + vigilance XSS : la résolution ne doit rien déséchapper."""
+    from weekly_telemetry_aggregator.html_report import _render_quality_block
+
+    rendered = str(
+        _render_quality_block("Budget <script>alert(1)</script> sur [N:30.0 dollars] [A:budget].")
+    )
+
+    assert "30.0 dollars" in rendered
+    assert "[N:" not in rendered
+    assert "<script>" not in rendered
+    assert "&lt;script&gt;" in rendered
+    assert '<span class="tag tag-a">A:budget</span>' in rendered
 
 
 def test_report_annex_groups_identical_warnings(tmp_path: Path):
@@ -1482,30 +2426,71 @@ def test_report_daily_totals_complete_window(tmp_path: Path):
     assert "| 2026-08-05 | 0.0000 | 0 |" in text  # jour vide en zéro explicite
 
 
-def test_report_harness_budget_rendered(tmp_path: Path):
-    _write_summary(tmp_path)
-    cfg = _cfg(tmp_path)
+def _write_harness_digest(tmp_path: Path, *, always_loaded: int, skill_count: int) -> None:
     (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
         json.dumps(
             {
                 "inspection": {"summary": {"errors": 2, "warnings": 3}},
                 "budget": {
                     "total_tokens": 11884,
-                    "always_loaded": 5575,
-                    "on_demand": 6309,
-                    "always_loaded_ratio": 0.47,
+                    "always_loaded": always_loaded,
+                    "on_demand": 11884 - always_loaded,
+                    "always_loaded_ratio": round(always_loaded / 11884, 2),
                     "heaviest": "claude_md/CLAUDE",
                 },
-                "triggers": {"skill_count": 0, "overlaps": []},
+                "triggers": {"skill_count": skill_count, "overlaps": []},
                 "dependencies": {"total_edges": 3, "broken": []},
             }
         ),
         encoding="utf-8",
     )
-    draft, ctx = report_prep(cfg, anchor=RUN.isoformat())
+
+
+def test_report_harness_budget_rendered(tmp_path: Path):
+    """D7 (cas nominal) : la ligne budget n'apparaît QUE si `always_loaded > 0`.
+
+    Motif de la réécriture : l'ancien test ne fixtureait `always_loaded: 5575`
+    alors que la valeur de production est TOUJOURS 0 (le scan ne mesure aucun
+    budget always-loaded). Le gabarit ne testait que la présence du dict, donc
+    une ligne « always-loaded 0 / ratio 0.0 » s'affichait quand même — métrique
+    morte (C10). Le cas nominal est conservé ici, le cas mort est couvert par
+    `test_report_harness_dead_metrics_hidden`.
+    """
+    _write_summary(tmp_path)
+    _write_harness_digest(tmp_path, always_loaded=5575, skill_count=0)
+    draft, ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
     text = draft.read_text(encoding="utf-8")
     assert "Budget tokens" in text and "11,884" in text
+    assert "always-loaded 5,575" in text
     assert "Dépendances : 3 arêtes" in text
+
+
+def test_report_harness_dead_metrics_hidden(tmp_path: Path):
+    """D7 : `always_loaded == 0` et `skill_count == 0` ⇒ aucune ligne morte.
+
+    Ces deux métriques affichaient « ratio 0.0 » et « 0 skills » en permanence
+    (C10) : un dict non vide suffisait à afficher la ligne. On gate sur la VALEUR.
+    Les métriques vivantes du même digest (§ Inspection, Dépendances) restent.
+    """
+    _write_summary(tmp_path)
+    _write_harness_digest(tmp_path, always_loaded=0, skill_count=0)
+    draft, _ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    text = draft.read_text(encoding="utf-8")
+    assert "Budget tokens" not in text
+    assert "always-loaded" not in text
+    assert "Triggers :" not in text
+    # les métriques vivantes du même bloc ne sont pas sacrifiées
+    assert "Inspection : 2 erreurs, 3 warnings" in text
+    assert "Dépendances : 3 arêtes" in text
+
+
+def test_report_harness_triggers_rendered_when_skills(tmp_path: Path):
+    """D7 : le gate est sur la valeur — `skill_count > 0` rend toujours la ligne."""
+    _write_summary(tmp_path)
+    _write_harness_digest(tmp_path, always_loaded=0, skill_count=72)
+    draft, _ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    text = draft.read_text(encoding="utf-8")
+    assert "Triggers : 72 skills, 0 chevauchement(s)" in text
 
 
 def test_report_harness_remediation_status_rendered(tmp_path: Path):
@@ -1686,12 +2671,14 @@ def test_template_maintenance_and_unscoped_lines_are_not_glued(tmp_path: Path):
                     "findings": [
                         {
                             "severity": "HIGH",
+                            "category": "token-risk",
                             "description": "first finding",
                             "recommendation": "fix it",
                             "evidence_summary": "file:line proof one",
                         },
                         {
                             "severity": "MEDIUM",
+                            "category": "agent-loop",
                             "description": "second finding",
                             "recommendation": "fix it too",
                             "evidence_summary": "file:line proof two",
@@ -1716,14 +2703,60 @@ def test_template_maintenance_and_unscoped_lines_are_not_glued(tmp_path: Path):
     draft, ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
     assert draft is not None
     text = draft.read_text(encoding="utf-8")
-    assert "- **[HIGH]** first finding → fix it — preuve : file:line proof one\n" in text
-    assert "\n- **[MEDIUM]** second finding → fix it too — preuve : file:line proof two" in text
+    # §7 : une ligne par constat (agent-loop < token-risk), catégorie incluse dans la ligne
+    section_7 = text.split("## 7.", 1)[1].split("## 8.", 1)[0]
+    bullets = [line for line in section_7.splitlines() if line.startswith("- **[")]
+    assert bullets == [
+        "- **[MEDIUM]** [agent-loop] second finding → fix it too — preuve : file:line proof two",
+        "- **[HIGH]** [token-risk] first finding → fix it — preuve : file:line proof one",
+    ]
     assert "proof one- **[MEDIUM]" not in text  # plus de collage (trim_blocks)
     # ligne unscoped non collée à la section suivante (trim_blocks, v6.0.k)
     assert "b.json\n" in text
     assert "b.json## 6." not in text
     # annexe : répertoire du run
     assert f"`runs/{active.run_id}/`" in text
+
+
+def test_template_maintenance_finding_without_category_stays_readable(tmp_path: Path):
+    """§7 : un constat SANS catégorie ne plante pas et ne rend pas de crochets vides."""
+    _write_summary(tmp_path)
+    (tmp_path / f"weekly-insights-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "alerts": [],
+                "maintenance": {
+                    "findings": [
+                        {
+                            "severity": "HIGH",
+                            "description": "constat sans catégorie",
+                            "recommendation": "corriger",
+                            "evidence_summary": "src=foo",
+                        },
+                        {
+                            "severity": "LOW",
+                            "category": "",
+                            "description": "constat catégorie vide",
+                            "recommendation": "corriger aussi",
+                            "evidence_summary": "src=bar",
+                        },
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    draft, _ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None
+    text = draft.read_text(encoding="utf-8")
+    section_7 = text.split("## 7.", 1)[1].split("## 8.", 1)[0]
+    bullets = [line for line in section_7.splitlines() if line.startswith("- **[")]
+    assert len(bullets) == 2
+    assert "[]" not in section_7  # pas de « catégorie » vide rendue
+    # la sévérité reste en tête, le constat et sa preuve restent entiers
+    for line in bullets:
+        assert re.match(r"^- \*\*\[(HIGH|LOW)\]\*\* constat .+ → corriger", line), line
+        assert re.search(r" — preuve : src=\w+$", line), line
 
 
 def test_assemble_renders_html_with_injected_quality_block(tmp_path: Path, monkeypatch):
@@ -2057,7 +3090,7 @@ def test_actor_mapping_snapshot():
     assert _actor_for_alert("weekly_budget_usd") == "Toi"
     assert _actor_for_alert("lint_violations_max") == "Pipeline"
     assert _actor_for_alert("lint_coverage") == "Pipeline"
-    assert _actor_for_alert("daily_spike_z_min") == "Pipeline"
+    assert _actor_for_alert("daily_spike") == "Pipeline"
     assert _actor_for_alert("cache_hit_rate_min") == "Agent"
 
     # finding
@@ -2407,9 +3440,16 @@ def test_html_renders_harness_filter_and_closed_annex(tmp_path: Path):
     assert "cdn" not in html.lower()
     # titres de l'annexe H tronqués 80ch (le tableau top-sessions d'annexe B
     # garde son rendu historique ; le payload JSON garde les données complètes)
+    #
+    # ADAPTÉ (C6) : la troncature passe par `report.truncate_text`, qui coupe sur
+    # une frontière de mot et signale la troncature par une ellipse. Ici le titre
+    # est un jeton insécable de 100 `x` plus long que la borne : aucune frontière
+    # n'existe, la coupe tombe donc à `limit - 1` + `…` (`report.truncate_text`
+    # cas 3). Avant, le `[:80]` nu rendait 80 caractères sans marqueur, ce qui
+    # faisait croire à un titre complet. Longueur visible inchangée : 80.
     annex_h = html.split('id="annex-h"')[1].split('<script type="application/json"')[0]
     assert "x" * 100 not in annex_h
-    assert "<td>Gros chantier " + "x" * 66 + "</td>" in annex_h
+    assert "<td>Gros chantier " + "x" * 65 + "…</td>" in annex_h
     # l'annexe affichée ne rend que des champs sûrs (pas de brut transcript) ;
     # les clés agrégées du payload JSON embarqué ne sont pas du contenu brut
     assert "user_turns" not in annex_h and "tool_arg" not in annex_h
@@ -2454,3 +3494,1399 @@ def test_audit_envelope_rejects_empty_summary_and_sid_mismatch():
     bad_sid = _valid_audit_envelope(sid="ses_other")
     assert _audit_envelope_valid(bad_sid, "ses_f6ed03e11ffetdQstFHu2pb7B5") is False
     assert _audit_envelope_reason(bad_sid, "ses_f6ed03e11ffetdQstFHu2pb7B5") == "sid-mismatch"
+
+
+# =====================================================================
+# FIX 1-8 : défauts de rendu vérifiés sur le run réel 2026-10-01
+# (le rapport affirmait des choses fausses : « 30 commits en attente de
+# revue » alors que le run en a produit 3, « 5 518 397.0 tokens,  appels
+# API- », deux nombres collés sur une ligne).
+# =====================================================================
+
+
+def _git_repo(path: Path) -> Path:
+    """Repo git initialisé, prêt à recevoir des commits."""
+    import subprocess as sp
+
+    path.mkdir(parents=True, exist_ok=True)
+    for cmd in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "t@t"],
+        ["git", "config", "user.name", "T"],
+    ):
+        sp.run(cmd, cwd=path, check=True)
+    return path
+
+
+def _commit(
+    repo: Path, name: str, subject: str, body: str | None = None, when: str | None = None
+) -> str:
+    """Un commit ; `body` non nul crée un commit à corps multi-ligne.
+
+    `when` fixe la date de commit (auteur ET committer, format ISO git) : sans
+    elle, les bornes `--since`/`--until` des tests dépendent de l'horloge réelle.
+    """
+    import subprocess as sp
+
+    (repo / name).write_text(name, encoding="utf-8")
+    sp.run(["git", "add", "-A"], cwd=repo, check=True)
+    args = ["git", "commit", "-q", "-m", subject]
+    if body is not None:
+        args += ["-m", body]
+    env = None
+    if when is not None:
+        import os
+
+        env = {**os.environ, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when}
+    sp.run(args, cwd=repo, check=True, env=env)
+    return sp.run(
+        ["git", "rev-parse", "--short", "HEAD"], cwd=repo, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _prep_with_ctx(tmp_path: Path, monkeypatch, **overrides):
+    """report_prep sur un repo git dédié ; renvoie (draft_text, ctx)."""
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _cfg(tmp_path)
+    cfg.project_root = repo
+    cfg.html_report_dir = str(tmp_path / "html")
+    _write_summary(tmp_path)
+    if "self_cost" in overrides:
+        monkeypatch.setattr(
+            "weekly_telemetry_aggregator.report._self_cost_value",
+            lambda _cfg: overrides["self_cost"],
+        )
+    draft, ctx = report_prep(cfg, anchor=RUN.isoformat())
+    assert draft is not None and ctx is not None
+    return draft.read_text(encoding="utf-8"), ctx, cfg
+
+
+def _render_html(cfg, ctx) -> str:
+    """Rendu HTML via le chemin réel (render_html_report + security gate)."""
+    from weekly_telemetry_aggregator.html_report import render_html_report
+
+    dated = render_html_report(cfg, anchor=RUN.isoformat(), ctx=ctx, quality_block=None)
+    assert dated is not None
+    return dated.read_text(encoding="utf-8")
+
+
+def _html_visible(html: str) -> str:
+    """HTML sans le `<script type="application/json">` (payload machine lisible).
+
+    Le rapport HTML embarque le ctx COMPLET en JSON (usage machine, par design) :
+    les listes y sont donc non tronquées. Les assertions de cap portent sur le
+    balisage VISIBLE, pas sur la payload.
+    """
+    return re.sub(r'<script type="application/json"[^>]*>.*?</script>', "", html, flags=re.S)
+
+
+def test_self_cost_and_auto_commits_occupy_two_distinct_lines(tmp_path: Path, monkeypatch):
+    """FIX 1 : `trim_blocks=True` avaleait le newline du `{% endif %}` ligne-final.
+
+    Le self-cost et le compteur de commits se retrouvaient collés sur UNE seule
+    ligne. Vérifié sur les DEUX rendus (parité markdown/HTML stricte).
+    """
+    repo = _git_repo(tmp_path / "repo")
+    _commit(repo, "s.md", "skill:demo (auto-rédigé, revue hebdo 2026-08-14)")
+    text, ctx, cfg = _prep_with_ctx(tmp_path, monkeypatch, self_cost={"cost": 1.0, "tokens": 42.0})
+
+    lines = text.splitlines()
+    sc_idx = next(i for i, line in enumerate(lines) if "self-cost" in line)
+    sc_line, next_line = lines[sc_idx], lines[sc_idx + 1]
+    # le self-cost ne doit pas déborder sur la ligne des commits…
+    assert "Commits auto-rédigés" not in sc_line
+    # …et les commits doivent disposer de leur propre ligne
+    assert next_line.startswith("- Commits auto-rédigés sur la fenêtre")
+
+    html = _render_html(cfg, ctx)
+    assert "Commits auto-rédigés sur la fenêtre" in html
+    # HTML : le kpi self-cost et le compteur d'annexes sont deux blocs distincts
+    assert html.count("dont pipeline") == 1
+    assert "<p><b>Commits auto-rédigés sur la fenêtre" in html
+
+
+def test_self_cost_tokens_rendered_without_decimal(tmp_path: Path, monkeypatch):
+    """FIX 3 : `costing.py` somme des floats → `{:,}` rendait « 5 518 397.0 »."""
+    _value = {"cost": 1.2345, "tokens": 5518397.0, "session_id": "ses_x"}
+    text, _ctx, cfg = _prep_with_ctx(tmp_path, monkeypatch, self_cost=_value)
+    line = next(line for line in text.splitlines() if "self-cost" in line)
+    assert "5,518,397 tokens" in line
+    assert "5,518,397.0" not in line
+    html = _render_html(cfg, _ctx)
+    assert "5,518,397" in html
+    assert "5,518,397.0" not in html
+
+
+def test_self_cost_api_calls_absent_from_context_renders_na(tmp_path: Path, monkeypatch):
+    """FIX 2 : la clé n'est fournie par AUCUNE source du run → « n/a » explicite.
+
+    Le gabarit rendait une chaîne vide suivie d'un double espace («,  appels
+    API »). La valeur ne doit jamais être inventée : « n/a » est la réponse.
+    On retire la clé du ctx RÉEL pour provaquer le chemin de défense.
+    """
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+    from weekly_telemetry_aggregator import report as rp
+
+    _text, ctx, _cfg = _prep_with_ctx(
+        tmp_path, monkeypatch, self_cost={"cost": 1.0, "tokens": 100.0}
+    )
+    assert ctx["self_cost_api_calls"] == "n/a"  # context builder : source absente → n/a
+    ctx.pop("self_cost_api_calls")
+
+    env = Environment(
+        loader=FileSystemLoader(str(Path(rp.__file__).parent / "templates")),
+        autoescape=select_autoescape(("html",)),
+        trim_blocks=True,
+        lstrip_blocks=True,
+        keep_trailing_newline=True,
+    )
+    out = env.get_template("report_template.md.j2").render(**ctx)
+    line = next(line for line in out.splitlines() if "self-cost" in line)
+    assert "n/a appels API" in line
+    assert ",  appels" not in line  # plus de double espace
+
+
+# ============================================================ E4 : self-cost réconcilié
+
+
+def _seed_advisor_db(path: Path, cost: float) -> Path:
+    """DB V1 seedée avec UNE session advisor (titre = `advisor_run_title` par défaut)."""
+    seed_v1_file(
+        path,
+        [
+            {
+                "id": "ses_advisor",
+                "title": "Lance la revue hebdomadaire",
+                "start": RUN - timedelta(hours=2),
+                "updated": RUN - timedelta(hours=2),
+                "agg_cost": cost,
+                "steps": [{"ts": RUN - timedelta(hours=2), "cost": cost}],
+            }
+        ],
+    )
+    return path
+
+
+def _prep_cfg(tmp_path: Path, repo: Path) -> TelemetryConfig:
+    """cfg de prep SANS monkeypatch de `_self_cost_value` (chemin réel de mesure)."""
+    cfg = _cfg(tmp_path)
+    cfg.project_root = repo
+    cfg.html_report_dir = str(tmp_path / "html")
+    _write_summary(tmp_path)
+    return cfg
+
+
+def _self_cost_lines(text: str) -> list[str]:
+    """Lignes AFFICHANT le self-cost (bandeau + annexes), hors inventaire d'artefacts."""
+    return [
+        ln for ln in text.splitlines() if "self-cost" in ln.lower() and "Artefacts du run" not in ln
+    ]
+
+
+def test_self_cost_persists_post_assemble_artifact(tmp_path: Path):
+    """E4 (a) : l'étape 8 écrit `weekly-self-cost-<date>.json` dans le run actif.
+
+    Sans cet artefact, le rapport ne peut afficher que sa mesure d'assemblage —
+    une valeur antérieure qu'aucune ligne ne signale comme telle.
+    """
+    from weekly_telemetry_aggregator.costing import self_cost
+    from weekly_telemetry_aggregator.main import EXIT_OK
+
+    cfg = _cfg(tmp_path)
+    cfg.opencode_db_path = str(_seed_advisor_db(tmp_path / "opencode.db", 0.0718))
+
+    assert self_cost(cfg, anchor=RUN.isoformat()) == EXIT_OK
+
+    path = active_run_file(tmp_path, f"weekly-self-cost-{DATE}.json")
+    assert path.is_file()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["cost"] == pytest.approx(0.0718)
+    assert payload["session_id"]
+    assert payload["phase"] == "post-assemble"
+    assert payload["measured_at"]
+    # tokens absents du seed → 0, jamais None (contrat de l'artefact)
+    assert payload["tokens"] == 0
+
+
+def test_report_prefers_persisted_artifact_over_diverging_live_measurement(tmp_path: Path):
+    """E4 (b), branche ARTEFACT : une seule valeur — celle de l'étape 8.
+
+    Cas réel du 03/10 : 0,0493 $ dans le rapport contre 0,0718 $ à l'étape 8.
+    La source live est ici volontairement PLUS GRANDE que l'artefact : si le
+    rapport la publiait (ou les deux), les deux chiffres coexisteraient.
+    """
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _prep_cfg(tmp_path, repo)
+    (tmp_path / f"weekly-self-cost-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "cost": 0.0718,
+                "tokens": 2820000,
+                "session_id": "ses:abc",
+                "measured_at": "2026-08-12T10:00:00+00:00",
+                "phase": "post-assemble",
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg.opencode_db_path = str(_seed_advisor_db(tmp_path / "opencode.db", 3.5))
+
+    draft, ctx = report_prep(cfg, anchor=RUN.isoformat())
+    assert draft is not None and ctx is not None
+    assert ctx["self_cost"] == pytest.approx(0.0718)
+    assert ctx["self_cost_tokens"] == 2820000
+    assert ctx["self_cost_phase"] == "post-assemble"
+
+    text = draft.read_text(encoding="utf-8")
+    # une seule valeur, jamais les deux
+    assert "0.0718" in text
+    assert "3.5000" not in text
+    # réconciliée → pas de libellé d'antériorité
+    assert "mesuré à l'assemblage" not in text
+    # HTML : même valeur, pas de « 3,50 »
+    html = _html_visible(_render_html(cfg, ctx))
+    assert "0,07" in html
+    assert "3,50" not in html
+    assert "mesuré à l'assemblage" not in html
+
+
+def test_report_labels_live_self_cost_when_artifact_absent(tmp_path: Path):
+    """E4 (b), branche SANS ARTEFACT : la valeur live est étiquetée, pas nue.
+
+    Premier run du jour : l'assemblage ne peut pas encore lire l'artefact de
+    l'étape 8. La mesure reste affichée, mais comme mesure d'assemblage.
+    """
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _prep_cfg(tmp_path, repo)
+    cfg.opencode_db_path = str(_seed_advisor_db(tmp_path / "opencode.db", 0.0493))
+
+    draft, ctx = report_prep(cfg, anchor=RUN.isoformat())
+    assert draft is not None and ctx is not None
+    assert ctx["self_cost"] == pytest.approx(0.0493)
+    assert ctx["self_cost_phase"] == "assemble"
+
+    text = draft.read_text(encoding="utf-8")
+    assert "0.0493" in text
+    assert "mesuré à l'assemblage" in text
+    # le libellé qualifie CHAQUE occurrence du self-cost (bandeau + annexes)
+    lines = _self_cost_lines(text)
+    assert lines and all("mesuré à l'assemblage" in ln for ln in lines), lines
+
+    html = _html_visible(_render_html(cfg, ctx))
+    assert "0,05" in html
+    assert "mesuré à l'assemblage" in html
+
+
+def test_self_cost_report_and_step8_converge_on_one_value(tmp_path: Path, capsys):
+    """E4, bout en bout SANS monkeypatch : deux mesures, un seul chiffre affiché.
+
+    Séquence réelle : prep (pas d'artefact → live étiquetée) → étape 8 (persiste)
+    → re-prap alors que la source live a grandi. Le rapport doit basculer sur la
+    valeur persistée, sans jamais afficher l'ancienne ni la nouvelle en double.
+    """
+    from weekly_telemetry_aggregator.costing import self_cost
+    from weekly_telemetry_aggregator.main import EXIT_OK
+
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _prep_cfg(tmp_path, repo)
+    cfg.opencode_db_path = str(_seed_advisor_db(tmp_path / "opencode.db", 0.0493))
+
+    draft, ctx = report_prep(cfg, anchor=RUN.isoformat())
+    assert ctx["self_cost"] == pytest.approx(0.0493)
+    assert ctx["self_cost_phase"] == "assemble"
+    assert "mesuré à l'assemblage" in draft.read_text(encoding="utf-8")
+
+    # l'étape 8 remesure une session qui a continué de tourner
+    cfg.opencode_db_path = str(_seed_advisor_db(tmp_path / "opencode_grown.db", 0.0718))
+    assert self_cost(cfg, anchor=RUN.isoformat()) == EXIT_OK
+    assert "$0.0718" in capsys.readouterr().out
+
+    draft, ctx = report_prep(cfg, anchor=RUN.isoformat())
+    assert ctx["self_cost"] == pytest.approx(0.0718)
+    assert ctx["self_cost_phase"] == "post-assemble"
+    text = draft.read_text(encoding="utf-8")
+    assert "0.0718" in text
+    assert "0.0493" not in text  # l'ancienne valeur ne subsiste nulle part
+    assert "mesuré à l'assemblage" not in text
+    # le rapport et la console de l'étape 8 portent le MÊME chiffre
+    assert "$0.0718" in text
+    # une seule valeur par ligne porteuse de self-cost
+    lines = _self_cost_lines(text)
+    assert all("0.0718" in ln for ln in lines), lines
+
+
+def test_report_survives_truncated_self_cost_artifact(tmp_path: Path):
+    """E4 : un artefact corrompu (pas de `cost`) retombe sur la mesure live.
+
+    Le mode dégradé doit rester le MÊME chemin que l'absence d'artefact :
+    valeur live + libellé, jamais un `None` muet ni une KeyError.
+    """
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _prep_cfg(tmp_path, repo)
+    (tmp_path / f"weekly-self-cost-{DATE}.json").write_text(
+        json.dumps({"session_id": "ses:abc", "phase": "post-assemble"}), encoding="utf-8"
+    )
+    cfg.opencode_db_path = str(_seed_advisor_db(tmp_path / "opencode.db", 0.0493))
+
+    draft, ctx = report_prep(cfg, anchor=RUN.isoformat())
+    assert ctx["self_cost"] == pytest.approx(0.0493)
+    assert ctx["self_cost_phase"] == "assemble"
+    assert "mesuré à l'assemblage" in draft.read_text(encoding="utf-8")
+
+
+def test_audit_unaudited_uses_explicit_cap_label_and_caps_list_at_eight(
+    tmp_path: Path, monkeypatch
+):
+    """FIX 4 : 15 ids rendus sous « plafond 8 » — le cap d'audit K n'est pas un
+    plafond sur `unaudited`. Libellé explicite + liste tronquée à 8 + reste."""
+    (tmp_path / f"weekly-audit-candidates-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "date": DATE,
+                "limit": 8,
+                "audited": [],
+                "worker_statuses": [],
+                "unaudited": [{"session_id": f"ses_{i:04d}"} for i in range(15)],
+            }
+        ),
+        encoding="utf-8",
+    )
+    text, _ctx, cfg = _prep_with_ctx(tmp_path, monkeypatch)
+    assert "cap d'audit K = 8" in text
+    assert "plafond 8" not in text  # l'ancien libellé trompeur a disparu
+    assert "(+7 autres)" in text  # 15 - 8 rendus
+    for i in range(8):
+        assert f"`ses_{i:04d}`" in text
+    assert "`ses_0008`" not in text  # plafonné à 8
+
+    html = _html_visible(_render_html(cfg, _ctx))
+    assert "cap d'audit K = 8" in html
+    assert "(+7 autres)" in html
+    assert "ses_0008" not in html  # plafonné à 8 dans le balisage visible
+
+
+def test_dirty_files_rendered_as_indented_sublist_capped_at_eight(tmp_path: Path, monkeypatch):
+    """FIX 5 : 30 chemins bruts sur une seule ligne → sous-liste indentée, cap 8."""
+    repo = _git_repo(tmp_path / "repo")
+    _commit(repo, "a.txt", "feat: base")
+    for i in range(20):
+        (repo / f"dirty{i:02d}.txt").write_text("wip", encoding="utf-8")
+
+    text, _ctx, cfg = _prep_with_ctx(tmp_path, monkeypatch)
+    lines = text.splitlines()
+    head_idx = next(i for i, line in enumerate(lines) if line.startswith("- Fichiers dirty au run"))
+    assert lines[head_idx].rstrip().endswith(":")
+    entries = [line for line in lines[head_idx + 1 :] if line.startswith("  - `?? dirty")]
+    assert len(entries) == 8  # capé, pas 20 sur une ligne
+    assert all(line.startswith("  - ") for line in entries)  # sous-liste indentée
+    assert "(+12 autres)" in "\n".join(lines[head_idx : head_idx + 12])
+
+    html = _html_visible(_render_html(cfg, _ctx))
+    assert "(+12 autres)" in html
+    assert "dirty08.txt" not in html  # plafonné à 8 dans le balisage visible
+
+
+def test_auto_commits_count_commits_drafted_after_the_anchor(tmp_path: Path, monkeypatch):
+    """FIX 6 (défaut structurel) : le rapport ne peut pas compter ses propres drafts.
+
+    Preuve du run réel 2026-10-01 : ancre 19:07:13Z, commits draftés à
+    19:18:54Z/19:19:23Z/19:19:35Z — soit APRÈS la borne. `git log --until=<ancre>`
+    renvoyait 0 à chaque run. Ici les 3 commits sont postérieurs à l'ancre et
+    doivent être comptés.
+    """
+    repo = _git_repo(tmp_path / "repo")
+    for i in range(3):
+        _commit(repo, f"d{i}.md", f"skill:demo{i} (auto-rédigé, revue hebdo {DATE})")
+
+    text, ctx, _cfg = _prep_with_ctx(tmp_path, monkeypatch)
+    assert len(ctx["auto_commits"]) == 3
+    assert "- Commits auto-rédigés sur la fenêtre : 3" in text
+
+
+def test_recorded_draft_commits_merged_with_git_log_not_short_circuited(
+    tmp_path: Path, monkeypatch
+):
+    """FIX 6 : les drafts ENREGISTRÉS sont unionnés au git log, jamais écartés.
+
+    Le pipeline sait ce qu'il a committé ; le git log ne le sait pas au moment
+    du rendu (aucun draft du run courant n'est encore dans l'historique). Le
+    `if recorded: return recorded` perdait en prime les drafts des runs
+    PRÉCÉDENTS qui tombent dans la fenêtre — d'où l'union, pas la précédence.
+    """
+    repo = _git_repo(tmp_path / "repo")
+    logged = _commit(
+        repo,
+        "d0.md",
+        "skill:depuis-git (auto-rédigé, revue hebdo 2026-08-14)",
+        when="2026-08-10T00:00:00+00:00",
+    )
+    (tmp_path / f"weekly-timings-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "branches": {"A": {"steps_done": ["a"]}},
+                "steps": [
+                    {
+                        "branch": "D",
+                        "step": "commit-draft",
+                        "hash": "abc1234",
+                        "date": DATE,
+                        "subject": "skill:from-timings (auto-rédigé, revue hebdo 2026-08-14)",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _text, ctx, _cfg = _prep_with_ctx(tmp_path, monkeypatch)
+    hashes = [c["hash"] for c in ctx["auto_commits"]]
+    assert hashes == ["abc1234", logged]  # le recorded + le log, pas l'un OU l'autre
+    # §8 : le backlog borne par cutoff (2026-07-15) ne voit que l'enregistrement
+    # ci-dessus — le commit du 2026-08-10 est postérieur à la borne haute.
+    assert ctx["pending_auto_commits"] == 1
+
+
+def test_auto_commits_keeps_previous_run_drafts_inside_the_window(tmp_path: Path, monkeypatch):
+    """MEDIUM : borne INFERIEURE manquante — les drafts des runs précédents
+    qui tombent dans la fenêtre §8 disparaissaient dès qu'un enregistrement
+    existait. Ancre 2026-08-12, fenêtre 7 jours (borne basse 2026-08-05)."""
+    repo = _git_repo(tmp_path / "repo")
+    # ordre décroissant de date : `git log --since` élague la traversée au premier
+    # commit plus ancien que la borne, donc HEAD doit être dans la fenêtre.
+    _commit(
+        repo,
+        "old.md",
+        "skill:hors-fenetre (auto-rédigé, revue hebdo 2026-01-01)",
+        when="2026-01-01T00:00:00+00:00",
+    )
+    _commit(
+        repo,
+        "prev.md",
+        "skill:run-precedent (auto-rédigé, revue hebdo 2026-08-06)",
+        when="2026-08-06T00:00:00+00:00",
+    )
+    (tmp_path / f"weekly-timings-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "steps": [
+                    {
+                        "step": "commit-draft",
+                        "hash": "abc1234",
+                        "date": DATE,
+                        "subject": "skill:run-courant (auto-rédigé, revue hebdo 2026-08-12)",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    _text, ctx, _cfg = _prep_with_ctx(tmp_path, monkeypatch)
+    subjects = [c["subject"] for c in ctx["auto_commits"]]
+    assert len(subjects) == 2  # courant (enregistré) + précédent (dans la fenêtre)
+    assert any("run-precedent" in s for s in subjects)
+    assert not any("hors-fenetre" in s for s in subjects)  # borné par le bas
+
+
+def test_pending_auto_commits_unions_recorded_with_cross_run_backlog(tmp_path: Path):
+    """HIGH : « en attente de revue » est un backlog CROSS-RUN, pas un compteur
+    du run courant. `if recorded: return len(recorded)` le faisait s'effondrer sur
+    le seul run (3 au lieu de 40+). Union dédupliquée par hash."""
+    from weekly_telemetry_aggregator.report import _pending_auto_commits
+
+    repo = _git_repo(tmp_path / "repo")
+    backlog = [
+        _commit(repo, f"old{i}.md", f"skill:backlog{i} (auto-rédigé, revue hebdo 2026-07-01)")
+        for i in range(3)
+    ]
+    timings = {
+        "steps": [
+            {
+                "step": "commit-draft",
+                "hash": "abc1234",
+                "date": "2026-08-12",
+                "subject": "skill:run-courant (auto-rédigé, revue hebdo 2026-08-12)",
+            }
+        ]
+    }
+    # cutoff large : les 3 commits antérieurs sont bien dans le backlog
+    assert _pending_auto_commits(repo, "2099-01-01T00:00:00Z", timings) == 4
+
+    # le même commit vu par les DEUX sources n'est compté qu'une fois (dédup par hash)
+    timings["steps"][0]["hash"] = backlog[0]
+    assert _pending_auto_commits(repo, "2099-01-01T00:00:00Z", timings) == 3
+
+
+def test_pending_auto_commits_ignores_marker_present_only_in_commit_body(tmp_path: Path):
+    """FIX 7 : `--grep` matche le CORPS complet → « 30 en attente de revue ».
+
+    Un commit dont le corps mentionne le motif mais dont le SUJET n'en parle pas
+    ne doit PAS être compté. Le filtre est appliqué une seule fois, dans
+    `_git_log` (côté sujet) : `_pending_auto_commits` ne le re-teste plus.
+    """
+    repo = _git_repo(tmp_path / "repo")
+    _commit(repo, "spec.md", "docs: note de spec", body="Voir aussi : auto-rédigé, revue hebdo")
+    _commit(repo, "feat.md", "feat: sans rapport", body="Mention: auto-rédigé, revue hebdo 2026")
+    _commit(repo, "vrai.md", "skill:legitime (auto-rédigé, revue hebdo 2026)")
+
+    from weekly_telemetry_aggregator.report import _pending_auto_commits
+
+    # cutoff très tardif : les 3 commits sont dans le backlog
+    pending = _pending_auto_commits(repo, "2099-01-01T00:00:00Z")
+    assert pending == 1  # seul le vrai draft compte, pas les 2 faux positifs
+
+
+def test_security_gate_exposes_by_rule_and_explains_count_ratio():
+    """FIX 8 : `critical_count` (parcours récursif) vs 32/29 (dedup) vs blocking."""
+    from weekly_telemetry_aggregator.report import _assemble_security_gate, _render_security_section
+
+    digest = {
+        "harness_counts": {"findings_raw": 32, "findings_unique": 29},
+        "inspection": {
+            "a": {
+                "findings": [
+                    {"rule": "security/mcp-tool-poisoning", "severity": "critical"},
+                    {"rule": "memory-write-unscoped", "severity": "critical"},
+                    {"rule": "unbounded-delegation", "severity": "critical"},
+                    {"rule": "security/autre-regle", "severity": "critical"},
+                ]
+            }
+        },
+    }
+    gate, _warning = _assemble_security_gate(digest)
+    assert gate["critical_count"] == 4
+    assert gate["blocking_count"] == 3
+    assert gate["by_rule"]["mcp-tool-poisoning"] == 1  # normalisation : préfixe security/ retiré
+    assert gate["by_rule"]["autre-regle"] == 1
+    assert gate["blocking_by_rule"] == {
+        "mcp-tool-poisoning": 1,
+        "memory-write-unscoped": 1,
+        "unbounded-delegation": 1,
+    }
+    assert (gate["digest_findings_raw"], gate["digest_findings_unique"]) == (32, 29)
+
+    md = _render_security_section(gate)
+    assert "not comparable" in md or "pas comparables" in md
+    assert "32" in md and "29" in md  # les compteurs du digest sont explicités
+    for rule in ("mcp-tool-poisoning", "memory-write-unscoped", "unbounded-delegation"):
+        assert rule in md  # les 3 règles bloquantes sont nommées explicitement
+
+
+# ============================================================ C5 / C6 / C7 / C9 — rendu du rapport
+#
+# C5 : le nom du skill visé est écrit DANS la puce (il n'était lisible que dans la
+#      preuve, tronquée en milieu de mot).
+# C6 : une source UNIQUE de troncature, sur frontière de mot.
+# C7 : les puces byte-identiques sont condensées en une puce + multiplicateur.
+# C9 : les findings de veille sont groupés par `category` (une puce par famille).
+
+
+def test_truncate_text_never_cuts_a_word_in_half():
+    """C6 : la troncature tombe sur une frontière de mot, jamais en milieu de mot.
+
+    Régression observée : `evidence_summary[:110]` rendait « loadtest-baseline-man »
+    et « octoperf-campaign-des » — un nom de skill coupé, donc inexploitable.
+    """
+    from weekly_telemetry_aggregator.report import truncate_text
+
+    evidence = (
+        "weekly-coherence-findings.json:147 : skills_never_loaded: "
+        "loadtest-baseline-management, octoperf-campaign-design et "
+        "candidates.selection absents de la surface déclarative"
+    )
+    for limit in (60, 110, 160):
+        out = truncate_text(evidence, limit)
+        assert len(out) <= limit
+        cut = out[:-1] if out.endswith("…") else out
+        # invariant : chaque mot rendu est un mot INTÉGRAL du texte source
+        assert all(token in evidence.split() for token in cut.split()), (limit, out)
+    # le cas réellement observé (110) : le nom de skill sort ENTIER, pas « loadtest-baseline-man »
+    out = truncate_text(evidence, 110)
+    assert "loadtest-baseline-management" in out
+    assert "loadtest-baseline-man," not in out and "loadtest-baseline-man " not in out
+    assert out.endswith("…")
+    assert evidence.startswith(out[:-1].rstrip())
+
+
+def test_truncate_text_prefers_sentence_then_word_then_hard_cut():
+    """C6 : trois sorties, dans l'ordre de préférence documenté."""
+    from weekly_telemetry_aggregator.report import truncate_text
+
+    # 1. texte court : inchangé, espaces normalisés
+    assert truncate_text("  deux   espaces  ", 80) == "deux espaces"
+    # 2. phrase finissant au-delà du tiers de la fenêtre → coupure de phrase, sans ellipse
+    phrase = "a" * 100 + ". suite du rapport qui ne rentre pas dans la borne."
+    assert truncate_text(phrase, 120) == "a" * 100 + "."
+    # 3. pas de phrase, plusieurs mots → dernier espace de la fenêtre
+    words = " ".join(f"mot{i:02d}" for i in range(40))
+    out = truncate_text(words, 30)
+    assert out.endswith("…") and len(out) <= 30
+    assert words.startswith(out[:-1].rstrip())
+    # 4. jeton insécable plus long que la borne → coupe franche à limit-1 + ellipse
+    hard = truncate_text("y" * 100, 10)
+    assert hard == "y" * 9 + "…" and len(hard) == 10
+
+
+def test_truncate_summary_reuses_report_helper():
+    """C6 : les DEUX implémentations historiques n'en font plus qu'une.
+
+    `watch_distill.truncate_summary` délègue à `report.truncate_text` ; l'ancienne
+    coupe franche de `truncate_summary` (et celle de `main._truncate`) exposait un
+    mot coupé. La borne historique « `limit - 1` + ellipse » est conservée.
+    """
+    from weekly_telemetry_aggregator.report import truncate_text
+    from weekly_telemetry_aggregator.watch_distill import truncate_summary
+
+    sample = "Skill weekly-safety-guardrails jamais chargé sur 8 runs consécutifs"
+    for limit in (20, 40, 80, 200):
+        assert truncate_summary(sample, limit) == truncate_text(sample, limit)
+    # la borne est bien celle de `main._truncate` : `limit` caractères, ellipse comprise
+    assert len(truncate_summary("z" * 500, 80)) == 80
+    assert truncate_summary("z" * 500, 80).endswith("…")
+
+
+def test_plain_twins_strip_markdown_ticks_for_html_and_keep_it_for_markdown(tmp_path: Path):
+    """Jumeaux `plain` : le HTML perd les délimiteurs Markdown, le markdown les garde.
+
+    Régression observée : le HTML fuit des backticks EN CLAIR — « Corriger
+    `weekly-report-prose` — 3 violation(s) » (next-steps) et la description d'une
+    nouveauté écosystème. Le HTML n'interprète pas le Markdown : le texte Markdown,
+    lui, est écrit POUR ces délimiteurs. D'où un jumeau par champ, calculé ici
+    (source unique), consommé par le gabarit HTML.
+
+    Les deux rendus portent les MÊMES mots : on a retiré la ponctuation Markdown,
+    pas du texte.
+    """
+    _write_summary(tmp_path)
+    (tmp_path / f"weekly-ecosystem-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "new_items": [
+                    {
+                        "name": "acme/widget",
+                        "category": "lib",
+                        "description": "Corriger `render` dans la barre — version 1.2.3",
+                        "found_via": ["watch:acme/widget"],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / f"weekly-harness-digest-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "inspection": {"summary": {"errors": 1, "warnings": 0}},
+                "findings": [
+                    {"rule": "weekly-report-prose", "severity": "high", "message": "vide"}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    draft, ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+
+    assert ctx is not None and draft is not None
+    # 1. next-steps : `text` garde les délimiteurs, `text_plain` les perd
+    steps = ctx["top_next_steps"]
+    assert steps, "le digest harness doit produire au moins une action"
+    assert steps[0]["text"].startswith("Corriger `weekly-report-prose`")
+    assert steps[0]["text_plain"] == "Corriger weekly-report-prose — 1 violation(s)"
+    assert "`" not in steps[0]["text_plain"]
+    # 2. écosystème : idem pour la description
+    item = ctx["ecosystem"]["new_items"][0]
+    assert "`render`" in item["description_short"]
+    assert item["description_plain"] == "Corriger render dans la barre — version 1.2.3"
+    # 3. le markdown, lui, rend toujours ses délimiteurs (les deux rendus concordent
+    #    sur les MOTS) — et l'artefact brut n'a pas été muté sur place
+    assert "`render`" in draft.read_text(encoding="utf-8")
+    assert (
+        json.loads((tmp_path / f"weekly-ecosystem-{DATE}.json").read_text(encoding="utf-8"))[
+            "new_items"
+        ][0]["description"]
+        == "Corriger `render` dans la barre — version 1.2.3"
+    )
+
+
+def test_coherence_bullet_names_the_skill_it_targets(tmp_path: Path):
+    """C5 : la puce nomme la cible, elle ne la laisse plus deviner via la preuve."""
+    _write_summary(tmp_path)
+    (tmp_path / f"weekly-coherence-findings-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "findings": [
+                    {
+                        "category": "unused-unreferenced",
+                        "tag_action": "archive",
+                        "severity": "medium",
+                        "description": "Skill jamais chargé mais protégé par une politique TTL pin",
+                        "evidence_summary": "skills_never_loaded: loadtest-baseline-management",
+                        "recommendation": "Revue puis archivage",
+                        "target_skill_id": "loadtest-baseline-management",
+                    },
+                    {
+                        # pas de target_skill_id : le nom est dans la description
+                        "category": "retire-candidate",
+                        "severity": "medium",
+                        "description": "skill 'octoperf-campaign-design' jamais chargé sur 8 runs",
+                        "evidence_summary": "skills_never_loaded: 8/8 runs",
+                        "recommendation": "Retirer .opencode/skills/octoperf-campaign-design/SKILL.md",
+                    },
+                    {
+                        # ni target_skill_id, ni nom slug : le chemin de la reco est le source
+                        "category": "duplicate",
+                        "severity": "high",
+                        "description": "Deux agents se recouvrent",
+                        "evidence_summary": "chevauchement",
+                        "recommendation": "Fusionner .opencode/skills/cli-builder/SKILL.md avec l'autre",
+                    },
+                    {
+                        # aucun skill nulle part → pas de `subject` rendu (pas de crochets vides)
+                        "category": "dead-reference",
+                        "severity": "high",
+                        "description": "Référence morte",
+                        "evidence_summary": "x",
+                        "recommendation": "corriger",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    draft, ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None and ctx is not None
+    section_5 = draft.read_text(encoding="utf-8").split("## 5.", 1)[1].split("## 6.", 1)[0]
+    bullets = [ln for ln in section_5.splitlines() if ln.startswith("- **")]
+    assert len(bullets) == 4
+    # le nom est dans la PUCE (avant la description), pas seulement dans la preuve
+    assert bullets[0].startswith("- **`loadtest-baseline-management`** **unused-unreferenced** ")
+    assert bullets[1].startswith("- **`octoperf-campaign-design`** **retire-candidate** ")
+    assert bullets[2].startswith("- **`cli-builder`** **duplicate** ")
+    assert bullets[3].startswith("- **dead-reference** ")  # pas de subject → rien d'inventé
+    assert "`**" not in bullets[3]
+    # le nom n'est plus seulement lisible dans la preuve tronquée
+    assert ctx["coherence_items"][0]["subject"] == "loadtest-baseline-management"
+    assert ctx["coherence_items"][3].get("subject") is None
+
+
+def test_identical_findings_collapse_into_one_bullet_with_multiplier(tmp_path: Path):
+    """C7 : 12 puces byte-identiques → 1 puce `×12`, pas 12 doublons.
+
+    Mesuré le 03/10 sur le run réel (cf. `doc/measurements/
+    2026-10-03-section5-duplication.md`) : 12 findings `unused-unreferenced` et
+    17 « jamais chargé 8/8 runs » identiques à l'écran.
+    """
+    _write_summary(tmp_path)
+    duplicate = {
+        "category": "unused-unreferenced",
+        "severity": "medium",
+        "description": "Skill jamais chargé et référencé nulle part",
+        "evidence_summary": "weekly-coherence-findings.json:42",
+        "recommendation": "Supprimer après revue",
+    }
+    (tmp_path / f"weekly-coherence-findings-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "findings": [
+                    *[dict(duplicate) for _ in range(12)],
+                    {  # finding distinct (preuve différente) → reste une puce séparée
+                        **duplicate,
+                        "evidence_summary": "weekly-coherence-findings.json:99",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    draft, ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None and ctx is not None
+    section_5 = draft.read_text(encoding="utf-8").split("## 5.", 1)[1].split("## 6.", 1)[0]
+    bullets = [ln for ln in section_5.splitlines() if ln.startswith("- **")]
+    assert len(bullets) == 2  # 13 findings → 2 puces
+    assert bullets[0].endswith("Supprimer après revue **×12**")
+    assert "**×12**" not in bullets[1]
+    # le multiplicateur est porté par la donnée, pas compté dans le gabarit
+    assert sorted(f["dup"] for f in ctx["coherence_items"]) == [1, 12]
+
+
+def test_maintenance_findings_collapse_but_keep_distinct_recommendations(tmp_path: Path):
+    """C7 : même condensation en §7, SANS agréger des constats qui diffèrent.
+
+    La clé de déduplication inclut la recommandation : c'est elle qui nomme le skill
+    à traiter, si hersser dessus fusionnerait deux actions différentes (mesure
+    2026-10-03 §3.1).
+    """
+    _write_summary(tmp_path)
+    same = {
+        "category": "retire-candidate",
+        "severity": "medium",
+        "description": "skill 'alpha' jamais chargé sur 8 runs consécutifs",
+        "recommendation": "Retirer .opencode/skills/alpha/SKILL.md après revue",
+        "evidence_summary": "skills_never_loaded: 8/8 runs",
+    }
+    findings = [
+        *[dict(same) for _ in range(17)],
+        {**same, "recommendation": "Retirer .opencode/skills/beta/SKILL.md après revue"},
+    ]
+    (tmp_path / f"weekly-insights-{DATE}.json").write_text(
+        json.dumps({"alerts": [], "maintenance": {"findings": findings}}),
+        encoding="utf-8",
+    )
+    draft, ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None and ctx is not None
+    section_7 = draft.read_text(encoding="utf-8").split("## 7.", 1)[1].split("## 8.", 1)[0]
+    bullets = [ln for ln in section_7.splitlines() if ln.startswith("- **[")]
+    assert len(bullets) == 2  # 18 findings → 2 puces
+    assert bullets[0].endswith("**×17**")  # .opencode/skills/alpha
+    assert "**×" not in bullets[1]  # .opencode/skills/beta : reco différente
+    assert "alpha" in bullets[0] and "beta" in bullets[1]  # C5 : cible dans la puce
+    assert ctx["maint_sorted"][0]["subject"] == "alpha"
+
+
+def test_watch_findings_grouped_by_category_one_bullet_per_family(tmp_path: Path):
+    """C9 : `install-new`/`improve-existing`/`ignore` sont des CATÉGORIES.
+
+    Le gabarit les répétait en boucle (26 puces `[LOW] ignore`) : une puce par famille,
+    avec le décompte, et les membres dessous.
+    """
+    _write_summary(tmp_path)
+
+    def _f(category: str, severity: str, i: int) -> dict:
+        return {
+            "session_id": None,
+            "category": category,
+            "severity": severity,
+            "description": f"motif coûteux {category} #{i} : le harness relance le contexte",
+            "evidence_summary": f"pattern coûteux détecté (F:ses_{i:08x}#context-bloat)",
+            "recommendation": "Ne rien faire, ecosysteme deja couvert",
+            "recommendation_type": f"watch-{category}",
+        }
+
+    findings = [_f("ignore", "low", i) for i in range(26)]
+    findings += [_f("install-new", "high", 100), _f("install-new", "medium", 101)]
+    (tmp_path / f"weekly-watch-findings-{DATE}.json").write_text(
+        json.dumps({"findings": findings}), encoding="utf-8"
+    )
+    draft, ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None and ctx is not None
+    section_6 = draft.read_text(encoding="utf-8").split("## 6.", 1)[1].split("## 7.", 1)[0]
+    families = [ln for ln in section_6.splitlines() if ln.startswith("- **")]
+    # 2 puces de famille (pas 28 puces en boucle)
+    assert len(families) == 2
+    assert "- **[LOW] ignore** ×26" in section_6
+    assert "- **install-new** ×2 — sévérités high×1, medium×1" in section_6
+    # les 28 constats restent visibles, un par ligne indentée
+    members = [ln for ln in section_6.splitlines() if ln.startswith("  - **[")]
+    assert len(members) == 28
+    # ordre : la famille la plus grave d'abord
+    assert ctx["watch_groups"][0]["category"] == "install-new"
+    assert ctx["watch_groups"][1]["severity"] == "low"
+    assert ctx["watch_groups"][1]["count"] == 26
+    # plus aucune trace de la boucle `[SÉV] category` par constat
+    assert section_6.count("- **[LOW] ignore** —") == 0
+
+
+def test_watch_findings_byte_identical_collapse_inside_their_family(tmp_path: Path):
+    """C7 applique aux familles de veille : multiplicateur sur le membre, pas par ligne."""
+    _write_summary(tmp_path)
+    identical = {
+        "session_id": None,
+        "category": "ignore",
+        "severity": "low",
+        "description": "Motif déjà connu, aucun gain",
+        "evidence_summary": "pattern coûteux détecté (F:ses_1#context-bloat)",
+        "recommendation": "Ignorer",
+        "recommendation_type": "watch-ignore",
+    }
+    (tmp_path / f"weekly-watch-findings-{DATE}.json").write_text(
+        json.dumps({"findings": [*[dict(identical) for _ in range(26)]]}), encoding="utf-8"
+    )
+    draft, _ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None
+    section_6 = draft.read_text(encoding="utf-8").split("## 6.", 1)[1].split("## 7.", 1)[0]
+    assert "- **[LOW] ignore** ×26 (1 distinct)" in section_6
+    assert len([ln for ln in section_6.splitlines() if ln.startswith("  - **[")]) == 1
+    assert "Ignorer **×26**" in section_6
+
+
+def test_watch_section_markdown_and_html_agree(tmp_path: Path, monkeypatch):
+    """Parité md/HTML : mêmes familles, mêmes décomptes, mêmes sujets, même troncature."""
+    _write_summary(tmp_path)
+    (tmp_path / f"weekly-watch-findings-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "findings": [
+                    {
+                        "session_id": None,
+                        "category": "ignore",
+                        "severity": "low",
+                        # description longue → tronquée sur frontière de mot des deux côtés
+                        "description": "Le motif " + "verylongtoken" * 40 + " est déjà couvert",
+                        "evidence_summary": "pattern coûteux (F:ses_1#context-bloat)",
+                        "recommendation": "Ignorer",
+                        "recommendation_type": "watch-ignore",
+                    },
+                    {
+                        "session_id": None,
+                        "category": "install-new",
+                        "severity": "high",
+                        "description": "Adopter X",
+                        "evidence_summary": "y",
+                        "recommendation": "Évaluer X",
+                        "recommendation_type": "watch-install-new",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    text, ctx, cfg = _prep_with_ctx(tmp_path, monkeypatch)
+    html = _render_html(cfg, ctx)
+    for group in ctx["watch_groups"]:
+        assert group["category"] in text
+        assert group["category"] in html
+        assert f"×{group['count']}" in text
+        assert f"&times;{group['count']}" in html
+    # la description tronquée est IDENTIQUE dans les deux rendus, et sans mot coupé
+    desc_short = ctx["watch_groups"][0]["members"][0]["description"]
+    assert len(desc_short) <= 160
+    assert desc_short in text and desc_short in html
+    assert "verylongtokenverylong" not in desc_short
+
+
+def test_report_html_shows_skill_subject_and_multiplier(tmp_path: Path, monkeypatch):
+    """Parité md/HTML pour C5 + C7 : sujet et multiplicateur rendus des deux côtés."""
+    _write_summary(tmp_path)
+    (tmp_path / f"weekly-coherence-findings-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "findings": [
+                    {
+                        "category": "retire-candidate",
+                        "severity": "medium",
+                        "description": "skill 'weekly-report-prose' jamais chargé sur 8 runs",
+                        "evidence_summary": "skills_never_loaded: 8/8 runs",
+                        "recommendation": "Retirer .opencode/skills/weekly-report-prose/SKILL.md",
+                        "target_skill_id": "weekly-report-prose",
+                    }
+                ]
+                * 3
+            }
+        ),
+        encoding="utf-8",
+    )
+    text, ctx, cfg = _prep_with_ctx(tmp_path, monkeypatch)
+    html = _render_html(cfg, ctx)
+    assert ctx["coherence_items"][0]["dup"] == 3
+    assert "**`weekly-report-prose`**" in text
+    assert "×3" in text
+    assert "<code>weekly-report-prose</code>" in html
+    assert "&times;3" in html  # `&times;` : la cellule HTML rend ×3
+
+
+# --------------------------------------------------------------------------- C8
+def _write_draft_candidates(tmp_path: Path, candidates: list[dict], *, limit: int = 3) -> None:
+    (tmp_path / f"weekly-draft-candidates-{DATE}.json").write_text(
+        json.dumps(
+            {"schema_version": 1, "date": DATE, "candidates": candidates, "limit": limit},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_report_section8_lists_every_run_artifact_not_four_hardcoded(tmp_path: Path):
+    """C8 : le §8 liste le CONTENU RÉEL du run dir, plus une liste de noms en dur.
+
+    Motif : la ligne citait `weekly-summary/insights/harness-digest/ecosystem-<date>.json`
+    en dur. Aucun de ces quatre fichiers n'est garanti (l'écosystème peut ne pas
+    être produit), et les 10+ autres artefacts du run — dont
+    `weekly-draft-candidates-<date>.json` — n'étaient jamais listés.
+    """
+    _write_summary(tmp_path)
+    _write_audit_candidates(tmp_path)
+    _write_skill_curate(tmp_path)
+    _write_ecosystem(tmp_path)
+    _write_draft_candidates(tmp_path, [{"session_id": "ses_x", "severity": "low"}])
+    (tmp_path / f"weekly-watch-findings-{DATE}.json").write_text(
+        json.dumps({"findings": [], "warnings": []}), encoding="utf-8"
+    )
+
+    draft, ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None and ctx is not None
+    text = draft.read_text(encoding="utf-8")
+    line = next(ln for ln in text.splitlines() if ln.startswith("- Artefacts du run"))
+
+    assert f"- Artefacts du run ({len(ctx['run_artifacts'])}) :" in line
+    # les artefacts réellement présents ET l'étape 4 (jamais listée avant)
+    for name in (
+        f"weekly-summary-{DATE}.json",
+        f"weekly-audit-candidates-{DATE}.json",
+        f"weekly-draft-candidates-{DATE}.json",
+        f"weekly-watch-findings-{DATE}.json",
+        f"skill-curate-{DATE}.json",
+    ):
+        assert f"`{name}`" in line, name
+    # un artefact attendu mais absent reste visible, avec son statut
+    assert f"`weekly-harness-digest-{DATE}.json` _(absent)_" in line
+    # le requis est marqué, et la ligne reste UNE ligne (trim_blocks)
+    assert f"`weekly-summary-{DATE}.json` _(requis)_" in line
+    assert "\n" not in line
+
+
+def test_run_artifact_inventory_excludes_render_outputs_and_stays_deterministic(tmp_path: Path):
+    """C8 : le §8 reste déterministe — les SORTIES de rendu n'y sont pas.
+
+    Motif : inventorier tous les fichiers faisait apparaître
+    `weekly-report-draft-<date>.md` au render N+1 (le draft du render N), donc
+    deux rendus successifs du même run ne donnaient pas le même texte.
+    """
+    from weekly_telemetry_aggregator.report import _run_artifact_inventory
+
+    _write_summary(tmp_path)
+    (tmp_path / f"weekly-report-draft-{DATE}.md").write_text("draft", encoding="utf-8")
+    (tmp_path / f"weekly-report-{DATE}.md").write_text("report", encoding="utf-8")
+    (tmp_path / "extracts").mkdir()
+
+    first = _run_artifact_inventory(tmp_path, {})
+    second = _run_artifact_inventory(tmp_path, {})
+    assert first == second
+    assert [a["name"] for a in first] == [f"weekly-summary-{DATE}.json"]
+    assert all(a["status"] == "present" for a in first)
+
+    # un run dir illisible ne lève pas : l'inventaire se réduit au déclaré
+    missing = _run_artifact_inventory(tmp_path / "nope", {"x.json": {"status": "absent"}})
+    assert missing == [{"name": "x.json", "status": "absent", "required": False}]
+
+
+def test_run_artifact_inventory_truncates_beyond_display_limit(tmp_path: Path):
+    """C8 : au-delà de la fenêtre d'affichage le reste est COMPTÉ, pas listé."""
+    from weekly_telemetry_aggregator.report import _RUN_ARTIFACTS_LIST_LIMIT
+
+    _write_summary(tmp_path)
+    for i in range(_RUN_ARTIFACTS_LIST_LIMIT + 6):
+        (tmp_path / f"extra-{i:03d}.json").write_text("{}", encoding="utf-8")
+
+    draft, ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None and ctx is not None
+    text = draft.read_text(encoding="utf-8")
+    line = next(ln for ln in text.splitlines() if ln.startswith("- Artefacts du run"))
+    listed = line.count("`") // 2
+    total = ctx["run_artifacts_total"]
+    assert total > _RUN_ARTIFACTS_LIST_LIMIT  # le plafond est bien atteint
+    assert listed == _RUN_ARTIFACTS_LIST_LIMIT
+    assert f"Artefacts du run ({total}) :" in line
+    assert f"+{total - _RUN_ARTIFACTS_LIST_LIMIT} autres (liste tronquée)" in line
+
+
+# --------------------------------------------------------------------------- C11
+def _summary_with_session(tmp_path: Path, session_id: str, project_path: str) -> None:
+    """Ajoute UNE session (avec son `project_path`) à la summary du run."""
+    _write_summary(tmp_path)
+    p = tmp_path / f"weekly-summary-{DATE}.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data["all_sessions"] = [
+        *(data.get("all_sessions") or []),
+        {
+            "session_id": session_id,
+            "project_path": project_path,
+            "harness": "opencode",
+            "cost_usd": 0.1,
+            "total_tokens": 10,
+        },
+    ]
+    p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+def _summary_with_sessions(tmp_path: Path, pairs: list[tuple[str, str]]) -> None:
+    """Summary du run dont CHAQUE session a son `project_path` (une seule écriture)."""
+    _write_summary(tmp_path)
+    p = tmp_path / f"weekly-summary-{DATE}.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data["all_sessions"] = [
+        {
+            "session_id": sid,
+            "project_path": path,
+            "harness": "opencode",
+            "cost_usd": 0.1,
+            "total_tokens": 10,
+        }
+        for sid, path in pairs
+    ]
+    p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+def test_report_drafting_section_names_out_of_scope_target(tmp_path: Path, monkeypatch):
+    """C11/D5 : le rapport NOMME la cible hors périmètre, il n'en crée pas de seconde.
+
+    Motif (P5) : l'étape 4 produisait `weekly-draft-candidates-<date>.json` et le
+    rapport ne le lisait pas du tout — aucun mot « drafting » dans §7 ni §8. Un
+    run dont les 3 candidats visent un dépôt non projeté s'expliquait par « 0
+    draft » sans jamais dire où était le travail.
+    """
+    repo = _git_repo(tmp_path / "repo")
+    cfg = _cfg(tmp_path)
+    cfg.project_root = repo
+    _summary_with_sessions(
+        tmp_path,
+        [("opencode:ses_in", str(repo)), ("opencode:ses_out", str(tmp_path / "elsewhere"))],
+    )
+    _write_draft_candidates(
+        tmp_path,
+        [
+            {
+                "session_id": "opencode:ses_in",
+                "recommendation_type": "skill-candidate",
+                "severity": "high",
+                "action": "create",
+                "skill_id": "skill_in",
+                "description": "Motif coûteux répété dans le projet",
+            },
+            {
+                "session_id": "opencode:ses_out",
+                "recommendation_type": "command-candidate",
+                "severity": "low",
+                "action": "create",
+                "skill_id": "skill_out",
+                "description": "Vérification rejouée à la main dans un autre dépôt",
+            },
+        ],
+    )
+
+    draft, ctx = report_prep(cfg, anchor=RUN.isoformat())
+    assert draft is not None and ctx is not None
+    text = draft.read_text(encoding="utf-8")
+
+    assert "### Drafting — candidats de l'étape 4" in text
+    assert f"Cible du run : `{repo}`" in text
+    assert "**Hors périmètre** : 1 candidat(s) sur 2 visent" in text
+    assert str(tmp_path / "elsewhere") in text
+    # la cible DANS le projet n'est pas étiquetée hors périmètre
+    assert ctx["drafting"]["out_of_scope_targets"] == [str(tmp_path / "elsewhere")]
+    assert [c["in_scope"] for c in ctx["drafting"]["candidates"]] == [True, False]
+    # parité HTML
+    html = _render_html(cfg, ctx)
+    assert "Drafting — candidats de l'étape 4" in html
+    assert "hors périmètre du projet" in html
+    assert str(tmp_path / "elsewhere") in html
+
+
+def test_report_drafting_section_absent_without_artifact(tmp_path: Path):
+    """C11 : pas d'artefact d'étape 4 ⇒ pas de section (aucune hypothèse)."""
+    _write_summary(tmp_path)
+    draft, _ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None
+    text = draft.read_text(encoding="utf-8")
+    assert "### Drafting" not in text
+    assert "weekly-draft-candidates" not in text
+
+
+def test_report_drafting_section_reports_empty_candidate_list(tmp_path: Path):
+    """C11 : artefact présent et VIDE ⇒ section explicite, pas un silence."""
+    _write_summary(tmp_path)
+    _write_draft_candidates(tmp_path, [])
+    draft, ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None
+    text = draft.read_text(encoding="utf-8")
+    assert "### Drafting — aucune cible" in text
+    assert ctx["drafting"]["candidates"] == []
+
+
+def test_drafting_view_leaves_unresolvable_session_unnamed(tmp_path: Path):
+    """C11 : une session absente de la summary n'est PAS comptée hors périmètre.
+
+    Fail-closed : ni « dans le projet » (invérifiable) ni « hors périmètre »
+    (inventé). Elle est nommée comme non résolue, et le rapport dit que le chemin
+    n'est une donnée d'aucun artefact.
+    """
+    from weekly_telemetry_aggregator.report import _drafting_view
+
+    payload = {"candidates": [{"session_id": "ses_absent", "description": "x"}]}
+    view = _drafting_view(payload, {"all_sessions": []}, tmp_path)
+    assert view["out_of_scope"] == []
+    assert view["unknown_scope_count"] == 1
+    assert view["candidates"][0]["target"] == ""
+    # `_drafting_view` ne doit jamais écrire : D5 = nommer, pas redresser.
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_drafting_view_resolves_session_id_with_or_without_harness_prefix(tmp_path: Path):
+    """C11 : `opencode:ses_x` et `ses_x` désignent la même session."""
+    from weekly_telemetry_aggregator.report import _drafting_view
+
+    summary = {"all_sessions": [{"session_id": "opencode:ses_x", "project_path": "/elsewhere"}]}
+    for sid in ("opencode:ses_x", "ses_x"):
+        view = _drafting_view({"candidates": [{"session_id": sid}]}, summary, tmp_path)
+        assert view["candidates"][0]["target"] == "/elsewhere"
+        assert view["out_of_scope_count"] == 1
+
+
+def test_drafting_view_truncates_prose_without_cutting_a_word(tmp_path: Path):
+    """C11 : les descriptions passent par `truncate_text` (jamais de coupe en plein mot)."""
+    from weekly_telemetry_aggregator.report import _drafting_view, truncate_text
+
+    # mots de 5+ caractères : la troncature ne peut pas les couper sans le signaler
+    description = " ".join(
+        [
+            "alpha",
+            "bravo",
+            "charlie",
+            "delta",
+            "echo",
+            "foxtrot",
+            "golf",
+            "hotel",
+            "india",
+            "juliet",
+            "kilo",
+            "lima",
+            "mike",
+            "november",
+            "oscar",
+            "papa",
+            "quebec",
+            "romeo",
+        ]
+    )
+    view = _drafting_view(
+        {"candidates": [{"session_id": "ses_x", "description": description}]}, {}, tmp_path
+    )
+    short = view["candidates"][0]["description_short"]
+    assert short == truncate_text(description, 80)
+    assert len(short) <= 80
+    # contrat de `truncate_text` : coupée sur une frontière de mot, ou ellipsée
+    assert short.endswith("…") or description.startswith(short)
+
+
+# ------------------------------------------------------------------ D5 propagé
+def test_group_warnings_reads_count_multiplier_not_line_count():
+    """D5 (correctif propagé) : l'annexe lit `count`, pas le nombre de LIGNES.
+
+    Motif : `aggregator._cap_warnings` regroupe les warnings de même message et
+    porte le total dans `count`. Compter les lignes affichait `×1` pour 50
+    occurrences — l'annexe contredisait le summary JSON qu'elle résume.
+    """
+    from weekly_telemetry_aggregator.report import _group_warnings
+
+    grouped = _group_warnings(
+        [
+            {
+                "message": "session active exclue",
+                "session_id": "ses_a",
+                "count": 50,
+                "session_ids": ["ses_b", "ses_c"],
+            }
+        ]
+    )
+    assert len(grouped) == 1
+    assert grouped[0]["count"] == 50
+    assert grouped[0]["session_ids"] == ["ses_a", "ses_b", "ses_c"]
+
+
+def test_group_warnings_absent_count_defaults_to_one():
+    """D5 : un warning sans `count` (summary pré-D5) vaut 1 occurrence, pas 0."""
+    from weekly_telemetry_aggregator.report import _group_warnings
+
+    grouped = _group_warnings(
+        [{"message": "m", "session_id": "ses_a"}, {"message": "m", "session_id": "ses_b"}]
+    )
+    assert grouped[0]["count"] == 2
+    assert grouped[0]["session_ids"] == ["ses_a", "ses_b"]
+
+
+def test_report_warning_multiplier_rejects_ill_readable_count():
+    """D5 : `count` illisible ou négatif retombe sur 1 (jamais 0 → ligne fantôme)."""
+    from weekly_telemetry_aggregator.report import _warning_multiplier
+
+    assert _warning_multiplier({}) == 1
+    assert _warning_multiplier({"count": 0}) == 1
+    assert _warning_multiplier({"count": -5}) == 1
+    assert _warning_multiplier({"count": "beaucoup"}) == 1
+    assert _warning_multiplier({"count": 7}) == 7
+
+
+def test_report_annex_warnings_show_multiplier_from_summary_count(tmp_path: Path):
+    """D5 : le §8 et la Synthèse affichent le MÊME total que le summary JSON."""
+    _write_summary(tmp_path)
+    p = tmp_path / f"weekly-summary-{DATE}.json"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data["warnings"] = [
+        {
+            "message": "session active exclue",
+            "session_id": "ses_a",
+            "count": 50,
+            "session_ids": ["ses_a", "ses_b"],
+        },
+        {"message": "source opencode indisponible", "session_id": "ses_z", "count": 1},
+    ]
+    p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    draft, ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None and ctx is not None
+    text = draft.read_text(encoding="utf-8")
+
+    # 2 ENTITÉS (pas 2 lignes de 50) sur 51 OCCURRENCES (pas 2)
+    assert (
+        "- Warnings pipeline : 2 entité(s) groupée(s) sur 51 occurrence(s)"
+        " — multiplicateur dominant ×50" in text
+    )
+    assert "- Warnings pipeline (51) :" in text
+    assert "- **×50** session active exclue — `ses_a`, `ses_b`" in text
+    assert ctx["warnings_occurrences"] == 51
+    assert len(ctx["warnings_grouped"]) == 2
+
+
+# --------------------------------------------------------------------------- C10/R3
+def test_ecosystem_core_change_version_rendered_with_single_v(tmp_path: Path):
+    """R3 : le gabarit préfixait `v` sur un `tag_name` qui le porte déjà (`vv1.18.34`)."""
+    _write_summary(tmp_path)
+    (tmp_path / f"weekly-ecosystem-{DATE}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "new_items": [],
+                "core_changes": [
+                    {
+                        "version": "v1.18.34",
+                        "date": "2026-09-30",
+                        "summary": "## Core · ### Bugfixes · Send namespaced identity headers.",
+                        "relevance_flag": "medium",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    draft, ctx = report_prep(_cfg(tmp_path), anchor=RUN.isoformat())
+    assert draft is not None and ctx is not None
+    text = draft.read_text(encoding="utf-8")
+    line = next(ln for ln in text.splitlines() if ln.startswith("- v1.18.34 "))
+    assert "vv1.18.34" not in text
+    assert "- v1.18.34 (2026-09-30) — Core · Bugfixes · Send namespaced identity" in line
+    assert "##" not in line and "###" not in line
+    assert ctx["ecosystem"]["core_changes"][0]["version_label"] == "v1.18.34"
+
+
+def test_version_label_normalizes_missing_and_double_v():
+    """R3 : un seul `v`, quelle que soit la forme stockée ; rien à inventer."""
+    from weekly_telemetry_aggregator.report import _version_label
+
+    assert _version_label("1.18.34") == "v1.18.34"
+    assert _version_label("v1.18.34") == "v1.18.34"
+    assert _version_label("vv1.18.34") == "v1.18.34"
+    assert _version_label("") == ""
+    assert _version_label(None) == ""
+
+
+def test_plain_release_summary_strips_markdown_markers():
+    """R3 : le résumé de release est de la prose, pas du Markdown."""
+    from weekly_telemetry_aggregator.report import _plain_release_summary
+
+    assert _plain_release_summary("## Core · ### Bugfixes · **`x`** `y`") == (
+        "Core · Bugfixes · x y"
+    )
+    assert _plain_release_summary(None) == ""
+    # pas de marqueur en début de ligne ⇒ texte intact (un `#` isolé reste un #)
+    assert _plain_release_summary("issue #42 closed") == "issue #42 closed"

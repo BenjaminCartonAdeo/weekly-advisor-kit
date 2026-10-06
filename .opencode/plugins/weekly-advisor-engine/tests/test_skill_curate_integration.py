@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from argparse import Namespace
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -72,19 +73,51 @@ def _inputs(run: Path) -> None:
     )
 
 
-def test_kit_adeo_contract_uses_project_skill_roots_only(tmp_path: Path):
-    """Kit/Adeo installs expose the three supported project-local roots."""
+def test_kit_adeo_contract_uses_project_skill_roots_only(tmp_path: Path, monkeypatch):
+    """Kit/Adeo end-to-end apply roots follow the RESOLVED harness, not a hardcoded list.
+
+    This is the kit-level contract test, on purpose, and not a unit test of
+    ``_skill_dirs_for``: the former three-root list was a hardcoded snapshot that
+    drifted from the single source of truth (``main.resolve_skill_surface`` fed by
+    ``resolve_draft_targets``). Unit coverage of ``_skill_dirs_for`` itself —
+    default, override, legacy ordering, and the A4 global-root guard — already
+    lives in ``tests/test_main.py`` (section "skill-curate : racines apply
+    alignées sur A5").
+
+    What is locked here is the deployable kit behaviour:
+
+    * default / auto mode ⇒ ``[.opencode/skills]`` alone. A harness that is not
+      resolved holds no catalogued skill, so there is nothing to move there;
+    * an explicit ``claude-code`` override ⇒ ``[.claude/skills]``, proving the
+      roots are derived from the resolved target rather than fixed;
+    * invariant A4 end-to-end: no user-level/global root ever shows up in the
+      write roots, not even when it exists on disk.
+    """
     from weekly_telemetry_aggregator.cli import _skill_dirs_for
 
-    cfg = _cfg(tmp_path / "reports", tmp_path / "adeo")
-    roots = _skill_dirs_for(cfg)
+    project = tmp_path / "adeo"
+    (project / ".opencode" / "skills").mkdir(parents=True)
+    (project / ".claude" / "skills").mkdir(parents=True)
+    home = tmp_path / "home"
+    (home / ".config" / "opencode" / "skills").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
 
-    assert roots == [
-        cfg.project_root / ".opencode" / "skills",
-        cfg.project_root / ".claude" / "skills",
-        cfg.project_root / ".agents" / "skills",
-    ]
-    assert all(cfg.project_root in root.parents for root in roots)
+    cfg = _cfg(tmp_path / "reports", project)
+
+    # 1. Default (auto) target: the opencode root only.
+    assert _skill_dirs_for(cfg) == [project.resolve() / ".opencode" / "skills"]
+
+    # 2. An explicit claude-code override moves the apply universe.
+    claude_cfg = replace(
+        cfg, draft_targets=replace(cfg.draft_targets, mode="override", targets=["claude-code"])
+    )
+    assert _skill_dirs_for(claude_cfg) == [project.resolve() / ".claude" / "skills"]
+
+    # 3. A4 end-to-end: every write root is project-local, never global.
+    for root in (_skill_dirs_for(cfg), _skill_dirs_for(claude_cfg)):
+        assert root and all(project.resolve() in path.parents for path in root)
+        assert not any(home.resolve() in path.parents for path in root)
+        assert home.resolve() / ".config" / "opencode" / "skills" not in root
 
 
 def test_skill_curate_dry_run_manifest_schema_and_no_move(tmp_path: Path):

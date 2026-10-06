@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from weekly_telemetry_aggregator.config import TelemetryConfig
+from weekly_telemetry_aggregator.config import DraftTargetsConfig, TelemetryConfig
 from weekly_telemetry_aggregator.harness_remediation import run
 from weekly_telemetry_aggregator.main import EXIT_OK, EXIT_PARTIAL, EXIT_TOTAL_FAILURE
 
@@ -485,20 +485,40 @@ def test_apply_with_null_old_text_is_blocked(tmp_path: Path):
 
 
 def test_run_result_reports_draft_target_surface_decision(tmp_path: Path):
-    """Le résultat 5.5 documente la surface décidée (harnais/mode → décision)."""
+    """Le résultat 5.5 documente la surface décidée (harnais/mode → décision).
+
+    A2 : la détection par marqueurs n'existe plus, donc la branche `portability`
+    s'atteint via un `draft_targets` explicite — c'est le seul chemin restant.
+    """
     project, _target = _project(tmp_path)
-    (project / ".claude").mkdir()  # marqueur claude-code → priorité détection
     cfg = _config(tmp_path, project)
+    cfg.draft_targets = DraftTargetsConfig(mode="override", targets=["claude-code"])
     proposal = _proposal(cfg.output_dir / "proposal.json")
 
     assert run(cfg, proposal_path=proposal, mode="dry-run", anchor=ANCHOR) == EXIT_OK
 
     result = _result(cfg)
     draft_target = result["draft_target"]
-    assert draft_target["mode"] == "detected"
+    assert draft_target["mode"] == "override"
     assert draft_target["harnesses"] == ["claude-code"]
     assert draft_target["decision"] == "portability"
     assert "portability.yaml" in draft_target["reason"]
+
+
+def test_run_ignores_claude_marker_for_draft_target(tmp_path: Path):
+    """A2 : `.claude` présent n'est plus un marqueur de décision — la surface
+    résolue reste opencode/projection (régression du run 2026-10-03)."""
+    project, _target = _project(tmp_path)
+    (project / ".claude").mkdir()
+    cfg = _config(tmp_path, project)
+    proposal = _proposal(cfg.output_dir / "proposal.json")
+
+    assert run(cfg, proposal_path=proposal, mode="dry-run", anchor=ANCHOR) == EXIT_OK
+
+    draft_target = _result(cfg)["draft_target"]
+    assert draft_target["mode"] == "default"
+    assert draft_target["harnesses"] == ["opencode"]
+    assert draft_target["decision"] == "projection"
 
 
 def test_run_result_reports_projection_for_opencode_project(tmp_path: Path):

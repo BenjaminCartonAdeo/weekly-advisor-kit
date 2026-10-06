@@ -3,10 +3,11 @@
 ## 8.1 Déterminisme et reproductibilité
 - Pour un même jeu d'entrées (mêmes sources, mêmes seuils) et une **même ancre**, une revue
   produit des sorties **identiques** : chaque liste a un tri total documenté, les montants sont
-  arrondis, les divisions par zéro → `null`, les avertissements sont plafonnés.
+  arrondis (`round6`), les divisions par zéro → `null`, les avertissements sont plafonnés.
 - La **reprise d'une ancre** (rejouer la même fenêtre) couvre exactement la même fenêtre : un
   re-run du même jour écrase la sortie du jour (fenêtre identique), jamais purgée entre jours
   différents.
+- Les nouvelles sorties sont déterministes : empreinte prompts répétés par bucket `|` stable (`-count, session_id`), classifications triées par `session_id`, findings règles triés par `id`, distributions triées par `-count, key`, `debug-rule` lecture seule sans réseau.
 
 ## 8.2 Ancre et fenêtrage
 - Toutes les étapes d'un même run partagent la **même ancre** : la fenêtre dérivée est identique
@@ -18,8 +19,10 @@
   du contexte, jamais persisté dans la configuration).
 
 ## 8.3 Fail-soft par classe d'erreur
-- **Transitoire / isolée** (source de données en panne, item illisible, vérificateur absent) →
-  avertissement + dégradation locale, le run continue.
+- **Transitoire / isolée** (source de données en panne, item illisible, vérificateur absent,
+  **règle d'audit qui lève**) → avertissement + dégradation locale, le run continue. L'échec
+  d'une règle est **isolé par règle** : il produit un unique constat `rule-error` (sévérité
+  basse) et les autres règles sont évaluées normalement, sans arrêter l'étape `insights`.
 - **Partielle** (au moins une étape dégradée) → code **1**, le rapport est quand même produit avec
   les dégradations à l'annexe.
 - **Fatale** (collecte défaillante, installation invalide, exécution déclarative impossible) →

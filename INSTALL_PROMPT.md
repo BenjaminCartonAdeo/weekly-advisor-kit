@@ -78,12 +78,15 @@ SRC=/tmp/weekly-advisor-kit-src
 grep -m1 "^kit_version:" "$SRC/INSTALL_PROMPT.md"   # doit contenir `6.1`
 for f in INSTALL.md README.md doc/spec/README.md doc/architecture/README.md \
   .opencode/plugins/weekly-advisor.ts \
+  .opencode/plugins/weekly-advisor/tool-registry.ts \
   .opencode/agents/weekly-advisor/weekly-advisor.md \
   .opencode/agents/harness-remediator/harness-remediator.md \
   .opencode/skills/harness-remediation/SKILL.md \
   .opencode/commands/harness-remediate.md \
   .opencode/plugins/weekly-advisor-engine/pyproject.toml \
-  .opencode/plugins/weekly-advisor-engine/weekly_telemetry_aggregator/__init__.py; do
+  .opencode/plugins/weekly-advisor-engine/weekly_telemetry_aggregator/__init__.py \
+  .opencode/plugins/weekly-advisor-engine/weekly_telemetry_aggregator/rule_pipeline.py \
+  .opencode/plugins/weekly-advisor-engine/weekly_telemetry_aggregator/rules/agent-loop.md; do
   test -f "$SRC/$f" || { echo "MANQUANT: $f"; exit 2; }
 done
 git -C "$SRC" rev-parse HEAD

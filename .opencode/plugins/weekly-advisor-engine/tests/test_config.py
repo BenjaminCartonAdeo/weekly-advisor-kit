@@ -65,3 +65,45 @@ def test_parse_no_warning_when_project_root_absent(tmp_path: Path):
         warnings.simplefilter("error")
         cfg = _parse(cfg_path)
     assert cfg.project_root is None
+
+
+# --------------------------------------------------------------------------- #
+# Section insights — premier parsing asserté de ce bloc (D2)
+# --------------------------------------------------------------------------- #
+
+
+def test_parse_insights_session_caps(tmp_path: Path):
+    """D2 : `session_cost_cap` devient le déclencheur de token-risk et est parsé.
+
+    `session_token_cap` était déclaré dans la dataclass mais **jamais parsé** par
+    `_parse_audit_insights` — une clé présente dans le JSON silently ignorée. D2
+    corrige l'asymétrie : les deux caps sont parsés, seul `session_cost_cap`
+    déclenche (l'autre est conservé pour la traçabilité de la config).
+    """
+    cfg_path = _config_file(
+        tmp_path,
+        {"insights": {"session_cost_cap": 2.5, "session_token_cap": 123}},
+    )
+    cfg = _parse(cfg_path)
+    assert cfg.insights.session_cost_cap == 2.5
+    assert cfg.insights.session_token_cap == 123
+
+
+def test_parse_insights_session_caps_default_when_absent(tmp_path: Path):
+    """D2 : clé absente → défaut de la dataclass, jamais de raise."""
+    defaults = InsightsConfig()
+    cfg = _parse(_config_file(tmp_path, {"insights": {"weekly_budget_usd": 40.0}}))
+    assert cfg.insights.session_cost_cap == defaults.session_cost_cap == 0.5
+    assert cfg.insights.session_token_cap == defaults.session_token_cap == 4_000_000
+
+
+def test_parse_insights_session_cost_cap_coerces_numeric_string(tmp_path: Path):
+    """D2 : la coercition suit celle des autres seuils insights (float())."""
+    cfg = _parse(_config_file(tmp_path, {"insights": {"session_cost_cap": "1.5"}}))
+    assert cfg.insights.session_cost_cap == 1.5
+
+
+def test_parse_never_loaded_runs_threshold_is_parsed(tmp_path: Path):
+    """D3 : le seuil R1 reste configurable — il est un plancher de preuve."""
+    cfg = _parse(_config_file(tmp_path, {"insights": {"never_loaded_runs_threshold": 4}}))
+    assert cfg.insights.never_loaded_runs_threshold == 4
