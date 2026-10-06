@@ -183,12 +183,14 @@ def detect_spec_driven(usage: SessionUsage) -> dict:
     """
     text = _turn_blob(usage)
     preuves: list[str] = []
+    seen: set[str] = set()
 
     for match in _DOC_PATH_RE.finditer(text):
         path = match.group(0)
         if _SPEC_PATH_KEYWORD_RE.search(path):
             preuve = f"path:{path}"
-            if preuve not in preuves:
+            if preuve not in seen:
+                seen.add(preuve)
                 preuves.append(preuve)
 
     for word in _MODAL_WORDS:

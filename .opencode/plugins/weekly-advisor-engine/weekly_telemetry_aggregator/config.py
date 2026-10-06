@@ -355,6 +355,7 @@ def _parse_session_sources(raw: dict, cfg: TelemetryConfig) -> None:
 def _validate_draft_target_names(names: list[str], known: set[str]) -> list[str]:
     """Filtre + déduplique les noms de harnais, warning sur inconnus."""
     valid: list[str] = []
+    seen: set[str] = set()
     for name in names:
         if name not in known:
             warnings.warn(
@@ -362,7 +363,8 @@ def _validate_draft_target_names(names: list[str], known: set[str]) -> list[str]
                 f"— harnais connus : {sorted(known)}",
                 stacklevel=4,
             )
-        elif name not in valid:
+        elif name not in seen:
+            seen.add(name)
             valid.append(name)
     return valid
 
@@ -439,6 +441,7 @@ def _parse_global_roots(raw: dict, cfg: TelemetryConfig) -> None:
         )
         return
     roots: list[Path] = []
+    seen: set[Path] = set()
     for item in value:
         if not isinstance(item, str) or not item.strip():
             warnings.warn(
@@ -447,7 +450,8 @@ def _parse_global_roots(raw: dict, cfg: TelemetryConfig) -> None:
             )
             continue
         root = _expand(item.strip())
-        if root not in roots:
+        if root not in seen:
+            seen.add(root)
             roots.append(root)
     cfg.global_roots = roots
 

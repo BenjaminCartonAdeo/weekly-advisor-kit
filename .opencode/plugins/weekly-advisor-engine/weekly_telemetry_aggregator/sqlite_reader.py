@@ -835,6 +835,43 @@ def _classify_db(conn: sqlite3.Connection) -> dict:
     return info
 
 
+def _candidate_db_paths(value: str) -> list[Path]:
+    """DB paths to probe: the pinned path, or the XDG/Windows defaults (deduped)."""
+    if value != "auto":
+        return [Path(value).expanduser()]
+    xdg = Path(os.environ.get("XDG_DATA_HOME", "~/.local/share")).expanduser()
+    bases = [xdg / "opencode"]
+    localappdata = os.environ.get("LOCALAPPDATA")
+    if localappdata:
+        bases.append(Path(localappdata) / "opencode")
+    candidates: list[Path] = []
+    seen: set[str] = set()
+    for base in bases:
+        for name in ("opencode.db", "opencode-next.db"):
+            candidate = base / name
+            if str(candidate) not in seen:
+                seen.add(str(candidate))
+                candidates.append(candidate)
+    return candidates
+
+
+def _probe_candidate(path: Path) -> tuple[int, Path, SchemaAdapter] | None:
+    """Schema-check one DB → ``(latest_updated_ms, path, adapter)``, else ``None``.
+
+    A failed probe closes the handle it opened so the caller never leaks it.
+    """
+    conn = None
+    try:
+        conn = open_database(path)
+        adapter = OpenCodeAdapter(conn)
+        adapter.check_schema()
+        return (adapter.latest_updated_ms(), path, adapter)
+    except (SchemaError, sqlite3.Error, OSError):
+        if conn is not None:
+            conn.close()
+        return None
+
+
 def detect_db(value: str) -> tuple[Path, SchemaAdapter]:
     """Auto-detect (or pin) the OpenCode DB and its schema adapter.
 
@@ -844,22 +881,7 @@ def detect_db(value: str) -> tuple[Path, SchemaAdapter]:
     the most recent `MAX(time_updated)` wins. No valid candidate →
     DataSourceError with an actionable, schema-aware message (v6.x).
     """
-    if value != "auto":
-        candidates = [Path(value).expanduser()]
-    else:
-        xdg = Path(os.environ.get("XDG_DATA_HOME", "~/.local/share")).expanduser()
-        bases = [xdg / "opencode"]
-        localappdata = os.environ.get("LOCALAPPDATA")
-        if localappdata:
-            bases.append(Path(localappdata) / "opencode")
-        candidates = []
-        seen: set[str] = set()
-        for base in bases:
-            for name in ("opencode.db", "opencode-next.db"):
-                candidate = base / name
-                if str(candidate) not in seen:
-                    seen.add(str(candidate))
-                    candidates.append(candidate)
+    candidates = _candidate_db_paths(value)
 
     matches: list[tuple[int, Path, SchemaAdapter]] = []
     existing: list[Path] = []
@@ -867,16 +889,9 @@ def detect_db(value: str) -> tuple[Path, SchemaAdapter]:
         if not path.is_file():
             continue
         existing.append(path)
-        for adapter_cls in (OpenCodeAdapter,):
-            conn = None
-            try:
-                conn = open_database(path)
-                adapter = adapter_cls(conn)
-                adapter.check_schema()
-                matches.append((adapter.latest_updated_ms(), path, adapter))
-            except (SchemaError, sqlite3.Error, OSError):
-                if conn is not None:
-                    conn.close()
+        probed = _probe_candidate(path)
+        if probed is not None:
+            matches.append(probed)
     if matches:
         matches.sort(key=lambda m: -m[0])
         _latest, path, adapter = matches[0]

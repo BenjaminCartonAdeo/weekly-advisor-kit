@@ -356,6 +356,30 @@ class CopilotCliSessionProvider:
         """Lots IN(50) : SUM tokens + modèle récent + COUNT events/turns."""
         ids = list(self._sessions)
         latest_ts: dict[str, datetime] = {}
+        self._enrich_usage_events(ids, latest_ts)
+        self._enrich_turns(ids)
+        self._enrich_nano_cost(ids)
+
+    def _apply_usage_row(self, row, latest_ts: dict[str, datetime]) -> None:
+        """Merge one grouped assistant_usage_events row into its session."""
+        session = self._sessions.get(str(row[0]))
+        if session is None:
+            return
+        session.event_count += int(row[7] or 0)
+        latest = _parse_ts(row[8])
+        seen = latest_ts.get(session.session_id)
+        if latest is not None and (seen is None or latest >= seen):
+            latest_ts[session.session_id] = latest
+            session.model_key = _model_key(row[1])
+        for key, val in zip(
+            ("input", "output", "reasoning", "cache_read", "cache_write"),
+            row[2:7],
+            strict=True,
+        ):
+            session.tokens[key] = session.tokens.get(key, 0.0) + _num(val)
+
+    def _enrich_usage_events(self, ids: list[str], latest_ts: dict[str, datetime]) -> None:
+        """SUM tokens + most recent model per session, batched IN(_BATCH_SIZE)."""
         for i in range(0, len(ids), _BATCH_SIZE):
             chunk = ids[i : i + _BATCH_SIZE]
             placeholders = ",".join("?" for _ in chunk)
@@ -369,23 +393,15 @@ class CopilotCliSessionProvider:
                     "GROUP BY session_id, model",
                     chunk,
                 ).fetchall():
-                    session = self._sessions.get(str(row[0]))
-                    if session is None:
-                        continue
-                    session.event_count += int(row[7] or 0)
-                    latest = _parse_ts(row[8])
-                    seen = latest_ts.get(session.session_id)
-                    if latest is not None and (seen is None or latest >= seen):
-                        latest_ts[session.session_id] = latest
-                        session.model_key = _model_key(row[1])
-                    for key, val in zip(
-                        ("input", "output", "reasoning", "cache_read", "cache_write"),
-                        row[2:7],
-                        strict=True,
-                    ):
-                        session.tokens[key] = session.tokens.get(key, 0.0) + _num(val)
+                    self._apply_usage_row(row, latest_ts)
             except sqlite3.Error as exc:
                 warnings.warn(f"copilot-cli : usage illisible ({exc})", stacklevel=2)
+
+    def _enrich_turns(self, ids: list[str]) -> None:
+        """Turn counts per session, batched IN(_BATCH_SIZE)."""
+        for i in range(0, len(ids), _BATCH_SIZE):
+            chunk = ids[i : i + _BATCH_SIZE]
+            placeholders = ",".join("?" for _ in chunk)
             try:
                 for row in self._conn.execute(
                     f"SELECT session_id, COUNT(*) FROM turns "
@@ -397,42 +413,46 @@ class CopilotCliSessionProvider:
                         session.turn_count += int(row[1] or 0)
             except sqlite3.Error as exc:
                 warnings.warn(f"copilot-cli : turns illisibles ({exc})", stacklevel=2)
-        # --- coût nano (colonne total_nano_aiu prioritaire, fallback token_details_json) ---
+
+    def _apply_nano_row(self, row, has_total: bool, has_details: bool) -> None:
+        """Add one row's nano cost to its session (total column preferred, JSON fallback)."""
+        session = self._sessions.get(str(row[0]))
+        if session is None:
+            return
+        raw_total = row["total_nano_aiu"] if has_total else None
+        raw_json = row["token_details_json"] if has_details else None
+        cost = _event_cost(raw_total, raw_json)
+        if cost:
+            session.tokens["nano_cost"] = session.tokens.get("nano_cost", 0.0) + cost
+            session.cost_estimate = (session.cost_estimate or 0.0) + cost
+
+    def _enrich_nano_cost(self, ids: list[str]) -> None:
+        """Nano cost per session (column ``total_nano_aiu``, fallback ``token_details_json``)."""
         has_total, has_details = self._nano_columns()
-        if has_total or has_details:
-            for i in range(0, len(ids), _BATCH_SIZE):
-                chunk = ids[i : i + _BATCH_SIZE]
-                placeholders = ",".join("?" for _ in chunk)
-                cols_sel = [
-                    c
-                    for c, present in (
-                        ("total_nano_aiu", has_total),
-                        ("token_details_json", has_details),
-                    )
-                    if present
-                ]
-                col_list = ", ".join(cols_sel)
-                try:
-                    for row in self._conn.execute(
-                        f"SELECT session_id, {col_list} FROM assistant_usage_events "
-                        f"WHERE session_id IN ({placeholders})",
-                        chunk,
-                    ).fetchall():
-                        sid = str(row[0])
-                        session = self._sessions.get(sid)
-                        if session is None:
-                            continue
-                        raw_total = row["total_nano_aiu"] if has_total else None
-                        raw_json = row["token_details_json"] if has_details else None
-                        cost = _event_cost(raw_total, raw_json)
-                        if cost:
-                            session.tokens["nano_cost"] = (
-                                session.tokens.get("nano_cost", 0.0) + cost
-                            )
-                            session.cost_estimate = (session.cost_estimate or 0.0) + cost
-                except sqlite3.Error as exc:
-                    warnings.warn(f"copilot-cli : nano cost illisible ({exc})", stacklevel=2)
-                    break
+        if not (has_total or has_details):
+            return
+        cols_sel = [
+            c
+            for c, present in (
+                ("total_nano_aiu", has_total),
+                ("token_details_json", has_details),
+            )
+            if present
+        ]
+        col_list = ", ".join(cols_sel)
+        for i in range(0, len(ids), _BATCH_SIZE):
+            chunk = ids[i : i + _BATCH_SIZE]
+            placeholders = ",".join("?" for _ in chunk)
+            try:
+                for row in self._conn.execute(
+                    f"SELECT session_id, {col_list} FROM assistant_usage_events "
+                    f"WHERE session_id IN ({placeholders})",
+                    chunk,
+                ).fetchall():
+                    self._apply_nano_row(row, has_total, has_details)
+            except sqlite3.Error as exc:
+                warnings.warn(f"copilot-cli : nano cost illisible ({exc})", stacklevel=2)
+                break
 
     def _state_enrichment(self, session_id: str) -> dict[str, str]:
         """Enrichissement léger depuis ``session-state/<uuid>/`` ; fail-soft."""

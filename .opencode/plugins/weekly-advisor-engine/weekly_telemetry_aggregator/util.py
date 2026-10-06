@@ -98,6 +98,64 @@ def _finding_record(
     }
 
 
+_INSPECTION_SECTIONS = ("command", "claude_md", "uncategorized")
+
+
+def _rules_finding(
+    value: Mapping[str, Any], component_path: str | None, section: str, index: int
+) -> dict[str, Any]:
+    """rules[] fallback row (pass/absent results already filtered by the caller)."""
+    return {
+        "rule": str(value.get("rule") or "unknown"),
+        "severity": "",
+        "message": "",
+        "path": component_path,
+        "component_path": component_path,
+        "section": section,
+        "component_index": index,
+        "detailed": False,
+    }
+
+
+def _uncategorized_component_path(
+    section: str, index: int, uncategorized_files: object
+) -> str | None:
+    """Path fallback for an ``uncategorized`` component with no inline ``path``."""
+    if section != "uncategorized" or not isinstance(uncategorized_files, list):
+        return None
+    if index >= len(uncategorized_files):
+        return None
+    return normalise_digest_path(uncategorized_files[index])
+
+
+def _component_path(
+    component: Mapping[str, Any], section: str, index: int, uncategorized_files: object
+) -> str | None:
+    """Inline component path, else the parallel ``uncategorized_files`` entry."""
+    inline = normalise_digest_path(component.get("path"))
+    if inline is not None:
+        return inline
+    return _uncategorized_component_path(section, index, uncategorized_files)
+
+
+def _iter_component_findings(
+    component: Mapping[str, Any], section: str, index: int, uncategorized_files: object
+) -> Iterator[dict[str, Any]]:
+    """One component's explicit findings then its rules[] fallback rows."""
+    component_path = _component_path(component, section, index, uncategorized_files)
+    comp_findings = component.get("findings")
+    if isinstance(comp_findings, list):
+        for value in comp_findings:
+            if isinstance(value, Mapping):
+                yield _finding_record(value, component_path, section, index)
+    rules = component.get("rules")
+    if isinstance(rules, list):
+        for value in rules:
+            if not isinstance(value, Mapping) or value.get("result") in (None, "pass"):
+                continue
+            yield _rules_finding(value, component_path, section, index)
+
+
 def iter_digest_findings(digest: object) -> Iterator[dict[str, Any]]:
     """Shared walk over a harness digest (fix-candidates + lint flatten).
 
@@ -110,7 +168,6 @@ def iter_digest_findings(digest: object) -> Iterator[dict[str, Any]]:
     """
     if not isinstance(digest, Mapping):
         return
-    uncategorized_files = digest.get("uncategorized_files")
     top = digest.get("findings")
     if isinstance(top, list):
         for value in top:
@@ -119,41 +176,16 @@ def iter_digest_findings(digest: object) -> Iterator[dict[str, Any]]:
     inspection = digest.get("inspection")
     if not isinstance(inspection, Mapping):
         return
-    for section in ("command", "claude_md", "uncategorized"):
+    uncategorized_files = digest.get("uncategorized_files")
+    for section in _INSPECTION_SECTIONS:
         components = inspection.get(section)
         if not isinstance(components, list):
             continue
         for index, component in enumerate(components):
-            if not isinstance(component, Mapping):
-                continue
-            component_path = normalise_digest_path(component.get("path"))
-            if (
-                component_path is None
-                and section == "uncategorized"
-                and isinstance(uncategorized_files, list)
-                and index < len(uncategorized_files)
-            ):
-                component_path = normalise_digest_path(uncategorized_files[index])
-            comp_findings = component.get("findings")
-            if isinstance(comp_findings, list):
-                for value in comp_findings:
-                    if isinstance(value, Mapping):
-                        yield _finding_record(value, component_path, section, index)
-            rules = component.get("rules")
-            if isinstance(rules, list):
-                for value in rules:
-                    if not isinstance(value, Mapping) or value.get("result") in (None, "pass"):
-                        continue
-                    yield {
-                        "rule": str(value.get("rule") or "unknown"),
-                        "severity": "",
-                        "message": "",
-                        "path": component_path,
-                        "component_path": component_path,
-                        "section": section,
-                        "component_index": index,
-                        "detailed": False,
-                    }
+            if isinstance(component, Mapping):
+                yield from _iter_component_findings(
+                    component, section, index, uncategorized_files
+                )
 
 
 def root_and_orphan_ids(
@@ -248,6 +280,35 @@ def load_jsonc(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _skip_line_comment(text: str, i: int, n: int) -> int:
+    """Advance past ``// …`` up to (not including) the newline."""
+    while i < n and text[i] != "\n":
+        i += 1
+    return i
+
+
+def _skip_block_comment(text: str, i: int, n: int) -> int:
+    """Advance past ``/* … */``; ``i`` points at the opening ``/``."""
+    i += 2
+    while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+        i += 1
+    return i + 2
+
+
+def _skip_trivia(text: str, j: int, n: int) -> int:
+    """Advance past whitespace and ``//``/``/* */`` comments from ``j``."""
+    while j < n:
+        if text[j] in " \t\r\n":
+            j += 1
+        elif text[j] == "/" and j + 1 < n and text[j + 1] == "/":
+            j = _skip_line_comment(text, j + 2, n)
+        elif text[j] == "/" and j + 1 < n and text[j + 1] == "*":
+            j = _skip_block_comment(text, j, n)
+        else:
+            break
+    return j
+
+
 def _strip_jsonc(text: str) -> str:
     """Remove ``//``/``/* */`` comments (never inside strings) and trailing commas."""
     out: list[str] = []
@@ -271,31 +332,13 @@ def _strip_jsonc(text: str) -> str:
             out.append(ch)
             i += 1
         elif ch == "/" and nxt == "/":
-            while i < n and text[i] != "\n":
-                i += 1
+            i = _skip_line_comment(text, i + 2, n)
         elif ch == "/" and nxt == "*":
-            i += 2
-            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
-                i += 1
-            i += 2
+            i = _skip_block_comment(text, i, n)
         elif ch == ",":
-            j = i + 1
             # Trailing comma before a closer: tolerate comments/whitespace between
             # the comma and the closing bracket (JSONC fixture style).
-            while j < n:
-                if text[j] in " \t\r\n":
-                    j += 1
-                elif text[j] == "/" and j + 1 < n and text[j + 1] == "/":
-                    j += 2
-                    while j < n and text[j] != "\n":
-                        j += 1
-                elif text[j] == "/" and j + 1 < n and text[j + 1] == "*":
-                    j += 2
-                    while j + 1 < n and not (text[j] == "*" and text[j + 1] == "/"):
-                        j += 1
-                    j += 2
-                else:
-                    break
+            j = _skip_trivia(text, i + 1, n)
             if j < n and text[j] in "]}":
                 i += 1  # trailing comma before a closing bracket: drop it
             else:

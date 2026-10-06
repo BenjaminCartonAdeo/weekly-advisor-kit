@@ -211,10 +211,12 @@ def resolve_skill_surface(
     harnesses = tuple(getattr(resolved_drafts, "harnesses", ()) or ())
     root = project_root or Path.cwd()
     project: list[Path] = []
+    seen: set[Path] = set()
     for harness in harnesses:
         for target in DRAFT_HARNESS_TARGETS.get(str(harness), ()):
             candidate = root.joinpath(*PurePosixPath(str(target)).parts)
-            if candidate not in project:
+            if candidate not in seen:
+                seen.add(candidate)
                 project.append(candidate)
     # Une racine globale ne doit jamais être projetable : on la retire explicitement
     # plutôt que de laisser une racine dupliquée par config.
