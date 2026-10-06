@@ -3108,6 +3108,24 @@ def test_actor_mapping_snapshot():
     assert _actor_for_finding({"category": "context-bloat"}) == "Agent"
 
 
+def test_actor_mapping_guardrail_and_navigation():
+    """v1 report-only : ``missing-guardrail`` / ``guardrail-check`` → « Toi » (le kit
+    ne pose pas le check, l'humain si) ; ``navigation`` / ``navigation-pointer``
+    restent « Agent » (pointer, pas une action harness/pipeline)."""
+    from weekly_telemetry_aggregator.report import _actor_for_finding
+
+    assert (
+        _actor_for_finding(
+            {"category": "missing-guardrail", "recommendation_type": "guardrail-check"}
+        )
+        == "Toi"
+    )
+    assert (
+        _actor_for_finding({"category": "navigation", "recommendation_type": "navigation-pointer"})
+        == "Agent"
+    )
+
+
 def test_report_context_top_next_steps_passthrough_snapshot(tmp_path: Path):
     """Snapshot build_report_context : top_next_steps exposé, groupé, best-effort."""
     from weekly_telemetry_aggregator.report import build_report_context

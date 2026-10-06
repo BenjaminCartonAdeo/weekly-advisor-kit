@@ -976,6 +976,12 @@ def _actor_for_finding(finding: dict) -> str:
         return "Toi"
     if _match_actor(rtype, ("adopt", "merge"), ()) == "Toi":
         return "Toi"
+    #: constats guardrail (catégorie `missing-guardrail` ou rec-type `guardrail-check`) :
+    #: le kit ne peut pas appliquer un check, l'humain si → « Toi ».
+    if _match_actor(cat, ("guardrail",), ()) == "Toi":
+        return "Toi"
+    if _match_actor(rtype, ("guardrail",), ()) == "Toi":
+        return "Toi"
     return _match_actor(cat, (), ("harness", "coverage", "scope", "drift"))
 
 
@@ -1050,6 +1056,24 @@ def _alert_step_candidates(insights: dict | None) -> list[dict]:
     return candidates
 
 
+def _proposed_check_suffix(finding: dict) -> str:
+    """Suffixe borné `[check <kind> → <target>]` si le finding porte `proposed_check`.
+
+    Report-only v1 : le payload nomme le check à construire pour que le bloc
+    « Prochaines actions » montre QUEL check construire. Absent ou malformé →
+    chaîne vide (comportement historique strictement inchangé).
+    """
+    pc = finding.get("proposed_check")
+    if not isinstance(pc, dict):
+        return ""
+    kind = truncate_text(pc.get("kind"), 24)
+    target = truncate_text(pc.get("target"), _AUDIT_TEXT_LIMIT)
+    if not kind and not target:
+        return ""
+    inner = f"{kind} → {target}" if kind and target else (kind or target)
+    return f" [check {truncate_text(inner, _AUDIT_TEXT_LIMIT)}]"
+
+
 def _audit_step_candidates(findings: dict | None) -> list[dict]:
     """Candidats next-steps depuis les audit findings qualitatifs (source 3/3)."""
     candidates: list[dict] = []
@@ -1074,6 +1098,8 @@ def _audit_step_candidates(findings: dict | None) -> list[dict]:
             if desc or rec
             else cat
         )
+        #: payload report-only : nomme le check à construire, sans changer le défaut.
+        short += _proposed_check_suffix(finding)
         candidates.append(
             {
                 "actor": actor,

@@ -100,6 +100,13 @@ Si un de ces critères matche → **ne PAS émettre `skill-candidate`**. Émettr
 (ignorer le constat). Ce pré-filtre évite d'alimenter l'étape 4 avec du bruit
 non-apprenable.
 
+Un pattern **MÉCANIQUE** (erreur qu'une vérification déterministe aurait attrapée : règle de
+harness absente, hook débranché, contrôle cassé, étape CI manquante) ne doit **PAS** émettre
+`skill-candidate` : il émet `recommendation_type: guardrail-check` avec un `proposed_check`
+(cf. catégorie `missing-guardrail`). Idem pour un coût de **navigation** répété :
+`recommendation_type: navigation-pointer` (cf. catégorie `navigation`). Ces deux types sont
+**report-only** : jamais transmis au drafting.
+
 ## Boucle usage → raffinement — R7
 
 Les **gaps récurrents d'usage d'un skill existant** (ex. un skill mal ciblé,
@@ -133,6 +140,8 @@ identifiable dans le frontmatter/description du skill.
 | `non-spec-driven` | Session coûteuse (`session_classifications.cost_usd` élevé) sans preuve spec-driven (`spec_driven: false`) → recommander un cadrage amont |
 | `code-non-relu` | Édits jamais relus (`production_review_measured > 0`, `production_review_pct == 0`) → recommander une relecture systématique |
 | `low-maturity-prompt` | Prompt de faible maturité (`prompt_maturity_grade: F`) → recommander une hygiène de prompting |
+| `missing-guardrail` | Un check qui aurait attrapé l'erreur est **absent**, OU existe mais est **débranché/cassé** — c'est **ce** constat qui est émis ; exige un `proposed_check` (report-only) |
+| `navigation` | Localiser une information/dépendance a coûté cher (recherches répétées) → proposer un pointeur `AGENTS.md`/skill (report-only) |
 | `environment-change` | Constat dont la cible est hors `project_root` ou non écrasable (report-only) |
 
 ### Catégories alimentées par `session_classifications` (P6, déterministe)
@@ -167,14 +176,23 @@ Ces constats n'ajoutent pas de catégorie de recommandation : ils réutilisent
       "evidence_summary": "≤ 200 caractères — PARAPHRASE, jamais de citation verbatim"
                                            // (règle copyright : pas de copie du transcript)
       "recommendation": "...",
-      "recommendation_type": "prompting-habit | environment-change | skill-candidate | skill-improvement | command-candidate | command-improvement",
+      "recommendation_type": "prompting-habit | environment-change | skill-candidate | skill-improvement | command-candidate | command-improvement | guardrail-check | navigation-pointer",
       "impact_order_of_magnitude": "small | medium | large",
       "source": "new",                    // new | carried
-      "carried_from": "2026-08-16-ace20d4b"  // requis si source=carried (run d'origine)
+      "carried_from": "2026-08-16-ace20d4b",  // requis si source=carried (run d'origine)
+      "proposed_check": {                 // optionnel — requis si recommendation_type=guardrail-check
+        "kind": "harness-rule | precommit | ci",
+        "target": "chemin ou nom de règle visée",
+        "rationale": "≤ 200 caractères — pourquoi ce check aurait attrapé l'erreur"
+      }
     }
   ]
 }
 ```
+
+Les deux nouveaux `recommendation_type` (`guardrail-check`, `navigation-pointer`) sont
+**REPORT-ONLY** : jamais draftés, jamais transmis à l'étape 4 (comme `environment-change`).
+Ils alimentent uniquement le rapport et la revue humaine.
 
 ## Règles de rédaction
 
