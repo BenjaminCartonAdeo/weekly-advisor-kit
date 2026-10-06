@@ -219,6 +219,48 @@ def _typosquat_target(item: Mapping[str, Any]) -> str | None:
     return normalize_npm_package(candidate)
 
 
+def _screen_blocked(text: str) -> tuple[str, str] | None:
+    """Exfiltration/injection/chemin d'identifiants → ``("blocked", raison)``."""
+    if _RE_ENV_EXFIL.search(text):
+        return "blocked", "env-exfiltration"
+    if _RE_PROMPT_INJECTION.search(text):
+        return "blocked", "prompt-injection"
+    if _RE_CREDENTIAL_PATH.search(text):
+        return "blocked", "credential-path"
+    return None
+
+
+def _screen_typosquat(item: Mapping[str, Any]) -> tuple[str, str] | None:
+    """Levenshtein ≤ ``_TYPOSQUAT_DISTANCE`` contre ``CORE_PKGS`` → ``blocked``."""
+    target = _typosquat_target(item)
+    if target is None or target in CORE_PKGS:
+        return None
+    for core in CORE_PKGS:
+        if _levenshtein(target, core) <= _TYPOSQUAT_DISTANCE:
+            return "blocked", f"typosquat:{core}"
+    return None
+
+
+def _screen_suspicious(
+    item: Mapping[str, Any], description: str, text: str
+) -> tuple[str, str] | None:
+    """Majuscules/postinstall/publication récente sans traction → ``suspicious``."""
+    letters = [char for char in description if char.isalpha()]
+    if len(letters) >= 8 and sum(1 for char in letters if char.isupper()) / len(letters) > 0.5:
+        return "suspicious", "description-caps"
+    if _RE_POSTINSTALL.search(text):
+        return "suspicious", "postinstall"
+    published = _published_dt(item.get("published_at"))
+    stars = item.get("stars")
+    # Absence de donnée traction (None, typique npm) ≠ zéro traction : ne pas flagger.
+    zero_traction = isinstance(stars, int | float) and not isinstance(stars, bool) and stars <= 0
+    if published is not None and zero_traction:
+        age_days = (datetime.now(UTC) - published.astimezone(UTC)).total_seconds() / 86400
+        if 0 <= age_days < _RECENT_DAYS:
+            return "suspicious", "recent-no-traction"
+    return None
+
+
 def screen_item(item: Mapping[str, Any]) -> tuple[str, str | None]:
     """Heuristiques supply-chain locales : ``(clean|suspicious|blocked, raison)``.
 
@@ -232,36 +274,12 @@ def screen_item(item: Mapping[str, Any]) -> tuple[str, str | None]:
     name = item.get("name") if isinstance(item.get("name"), str) else ""
     description = item.get("description") if isinstance(item.get("description"), str) else ""
     text = f"{name}\n{description}"
-
-    if _RE_ENV_EXFIL.search(text):
-        return "blocked", "env-exfiltration"
-    if _RE_PROMPT_INJECTION.search(text):
-        return "blocked", "prompt-injection"
-    if _RE_CREDENTIAL_PATH.search(text):
-        return "blocked", "credential-path"
-
-    target = _typosquat_target(item)
-    if target is not None and target not in CORE_PKGS:
-        for core in CORE_PKGS:
-            if _levenshtein(target, core) <= _TYPOSQUAT_DISTANCE:
-                return "blocked", f"typosquat:{core}"
-
-    letters = [char for char in description if char.isalpha()]
-    if len(letters) >= 8 and sum(1 for char in letters if char.isupper()) / len(letters) > 0.5:
-        return "suspicious", "description-caps"
-    if _RE_POSTINSTALL.search(text):
-        return "suspicious", "postinstall"
-
-    published = _published_dt(item.get("published_at"))
-    stars = item.get("stars")
-    # Absence de donnée traction (None, typique npm) ≠ zéro traction : ne pas flagger.
-    zero_traction = isinstance(stars, int | float) and not isinstance(stars, bool) and stars <= 0
-    if published is not None and zero_traction:
-        age_days = (datetime.now(UTC) - published.astimezone(UTC)).total_seconds() / 86400
-        if 0 <= age_days < _RECENT_DAYS:
-            return "suspicious", "recent-no-traction"
-
-    return "clean", None
+    verdict = (
+        _screen_blocked(text)
+        or _screen_typosquat(item)
+        or _screen_suspicious(item, description, text)
+    )
+    return verdict if verdict is not None else ("clean", None)
 
 
 # ---------------------------------------------------------------------- rank
@@ -342,6 +360,18 @@ def _category(entry: Mapping[str, Any] | None) -> str:
     return "resurfaced" if last_status(entry) == "ignored" else "improvable"
 
 
+def _merge_fused(existing: dict[str, Any], record: dict[str, Any]) -> None:
+    """Union ``found_via`` (ordre conservé) ; description la plus longue gagne ses scalaires."""
+    for source in record.get("found_via") or []:
+        if isinstance(source, str) and source not in existing.setdefault("found_via", []):
+            existing["found_via"].append(source)
+    if len(str(record.get("description") or "")) > len(str(existing.get("description") or "")):
+        # La description gagnante met à jour les scalaires, jamais id/sources.
+        for key, value in record.items():
+            if key not in ("id", "found_via"):
+                existing[key] = value
+
+
 def _fuse_items(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Fusionne les doublons multi-sources par ``normalize_id``.
 
@@ -364,15 +394,8 @@ def _fuse_items(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         if existing is None:
             fused[iid] = record
             order.append(iid)
-            continue
-        for source in record.get("found_via") or []:
-            if isinstance(source, str) and source not in existing.setdefault("found_via", []):
-                existing["found_via"].append(source)
-        if len(str(record.get("description") or "")) > len(str(existing.get("description") or "")):
-            # La description gagnante met à jour les scalaires, jamais id/sources.
-            for key, value in record.items():
-                if key not in ("id", "found_via"):
-                    existing[key] = value
+        else:
+            _merge_fused(existing, record)
     return [fused[iid] for iid in order]
 
 

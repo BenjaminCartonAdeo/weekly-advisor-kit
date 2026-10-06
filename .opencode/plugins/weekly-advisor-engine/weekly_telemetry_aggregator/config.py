@@ -334,22 +334,30 @@ def _parse_harness_include_dict(
     return harness_include
 
 
+def _parse_session_source(entry: object) -> dict | None:
+    """Normalise une entrée ``session_sources`` ; entrée invalide → ``None``."""
+    if not isinstance(entry, dict):
+        return None
+    stype = entry.get("type")
+    if not isinstance(stype, str) or not stype.strip():
+        return None
+    source: dict = {"type": stype.strip(), "enabled": bool(entry.get("enabled", True))}
+    for key, value in entry.items():
+        if key not in ("type", "enabled"):
+            source[key] = value
+    return source
+
+
 def _parse_session_sources(raw: dict, cfg: TelemetryConfig) -> None:
     sources_raw = raw.get("session_sources")
-    if isinstance(sources_raw, list):
-        parsed_sources: list[dict] = []
-        for entry in sources_raw:
-            if not isinstance(entry, dict):
-                continue
-            stype = entry.get("type")
-            if not isinstance(stype, str) or not stype.strip():
-                continue
-            source: dict = {"type": stype.strip(), "enabled": bool(entry.get("enabled", True))}
-            for key, value in entry.items():
-                if key not in ("type", "enabled"):
-                    source[key] = value
+    if not isinstance(sources_raw, list):
+        return
+    parsed_sources: list[dict] = []
+    for entry in sources_raw:
+        source = _parse_session_source(entry)
+        if source is not None:
             parsed_sources.append(source)
-        cfg.session_sources = parsed_sources
+    cfg.session_sources = parsed_sources
 
 
 def _validate_draft_target_names(names: list[str], known: set[str]) -> list[str]:
