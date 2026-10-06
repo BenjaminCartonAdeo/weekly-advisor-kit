@@ -183,9 +183,7 @@ def iter_digest_findings(digest: object) -> Iterator[dict[str, Any]]:
             continue
         for index, component in enumerate(components):
             if isinstance(component, Mapping):
-                yield from _iter_component_findings(
-                    component, section, index, uncategorized_files
-                )
+                yield from _iter_component_findings(component, section, index, uncategorized_files)
 
 
 def root_and_orphan_ids(
