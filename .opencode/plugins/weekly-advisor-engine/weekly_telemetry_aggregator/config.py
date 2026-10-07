@@ -63,6 +63,19 @@ DEFAULT_HARNESS_EXCLUDE_PATTERNS: tuple[str, ...] = (
     "**/dist/**",
     "**/build/**",
     "**/coverage/**",
+    # Artefacts générés (graphify) : hors surface de politique, faussent la
+    # couverture lint (cache AST volumineux) — exclus du scan (v6.0.n).
+    ".opencode/graphify-out/**",
+    # Lockfiles et descripteurs de service : hashes base64 → faux positifs
+    # `security/mcp-tool-poisoning` (heuristique « blob base64 ») — exclus.
+    "**/package-lock.json",
+    "**/pnpm-lock.yaml",
+    "**/yarn.lock",
+    "**/bun.lock",
+    "**/service.json",
+    # Skills archivés : déjà exclus de l'inventaire de curation (A6) ; on aligne
+    # le scanner harness pour ne pas les réinventorier (cohérence C13).
+    ".opencode/skills/_archive/**",
 )
 
 
