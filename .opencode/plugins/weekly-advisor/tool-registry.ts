@@ -306,9 +306,9 @@ const SECTION_4_FILE_CONTRACT =
   "chaque finding de sévérité `high` doit être cité (sinon : coverage warning dans l'annexe) ; " +
   "aucun chiffre libre dans le texte visible (seules dates ISO, pourcentages et versions " +
   "sont tolérés) — le bloc ne cite que des catégories et des sévérités ; " +
-  "la 1re ligne non vide ne doit PAS être un titre Markdown — commence par une phrase " +
-  "ou un `###` de sous-rubrique, jamais `##` (le gabarit fournit déjà le titre de " +
-  "la section 4)."
+  "AUCUN titre Markdown dans le bloc, à aucun niveau (`#`, `##`, `###`, …) : le bloc " +
+  "qualitatif est de la prose pure — commence par une phrase (le gabarit fournit déjà " +
+  "le titre de la section 4)."
 
 /**
  * Sémantique des codes de sortie des étapes de rapport. `rc=1` est une

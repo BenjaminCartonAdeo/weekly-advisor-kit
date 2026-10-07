@@ -17,33 +17,6 @@
   "harness_auto_fix_max_files": 1,
   "harness_include": {
     "default_profile": "advisory",
-    "profiles": {
-      "strict": [
-        ".opencode/AGENTS.md",
-        ".opencode/agents/**/*.md",
-        ".opencode/commands/**/*.md",
-        ".opencode/plugins/*.{js,ts,mjs,cjs}",
-        ".opencode/opencode.json",
-        ".opencode/opencode.jsonc",
-        ".opencode/context/**/*.md",
-        ".opencode/*.json"
-      ],
-      "advisory": [
-        ".opencode/AGENTS.md",
-        ".opencode/agents/**/*.md",
-        ".opencode/commands/**/*.md",
-        ".opencode/plugins/*.{js,ts,mjs,cjs}",
-        ".opencode/opencode.json",
-        ".opencode/opencode.jsonc",
-        ".opencode/skills/**/SKILL.md",
-        ".opencode/skills/**/references/**/*.md",
-        ".opencode/skills/**/examples/**/*",
-        ".opencode/skills/**/assets/**/*",
-        ".opencode/skills/**/*.json",
-        ".opencode/context/**/*.md",
-        ".opencode/*.json"
-      ]
-    },
     "exclude_patterns": [
       ".opencode/node_modules/**",
       ".opencode/plugins/weekly-advisor-engine/**",

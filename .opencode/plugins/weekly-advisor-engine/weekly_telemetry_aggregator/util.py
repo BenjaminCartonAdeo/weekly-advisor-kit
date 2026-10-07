@@ -98,7 +98,22 @@ def _finding_record(
     }
 
 
-_INSPECTION_SECTIONS = ("command", "claude_md", "uncategorized")
+#: Inspection keys that never hold component records (summary metrics only).
+_NON_COMPONENT_SECTIONS = frozenset({"summary"})
+
+
+def iter_inspection_sections(inspection: Mapping[str, Any]) -> Iterator[tuple[str, list]]:
+    """Yield ``(section, components)`` for every component section of a digest.
+
+    harness-eval section names are version-dependent: 7.9.0 emits ``skill`` and
+    ``command`` while older digests emitted ``claude_md``.  Enumerating the
+    mapping instead of a hardcoded tuple keeps every component family in scope;
+    a fixed list silently dropped all ``skill`` findings (audit 2026-10-07).
+    """
+    for section, components in inspection.items():
+        if section in _NON_COMPONENT_SECTIONS or not isinstance(components, list):
+            continue
+        yield str(section), components
 
 
 def _rules_finding(
@@ -177,10 +192,7 @@ def iter_digest_findings(digest: object) -> Iterator[dict[str, Any]]:
     if not isinstance(inspection, Mapping):
         return
     uncategorized_files = digest.get("uncategorized_files")
-    for section in _INSPECTION_SECTIONS:
-        components = inspection.get(section)
-        if not isinstance(components, list):
-            continue
+    for section, components in iter_inspection_sections(inspection):
         for index, component in enumerate(components):
             if isinstance(component, Mapping):
                 yield from _iter_component_findings(component, section, index, uncategorized_files)

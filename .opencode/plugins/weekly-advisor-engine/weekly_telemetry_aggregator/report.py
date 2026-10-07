@@ -1227,8 +1227,8 @@ def _critical_security_findings(
     detailed-vs-matrix discrimination as ``util.iter_digest_findings``
     (``rec["detailed"]``), re-implemented locally because
     ``insights.flatten_harness_findings`` strips the ``detailed`` flag from its
-    output and only walks the canonical ``command|claude_md|uncategorized``
-    sections — it cannot answer "is this a detailed finding?".
+    output and walks every inspection section — it cannot answer "is this a
+    detailed finding?".
 
     A finding is kept when its rule is ``critical`` AND ``security/``-prefixed,
     or when it is one of the :data:`_BLOCKING_SECURITY_RULES` (blocking warns

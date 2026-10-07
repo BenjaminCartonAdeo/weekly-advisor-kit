@@ -37,11 +37,14 @@ DEFAULT_HARNESS_INCLUDE_PROFILES: dict[str, tuple[str, ...]] = {
         ".opencode/AGENTS.md",
         ".opencode/agents/**/*.md",
         ".opencode/commands/**/*.md",
-        ".opencode/plugins/*.{js,ts,mjs,cjs}",
+        ".opencode/plugins/**/*.{js,ts,mjs,cjs}",
+        ".opencode/plugins/**/AGENTS.md",
         ".opencode/opencode.json",
         ".opencode/opencode.jsonc",
-        ".opencode/skills/**/SKILL.md",
-        ".opencode/skills/**/references/**/*.md",
+        # Toute la documentation de skill (SKILL.md, references/, rules/…) :
+        # l'ancien couple SKILL.md + references/ laissait les règles `rules/*.md`
+        # hors scan (97 fichiers « unscoped », audit 2026-10-07).
+        ".opencode/skills/**/*.md",
         ".opencode/skills/**/examples/**/*",
         ".opencode/skills/**/assets/**/*",
         ".opencode/skills/**/*.json",
@@ -76,6 +79,17 @@ DEFAULT_HARNESS_EXCLUDE_PATTERNS: tuple[str, ...] = (
     # Skills archivés : déjà exclus de l'inventaire de curation (A6) ; on aligne
     # le scanner harness pour ne pas les réinventorier (cohérence C13).
     ".opencode/skills/_archive/**",
+    # Surfaces explicitement hors périmètre du scan (docs/politique) : legacy,
+    # thèmes, scripts, configs d'agent de skill et fichiers annexes. Les exclure
+    # fait retomber le warning « unscoped surface(s) not scanned » à zéro, qui
+    # redevient ainsi un signal exploitable (audit 2026-10-07).
+    ".opencode/plugins.v1/**",
+    ".opencode/themes/**",
+    ".opencode/.gitignore",
+    ".opencode/skills/**/scripts/**",
+    ".opencode/skills/**/agents/**",
+    ".opencode/skills/**/LICENSE*",
+    ".opencode/skills/**/.graphify_version",
 )
 
 

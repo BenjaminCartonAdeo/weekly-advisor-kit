@@ -34,7 +34,7 @@ def test_config_defaults(tmp_path: Path):
     assert cfg.harness_include.profiles["strict"] == list(
         DEFAULT_HARNESS_INCLUDE_PROFILES["strict"]
     )
-    assert ".opencode/skills/**/SKILL.md" in cfg.harness_include.profiles["advisory"]
+    assert ".opencode/skills/**/*.md" in cfg.harness_include.profiles["advisory"]
     # v6.1 : rapport HTML autonome — None → défaut <project_root>/reports/html.
     assert cfg.html_report_dir is None
     assert cfg.open_browser is True

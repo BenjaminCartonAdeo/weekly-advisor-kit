@@ -328,7 +328,7 @@ function toV2Tool(definition: ToolDefinition, runtime: AbortableRuntimeApi): V2T
  */
 export const setup = async (ctx: V2Context): Promise<void> => {
   // Gardes de capability : appelées en méthode (`ctx.session.hook(…)`) et non
-  // détachées, pour qu'un hôte реалиant `hook`/`transform` sur état privé
+  // détachées, pour qu'un hôte réalisant `hook`/`transform` sur état privé
   // (`#fields`, WeakMap) reste valide. `?.` tolère un contexte absent ; un
   // `TypeError` obscur est remplacé par une erreur d'adaptateur nommée.
   if (typeof ctx?.session?.hook !== "function") {

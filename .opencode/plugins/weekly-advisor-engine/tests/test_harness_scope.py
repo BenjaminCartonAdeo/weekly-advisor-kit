@@ -23,6 +23,8 @@ from weekly_telemetry_aggregator.draft_targets import (
     ResolvedDraftTarget,
 )
 from weekly_telemetry_aggregator.harness_scope import (
+    HarnessScope,
+    attach_component_paths,
     copy_scope_to_projection,
     enrich_harness_digest,
     harness_extra_roots,
@@ -68,11 +70,13 @@ def test_resolve_scope_matches_strict_and_advisory_profiles(tmp_path: Path):
     assert ".opencode/skills/demo/SKILL.md" in advisory.included_files
     assert ".opencode/skills/demo/references/guide.md" in advisory.included_files
     assert ".opencode/skills/demo/examples/example.txt" in advisory.included_files
-    assert ".opencode/skills/demo/README.md" in advisory.unscoped_files
+    assert ".opencode/skills/demo/README.md" in advisory.included_files
+    assert ".opencode/plugins/nested/local.ts" in advisory.included_files
     assert ".opencode/skills/demo/assets/preview.html" in advisory.included_files
     assert ".opencode/skills/demo/.swarm-bundled-skill.json" in advisory.included_files
     assert ".opencode/package.json" in advisory.included_files
-    assert any("unscoped" in warning for warning in advisory.warnings)
+    assert advisory.unscoped_files == []
+    assert not any("unscoped" in warning for warning in advisory.warnings)
 
 
 def test_scope_excludes_vendor_engine_and_generated_content(tmp_path: Path):
@@ -591,3 +595,50 @@ def test_baseline_restored_when_root_corrupted(tmp_path: Path, capsys):
     assert second["status"] == "reused"
     assert "baseline restaurée depuis" in capsys.readouterr().out
     assert json.loads((output_dir / HARNESS_BASELINE_FILE).read_text(encoding="utf-8")) == good
+
+
+def _scope_with_files(files: list[str]) -> HarnessScope:
+    return HarnessScope(
+        profile="advisory",
+        include_patterns=[],
+        exclude_patterns=[],
+        included_files=files,
+        included_counts_by_pattern={},
+        excluded_file_count=0,
+        excluded_counts_by_pattern={},
+        unscoped_files=[],
+        warnings=[],
+        extra_roots=[],
+    )
+
+
+def test_attach_component_paths_resolves_every_section():
+    """Régression : chaque section voit ses paths résolus (dont ``skill``)."""
+    scope = _scope_with_files(
+        [
+            ".opencode/skills/root-cause-verification/SKILL.md",
+            ".opencode/skills/swarm-coordination/SKILL.md",
+            ".opencode/commands/swarm.md",
+            ".opencode/agents/swarm/swarm-worker.md",
+            ".opencode/plugins/swarm.ts",
+        ]
+    )
+    digest: dict = {
+        "inspection": {
+            "skill": [{"name": "root-cause-verification"}, {"name": "swarm-coordination"}],
+            "command": [{"name": "swarm.md"}],
+            "agent": [{"name": "swarm-worker"}],
+            "plugin": [{"name": "swarm"}],
+            "summary": {"total": 5},
+        }
+    }
+
+    attach_component_paths(digest, scope)
+
+    inspection = digest["inspection"]
+    assert inspection["skill"][0]["path"] == ".opencode/skills/root-cause-verification/SKILL.md"
+    assert inspection["skill"][1]["path"] == ".opencode/skills/swarm-coordination/SKILL.md"
+    assert inspection["command"][0]["path"] == ".opencode/commands/swarm.md"
+    assert inspection["agent"][0]["path"] == ".opencode/agents/swarm/swarm-worker.md"
+    assert inspection["plugin"][0]["path"] == ".opencode/plugins/swarm.ts"
+    assert "path" not in inspection["summary"]
