@@ -49,16 +49,21 @@ parallèle.
 | `non-spec-driven` | session coûteuse sans preuve de spec (pas de doc/plan, pas de mots modaux, pas de listes) | `spec_driven=false` + coût ≥1,00 $ (P6) |
 | `code-non-relu` | édition sans relecture mesurée | `production_review` measured>0 et pct 0 % (gap >30 s, P6) |
 | `low-maturity-prompt` | maturité de prompt faible | `prompt_maturity` grade F (<40, P6) |
+| `garde-fou-manquant` (`missing-guardrail`) | un check qui aurait attrapé l'erreur est absent, ou présent mais débranché/cassé — c'est ce constat qui est émis (report-only) | transcript × audit déclaratif (règle/hook absente ou cassée) |
+| `navigation` (`navigation`) | localiser une information/dépendance a coûté cher (recherches répétées) → pointeur `AGENTS.md`/skill (report-only) | transcript (grep/lectures répétées vers la même info) |
 
 **Format d'un constat** : identifiant de session (canonique), catégorie, sévérité (haute/moyenne/
 basse), description, preuve résumée (**paraphrase**, pas de citation verbatim, ≤ ~200 caractères),
 recommandation, type de recommandation, impact en ordre de grandeur (petit/moyen/grand / non
-estimable).
+estimable). Un constat `garde-fou-manquant` porte en plus un payload `proposed_check`
+(`kind` : `harness-rule | precommit | ci`, `target`, `rationale`).
 
 **Types de recommandation → action**
 - `habitude-prompting` → rapport uniquement (retour sur la façon de prompter).
 - `changement-environnement` → rapport uniquement (y compris skill/command existant mal calibré :
   la réécriture d'un fichier existant dont les agents dépendent reste manuelle).
+- `check-gardrail` (`guardrail-check`), `pointeur-navigation` (`navigation-pointer`) → rapport
+  uniquement (report-only : jamais transmis au drafting C10, à l'image de `changement-environnement`).
 - `skill-candidat`, `command-candidat`, `amélioration-command` → transmis au drafting (C10,
   plafond combiné). Seules catégories d'écriture.
 

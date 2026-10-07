@@ -31,7 +31,7 @@ présente spécification. Chaque critère est **testable par un humain**.
 
 ## C. Audit & drafting
 - [ ] C1. La sélection des sessions à auditer est **déterministe** (9 signaux : top coût 5, coût/min 0.50, cache -0.20, prompts répétés, outliers, code-non-relu 0 %, maturity F, non-spec ≥1 $), plafonnée à 8 avec priorité documentée.
-- [ ] C2. Chaque constat porte catégorie (10+3 : `boucle`, `invalidation-cache`, `contexte-gonflé`, `injection-manuelle`, `sous-usage-skill/command`, `command-candidat`, `skill-candidat`, `mauvais-modèle`, `amélioration-command`, `non-spec-driven`, `code-non-relu`, `low-maturity-prompt`), sévérité, preuve **paraphrasée** (pas de citation verbatim), type de recommandation.
+- [ ] C2. Chaque constat porte catégorie (12+3 : `boucle`, `invalidation-cache`, `contexte-gonflé`, `injection-manuelle`, `sous-usage-skill/command`, `command-candidat`, `skill-candidat`, `mauvais-modèle`, `amélioration-command`, `non-spec-driven`, `code-non-relu`, `low-maturity-prompt`, `garde-fou-manquant`, `navigation`), sévérité, preuve **paraphrasée** (pas de citation verbatim), type de recommandation.
 - [ ] C3. Le drafting cible **un harnais** résolu par (override > marqueurs > défaut), priorité
       claude-code > opencode > copilot-cli > codex.
 - [ ] C4. Au plus 3 documents générés par run ; un chevauchement détecté ne crée **jamais** de

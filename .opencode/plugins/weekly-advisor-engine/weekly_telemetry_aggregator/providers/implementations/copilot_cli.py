@@ -102,34 +102,40 @@ def resolve_copilot_home(source_cfg: dict) -> Path:
     return _default_copilot_home()
 
 
+def _parse_epoch(value: int | float) -> datetime | None:
+    """Epoch (s/ms) → datetime UTC ; non positif → ``None``."""
+    num = float(value)
+    if num <= 0:
+        return None
+    if num > 1e10:  # epoch ms (ou µs : garde-fou, traite comme ms)
+        num /= 1000.0
+    return datetime.fromtimestamp(num, tz=UTC)
+
+
+def _parse_iso(text: str) -> datetime | None:
+    """ISO 8601 ou ``YYYY-MM-DD HH:MM:SS`` UTC → datetime ; illisible → ``None``."""
+    iso = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+    try:
+        dt = datetime.fromisoformat(iso)
+    except ValueError:
+        pass
+    else:
+        return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
 def _parse_ts(value: object) -> datetime | None:
     """Horodatage tolérant : epoch (s/ms), ISO, ``YYYY-MM-DD HH:MM:SS`` UTC."""
-    if value is None:
-        return None
-    if isinstance(value, bool):
+    if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        num = float(value)
-        if num <= 0:
-            return None
-        if num > 1e10:  # epoch ms (ou µs : garde-fou, traite comme ms)
-            num /= 1000.0
-        return datetime.fromtimestamp(num, tz=UTC)
+        return _parse_epoch(value)
     if isinstance(value, str):
         text = value.strip()
-        if not text:
-            return None
-        try:
-            if text.endswith(("Z", "z")):
-                text = text[:-1] + "+00:00"
-            dt = datetime.fromisoformat(text)
-            return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
-        except ValueError:
-            pass
-        try:
-            return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
-        except ValueError:
-            return None
+        return _parse_iso(text) if text else None
     return None
 
 
@@ -148,6 +154,40 @@ def _model_key(raw: object) -> str:
 
 def _num(value: object) -> float:
     return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def _nano_from_dict(data: dict) -> float:
+    """``{"total_nano_aiu": nano}`` → USD ; absent/non numérique → warn + 0.0."""
+    raw_val = data.get("total_nano_aiu")
+    if raw_val is None:
+        return 0.0
+    try:
+        nano = float(raw_val)
+    except (TypeError, ValueError):
+        warnings.warn(
+            f"copilot-cli : total_nano_aiu non numérique ({raw_val!r})",
+            stacklevel=4,
+        )
+        return 0.0
+    return nano / 1e11
+
+
+def _nano_from_list(entries: list) -> float:
+    """``[{batchSize, costPerBatch, tokenCount}]`` → USD (``Σ count×unit/batch``)."""
+    nano_total = 0.0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            batch = float(entry.get("batchSize"))
+            unit = float(entry.get("costPerBatch"))
+            count = float(entry.get("tokenCount"))
+        except (TypeError, ValueError):
+            continue
+        if not batch:
+            continue
+        nano_total += count * unit / batch
+    return nano_total / 1e11
 
 
 def _parse_nano_cost(raw_json: object) -> float:
@@ -183,33 +223,9 @@ def _parse_nano_cost(raw_json: object) -> float:
         )
         return 0.0
     if isinstance(data, dict):
-        raw_val = data.get("total_nano_aiu")
-        if raw_val is None:
-            return 0.0
-        try:
-            nano = float(raw_val)
-        except (TypeError, ValueError):
-            warnings.warn(
-                f"copilot-cli : total_nano_aiu non numérique ({raw_val!r})",
-                stacklevel=4,
-            )
-            return 0.0
-        return nano / 1e11
+        return _nano_from_dict(data)
     if isinstance(data, list):
-        nano_total = 0.0
-        for entry in data:
-            if not isinstance(entry, dict):
-                continue
-            try:
-                batch = float(entry.get("batchSize"))
-                unit = float(entry.get("costPerBatch"))
-                count = float(entry.get("tokenCount"))
-            except (TypeError, ValueError):
-                continue
-            if not batch:
-                continue
-            nano_total += count * unit / batch
-        return nano_total / 1e11
+        return _nano_from_list(data)
     return 0.0
 
 
@@ -231,6 +247,88 @@ def _event_cost(total_nano: object | None, raw_json: object | None) -> float:
         else:
             return nano / 1e11
     return _parse_nano_cost(raw_json)
+
+
+def _enrich_from_workspace(out: dict[str, str], ws_yaml: Path) -> None:
+    """Comble ``directory``/``title`` depuis ``workspace.yaml`` ; fail-soft."""
+    if not ws_yaml.is_file():
+        return
+    try:
+        for line in ws_yaml.read_text(encoding="utf-8").splitlines():
+            if "directory" not in out:
+                m_dir = _WS_YAML_KEYS.match(line)
+                if m_dir:
+                    out["directory"] = m_dir.group(1).strip().strip("'\"")
+            if "title" not in out:
+                m_title = _WS_YAML_TITLE_KEYS.match(line)
+                if m_title:
+                    out["title"] = m_title.group(1).strip().strip("'\"")[:80]
+            if "directory" in out and "title" in out:
+                break
+    except (OSError, ValueError):
+        warnings.warn(f"session-state illisible, ignoré : {ws_yaml}", stacklevel=2)
+
+
+def _enrich_from_index(out: dict[str, str], index_md: Path) -> None:
+    """Comble ``title`` depuis ``checkpoints/index.md`` ; fail-soft."""
+    if "title" in out or not index_md.is_file():
+        return
+    try:
+        for line in index_md.read_text(encoding="utf-8").splitlines():
+            match = _MD_HEADING.match(line)
+            if match and match.group(1).strip():
+                out["title"] = match.group(1).strip()[:80]
+                break
+    except (OSError, ValueError):
+        warnings.warn(f"session-state illisible, ignoré : {index_md}", stacklevel=2)
+
+
+def _table_names(conn: sqlite3.Connection) -> set[str]:
+    """Noms des tables du DB ; DB illisible → ``SchemaError``."""
+    try:
+        return {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+    except sqlite3.Error as exc:
+        raise SchemaError(f"session-store.db illisible : {exc}") from exc
+
+
+def _check_core_tables(conn: sqlite3.Connection, tables: set[str]) -> None:
+    """Tables/colonnes cœur manquantes → ``SchemaError``."""
+    missing = [t for t in _CORE_TABLES if t not in tables]
+    if missing:
+        raise SchemaError(f"tables cœur manquantes : {', '.join(missing)}")
+    for table, columns in _CORE_TABLES.items():
+        try:
+            present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        except sqlite3.Error as exc:
+            raise SchemaError(f"table {table} illisible : {exc}") from exc
+        absent = [c for c in columns if c not in present]
+        if absent:
+            raise SchemaError(f"table {table} : colonnes manquantes : {', '.join(absent)}")
+
+
+def _warn_optional_tables(tables: set[str]) -> None:
+    for table in _OPTIONAL_TABLES:
+        if table not in tables:
+            warnings.warn(
+                f"copilot-cli : table optionnelle {table!r} absente",
+                stacklevel=2,
+            )
+
+
+def _read_schema_version(conn: sqlite3.Connection, tables: set[str]) -> str | None:
+    """Version de schéma déclarée, ou ``None`` si table absente/illisible."""
+    if "schema_version" not in tables:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT version FROM schema_version ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    return str(row[0]) if row is not None else None
 
 
 @dataclass(slots=True)
@@ -356,6 +454,30 @@ class CopilotCliSessionProvider:
         """Lots IN(50) : SUM tokens + modèle récent + COUNT events/turns."""
         ids = list(self._sessions)
         latest_ts: dict[str, datetime] = {}
+        self._enrich_usage_events(ids, latest_ts)
+        self._enrich_turns(ids)
+        self._enrich_nano_cost(ids)
+
+    def _apply_usage_row(self, row, latest_ts: dict[str, datetime]) -> None:
+        """Merge one grouped assistant_usage_events row into its session."""
+        session = self._sessions.get(str(row[0]))
+        if session is None:
+            return
+        session.event_count += int(row[7] or 0)
+        latest = _parse_ts(row[8])
+        seen = latest_ts.get(session.session_id)
+        if latest is not None and (seen is None or latest >= seen):
+            latest_ts[session.session_id] = latest
+            session.model_key = _model_key(row[1])
+        for key, val in zip(
+            ("input", "output", "reasoning", "cache_read", "cache_write"),
+            row[2:7],
+            strict=True,
+        ):
+            session.tokens[key] = session.tokens.get(key, 0.0) + _num(val)
+
+    def _enrich_usage_events(self, ids: list[str], latest_ts: dict[str, datetime]) -> None:
+        """SUM tokens + most recent model per session, batched IN(_BATCH_SIZE)."""
         for i in range(0, len(ids), _BATCH_SIZE):
             chunk = ids[i : i + _BATCH_SIZE]
             placeholders = ",".join("?" for _ in chunk)
@@ -369,23 +491,15 @@ class CopilotCliSessionProvider:
                     "GROUP BY session_id, model",
                     chunk,
                 ).fetchall():
-                    session = self._sessions.get(str(row[0]))
-                    if session is None:
-                        continue
-                    session.event_count += int(row[7] or 0)
-                    latest = _parse_ts(row[8])
-                    seen = latest_ts.get(session.session_id)
-                    if latest is not None and (seen is None or latest >= seen):
-                        latest_ts[session.session_id] = latest
-                        session.model_key = _model_key(row[1])
-                    for key, val in zip(
-                        ("input", "output", "reasoning", "cache_read", "cache_write"),
-                        row[2:7],
-                        strict=True,
-                    ):
-                        session.tokens[key] = session.tokens.get(key, 0.0) + _num(val)
+                    self._apply_usage_row(row, latest_ts)
             except sqlite3.Error as exc:
                 warnings.warn(f"copilot-cli : usage illisible ({exc})", stacklevel=2)
+
+    def _enrich_turns(self, ids: list[str]) -> None:
+        """Turn counts per session, batched IN(_BATCH_SIZE)."""
+        for i in range(0, len(ids), _BATCH_SIZE):
+            chunk = ids[i : i + _BATCH_SIZE]
+            placeholders = ",".join("?" for _ in chunk)
             try:
                 for row in self._conn.execute(
                     f"SELECT session_id, COUNT(*) FROM turns "
@@ -397,73 +511,53 @@ class CopilotCliSessionProvider:
                         session.turn_count += int(row[1] or 0)
             except sqlite3.Error as exc:
                 warnings.warn(f"copilot-cli : turns illisibles ({exc})", stacklevel=2)
-        # --- coût nano (colonne total_nano_aiu prioritaire, fallback token_details_json) ---
+
+    def _apply_nano_row(self, row, has_total: bool, has_details: bool) -> None:
+        """Add one row's nano cost to its session (total column preferred, JSON fallback)."""
+        session = self._sessions.get(str(row[0]))
+        if session is None:
+            return
+        raw_total = row["total_nano_aiu"] if has_total else None
+        raw_json = row["token_details_json"] if has_details else None
+        cost = _event_cost(raw_total, raw_json)
+        if cost:
+            session.tokens["nano_cost"] = session.tokens.get("nano_cost", 0.0) + cost
+            session.cost_estimate = (session.cost_estimate or 0.0) + cost
+
+    def _enrich_nano_cost(self, ids: list[str]) -> None:
+        """Nano cost per session (column ``total_nano_aiu``, fallback ``token_details_json``)."""
         has_total, has_details = self._nano_columns()
-        if has_total or has_details:
-            for i in range(0, len(ids), _BATCH_SIZE):
-                chunk = ids[i : i + _BATCH_SIZE]
-                placeholders = ",".join("?" for _ in chunk)
-                cols_sel = [
-                    c
-                    for c, present in (
-                        ("total_nano_aiu", has_total),
-                        ("token_details_json", has_details),
-                    )
-                    if present
-                ]
-                col_list = ", ".join(cols_sel)
-                try:
-                    for row in self._conn.execute(
-                        f"SELECT session_id, {col_list} FROM assistant_usage_events "
-                        f"WHERE session_id IN ({placeholders})",
-                        chunk,
-                    ).fetchall():
-                        sid = str(row[0])
-                        session = self._sessions.get(sid)
-                        if session is None:
-                            continue
-                        raw_total = row["total_nano_aiu"] if has_total else None
-                        raw_json = row["token_details_json"] if has_details else None
-                        cost = _event_cost(raw_total, raw_json)
-                        if cost:
-                            session.tokens["nano_cost"] = (
-                                session.tokens.get("nano_cost", 0.0) + cost
-                            )
-                            session.cost_estimate = (session.cost_estimate or 0.0) + cost
-                except sqlite3.Error as exc:
-                    warnings.warn(f"copilot-cli : nano cost illisible ({exc})", stacklevel=2)
-                    break
+        if not (has_total or has_details):
+            return
+        cols_sel = [
+            c
+            for c, present in (
+                ("total_nano_aiu", has_total),
+                ("token_details_json", has_details),
+            )
+            if present
+        ]
+        col_list = ", ".join(cols_sel)
+        for i in range(0, len(ids), _BATCH_SIZE):
+            chunk = ids[i : i + _BATCH_SIZE]
+            placeholders = ",".join("?" for _ in chunk)
+            try:
+                for row in self._conn.execute(
+                    f"SELECT session_id, {col_list} FROM assistant_usage_events "
+                    f"WHERE session_id IN ({placeholders})",
+                    chunk,
+                ).fetchall():
+                    self._apply_nano_row(row, has_total, has_details)
+            except sqlite3.Error as exc:
+                warnings.warn(f"copilot-cli : nano cost illisible ({exc})", stacklevel=2)
+                break
 
     def _state_enrichment(self, session_id: str) -> dict[str, str]:
         """Enrichissement léger depuis ``session-state/<uuid>/`` ; fail-soft."""
         out: dict[str, str] = {}
         state_dir = self.home / "session-state" / session_id
-        ws_yaml = state_dir / "workspace.yaml"
-        if ws_yaml.is_file():
-            try:
-                for line in ws_yaml.read_text(encoding="utf-8").splitlines():
-                    if "directory" not in out:
-                        m_dir = _WS_YAML_KEYS.match(line)
-                        if m_dir:
-                            out["directory"] = m_dir.group(1).strip().strip("'\"")
-                    if "title" not in out:
-                        m_title = _WS_YAML_TITLE_KEYS.match(line)
-                        if m_title:
-                            out["title"] = m_title.group(1).strip().strip("'\"")[:80]
-                    if "directory" in out and "title" in out:
-                        break
-            except (OSError, ValueError):
-                warnings.warn(f"session-state illisible, ignoré : {ws_yaml}", stacklevel=2)
-        index_md = state_dir / "checkpoints" / "index.md"
-        if "title" not in out and index_md.is_file():
-            try:
-                for line in index_md.read_text(encoding="utf-8").splitlines():
-                    match = _MD_HEADING.match(line)
-                    if match and match.group(1).strip():
-                        out["title"] = match.group(1).strip()[:80]
-                        break
-            except (OSError, ValueError):
-                warnings.warn(f"session-state illisible, ignoré : {index_md}", stacklevel=2)
+        _enrich_from_workspace(out, state_dir / "workspace.yaml")
+        _enrich_from_index(out, state_dir / "checkpoints" / "index.md")
         return out
 
     # --- helpers ------------------------------------------------------------
@@ -568,41 +662,12 @@ class CopilotCliSessionProvider:
     # --- Protocol SessionProvider -------------------------------------------
 
     def check_schema(self) -> None:
-        try:
-            tables = {
-                row[0]
-                for row in self._conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
-            }
-        except sqlite3.Error as exc:
-            raise SchemaError(f"session-store.db illisible : {exc}") from exc
-        missing = [t for t in _CORE_TABLES if t not in tables]
-        if missing:
-            raise SchemaError(f"tables cœur manquantes : {', '.join(missing)}")
-        for table, columns in _CORE_TABLES.items():
-            try:
-                present = {row[1] for row in self._conn.execute(f"PRAGMA table_info({table})")}
-            except sqlite3.Error as exc:
-                raise SchemaError(f"table {table} illisible : {exc}") from exc
-            absent = [c for c in columns if c not in present]
-            if absent:
-                raise SchemaError(f"table {table} : colonnes manquantes : {', '.join(absent)}")
-        for table in _OPTIONAL_TABLES:
-            if table not in tables:
-                warnings.warn(
-                    f"copilot-cli : table optionnelle {table!r} absente",
-                    stacklevel=2,
-                )
-        if "schema_version" in tables:
-            try:
-                row = self._conn.execute(
-                    "SELECT version FROM schema_version ORDER BY rowid DESC LIMIT 1"
-                ).fetchone()
-                if row is not None:
-                    self.schema_version = str(row[0])
-            except sqlite3.Error:
-                pass
+        tables = _table_names(self._conn)
+        _check_core_tables(self._conn, tables)
+        _warn_optional_tables(tables)
+        version = _read_schema_version(self._conn, tables)
+        if version is not None:
+            self.schema_version = version
 
     def list_sessions(self, since_ms: int) -> list[HarnessSession]:
         sessions = [
@@ -759,10 +824,7 @@ class CopilotCliSessionProvider:
             "tokens_cache_write": totals[4],
         }
 
-    def session_parts(self, session_id: str) -> list[PartRecord]:
-        entry = self._get(session_id)
-        if entry is None:
-            return []
+    def _turn_parts(self, entry: _CliSession) -> list[PartRecord]:
         parts: list[PartRecord] = []
         for row in self._windowed_turns(entry.session_id, 0, 2**63 - 1):
             ts = _parse_ts(row["timestamp"])
@@ -774,6 +836,10 @@ class CopilotCliSessionProvider:
             assistant_text = str(row["assistant_response"] or "")
             if assistant_text.strip():
                 parts.append(PartRecord(ts=ts, kind="assistant", text=assistant_text))
+        return parts
+
+    def _trajectory_parts(self, entry: _CliSession) -> list[PartRecord]:
+        parts: list[PartRecord] = []
         for item in self._windowed_trajectory(entry.session_id, 0, 2**63 - 1):
             ts = _parse_ts(item.get("created_at")) if "created_at" in item else None
             if ts is None:
@@ -790,35 +856,51 @@ class CopilotCliSessionProvider:
                     tool_output=str(item.get("output") or "")[:2000] or None,
                 )
             )
+        return parts
+
+    def _cost_parts(self, entry: _CliSession) -> list[PartRecord]:
         # Coûts lifetime : un part `step-finish` par event d'usage, même modèle
         # que le lecteur OpenCode (`PartRecord(kind="step-finish", cost=...)`).
         has_total, has_details = self._nano_columns()
-        if has_total or has_details:
-            extra = ""
-            if has_total:
-                extra += ", total_nano_aiu"
-            if has_details:
-                extra += ", token_details_json"
-            try:
-                cost_rows = self._conn.execute(
-                    f"SELECT created_at{extra} FROM assistant_usage_events "  # noqa: S608
-                    "WHERE session_id = ? ORDER BY created_at",
-                    (entry.session_id,),
-                ).fetchall()
-            except sqlite3.Error:
-                cost_rows = []
-            for row in cost_rows:
-                ts = _parse_ts(row["created_at"])
-                if ts is None:
-                    ts = entry.updated or entry.created
-                if ts is None:
-                    continue
-                with contextlib.suppress(KeyError, IndexError):
-                    raw_total = row["total_nano_aiu"] if has_total else None
-                    raw_json = row["token_details_json"] if has_details else None
-                    parts.append(
-                        PartRecord(ts=ts, kind="step-finish", cost=_event_cost(raw_total, raw_json))
-                    )
+        if not (has_total or has_details):
+            return []
+        extra = ""
+        if has_total:
+            extra += ", total_nano_aiu"
+        if has_details:
+            extra += ", token_details_json"
+        try:
+            cost_rows = self._conn.execute(
+                f"SELECT created_at{extra} FROM assistant_usage_events "  # noqa: S608
+                "WHERE session_id = ? ORDER BY created_at",
+                (entry.session_id,),
+            ).fetchall()
+        except sqlite3.Error:
+            return []
+        parts: list[PartRecord] = []
+        for row in cost_rows:
+            ts = _parse_ts(row["created_at"])
+            if ts is None:
+                ts = entry.updated or entry.created
+            if ts is None:
+                continue
+            with contextlib.suppress(KeyError, IndexError):
+                raw_total = row["total_nano_aiu"] if has_total else None
+                raw_json = row["token_details_json"] if has_details else None
+                parts.append(
+                    PartRecord(ts=ts, kind="step-finish", cost=_event_cost(raw_total, raw_json))
+                )
+        return parts
+
+    def session_parts(self, session_id: str) -> list[PartRecord]:
+        entry = self._get(session_id)
+        if entry is None:
+            return []
+        parts = [
+            *self._turn_parts(entry),
+            *self._trajectory_parts(entry),
+            *self._cost_parts(entry),
+        ]
         parts.sort(key=lambda p: p.ts)
         return parts
 

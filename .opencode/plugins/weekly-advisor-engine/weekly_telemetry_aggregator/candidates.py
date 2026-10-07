@@ -10,6 +10,7 @@ findings archive (skill-candidate / command-candidate), capped by
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 
 #: types transmis à la Partie 4 pour drafting — création OU amélioration d'une
 #: commande existante (v5.30, E : pattern coûteux lancé par une commande).
@@ -152,6 +153,123 @@ def _entry_cost(entry: dict) -> float:
     return _as_float(entry.get("cost_usd"))
 
 
+def _build_cost_index(summary: dict) -> dict[str, float]:
+    """session_id → cost_usd, first hit wins (top_sessions_by_cost then all_sessions)."""
+    cost_index: dict[str, float] = {}
+    for bucket in ("top_sessions_by_cost", "all_sessions"):
+        for row in summary.get(bucket) or []:
+            if not isinstance(row, dict):
+                continue
+            sid = str(row.get("session_id") or "")
+            if sid and row.get("cost_usd") is not None:
+                cost_index.setdefault(sid, _as_float(row["cost_usd"]))
+    return cost_index
+
+
+def _merge_worker_status(target: dict, source: dict) -> None:
+    """Merge outcome metadata without allowing healthy duplicates to hide failures."""
+    for key in ("session_id", "worker_status", "status"):
+        if key in source and source[key] and key not in target:
+            target[key] = source[key]
+    if "rc" in source:
+        try:
+            rc = int(source["rc"])
+        except (TypeError, ValueError):
+            rc = 1
+        try:
+            target["rc"] = max(int(target.get("rc", 0) or 0), rc)
+        except (TypeError, ValueError):
+            target["rc"] = rc
+    if "truncated" in source:
+        target["truncated"] = bool(target.get("truncated", False) or source["truncated"])
+
+
+def _collect_worker_statuses(summary: dict) -> dict[str, dict]:
+    """session_id → merged worker outcome.
+
+    Orchestrators may copy the same outcomes into both top-level and selection
+    payloads. Merge by session id so provenance stays one-to-one.
+    """
+    by_id: dict[str, dict] = {}
+    for status in [
+        *(summary.get("worker_statuses") or []),
+        *((summary.get("selection") or {}).get("worker_statuses") or []),
+    ]:
+        if isinstance(status, dict) and status.get("session_id"):
+            session_id = str(status["session_id"])
+            _merge_worker_status(by_id.setdefault(session_id, {}), status)
+    return by_id
+
+
+def _add_classification_signals(sc: object, add: Callable[[str, str, dict | None], None]) -> None:
+    """Emit code-non-relu / maturity-F / non-spec-coûteuse signals for one row."""
+    if not isinstance(sc, dict):
+        return
+    sid = str(sc.get("session_id") or "")
+    if not sid:
+        return
+    measured = int(sc.get("production_review_measured") or 0)
+    pct = sc.get("production_review_pct")
+    if measured > 0 and pct is not None and float(pct) == 0.0:
+        add(sid, "code-non-relu", sc)
+    if str(sc.get("prompt_maturity_grade") or "").upper() == "F":
+        add(sid, "maturity-F", sc)
+    if not sc.get("spec_driven") and _as_float(sc.get("cost_usd")) >= _NON_SPEC_COST_MIN_USD:
+        add(sid, "non-spec coûteuse", sc)
+
+
+def _emit_signal_candidates(
+    summary: dict,
+    add: Callable[[str, str, dict | None], None],
+    *,
+    top_sessions_limit: int,
+    cost_per_active_minute_min: float,
+    cache_efficiency_gap: float,
+) -> None:
+    """Emit every signal-class candidate via ``add`` (insertion order = historical)."""
+    top = summary.get("top_sessions_by_cost", [])
+    for s in top[: max(0, top_sessions_limit)]:
+        add(str(s.get("session_id") or ""), "top-cost", s)
+    for o in summary.get("cost_outliers", []):
+        add(str(o.get("session_id") or ""), "cost-outlier", o)
+    weekly_cache = (summary.get("totals") or {}).get("cache_hit_rate")
+    for s in top:
+        cpm = s.get("cost_per_active_minute")
+        if cpm is not None and cpm >= cost_per_active_minute_min:
+            add(str(s.get("session_id") or ""), "loop", s)
+        ce = s.get("cache_efficiency")
+        if weekly_cache is not None and ce is not None and ce < weekly_cache - cache_efficiency_gap:
+            add(str(s.get("session_id") or ""), "cache-gap", s)
+    for r in summary.get("user_prompt_repeats", []):
+        add(str(r.get("session_id") or ""), "repeated-prompts", r)
+    for sc in summary.get("session_classifications", []):
+        _add_classification_signals(sc, add)
+
+
+def _score_and_sort(
+    ordered: list[dict], cost_index: dict[str, float], source_cost: dict[str, float]
+) -> None:
+    """Attach cost_usd + composite score, then sort (stable) by score DESC."""
+    resolved = {
+        str(entry["session_id"]): cost_index.get(
+            str(entry["session_id"]), source_cost.get(str(entry["session_id"]), 0.0)
+        )
+        for entry in ordered
+    }
+    total_cost = sum(resolved.values())
+    for entry in ordered:
+        sid = str(entry["session_id"])
+        cost = resolved[sid]
+        entry["cost_usd"] = cost
+        # Rang de la classe = rang du PREMIER signal de l'entrée.
+        first_reason = str((entry.get("reasons") or [""])[0])
+        rank = _SIGNAL_RANK.get(first_reason, len(_SIGNAL_ORDER))
+        share = cost / total_cost if total_cost > 0 else 0.0
+        entry["score"] = round((len(_SIGNAL_ORDER) - rank) + 0.5 * share, 6)
+    # Tri stable : la classe de signal reste primaire, le coût est secondaire.
+    ordered.sort(key=lambda e: -e["score"])
+
+
 def select_audit_candidates(
     summary: dict,
     *,
@@ -186,50 +304,10 @@ def select_audit_candidates(
     """
     ordered: list[dict] = []
     index: dict[str, int] = {}
-    cost_index: dict[str, float] = {}
+    cost_index = _build_cost_index(summary)
     #: coût porté par le payload signal déclencheur (outlier, classification…).
     source_cost: dict[str, float] = {}
-    for bucket in ("top_sessions_by_cost", "all_sessions"):
-        for row in summary.get(bucket) or []:
-            if not isinstance(row, dict):
-                continue
-            sid = str(row.get("session_id") or "")
-            if sid and row.get("cost_usd") is not None:
-                cost_index.setdefault(sid, _as_float(row["cost_usd"]))
-    # Orchestrators may copy the same outcomes into both top-level and
-    # selection payloads. Merge by session id so provenance stays one-to-one.
-    worker_statuses_by_id: dict[str, dict] = {}
-
-    def _merge_worker_status(target: dict, source: dict) -> None:
-        """Merge outcome metadata without allowing healthy duplicates to hide failures."""
-        for key in ("session_id", "worker_status", "status"):
-            if key in source and source[key] and key not in target:
-                target[key] = source[key]
-        if "rc" in source:
-            try:
-                rc = int(source["rc"])
-            except (TypeError, ValueError):
-                rc = 1
-            try:
-                target["rc"] = max(int(target.get("rc", 0) or 0), rc)
-            except (TypeError, ValueError):
-                target["rc"] = rc
-        if "truncated" in source:
-            target["truncated"] = bool(target.get("truncated", False) or source["truncated"])
-
-    for status in [
-        *(summary.get("worker_statuses") or []),
-        *((summary.get("selection") or {}).get("worker_statuses") or []),
-    ]:
-        if isinstance(status, dict) and status.get("session_id"):
-            session_id = str(status["session_id"])
-            _merge_worker_status(worker_statuses_by_id.setdefault(session_id, {}), status)
-    worker_statuses = list(worker_statuses_by_id.values())
-    worker_status_by_id = {
-        str(status.get("session_id")): status
-        for status in worker_statuses
-        if isinstance(status, dict) and status.get("session_id")
-    }
+    worker_status_by_id = _collect_worker_statuses(summary)
 
     def _add(session_id: str, reason: str, source: dict | None = None) -> None:
         if not session_id:
@@ -251,55 +329,14 @@ def select_audit_candidates(
         _merge_worker_status(entry, status)
         ordered.append(entry)
 
-    top = summary.get("top_sessions_by_cost", [])
-    for s in top[: max(0, top_sessions_limit)]:
-        _add(str(s.get("session_id") or ""), "top-cost", s)
-    for o in summary.get("cost_outliers", []):
-        _add(str(o.get("session_id") or ""), "cost-outlier", o)
-    weekly_cache = (summary.get("totals") or {}).get("cache_hit_rate")
-    for s in top:
-        cpm = s.get("cost_per_active_minute")
-        if cpm is not None and cpm >= cost_per_active_minute_min:
-            _add(str(s.get("session_id") or ""), "loop", s)
-        ce = s.get("cache_efficiency")
-        if weekly_cache is not None and ce is not None and ce < weekly_cache - cache_efficiency_gap:
-            _add(str(s.get("session_id") or ""), "cache-gap", s)
-    for r in summary.get("user_prompt_repeats", []):
-        _add(str(r.get("session_id") or ""), "repeated-prompts", r)
-    for sc in summary.get("session_classifications", []):
-        sid = str(sc.get("session_id") or "")
-        if not sid:
-            continue
-        measured = int(sc.get("production_review_measured") or 0)
-        pct = sc.get("production_review_pct")
-        if measured > 0 and pct is not None and float(pct) == 0.0:
-            _add(sid, "code-non-relu", sc)
-        if str(sc.get("prompt_maturity_grade") or "").upper() == "F":
-            _add(sid, "maturity-F", sc)
-        try:
-            cost = float(sc.get("cost_usd") or 0.0)
-        except (TypeError, ValueError):
-            cost = 0.0
-        if not sc.get("spec_driven") and cost >= _NON_SPEC_COST_MIN_USD:
-            _add(sid, "non-spec coûteuse", sc)
-    resolved = {
-        str(entry["session_id"]): cost_index.get(
-            str(entry["session_id"]), source_cost.get(str(entry["session_id"]), 0.0)
-        )
-        for entry in ordered
-    }
-    total_cost = sum(resolved.values())
-    for entry in ordered:
-        sid = str(entry["session_id"])
-        cost = resolved[sid]
-        entry["cost_usd"] = cost
-        # Rang de la classe = rang du PREMIER signal de l'entrée.
-        first_reason = str((entry.get("reasons") or [""])[0])
-        rank = _SIGNAL_RANK.get(first_reason, len(_SIGNAL_ORDER))
-        share = cost / total_cost if total_cost > 0 else 0.0
-        entry["score"] = round((len(_SIGNAL_ORDER) - rank) + 0.5 * share, 6)
-    # Tri stable : la classe de signal reste primaire, le coût est secondaire.
-    ordered.sort(key=lambda e: -e["score"])
+    _emit_signal_candidates(
+        summary,
+        _add,
+        top_sessions_limit=top_sessions_limit,
+        cost_per_active_minute_min=cost_per_active_minute_min,
+        cache_efficiency_gap=cache_efficiency_gap,
+    )
+    _score_and_sort(ordered, cost_index, source_cost)
     return ordered
 
 

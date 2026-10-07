@@ -165,62 +165,76 @@ def _model_key(message: object) -> str:
     return base if "/" in base else f"anthropic/{base}"
 
 
+def _record_cost(
+    costs: dict[str, float], entry: dict, session_id: str | None, fallback_sid: str
+) -> None:
+    """Track the max ``totalCostUSD`` per session id (id from row, else running/fallback)."""
+    raw_cost = entry.get("totalCostUSD")
+    if not isinstance(raw_cost, int | float) or raw_cost < 0:
+        return
+    raw_sid = entry.get("sessionId")
+    cost_sid = raw_sid if isinstance(raw_sid, str) and raw_sid else (session_id or fallback_sid)
+    prev = costs.get(cost_sid)
+    val = float(raw_cost)
+    if prev is None or val > prev:
+        costs[cost_sid] = val
+
+
+def _read_jsonl(path: Path, costs: dict[str, float]) -> tuple[list[_Line], str | None]:
+    """Parse one ``<sid>.jsonl``; cost-state rows land in ``costs``.
+
+    Returns ``(turns, session_id)``; a partially unreadable file warns but still
+    yields whatever parsed (fail-soft).
+    """
+    broken = 0
+    lines: list[_Line] = []
+    session_id: str | None = None
+    with path.open(encoding="utf-8") as fh:
+        for raw_line in fh:
+            try:
+                entry = json.loads(raw_line)
+            except json.JSONDecodeError:
+                broken += 1
+                continue
+            if not isinstance(entry, dict):
+                continue
+            etype = entry.get("type")
+            if etype == "cost-state":
+                _record_cost(costs, entry, session_id, path.stem)
+                continue
+            if etype not in ("user", "assistant"):
+                continue
+            ts = _parse_ts(entry.get("timestamp"))
+            if ts is None:
+                continue  # ligne sans horodatage exploitable : ignorée
+            if isinstance(entry.get("sessionId"), str) and entry["sessionId"]:
+                session_id = session_id or entry["sessionId"]
+            lines.append(_Line(ts=ts, ms=int(ts.timestamp() * 1000), entry=entry))
+    if broken:
+        warnings.warn(
+            f"JSONL partiellement illisible ({broken} ligne(s)) : {path.name}", stacklevel=2
+        )
+    return lines, session_id
+
+
+def _merge_session(sessions: dict[str, _JsonlSession], sid: str, lines: list[_Line]) -> None:
+    """Create the session, or merge chronologically (same sid across directories)."""
+    existing = sessions.get(sid)
+    if existing is None:
+        sessions[sid] = _JsonlSession(session_id=sid, lines=sorted(lines, key=lambda ln: ln.ms))
+        return
+    existing.lines.extend(lines)
+    existing.lines.sort(key=lambda ln: ln.ms)
+
+
 def _load_sessions(projects_dir: Path) -> dict[str, _JsonlSession]:
     """Scan fail-soft `<projects_dir>/*/<sid>.jsonl` ; ids depuis lignes sinon stem."""
     sessions: dict[str, _JsonlSession] = {}
     costs: dict[str, float] = {}
     for path in sorted(projects_dir.glob("*/*.jsonl")):
-        broken = 0
-        lines: list[_Line] = []
-        session_id: str | None = None
-        with path.open(encoding="utf-8") as fh:
-            for raw_line in fh:
-                try:
-                    entry = json.loads(raw_line)
-                except json.JSONDecodeError:
-                    broken += 1
-                    continue
-                if not isinstance(entry, dict):
-                    continue
-                etype = entry.get("type")
-                if etype == "cost-state":
-                    raw_cost = entry.get("totalCostUSD")
-                    if isinstance(raw_cost, int | float) and raw_cost >= 0:
-                        cost_sid = (
-                            entry.get("sessionId")
-                            if isinstance(entry.get("sessionId"), str) and entry["sessionId"]
-                            else (session_id or path.stem)
-                        )
-                        prev = costs.get(cost_sid)
-                        val = float(raw_cost)
-                        if prev is None or val > prev:
-                            costs[cost_sid] = val
-                    continue
-                if etype not in ("user", "assistant"):
-                    continue
-                ts = _parse_ts(entry.get("timestamp"))
-                if ts is None:
-                    continue  # ligne sans horodatage exploitable : ignorée
-                if isinstance(entry.get("sessionId"), str) and entry["sessionId"]:
-                    session_id = session_id or entry["sessionId"]
-                lines.append(_Line(ts=ts, ms=int(ts.timestamp() * 1000), entry=entry))
-        if broken:
-            warnings.warn(
-                f"JSONL partiellement illisible ({broken} ligne(s)) : {path.name}", stacklevel=2
-            )
-        sid = session_id or path.stem
+        lines, session_id = _read_jsonl(path, costs)
         if lines:
-            existing = sessions.get(sid)
-            if existing is None:
-                sessions[sid] = _JsonlSession(
-                    session_id=sid, lines=sorted(lines, key=lambda ln: ln.ms)
-                )
-            else:  # même sessionId vu sous plusieurs répertoires : fusion chronologique
-                existing.lines.extend(lines)
-                existing.lines.sort(key=lambda ln: ln.ms)
-        elif sid in costs and sid not in sessions:
-            # session avec seul cost-state (sans tours) : pas de session exposée
-            pass
+            _merge_session(sessions, session_id or path.stem, lines)
     for sid, val in costs.items():
         sess = sessions.get(sid)
         if sess is not None:

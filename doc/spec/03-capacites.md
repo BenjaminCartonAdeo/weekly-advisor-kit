@@ -402,7 +402,10 @@ snooze.
 
 **Règles**
 1. **Types éligibles** : `skill-candidat` (création de skill), `command-candidat` (création de
-   command), `command-amélioration` (amélioration d'une command existante).
+   command), `command-amélioration` (amélioration d'une command existante). Les constats
+   `check-gardrail` (`guardrail-check`) et `pointeur-navigation` (`navigation-pointer`) sont
+   **inéligibles** au drafting (report-only, à l'image de `changement-environnement`) : jamais
+   transmis à l'étape 4.
 2. **Plafond combiné** : au plus **3** candidats par run (skills + commands confondus), classés par
    sévérité décroissante. Les non retenus restent dans l'archive des findings et sont listés au
    rapport comme « candidats non traités ».
@@ -484,6 +487,9 @@ par le calcul.
 5. Le bloc doit contenir au moins **40 mots** pour être accepté à l'assemblage.
 6. Ne recommande **jamais** l'installation d'un item d'écosystème à source unique et non nouveau
    (la sélection est du calcul).
+7. Les constats **report-only** (`changement-environnement`, `check-gardrail`/`guardrail-check`,
+   `pointeur-navigation`/`navigation-pointer`) figurent au bloc qualitatif mais ne sont **jamais**
+   transmis au drafting.
 
 ---
 

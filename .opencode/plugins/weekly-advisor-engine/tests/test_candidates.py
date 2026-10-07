@@ -363,6 +363,46 @@ def test_select_draft_enriches_with_provenance():
     assert cands[0]["skill_id"] == generate_skill_id("High Skill")
 
 
+def test_select_draft_excludes_report_only_types():
+    """v1 report-only : les rec-types ``guardrail-check`` et ``navigation-pointer``
+    (constats catégorie ``missing-guardrail`` / ``navigation``) ne sont jamais
+    transmis au drafting car absents de ``_DRAFT_TYPES`` ; seul le
+    ``skill-candidate`` ressort."""
+    findings = {
+        "findings": [
+            {
+                "session_id": "s1",
+                "category": "missing-guardrail",
+                "severity": "high",
+                "recommendation_type": "guardrail-check",
+                "description": "d",
+                "recommendation": "r",
+            },
+            {
+                "session_id": "s2",
+                "category": "navigation",
+                "severity": "high",
+                "recommendation_type": "navigation-pointer",
+                "description": "d",
+                "recommendation": "r",
+            },
+            {
+                "session_id": "s3",
+                "category": "c",
+                "severity": "medium",
+                "recommendation_type": "skill-candidate",
+                "description": "d",
+                "recommendation": "r",
+            },
+        ]
+    }
+    cands = select_draft_candidates(findings, max_candidates=3)
+    # 1 seul survivant : les 2 report-only sont exclus par construction.
+    assert len(cands) == 1
+    assert [c["session_id"] for c in cands] == ["s3"]
+    assert cands[0]["recommendation_type"] == "skill-candidate"
+
+
 # --------------------------------------------------------------------------- #
 # P6 — priorités d'audit déterministes issues de session_classifications
 # --------------------------------------------------------------------------- #

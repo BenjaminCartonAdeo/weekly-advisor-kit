@@ -778,6 +778,31 @@ def open_database(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _event_shape(conn: sqlite3.Connection, tables: set[str]) -> str:
+    """Signature de la table ``event`` (``?`` si absente)."""
+    if "event" not in tables:
+        return "?"
+    ev = {r[1] for r in conn.execute("PRAGMA table_info(event)").fetchall()}
+    if {"aggregate_id", "seq"} <= ev:
+        return "aggregate_id/seq (courant)"
+    if "session_id" in ev:
+        return "session_id (legacy?)"
+    return "inconnu"
+
+
+def _db_family(tables: set[str]) -> str:
+    """Famille de schéma déduite des tables présentes."""
+    if "session_v2" in tables and "session" in tables:
+        return "v1+v2 (session + session_v2)"
+    if "session_v2" in tables:
+        return "v2 (session_v2)"
+    if "session" in tables:
+        return "v1 (session)"
+    if tables:
+        return "schéma OpenCode non reconnu"
+    return "inconnu"
+
+
 def _classify_db(conn: sqlite3.Connection) -> dict:
     """Best-effort signature of an OpenCode DB for actionable diagnostics.
 
@@ -802,9 +827,9 @@ def _classify_db(conn: sqlite3.Connection) -> dict:
 
     info: dict[str, object] = {
         "tables": sorted(tables),
-        "family": "inconnu",
+        "family": _db_family(tables),
         "session_tables": [t for t in ("session_v2", "session") if t in tables],
-        "event_shape": "?",
+        "event_shape": _event_shape(conn, tables),
         "migration": None,
         "data_migration": None,
     }
@@ -814,25 +839,44 @@ def _classify_db(conn: sqlite3.Connection) -> dict:
                 info[tbl] = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
             except sqlite3.Error:
                 info[tbl] = "?"
-
-    if "event" in tables:
-        ev = {r[1] for r in conn.execute("PRAGMA table_info(event)").fetchall()}
-        if {"aggregate_id", "seq"} <= ev:
-            info["event_shape"] = "aggregate_id/seq (courant)"
-        elif "session_id" in ev:
-            info["event_shape"] = "session_id (legacy?)"
-        else:
-            info["event_shape"] = "inconnu"
-
-    if "session_v2" in tables and "session" in tables:
-        info["family"] = "v1+v2 (session + session_v2)"
-    elif "session_v2" in tables:
-        info["family"] = "v2 (session_v2)"
-    elif "session" in tables:
-        info["family"] = "v1 (session)"
-    elif tables:
-        info["family"] = "schéma OpenCode non reconnu"
     return info
+
+
+def _candidate_db_paths(value: str) -> list[Path]:
+    """DB paths to probe: the pinned path, or the XDG/Windows defaults (deduped)."""
+    if value != "auto":
+        return [Path(value).expanduser()]
+    xdg = Path(os.environ.get("XDG_DATA_HOME", "~/.local/share")).expanduser()
+    bases = [xdg / "opencode"]
+    localappdata = os.environ.get("LOCALAPPDATA")
+    if localappdata:
+        bases.append(Path(localappdata) / "opencode")
+    candidates: list[Path] = []
+    seen: set[str] = set()
+    for base in bases:
+        for name in ("opencode.db", "opencode-next.db"):
+            candidate = base / name
+            if str(candidate) not in seen:
+                seen.add(str(candidate))
+                candidates.append(candidate)
+    return candidates
+
+
+def _probe_candidate(path: Path) -> tuple[int, Path, SchemaAdapter] | None:
+    """Schema-check one DB → ``(latest_updated_ms, path, adapter)``, else ``None``.
+
+    A failed probe closes the handle it opened so the caller never leaks it.
+    """
+    conn = None
+    try:
+        conn = open_database(path)
+        adapter = OpenCodeAdapter(conn)
+        adapter.check_schema()
+        return (adapter.latest_updated_ms(), path, adapter)
+    except (SchemaError, sqlite3.Error, OSError):
+        if conn is not None:
+            conn.close()
+        return None
 
 
 def detect_db(value: str) -> tuple[Path, SchemaAdapter]:
@@ -844,22 +888,7 @@ def detect_db(value: str) -> tuple[Path, SchemaAdapter]:
     the most recent `MAX(time_updated)` wins. No valid candidate →
     DataSourceError with an actionable, schema-aware message (v6.x).
     """
-    if value != "auto":
-        candidates = [Path(value).expanduser()]
-    else:
-        xdg = Path(os.environ.get("XDG_DATA_HOME", "~/.local/share")).expanduser()
-        bases = [xdg / "opencode"]
-        localappdata = os.environ.get("LOCALAPPDATA")
-        if localappdata:
-            bases.append(Path(localappdata) / "opencode")
-        candidates = []
-        seen: set[str] = set()
-        for base in bases:
-            for name in ("opencode.db", "opencode-next.db"):
-                candidate = base / name
-                if str(candidate) not in seen:
-                    seen.add(str(candidate))
-                    candidates.append(candidate)
+    candidates = _candidate_db_paths(value)
 
     matches: list[tuple[int, Path, SchemaAdapter]] = []
     existing: list[Path] = []
@@ -867,16 +896,9 @@ def detect_db(value: str) -> tuple[Path, SchemaAdapter]:
         if not path.is_file():
             continue
         existing.append(path)
-        for adapter_cls in (OpenCodeAdapter,):
-            conn = None
-            try:
-                conn = open_database(path)
-                adapter = adapter_cls(conn)
-                adapter.check_schema()
-                matches.append((adapter.latest_updated_ms(), path, adapter))
-            except (SchemaError, sqlite3.Error, OSError):
-                if conn is not None:
-                    conn.close()
+        probed = _probe_candidate(path)
+        if probed is not None:
+            matches.append(probed)
     if matches:
         matches.sort(key=lambda m: -m[0])
         _latest, path, adapter = matches[0]

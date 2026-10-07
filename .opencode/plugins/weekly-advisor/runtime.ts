@@ -136,6 +136,25 @@ function commandOnPath(cmd: string): Promise<boolean> {
   })
 }
 
+/** Valide `payload` comme JSON, en échec explicite portant `label`. */
+function assertValidJson(payload: string, label: string): void {
+  try {
+    JSON.parse(payload)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`weekly_skill_curate ${label} JSON invalide: ${detail}`)
+  }
+}
+
+/** Nettoyage best-effort : jamais masquer l'échec/cause d'origine par son erreur. */
+function bestEffortCleanup(cleanup: () => void): void {
+  try {
+    cleanup()
+  } catch {
+    // Préserver l'échec d'écriture ou l'annulation : le nettoyage reste best-effort.
+  }
+}
+
 /**
  * Runtime d'exécution d'un kit weekly-advisor. Une instance = une racine.
  *
@@ -324,32 +343,19 @@ export class WeeklyRuntime implements RuntimeApi {
   stageJsonPayload(payload: string, label: string, signal?: AbortSignal): StagedPayload {
     // ponytail: file transport is the minimum reliable fix for oversized tool arguments.
     if (signal?.aborted) throw stagingAbortError(label)
-    try {
-      JSON.parse(payload)
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error)
-      throw new Error(`weekly_skill_curate ${label} JSON invalide: ${detail}`)
-    }
+    assertValidJson(payload, label)
     const directory = fs.mkdtempSync(path.join(path.resolve(os.tmpdir()), `weekly-${label}-`))
     const file = path.resolve(directory, "input.json")
     const cleanup = () => fs.rmSync(directory, { recursive: true, force: true })
     try {
       fs.writeFileSync(file, payload, "utf8")
     } catch (error) {
-      try {
-        cleanup()
-      } catch {
-        // Préserver l'échec d'écriture : le nettoyage reste best-effort.
-      }
+      bestEffortCleanup(cleanup)
       const detail = error instanceof Error ? error.message : String(error)
       throw new Error(`weekly_skill_curate ${label} JSON temporaire impossible: ${detail}`)
     }
     if (signal?.aborted) {
-      try {
-        cleanup()
-      } catch {
-        // Préserver l'annulation : le nettoyage reste best-effort.
-      }
+      bestEffortCleanup(cleanup)
       throw stagingAbortError(label)
     }
     return { file, cleanup }
@@ -400,29 +406,44 @@ export class WeeklyRuntime implements RuntimeApi {
     }
     const scan = prepareScanDir(file)
     try {
-      let stdout: string
-      try {
-        stdout = await this.runSkillVerify(scan.dir, signal)
-      } catch (error) {
-        // Crash/timeout du scanner ≠ faute de l'artefact, mais un commit passé
-        // sur une gate morte serait un faux vert → REFUS. Une annulation, elle,
-        // n'est pas un verdict : elle remonte à l'appelant.
-        if (signal?.aborted) throw error
-        return { kind: "unusable", reason: (error as Error).message.split("\n")[0] }
-      }
-      if (!stdout.trim()) return { kind: "ignored", reason: "binaire harness-eval introuvable" }
-      let errors: string[]
-      let warnings: string[]
-      try {
-        ;({ errors, warnings } = collectPortability(stdout))
-      } catch {
-        return { kind: "unusable", reason: "sortie skill-verify illisible (JSON invalide)" }
-      }
-      if (errors.length > 0) return { kind: "blocked", findings: errors }
-      return { kind: "pass", warnings }
+      return await this.evaluatePortability(scan.dir, signal)
     } finally {
       scan.cleanup()
     }
+  }
+
+  /**
+   * Exécute le scanner sur un répertoire isolé et traduit sa sortie en verdict.
+   * Un crash/timeout du scanner est un REFUS (`unusable`) ; une annulation
+   * remonte à l'appelant.
+   *
+   * @param scanDir répertoire de scan isolé (copie de l'artefact)
+   * @param signal annulation
+   */
+  private async evaluatePortability(
+    scanDir: string,
+    signal?: AbortSignal,
+  ): Promise<PortabilityOutcome> {
+    let stdout: string
+    try {
+      stdout = await this.runSkillVerify(scanDir, signal)
+    } catch (error) {
+      // Crash/timeout du scanner ≠ faute de l'artefact, mais un commit passé
+      // sur une gate morte serait un faux vert → REFUS. Une annulation, elle,
+      // n'est pas un verdict : elle remonte à l'appelant.
+      if (signal?.aborted) throw error
+      return { kind: "unusable", reason: (error as Error).message.split("\n")[0] }
+    }
+    if (!stdout.trim()) return { kind: "ignored", reason: "binaire harness-eval introuvable" }
+    let errors: string[]
+    let warnings: string[]
+    try {
+      ;({ errors, warnings } = collectPortability(stdout))
+    } catch {
+      return { kind: "unusable", reason: "sortie skill-verify illisible (JSON invalide)" }
+    }
+    if (errors.length > 0) return { kind: "blocked", findings: errors }
+    return { kind: "pass", warnings }
   }
 
   /**

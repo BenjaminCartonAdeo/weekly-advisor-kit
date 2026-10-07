@@ -104,6 +104,10 @@
       "name": "anthropics/skills"
     },
     {
+      "type": "repo",
+      "name": "mattpocock/skills"
+    },
+    {
       "type": "list",
       "name": "awesome-opencode/awesome-opencode"
     },
