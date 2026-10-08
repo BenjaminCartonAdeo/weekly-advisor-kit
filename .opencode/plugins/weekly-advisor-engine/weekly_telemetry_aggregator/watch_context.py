@@ -419,75 +419,68 @@ def _residual_entries(
     return [row[2] for row in rows[:RESIDUAL_CAP]]
 
 
-def build_watch_context(
-    project_root: Path,
-    ecosystem: Mapping[str, Any],
-    *,
-    generated_at: datetime | str | None = None,
-    ecosystem_path: Path | None = None,
-    candidates_path: Path | None = None,
-    extra_keywords: Sequence[str] = (),
-    harness_scope: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build a deterministic watch context from one ecosystem report.
+def _resolve_run_time(generated_at: datetime | str | None) -> tuple[datetime, str]:
+    """Normalise l'ancre du run en ``(run_time UTC, generated ISO)``.
 
-    ``ecosystem`` is treated as an input snapshot.  The function does not
-    fetch, mutate, deduplicate across runs, or write lifecycle state.  The
-    caller controls the timestamp so repeated runs with the same anchor and
-    worktree produce stable context content apart from filesystem changes.
-
-    Crosswalk candidats (T6) : si ``candidates_path`` pointe un snapshot
-    ``watch-candidates-<date>.json`` valide (mode ``distill``), les
-    ``market_matches`` sont restreints aux fiches retenues ET aux items
-    résiduels sous cutoff (plafonnés, hors annexe sécurité) afin que leurs
-    findings passent la validation 3.6. Snapshot absent → comportement legacy
-    inchangé ; corrompu/invalide → legacy + warning.
+    ``None`` et une chaîne illisible retombent sur l'heure courante plutôt que
+    de lever : l'appelant veut un contexte, pas une erreur d'ancre. Un datetime
+    naïf est interprété comme déjà expressed en UTC.
     """
 
-    inventory = inventory_environment(Path(project_root))
-    candidates, candidates_error = _load_valid_candidates(candidates_path)
-    if candidates_error is not None:
-        inventory.warnings.append(candidates_error)
     if generated_at is None:
         run_time = datetime.now(UTC)
-        generated = iso(run_time)
     elif isinstance(generated_at, datetime):
         run_time = (
             generated_at.astimezone(UTC)
             if generated_at.tzinfo
             else generated_at.replace(tzinfo=UTC)
         )
-        generated = iso(run_time)
     else:
         parsed = parse_iso_ts(str(generated_at))
         run_time = parsed.astimezone(UTC) if parsed is not None else datetime.now(UTC)
-        generated = iso(run_time)
-    environment = _environment_items(inventory)
-    eco_items = _ecosystem_items(ecosystem)
-    if candidates is not None:
-        # Scope appliqué dès que le snapshot est valide, même si aucune fiche
-        # n'est retenue : les bloqués sécurité doivent être exclus des deux
-        # artefacts (contexte ET enrichi), jamais seulement de l'un.
-        kept_ids, blocked_ids = _candidate_ids(candidates)
-        residual = _residual_entries(
-            ecosystem,
-            exclude_ids=kept_ids | blocked_ids,
-            now=run_time,
-            extra_keywords=extra_keywords,
-        )
-        scope_ids = kept_ids | {row["id"] for row in residual}
-        eco_items = [item for item in eco_items if _item_identity(item) in scope_ids]
-    market_matches = [_match_market_item(item, inventory) for item in eco_items]
-    market_matches.sort(
-        key=lambda item: (
-            str(item.get("name") or "").casefold(),
-            str(item.get("npm_package") or "").casefold(),
-            str(item.get("repo_url") or "").casefold(),
-        )
+    return run_time, iso(run_time)
+
+
+def _match_residuals(
+    ecosystem: Mapping[str, Any],
+    eco_items: Sequence[Mapping[str, Any]],
+    candidates: Mapping[str, Any] | None,
+    run_time: datetime,
+    extra_keywords: Sequence[str],
+) -> list[Mapping[str, Any]]:
+    """Restreint les items écosystème au scope candidats + bande résiduelle.
+
+    Sans snapshot valide (``candidates is None``) la liste est renvoyée telle
+    quelle : c'est le comportement legacy. Le scope s'applique dès que le
+    snapshot est valide, même si aucune fiche n'est retenue : les bloqués
+    sécurité doivent être exclus des deux artefacts (contexte ET enrichi), jamais
+    seulement de l'un.
+    """
+
+    if candidates is None:
+        return list(eco_items)
+    kept_ids, blocked_ids = _candidate_ids(candidates)
+    residual = _residual_entries(
+        ecosystem,
+        exclude_ids=kept_ids | blocked_ids,
+        now=run_time,
+        extra_keywords=extra_keywords,
     )
-    counts = {name: len(items) for name, items in environment.items()}
-    counts["declared_plugins"] = sum(1 for record in inventory.plugins if record.declared)
-    counts["local_plugins"] = sum(1 for record in inventory.plugins if not record.declared)
+    scope_ids = kept_ids | {row["id"] for row in residual}
+    return [item for item in eco_items if _item_identity(item) in scope_ids]
+
+
+def _architecture_section(
+    inventory: EnvironmentInventory,
+    environment: Mapping[str, list[dict[str, Any]]],
+    counts: dict[str, int],
+    market_matches: list[dict[str, Any]],
+    *,
+    run_time: datetime,
+    generated: str,
+    harness_scope: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Assemble the deterministic context payload, architecture projection included."""
 
     context: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -516,10 +509,84 @@ def build_watch_context(
     context["architecture_observations"] = _architecture_observations(
         inventory, market_matches, harness_scope
     )
+    return context
+
+
+def _attach_ecosystem_provenance(
+    context: dict[str, Any], ecosystem: Mapping[str, Any], ecosystem_path: Path | None
+) -> None:
+    """Rattache les deux clés de provenance, seulement quand la source existe."""
+
     if ecosystem_path is not None:
         context["ecosystem_file"] = ecosystem_path.name
     if isinstance(ecosystem.get("generated_at"), str):
         context["ecosystem_generated_at"] = ecosystem["generated_at"]
+
+
+def build_watch_context(
+    project_root: Path,
+    ecosystem: Mapping[str, Any],
+    *,
+    generated_at: datetime | str | None = None,
+    ecosystem_path: Path | None = None,
+    candidates_path: Path | None = None,
+    extra_keywords: Sequence[str] = (),
+    harness_scope: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a deterministic watch context from one ecosystem report.
+
+    ``ecosystem`` is treated as an input snapshot.  The function does not
+    fetch, mutate, deduplicate across runs, or write lifecycle state.  The
+    caller controls the timestamp so repeated runs with the same anchor and
+    worktree produce stable context content apart from filesystem changes.
+
+    Crosswalk candidats (T6) : si ``candidates_path`` pointe un snapshot
+    ``watch-candidates-<date>.json`` valide (mode ``distill``), les
+    ``market_matches`` sont restreints aux fiches retenues ET aux items
+    résiduels sous cutoff (plafonnés, hors annexe sécurité) afin que leurs
+    findings passent la validation 3.6. Snapshot absent → comportement legacy
+    inchangé ; corrompu/invalide → legacy + warning.
+
+    Les étapes sont déléguées à des helpers (_resolve_run_time,
+    _match_residuals, _architecture_section, _attach_ecosystem_provenance) ;
+    l'ordre des opérations est inchangé.
+    """
+
+    inventory = inventory_environment(Path(project_root))
+    candidates, candidates_error = _load_valid_candidates(candidates_path)
+    if candidates_error is not None:
+        inventory.warnings.append(candidates_error)
+    run_time, generated = _resolve_run_time(generated_at)
+    environment = _environment_items(inventory)
+    eco_items = _match_residuals(
+        ecosystem,
+        _ecosystem_items(ecosystem),
+        candidates,
+        run_time,
+        extra_keywords,
+    )
+    market_matches = [_match_market_item(item, inventory) for item in eco_items]
+    market_matches.sort(
+        key=lambda item: (
+            str(item.get("name") or "").casefold(),
+            str(item.get("npm_package") or "").casefold(),
+            str(item.get("repo_url") or "").casefold(),
+        )
+    )
+    counts = {name: len(items) for name, items in environment.items()}
+    counts["declared_plugins"] = sum(1 for record in inventory.plugins if record.declared)
+    counts["local_plugins"] = sum(1 for record in inventory.plugins if not record.declared)
+
+    context = _architecture_section(
+        inventory,
+        environment,
+        counts,
+        market_matches,
+        run_time=run_time,
+        generated=generated,
+        harness_scope=harness_scope,
+    )
+    _attach_ecosystem_provenance(context, ecosystem, ecosystem_path)
     return context
 
 
