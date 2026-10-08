@@ -69,15 +69,54 @@ from collections.abc import Mapping, Sequence
 from dataclasses import MISSING, fields
 from typing import Any
 
-from .insights import (
-    AGENT_LOOP_MIN_REPEATS_DEFAULT,
-    AGENT_LOOP_TASK_MIN_REPEATS_DEFAULT,
-    ARCHITECTURE_DRIFT_RUNS_DEFAULT,
-    _architecture_drift,
-    _architecture_observation,
-    _robust_z_scores,
-)
 from .models import SessionClassification, UserPromptRepeat
+from .util import robust_z
+
+# --------------------------------------------------------------------------- #
+# Cœurs partagés (A6 / agent-loop / architecture-drift)
+# --------------------------------------------------------------------------- #
+# Ces noms vivaient dans `insights`, qui les importait ici *en différé* pour
+# éviter un cycle (`insights` → `rule_context` → `insights`). Les owning sont
+# désormais ici : `insights` ré-exporte les six, donc son API est inchangée.
+# Comportement figé par `tests/test_rule_context_cores.py` avant le déplacement.
+
+ARCHITECTURE_DRIFT_RUNS_DEFAULT = 2
+AGENT_LOOP_MIN_REPEATS_DEFAULT = 8
+AGENT_LOOP_TASK_MIN_REPEATS_DEFAULT = 3
+
+#: Les 4 champs stables d'architecture comparés d'un run à l'autre. Un champ
+#: hors de cette liste (timestamp, anchor) n'est jamais du drift.
+_ARCHITECTURE_STABLE_FIELDS = ("state_counts", "config", "inventory_counts", "harness_scope")
+
+
+def _architecture_observation(summary: dict | None) -> dict | None:
+    """Extract the optional read-only watch-context architecture projection."""
+    if not isinstance(summary, dict):
+        return None
+    value = summary.get("architecture_observations")
+    if isinstance(value, dict):
+        return value
+    context = summary.get("watch_context")
+    if isinstance(context, dict) and isinstance(context.get("architecture_observations"), dict):
+        return context["architecture_observations"]
+    return None
+
+
+def _architecture_drift(current: dict | None, previous: dict | None) -> list[str]:
+    """Compare stable architecture facts; unknown/missing snapshots are ignored."""
+    if not current or not previous:
+        return []
+    changed: list[str] = []
+    for key in _ARCHITECTURE_STABLE_FIELDS:
+        if current.get(key) != previous.get(key):
+            changed.append(key)
+    return changed
+
+
+def _robust_z_scores(values: list[float]) -> list[float]:
+    """Robust z (median + MAD, shared core in util); 2-decimal rounding kept."""
+    return [round(z, 2) for z in robust_z(values)]
+
 
 __all__ = [
     "AGENT_LOOP_MIN_REPEATS_DEFAULT",
