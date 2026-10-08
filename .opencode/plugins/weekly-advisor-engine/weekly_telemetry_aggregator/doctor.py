@@ -253,10 +253,16 @@ def _doctor_tool_presence(warnings: list[str]) -> None:
 
 def _doctor_harness_eval_version(cfg: TelemetryConfig, warnings: list[str]) -> None:
     """Version minimum harness-eval (v6.1.a — plancher acceptant les versions supérieures)."""
-    if shutil.which("harness-eval") is not None and cfg.harness_eval_version:
+    # Windows : shutil.which résout "harness-eval" → "harness-eval.cmd"/".exe" (un
+    # nom nu n'est jamais résolu par CreateProcess qui n'applique pas PATHEXT).
+    harness_eval_bin = shutil.which("harness-eval")
+    if harness_eval_bin is not None and cfg.harness_eval_version:
         try:
             proc = subprocess.run(
-                ["harness-eval", "--version"], capture_output=True, encoding="utf-8", timeout=15
+                [harness_eval_bin, "--version"],
+                capture_output=True,
+                encoding="utf-8",
+                timeout=15,
             )
             version = (proc.stdout or proc.stderr).strip()
             installed = _main._version_tuple(version)
