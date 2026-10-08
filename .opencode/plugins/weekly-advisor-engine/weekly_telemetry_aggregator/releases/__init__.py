@@ -1,5 +1,9 @@
 """Écosystème watch — Partie 2 `releases` (veille minimale, schema_version 2).
 
+Point d'entrée du paquet : il garde l'orchestration (`run`, `_collect`,
+`_build_ecosystem`, dispatch des sources watch) et réexporte les noms historiques
+pour que `from .releases import X` et `releases.X` restent valides.
+
 Stateless observer of the OpenCode plugin ecosystem. Every run re-fetches four
 live sources within the sliding period window and filters client-side by date
 fields (no persistent dedup file, no DB):
@@ -15,50 +19,68 @@ Intra-run dedup only: the same repo found by several sources appears once in
 for every source hit. ``run`` returns ``(ecosystem_dict, exit_code)`` with
 ``exit_code`` 0 when at least one source succeeded (even with zero items) and 1
 when all sources failed.
+
+Sous-modules :
+
+* `_http`     — client HTTP, retry/backoff, fallback `gh api`
+* `dedup`     — clé de dedup, fusion, `FOUND_VIA_ORDER`, `_finalize_items`
+* `_npm`      — mapping npm search (extrait à l'étape suivante)
+* `_sources`  — fetchers GitHub/MCP/RSS/watch-list
+* `_watch_repos` — repos suivis
+* `_radar`    — radars MCP
 """
 
 from __future__ import annotations
 
 import base64
 import json
-import os
 import re
-import subprocess
-import time
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
-from json import dumps as _dumps
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
 
-from . import __version__
-from .config import apply_lookback_override
-from .util import iso as _iso
-from .util import parse_anchor as _parse_anchor
-from .util import parse_iso_ts
+# stdlib names were reachable on the old single module (`releases.urlopen`, …).
+# Redundant aliases mark them as deliberate re-exports (PEP 484 style).
+from urllib.error import HTTPError as HTTPError
+from urllib.error import URLError as URLError
+from urllib.parse import quote
+from urllib.parse import urlencode as urlencode
+from urllib.request import Request as Request
+from urllib.request import urlopen as urlopen
 
-#: Canonical found_via ordering — also the processing order of the new-item sources.
-FOUND_VIA_ORDER = [
-    "npm:keywords:opencode-plugin",
-    "github:topic:opencode-plugin",
-    "mcp-registry",
-    "github:releases:opencode",
-    "github:watch-repos",
-]
-SOURCE_NPM = FOUND_VIA_ORDER[0]
-SOURCE_GITHUB = FOUND_VIA_ORDER[1]
-SOURCE_MCP = FOUND_VIA_ORDER[2]
-SOURCE_RELEASES = FOUND_VIA_ORDER[3]
-SOURCE_WATCH = FOUND_VIA_ORDER[4]
-
-#: Retry/backoff — total attempts, backoff between attempts (spec: 1s, 2s).
-#: Module-level constant so tests can shorten it without hitting the network.
-_RETRIES = 3
-_BACKOFF: tuple[float, ...] = (1.0, 2.0)
+from .. import __version__
+from ..config import apply_lookback_override
+from ..util import iso as _iso
+from ..util import parse_anchor as _parse_anchor
+from ..util import parse_iso_ts
+from ._http import (
+    _BACKOFF,
+    _RETRIES,
+    SourceError,
+    _dumps,
+    _get_json,
+    _gh_api,
+    _github_headers,
+    _github_json,
+    _HttpClient,
+    _Response,
+)
+from .dedup import (
+    FOUND_VIA_ORDER,
+    SOURCE_GITHUB,
+    SOURCE_MCP,
+    SOURCE_NPM,
+    SOURCE_RELEASES,
+    SOURCE_WATCH,
+    _add_item,
+    _canonical_found_via,
+    _dedup_key,
+    _finalize_items,
+    _merge_into,
+    _preferred_record,
+)
 
 #: npm search pagination (registry caps size at 250 rows per page).
 NPM_PAGE_SIZE = 250
@@ -71,116 +93,6 @@ URL_NPM = "https://registry.npmjs.org/-/v1/search"
 URL_GITHUB_TOPICS = "https://api.github.com/search/repositories"
 URL_MCP = "https://registry.modelcontextprotocol.io/v0.1/servers"
 URL_RELEASES = "https://api.github.com/repos/anomalyco/opencode/releases"
-
-
-class SourceError(Exception):
-    """One watch source ultimately failed; the run continues (warning, non-fatal)."""
-
-
-class _Response:
-    """Réponse HTTP minimale : status, corps texte, headers (interface stable)."""
-
-    def __init__(self, status: int, body: bytes, headers):
-        self.status_code = status
-        self.text = body.decode("utf-8", errors="replace")
-        self.headers = headers
-
-    def json(self):
-        return json.loads(self.text)
-
-
-class _HttpClient:
-    """Client HTTP synchrone minimal sur stdlib urllib — zéro dépendance réseau.
-
-    Couvre exactement la surface du watch : GET JSON paginé (params encodés
-    en UTF-8 : espace ``%20``, ``+`` en ``%2B``), GET RSS, POST JSON-RPC
-    MCP avec session header. Les statuts 4xx/5xx sont retournés en réponse
-    (pas d'exception) — la politique retry/échec appartient aux appelants.
-    """
-
-    def __init__(self, timeout: int = 15) -> None:
-        self._timeout = timeout
-
-    def _open(self, url: str, data: bytes | None, headers: dict | None, timeout: int) -> _Response:
-        request = Request(url, data=data, headers=headers or {})
-        try:
-            with urlopen(request, timeout=timeout) as resp:
-                return _Response(resp.status, resp.read(), resp.headers)
-        except HTTPError as exc:  # 4xx/5xx : le corps reste lisible
-            return _Response(exc.code, exc.read(), exc.headers)
-
-    def get(
-        self,
-        url: str,
-        *,
-        params: dict | None = None,
-        headers: dict | None = None,
-        timeout: int | None = None,
-    ) -> _Response:
-        if params:
-            url = f"{url}?{urlencode(params, quote_via=quote)}"
-        return self._open(url, None, headers, timeout if timeout is not None else self._timeout)
-
-    def post(self, url: str, *, json: dict | None = None, headers: dict | None = None) -> _Response:
-        data = None if json is None else _dumps(json)
-        return self._open(url, data, headers, self._timeout)
-
-
-def _get_json(client, url: str, *, params: dict | None = None, headers: dict | None = None):
-    """GET JSON with retry/backoff on {429, 5xx} and network errors.
-
-    Other 4xx (404/401/403) are not retried. Raises :class:`SourceError` when
-    the source ultimately fails after ``_RETRIES`` attempts.
-    """
-    last: Exception | None = None
-    for attempt in range(_RETRIES):
-        if attempt:
-            time.sleep(_BACKOFF[attempt - 1])
-        try:
-            # timeout réseau hérité du client (_HttpClient(timeout=15)) — borne
-            # explicite C9 (v6.0.p), jamais désactivée.
-            resp = client.get(url, params=params, headers=headers)
-        except (URLError, OSError, TimeoutError) as exc:
-            # réseau : DNS, connexion refusée/reset, timeout → retry.
-            last = exc
-            continue
-        if resp.status_code == 429 or resp.status_code >= 500:
-            last = RuntimeError(f"HTTP {resp.status_code}")
-            continue
-        if resp.status_code >= 400:
-            raise SourceError(f"{url}: HTTP {resp.status_code}")
-        try:
-            return resp.json()
-        except (TypeError, ValueError) as exc:  # includes json.JSONDecodeError
-            last = exc
-            continue
-    raise SourceError(f"{url}: failed after {_RETRIES} attempts ({last})")
-
-
-def _github_headers() -> dict | None:
-    """Optional `Authorization: Bearer $GITHUB_TOKEN` when the env token is set."""
-    token = os.environ.get("GITHUB_TOKEN")
-    return {"Authorization": f"Bearer {token}"} if token else None
-
-
-def _github_json(client, url: str, *, params: dict | None = None):
-    """GitHub API call with authenticated fallback (v5.28 K3).
-
-    Tries plain HTTP (+ GITHUB_TOKEN env) first; on failure (private repo,
-    rename 404, anonymous rate-limit) falls back to the authenticated ``gh``
-    CLI so every GitHub source works in the same way as the watch.
-    """
-    try:
-        return _get_json(client, url, params=params, headers=_github_headers())
-    except SourceError:
-        path = url.removeprefix("https://api.github.com/")
-        if params:
-            # safe="+": le + est un espace dans les requêtes GitHub (search q=...),
-            # quote() l'encoderait en %2B et casserait la query (v5.30).
-            path = (
-                path + "?" + "&".join(f"{k}={quote(str(v), safe='+')}" for k, v in params.items())
-            )
-        return _gh_api(path)
 
 
 # ---------------------------------------------------------------- npm -------
@@ -523,31 +435,6 @@ def _fetch_releases(
             }
         )
     return changes, in_window
-
-
-def _gh_api(endpoint: str) -> dict | list:
-    """Query the GitHub API through the authenticated ``gh`` CLI.
-
-    Used as a fallback for private/renamed repos when plain HTTP fails (404/403).
-    Runs ``gh api <endpoint>`` and parses its JSON output; any failure raises
-    :class:`SourceError`.
-    """
-    try:
-        proc = subprocess.run(
-            ["gh", "api", endpoint, "--paginate"],
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:  # binary absent / hang
-        raise SourceError(f"gh api {endpoint}: {exc}") from exc
-    if proc.returncode != 0:
-        raise SourceError(f"gh api {endpoint}: {(proc.stderr or '').strip()[:180]}")
-    try:
-        return json.loads(proc.stdout or "null")
-    except json.JSONDecodeError as exc:
-        raise SourceError(f"gh api {endpoint}: sortie JSON invalide") from exc
 
 
 #: max items emitted per list/web source per run (anti-explosion, v5.30).
@@ -1040,52 +927,6 @@ def _fetch_watch_repos(
     return items
 
 
-# ---------------------------------------------------------------- dedup -------
-def _dedup_key(item: dict) -> str:
-    """repo_url if non-empty, else npm_package (name as last-resort key)."""
-    return item.get("repo_url") or item.get("npm_package") or item.get("name") or ""
-
-
-def _preferred_record(a: dict, b: dict) -> dict:
-    """Most complete record: non-empty description, then earliest published_at."""
-    a_desc, b_desc = a.get("description") or "", b.get("description") or ""
-    if a_desc and not b_desc:
-        return a
-    if b_desc and not a_desc:
-        return b
-    a_ts, b_ts = a.get("published_at"), b.get("published_at")
-    if a_ts and b_ts:
-        return a if a_ts <= b_ts else b
-    return b if b_ts and not a_ts else a
-
-
-def _merge_into(existing: dict, item: dict) -> dict:
-    """Merge `item` (same dedup key) into `existing`; return the surviving record."""
-    record = _preferred_record(existing, item)
-    merged = dict(record)
-    merged["repo_url"] = existing["repo_url"] or item["repo_url"] or ""
-    merged["npm_package"] = existing.get("npm_package") or item.get("npm_package")
-    merged["found_via"] = list(existing["found_via"])
-    for source in item.get("found_via") or []:
-        if source not in merged["found_via"]:
-            merged["found_via"].append(source)
-    merged["new_repo"] = bool(existing.get("new_repo") or item.get("new_repo"))
-    return merged
-
-
-def _add_item(items: dict[str, dict], item: dict) -> None:
-    key = _dedup_key(item)
-    existing = items.get(key)
-    items[key] = _merge_into(existing, item) if existing is not None else dict(item)
-
-
-def _canonical_found_via(found_via: list[str]) -> list[str]:
-    """Re-order found_via to the canonical npm, github, mcp, releases sequence."""
-    ordered = [source for source in FOUND_VIA_ORDER if source in found_via]
-    return ordered or list(found_via)
-
-
-# ---------------------------------------------------------------- orchestration
 def _collect(cfg, client, start: datetime, end: datetime) -> tuple[dict, int]:
     counts_by_source = {source: 0 for source in FOUND_VIA_ORDER}
     warnings: list[dict] = []
@@ -1136,33 +977,6 @@ def _collect(cfg, client, start: datetime, end: datetime) -> tuple[dict, int]:
     )
 
 
-def _finalize_items(items: dict[str, dict]) -> list[dict]:
-    result: list[dict] = []
-    for record in items.values():
-        published = record.get("published_at") or datetime(1970, 1, 1, tzinfo=UTC)
-        result.append(
-            {
-                "name": record.get("name") or "",
-                "category": record.get("category") or "plugin",
-                "repo_url": record.get("repo_url") or "",
-                "npm_package": record.get("npm_package"),
-                # passthrough (Task 4) : alimente signature.version de la mémoire.
-                "version": record.get("version"),
-                "description": record.get("description") or "",
-                "published_at": _iso(published),
-                "found_via": _canonical_found_via(record.get("found_via") or []),
-                "new_repo": bool(record.get("new_repo")),
-            }
-        )
-    result.sort(
-        key=lambda item: (
-            -(parse_iso_ts(item["published_at"]) or datetime(1970, 1, 1, tzinfo=UTC)).timestamp(),
-            item["name"],
-        )
-    )
-    return result
-
-
 def _fail_message(exc: Exception) -> str:
     short = str(exc) or type(exc).__name__
     if len(short) > 120:
@@ -1191,3 +1005,30 @@ def run(
     if client is None:
         client = _HttpClient(timeout=15)
     return _collect(cfg, client, start, run_time)
+
+
+__all__ = [
+    "FOUND_VIA_ORDER",
+    "_BACKOFF",
+    "_RETRIES",
+    "_dumps",
+    "SOURCE_GITHUB",
+    "SOURCE_MCP",
+    "SOURCE_NPM",
+    "SOURCE_RELEASES",
+    "SOURCE_WATCH",
+    "SourceError",
+    "_HttpClient",
+    "_Response",
+    "_add_item",
+    "_canonical_found_via",
+    "_dedup_key",
+    "_finalize_items",
+    "_gh_api",
+    "_get_json",
+    "_github_headers",
+    "_github_json",
+    "_merge_into",
+    "_preferred_record",
+    "run",
+]

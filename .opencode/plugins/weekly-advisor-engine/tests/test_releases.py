@@ -114,7 +114,7 @@ def npm_payload(*packages):
 
 
 def test_happy_path_all_sources(monkeypatch):
-    monkeypatch.setattr(releases, "_BACKOFF", (0.0, 0.0))
+    monkeypatch.setattr(releases._http, "_BACKOFF", (0.0, 0.0))
     handler = make_handler(
         {
             URL_NPM: npm_payload(
@@ -264,7 +264,7 @@ def test_run_lookback_days_override_widens_sources(monkeypatch):
     Paquet daté 2026-07-25 : hors fenêtre 7 j (start 08-03), inclus dans 21 j
     (start 07-20). La config n'est pas modifiée sur disque.
     """
-    monkeypatch.setattr(releases, "_BACKOFF", (0.0, 0.0))
+    monkeypatch.setattr(releases._http, "_BACKOFF", (0.0, 0.0))
     handler = make_handler(
         {
             URL_NPM: npm_payload(
@@ -295,7 +295,7 @@ def test_run_lookback_days_override_widens_sources(monkeypatch):
 
 # -----------------------------------------------------------------------------
 def test_intra_run_dedup_npm_and_github(monkeypatch):
-    monkeypatch.setattr(releases, "_BACKOFF", (0.0, 0.0))
+    monkeypatch.setattr(releases._http, "_BACKOFF", (0.0, 0.0))
     handler = make_handler(
         {
             URL_NPM: npm_payload(
@@ -375,8 +375,8 @@ def test_merge_prefers_github_description_when_npm_empty():
 
 # -----------------------------------------------------------------------------
 def test_all_sources_failing_exit_1_warnings_filled(monkeypatch):
-    monkeypatch.setattr(releases, "_BACKOFF", (0.0, 0.0))
-    monkeypatch.setattr(releases, "_gh_api", no_gh)
+    monkeypatch.setattr(releases._http, "_BACKOFF", (0.0, 0.0))
+    monkeypatch.setattr(releases._http, "_gh_api", no_gh)
 
     def handler(url, params, headers):
         if url == URL_NPM:
@@ -404,7 +404,7 @@ def test_all_sources_failing_exit_1_warnings_filled(monkeypatch):
 
 # -----------------------------------------------------------------------------
 def test_releases_keyword_relevance_0_1_2(monkeypatch):
-    monkeypatch.setattr(releases, "_BACKOFF", (0.0, 0.0))
+    monkeypatch.setattr(releases._http, "_BACKOFF", (0.0, 0.0))
     handler = make_handler(
         {
             URL_NPM: npm_payload(),
@@ -444,7 +444,7 @@ def test_releases_keyword_relevance_0_1_2(monkeypatch):
 
 # -----------------------------------------------------------------------------
 def test_period_filtering_excludes_items_outside_window(monkeypatch):
-    monkeypatch.setattr(releases, "_BACKOFF", (0.0, 0.0))
+    monkeypatch.setattr(releases._http, "_BACKOFF", (0.0, 0.0))
     handler = make_handler(
         {
             URL_NPM: npm_payload(
@@ -502,8 +502,8 @@ def test_period_filtering_excludes_items_outside_window(monkeypatch):
 
 # -----------------------------------------------------------------------------
 def test_partial_source_failure_exit_0(monkeypatch):
-    monkeypatch.setattr(releases, "_BACKOFF", (0.0, 0.0))
-    monkeypatch.setattr(releases, "_gh_api", no_gh)
+    monkeypatch.setattr(releases._http, "_BACKOFF", (0.0, 0.0))
+    monkeypatch.setattr(releases._http, "_gh_api", no_gh)
 
     def handler(url, params, headers):
         if url == URL_NPM:
@@ -577,7 +577,7 @@ def no_gh(endpoint: str):
 
 
 def test_watch_repos_emits_release_in_window(monkeypatch):
-    monkeypatch.setattr(releases, "_BACKOFF", (0.0, 0.0))
+    monkeypatch.setattr(releases._http, "_BACKOFF", (0.0, 0.0))
     handler = make_handler(
         {
             URL_WATCH_INFO: {
@@ -613,7 +613,7 @@ def test_watch_repos_emits_release_in_window(monkeypatch):
 
 
 def test_watch_repos_silent_when_no_window_activity(monkeypatch):
-    monkeypatch.setattr(releases, "_BACKOFF", (0.0, 0.0))
+    monkeypatch.setattr(releases._http, "_BACKOFF", (0.0, 0.0))
     handler = make_handler(
         {
             URL_WATCH_INFO: {
@@ -640,7 +640,7 @@ def test_watch_repos_silent_when_no_window_activity(monkeypatch):
 
 def test_watch_repos_falls_back_to_gh(monkeypatch):
     """Plain HTTP 404 (repo privé/renommé) → fallback authentifié via `gh api`."""
-    monkeypatch.setattr(releases, "_BACKOFF", (0.0, 0.0))
+    monkeypatch.setattr(releases._http, "_BACKOFF", (0.0, 0.0))
 
     def fake_gh(endpoint: str):
         if endpoint.startswith("repos/adeo/ai-skills/releases"):
@@ -655,7 +655,7 @@ def test_watch_repos_falls_back_to_gh(monkeypatch):
             }
         raise AssertionError(f"endpoint gh inattendu: {endpoint}")
 
-    monkeypatch.setattr(releases, "_gh_api", fake_gh)
+    monkeypatch.setattr(releases._http, "_gh_api", fake_gh)
     handler = make_handler(
         {
             URL_WATCH_INFO: urllib.error.URLError("connection reset"),
@@ -680,7 +680,7 @@ def test_watch_repos_falls_back_to_gh(monkeypatch):
 
 def test_github_topic_search_falls_back_to_gh(monkeypatch):
     """K3: le topic search utilise le fallback gh quand l'HTTP anonyme échoue."""
-    monkeypatch.setattr(releases, "_BACKOFF", (0.0, 0.0))
+    monkeypatch.setattr(releases._http, "_BACKOFF", (0.0, 0.0))
 
     def fake_gh(endpoint):
         if endpoint.startswith("search/repositories"):
@@ -699,7 +699,7 @@ def test_github_topic_search_falls_back_to_gh(monkeypatch):
             return []
         raise AssertionError(f"endpoint gh inattendu: {endpoint}")
 
-    monkeypatch.setattr(releases, "_gh_api", fake_gh)
+    monkeypatch.setattr(releases._http, "_gh_api", fake_gh)
     handler = make_handler(
         {
             URL_GITHUB: urllib.error.URLError("connection reset"),  # HTTP échoue
@@ -716,7 +716,7 @@ def test_github_topic_search_falls_back_to_gh(monkeypatch):
 
 def test_watch_repos_commits_fallback_in_window(monkeypatch):
     """v5.30 (3) : dernier push post-clôture mais commits dans la fenêtre → item émis."""
-    monkeypatch.setattr(releases, "_BACKOFF", (0.0, 0.0))
+    monkeypatch.setattr(releases._http, "_BACKOFF", (0.0, 0.0))
     handler = make_handler(
         {
             URL_WATCH_INFO: {
@@ -774,7 +774,7 @@ def test_watch_list_baseline_then_diff(monkeypatch, tmp_path):
             return {"content": b64.b64encode(readme.encode()).decode()}
         raise AssertionError(endpoint)
 
-    monkeypatch.setattr(releases, "_gh_api", fake_gh)
+    monkeypatch.setattr(releases._http, "_gh_api", fake_gh)
     client = FakeClient(lambda url, p, h: (_ for _ in ()).throw(urllib.error.URLError("reset")))
     end = _dt(2026, 8, 14)
 
@@ -827,7 +827,7 @@ def test_fetch_rss_atom_and_rss2():
 
 
 def test_fetch_github_topics(monkeypatch):
-    monkeypatch.setattr(releases, "_BACKOFF", (0.0, 0.0))
+    monkeypatch.setattr(releases._http, "_BACKOFF", (0.0, 0.0))
 
     def fake_gh(endpoint):
         if endpoint.startswith("search/repositories"):
@@ -851,7 +851,7 @@ def test_fetch_github_topics(monkeypatch):
             }
         raise AssertionError(endpoint)
 
-    monkeypatch.setattr(releases, "_gh_api", fake_gh)
+    monkeypatch.setattr(releases._http, "_gh_api", fake_gh)
     client = FakeClient(lambda url, p, h: (_ for _ in ()).throw(urllib.error.URLError("reset")))
     items = releases._fetch_github_topics(
         client, "claude-code", _dt(2026, 8, 1), _dt(2026, 8, 14), 5
@@ -1059,7 +1059,7 @@ def test_fetch_radar_missing_mcp_url_raises_clear_error(tmp_path):
 
 def test_collect_routes_radar_entries(monkeypatch, tmp_path):
     """_collect route le type radar : source_id `radar:<name>`, project_root transmis."""
-    monkeypatch.setattr(releases, "_BACKOFF", (0.0, 0.0))
+    monkeypatch.setattr(releases._http, "_BACKOFF", (0.0, 0.0))
     seen: dict = {}
 
     def fake_radar(client, entry, start, end, *, project_root):
@@ -1137,7 +1137,7 @@ def test_config_parses_radar_watch_entry(tmp_path):
 
 
 class _UrllibRecorder:
-    """Stub de `releases.urlopen` : enregistre (url, timeout, data), rend un contexte."""
+    """Stub de `releases._http.urlopen` : enregistre (url, timeout, data), rend un contexte."""
 
     def __init__(self, status: int = 200, body: bytes = b"{}", headers: dict | None = None):
         self.status = status
@@ -1178,7 +1178,7 @@ def test_response_decodes_utf8_replace_and_json():
 def test_http_client_get_encodes_params_and_timeout(monkeypatch):
     """GET : params encodés UTF-8 (%20 pour l'espace, %2B pour `+`), timeout du client."""
     rec = _UrllibRecorder(body=b'{"ok": true}')
-    monkeypatch.setattr(releases, "urlopen", rec)
+    monkeypatch.setattr(releases._http, "urlopen", rec)
     client = releases._HttpClient(timeout=7)
 
     resp = client.get("https://x.test/s", params={"q": "a b+c", "per_page": 50})
@@ -1193,7 +1193,7 @@ def test_http_client_get_encodes_params_and_timeout(monkeypatch):
 def test_http_client_get_timeout_override_and_no_params(monkeypatch):
     """Timeout par appel wins ; sans params, aucune query string n'est ajoutée."""
     rec = _UrllibRecorder(body=b"[]")
-    monkeypatch.setattr(releases, "urlopen", rec)
+    monkeypatch.setattr(releases._http, "urlopen", rec)
     client = releases._HttpClient(timeout=15)
 
     client.get("https://x.test/s", timeout=1)
@@ -1206,7 +1206,7 @@ def test_http_client_get_timeout_override_and_no_params(monkeypatch):
 def test_http_client_post_serializes_json(monkeypatch):
     """POST : corps JSON sérialisé, aucun timeout par appel (celui du client)."""
     rec = _UrllibRecorder(body=b'{"result": 1}')
-    monkeypatch.setattr(releases, "urlopen", rec)
+    monkeypatch.setattr(releases._http, "urlopen", rec)
 
     releases._HttpClient(timeout=3).post(
         "https://x.test/mcp", json={"method": "initialize"}, headers={"mcp-session-id": "s"}
@@ -1221,7 +1221,7 @@ def test_http_client_post_serializes_json(monkeypatch):
 def test_http_client_post_without_body_sends_no_data(monkeypatch):
     """POST sans json → data None (le corps est porté par json=..., pas par data)."""
     rec = _UrllibRecorder(body=b"")
-    monkeypatch.setattr(releases, "urlopen", rec)
+    monkeypatch.setattr(releases._http, "urlopen", rec)
 
     releases._HttpClient().post("https://x.test/mcp")
 
@@ -1234,7 +1234,7 @@ def test_http_client_http_error_is_returned_not_raised(monkeypatch):
     def boom(request, timeout=None):
         raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, io.BytesIO(b"missing"))
 
-    monkeypatch.setattr(releases, "urlopen", boom)
+    monkeypatch.setattr(releases._http, "urlopen", boom)
     resp = releases._HttpClient().get("https://x.test/s")
 
     assert resp.status_code == 404
@@ -1247,7 +1247,7 @@ def test_http_client_network_error_propagates(monkeypatch):
     def boom(request, timeout=None):
         raise urllib.error.URLError("dns")
 
-    monkeypatch.setattr(releases, "urlopen", boom)
+    monkeypatch.setattr(releases._http, "urlopen", boom)
     with pytest.raises(urllib.error.URLError):
         releases._HttpClient().get("https://x.test/s")
 
@@ -1274,7 +1274,7 @@ class _CountingClient:
 def _no_sleep(monkeypatch) -> list[float]:
     """Neutralise time.sleep et enregistre les durées de backoff demandées."""
     slept: list[float] = []
-    monkeypatch.setattr(releases.time, "sleep", slept.append)
+    monkeypatch.setattr(releases._http.time, "sleep", slept.append)
     return slept
 
 
@@ -1301,12 +1301,12 @@ def test_get_json_retries_retryable_statuses_then_raises(monkeypatch, status):
     client = _CountingClient([FakeResponse({}, status=status)])
 
     with pytest.raises(
-        releases.SourceError, match=f"failed after {releases._RETRIES} attempts"
+        releases.SourceError, match=f"failed after {releases._http._RETRIES} attempts"
     ) as ei:
         releases._get_json(client, "https://x.test/a")
 
-    assert len(client.calls) == releases._RETRIES
-    assert slept == list(releases._BACKOFF)
+    assert len(client.calls) == releases._http._RETRIES
+    assert slept == list(releases._http._BACKOFF)
     assert f"HTTP {status}" in str(ei.value)  # la dernière cause est citée
 
 
@@ -1330,7 +1330,7 @@ def test_get_json_recovers_on_second_attempt(monkeypatch):
 
     assert releases._get_json(client, "https://x.test/a") == {"ok": True}
     assert len(client.calls) == 2
-    assert slept == [releases._BACKOFF[0]]
+    assert slept == [releases._http._BACKOFF[0]]
 
 
 @pytest.mark.parametrize(
@@ -1350,8 +1350,8 @@ def test_get_json_retries_network_errors(monkeypatch, exc):
     with pytest.raises(releases.SourceError, match="failed after 3 attempts"):
         releases._get_json(client, "https://x.test/a")
 
-    assert len(client.calls) == releases._RETRIES
-    assert slept == list(releases._BACKOFF)
+    assert len(client.calls) == releases._http._RETRIES
+    assert slept == list(releases._http._BACKOFF)
 
 
 def test_get_json_retries_undecodable_body(monkeypatch):
@@ -1361,13 +1361,13 @@ def test_get_json_retries_undecodable_body(monkeypatch):
 
     with pytest.raises(releases.SourceError, match="failed after 3 attempts"):
         releases._get_json(client, "https://x.test/a")
-    assert len(client.calls) == releases._RETRIES
+    assert len(client.calls) == releases._http._RETRIES
 
 
 def test_get_json_uses_client_default_timeout_only(monkeypatch):
     """`_get_json` ne passe pas de timeout : la borne reste celle du client (15 s)."""
     rec = _UrllibRecorder(body=b"{}")
-    monkeypatch.setattr(releases, "urlopen", rec)
+    monkeypatch.setattr(releases._http, "urlopen", rec)
 
     releases._get_json(releases._HttpClient(timeout=15), "https://x.test/a")
 
@@ -1407,7 +1407,7 @@ def test_github_json_falls_back_to_gh_with_encoded_params(monkeypatch):
         seen.append(endpoint)
         return {"items": []}
 
-    monkeypatch.setattr(releases, "_gh_api", fake_gh)
+    monkeypatch.setattr(releases._http, "_gh_api", fake_gh)
     client = _CountingClient([FakeResponse({}, status=404)])
 
     assert releases._github_json(
@@ -1422,7 +1422,7 @@ def test_github_json_falls_back_to_gh_with_encoded_params(monkeypatch):
 def test_github_json_falls_back_without_params(monkeypatch):
     """Sans params, le endpoint gh est le path nu (pas de `?`)."""
     seen: list[str] = []
-    monkeypatch.setattr(releases, "_gh_api", lambda ep: seen.append(ep) or [])
+    monkeypatch.setattr(releases._http, "_gh_api", lambda ep: seen.append(ep) or [])
     client = _CountingClient([FakeResponse({}, status=403)])
 
     releases._github_json(client, "https://api.github.com/repos/anomalyco/opencode/releases")
@@ -1432,7 +1432,7 @@ def test_github_json_falls_back_without_params(monkeypatch):
 
 def test_github_json_propagates_gh_failure(monkeypatch):
     """Si le fallback gh échoue aussi, son SourceError remonte au run_source."""
-    monkeypatch.setattr(releases, "_gh_api", no_gh)
+    monkeypatch.setattr(releases._http, "_gh_api", no_gh)
     client = _CountingClient([FakeResponse({}, status=404)])
 
     with pytest.raises(releases.SourceError, match="gh indisponible"):
@@ -1455,9 +1455,9 @@ def test_gh_api_parses_json_stdout(monkeypatch):
         seen.append((argv, kw))
         return _Proc(stdout='{"full_name": "a/b"}')
 
-    monkeypatch.setattr(releases.subprocess, "run", fake_run)
+    monkeypatch.setattr(releases._http.subprocess, "run", fake_run)
 
-    assert releases._gh_api("repos/a/b") == {"full_name": "a/b"}
+    assert releases._http._gh_api("repos/a/b") == {"full_name": "a/b"}
     argv, kw = seen[0]
     assert argv == ["gh", "api", "repos/a/b", "--paginate"]
     assert kw["capture_output"] is True
@@ -1467,26 +1467,28 @@ def test_gh_api_parses_json_stdout(monkeypatch):
 def test_gh_api_non_zero_exit_truncates_stderr(monkeypatch):
     """rc != 0 : SourceError avec stderr tronqué à 180 caractères."""
     monkeypatch.setattr(
-        releases.subprocess, "run", lambda argv, **kw: _Proc(returncode=1, stderr="E" * 300)
+        releases._http.subprocess, "run", lambda argv, **kw: _Proc(returncode=1, stderr="E" * 300)
     )
     with pytest.raises(releases.SourceError) as excinfo:
-        releases._gh_api("repos/a/b")
+        releases._http._gh_api("repos/a/b")
     assert "E" * 180 in str(excinfo.value)
     assert "E" * 181 not in str(excinfo.value)
 
 
 def test_gh_api_invalid_json_raises(monkeypatch):
-    monkeypatch.setattr(releases.subprocess, "run", lambda argv, **kw: _Proc(stdout="not json"))
+    monkeypatch.setattr(
+        releases._http.subprocess, "run", lambda argv, **kw: _Proc(stdout="not json")
+    )
     with pytest.raises(releases.SourceError, match="sortie JSON invalide"):
-        releases._gh_api("repos/a/b")
+        releases._http._gh_api("repos/a/b")
 
 
 @pytest.mark.parametrize("exc", [OSError("gh absent"), subprocess.TimeoutExpired("gh", 30)])
 def test_gh_api_transport_failure_raises(monkeypatch, exc):
     """Binaire absent ou timeout → SourceError (jamais d'exception subprocess brute)."""
-    monkeypatch.setattr(releases.subprocess, "run", _raise(exc))
+    monkeypatch.setattr(releases._http.subprocess, "run", _raise(exc))
     with pytest.raises(releases.SourceError, match="gh api repos/a/b"):
-        releases._gh_api("repos/a/b")
+        releases._http._gh_api("repos/a/b")
 
 
 def _raise(exc):
@@ -1709,7 +1711,7 @@ def test_collect_seeds_counts_for_every_canonical_source():
 
 def test_collect_exit_1_when_every_source_fails(monkeypatch):
     """rc=1 seulement si AUCUNE source n'a réussi (0 item mais source ok ⇒ rc=0)."""
-    monkeypatch.setattr(releases, "_gh_api", no_gh)
+    monkeypatch.setattr(releases._http, "_gh_api", no_gh)
     _no_sleep(monkeypatch)
 
     def handler(url, params, headers):
@@ -1753,7 +1755,7 @@ def test_collect_watch_repos_fallback_to_watch_entries(monkeypatch):
 def test_collect_empty_watch_does_not_inflate_ok_sources(monkeypatch):
     """Pas d'entrée watch ⇒ pas de source no-op : un échec réseau seul donne rc=1."""
     _no_sleep(monkeypatch)
-    monkeypatch.setattr(releases, "_gh_api", no_gh)
+    monkeypatch.setattr(releases._http, "_gh_api", no_gh)
     called: list[int] = []
     monkeypatch.setattr(releases, "_collect_watch_sources", lambda *a, **k: called.append(1))
 

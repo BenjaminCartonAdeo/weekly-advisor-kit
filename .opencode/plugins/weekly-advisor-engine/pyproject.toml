@@ -21,6 +21,7 @@ build-backend = "setuptools.build_meta"
 packages = [
     "weekly_telemetry_aggregator",
     "weekly_telemetry_aggregator.aggregator",
+    "weekly_telemetry_aggregator.releases",
     "weekly_telemetry_aggregator.providers",
     "weekly_telemetry_aggregator.providers.implementations",
 ]
