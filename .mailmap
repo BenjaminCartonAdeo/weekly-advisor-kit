@@ -1,0 +1,4 @@
+# Unify the two commit identities sharing one email, so shortlog/blame and the
+# repowise ownership metrics (bus factor, hotspot ownership) do not split one
+# person in two. Display-only: this rewrites no history.
+Benjamin CARTON <benjamin.carton@ext.adeo.com> BenjaminCartonAdeo <benjamin.carton@ext.adeo.com>
