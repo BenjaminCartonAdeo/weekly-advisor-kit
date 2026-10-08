@@ -2000,7 +2000,7 @@ def test_fetch_npm_maps_only_in_window_objects(monkeypatch):
         {"bad": "object"},
         {"package": _npm_pkg(name="in2", date="2026-08-06T10:00:00Z")},
     ]
-    monkeypatch.setattr(releases, "_npm_fetch_pages", lambda client: objects)
+    monkeypatch.setattr(releases._npm, "_npm_fetch_pages", lambda client: objects)
 
     items = releases._fetch_npm(None, PERIOD_START, PERIOD_END)
 

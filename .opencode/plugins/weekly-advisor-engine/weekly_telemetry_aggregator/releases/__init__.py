@@ -33,12 +33,16 @@ Sous-modules :
 from __future__ import annotations
 
 import base64
-import json
+import json as json
+import os as os
 import re
+import subprocess as subprocess
+import time as time
 import xml.etree.ElementTree as ET
-from collections.abc import Mapping
-from datetime import UTC, datetime, timedelta
-from email.utils import parsedate_to_datetime
+from collections.abc import Mapping as Mapping
+from datetime import UTC as UTC
+from datetime import datetime, timedelta
+from email.utils import parsedate_to_datetime as parsedate_to_datetime
 from pathlib import Path
 
 # stdlib names were reachable on the old single module (`releases.urlopen`, …).
@@ -67,6 +71,36 @@ from ._http import (
     _HttpClient,
     _Response,
 )
+from ._npm import (
+    NPM_MAX_ROWS,
+    NPM_PAGE_SIZE,
+    NPM_QUERY,
+    URL_NPM,
+    _fetch_npm,
+    _mcp_map_entry,
+    _mcp_repo_url,
+    _npm_category,
+    _npm_fetch_pages,
+    _npm_map_object,
+)
+from ._radar import (
+    _RADAR_DATE_RE,
+    _RADAR_HEADERS,
+    MCP_PROTOCOL_VERSION,
+    _decode_mcp_body,
+    _fetch_radar,
+    _radar_markdown,
+    _radar_mcp_url,
+    _radar_post,
+)
+from ._sources import (
+    WATCH_ITEMS_CAP,
+    _extract_markdown_links,
+    _fetch_rss,
+    _rss_date,
+    _rss_local,
+    _rss_map_node,
+)
 from .dedup import (
     FOUND_VIA_ORDER,
     SOURCE_GITHUB,
@@ -82,136 +116,12 @@ from .dedup import (
     _preferred_record,
 )
 
-#: npm search pagination (registry caps size at 250 rows per page).
-NPM_PAGE_SIZE = 250
-NPM_MAX_ROWS = 1000
-NPM_QUERY = "keywords:opencode-plugin,opencode"
 RELEASES_PER_PAGE = 100
 
 # URLs (one per source, resolved per run).
-URL_NPM = "https://registry.npmjs.org/-/v1/search"
 URL_GITHUB_TOPICS = "https://api.github.com/search/repositories"
 URL_MCP = "https://registry.modelcontextprotocol.io/v0.1/servers"
 URL_RELEASES = "https://api.github.com/repos/anomalyco/opencode/releases"
-
-
-# ---------------------------------------------------------------- npm -------
-def _npm_category(package: dict) -> str:
-    """Heuristic: "skill" when the name or keywords suggest a skill, else "plugin"."""
-    name = str(package.get("name") or "").lower()
-    keywords = package.get("keywords")
-    joined = " ".join(str(k).lower() for k in keywords) if isinstance(keywords, list) else ""
-    if "skill" in name or "skill" in joined:
-        return "skill"
-    return "plugin"
-
-
-def _npm_fetch_pages(client) -> list:
-    """npm search pages, up to NPM_MAX_ROWS when `total > 250`."""
-    params: dict = {"text": NPM_QUERY, "size": NPM_PAGE_SIZE}
-    payload = _get_json(client, URL_NPM, params=params)
-    total = int(payload.get("total") or 0) if isinstance(payload, dict) else 0
-    objects: list = payload.get("objects") if isinstance(payload, dict) else []
-    if not isinstance(objects, list):
-        objects = []
-    offset = NPM_PAGE_SIZE
-    while offset < total and offset < NPM_MAX_ROWS:
-        page = _get_json(
-            client, URL_NPM, params={"text": NPM_QUERY, "size": NPM_PAGE_SIZE, "from": offset}
-        )
-        page_objects = page.get("objects") if isinstance(page, dict) else []
-        if not isinstance(page_objects, list) or not page_objects:
-            break
-        objects.extend(page_objects)
-        offset += NPM_PAGE_SIZE
-    return objects
-
-
-def _npm_map_object(obj, start: datetime, end: datetime) -> dict | None:
-    """One npm search object → item, or None when malformed/out-of-window."""
-    package = obj.get("package") if isinstance(obj, dict) else None
-    if not isinstance(package, dict):
-        return None
-    published = parse_iso_ts(package.get("date"))
-    if published is None or not (start <= published <= end):
-        return None
-    links = package.get("links")
-    repo_url = links.get("repository") if isinstance(links, dict) else ""
-    name = str(package.get("name") or "")
-    return {
-        "name": name,
-        "category": _npm_category(package),
-        "repo_url": str(repo_url or "") if repo_url else "",
-        "npm_package": name or None,
-        "description": str(package.get("description") or ""),
-        "published_at": published,
-        "found_via": [SOURCE_NPM],
-        "new_repo": False,
-    }
-
-
-def _mcp_map_entry(entry, start: datetime, end: datetime) -> dict | None:
-    """One registry server entry → item, or None when filtered out."""
-    if not isinstance(entry, dict):
-        return None
-    outer_meta = entry.get("_meta") if isinstance(entry.get("_meta"), dict) else {}
-    official = outer_meta.get("io.modelcontextprotocol.registry/official")
-    if not isinstance(official, dict):
-        official = {}
-    # Defensive guard: skip non-latest revisions of an official server.
-    if official.get("isLatest") is False:
-        return None
-    inner = entry.get("server") if isinstance(entry.get("server"), dict) else entry
-    if not isinstance(inner, dict):
-        return None
-    status = str(inner.get("status") or official.get("status") or "")
-    if status == "deleted":
-        return None
-    published = parse_iso_ts(official.get("publishedAt") or inner.get("publishedAt"))
-    if published is None or not (start <= published <= end):
-        return None
-    return {
-        "name": str(inner.get("name") or inner.get("title") or ""),
-        "category": "mcp-server",
-        "repo_url": _mcp_repo_url(inner),
-        "npm_package": None,
-        "description": str(inner.get("description") or ""),
-        "published_at": published,
-        "found_via": [SOURCE_MCP],
-        "new_repo": False,
-    }
-
-
-def _rss_local(tag: str) -> str:
-    """Local XML name without namespace."""
-    return tag.rsplit("}", 1)[-1]
-
-
-def _rss_map_node(node, url: str, start: datetime, end: datetime) -> dict | None:
-    """One RSS/Atom entry/item node → article, or None when dateless/out-of-window."""
-    if _rss_local(node.tag) not in ("entry", "item"):
-        return None
-    title = link = published = None
-    for child in node.iter():
-        name = _rss_local(child.tag)
-        if name == "title" and title is None:
-            title = " ".join((child.text or "").split())[:160]
-        elif name == "link" and link is None:
-            link = (child.get("href") or (child.text or "")).strip()
-        elif name in ("updated", "published", "pubDate", "date") and published is None:
-            published = _rss_date((child.text or "").strip())
-    if published is not None and start <= published <= end and title and link:
-        return {
-            "name": title,
-            "category": "article",
-            "repo_url": link,
-            "npm_package": None,
-            "description": f"Article publié le {published:%Y-%m-%d}",
-            "published_at": published,
-            "found_via": [f"rss:{url}"],
-            "new_repo": False,
-        }
-    return None
 
 
 def _partition_watch_entries(watch_entries: list) -> tuple[list, list, list, list, list]:
@@ -301,17 +211,6 @@ def _build_ecosystem(cfg, start, end, items, changes, counts_by_source, warnings
     }
 
 
-def _fetch_npm(client, start: datetime, end: datetime) -> list[dict]:
-    """npm search, paginated up to NPM_MAX_ROWS when `total > 250`."""
-    items: list[dict] = []
-    for obj in _npm_fetch_pages(client):
-        mapped = _npm_map_object(obj, start, end)
-        if mapped is not None:
-            items.append(mapped)
-    return items
-
-
-# ---------------------------------------------------------------- github -----
 def _fetch_github_topics(
     client, topic: str, start: datetime, end: datetime, min_stars: int
 ) -> list[dict]:
@@ -347,22 +246,6 @@ def _fetch_github_topics(
             }
         )
     return items
-
-
-# ---------------------------------------------------------------- mcp --------
-def _mcp_repo_url(inner: dict) -> str:
-    """First remote URL: direct keys first, then the `remotes` list."""
-    for key in ("repository", "githubUrl", "homepage", "sourceUrl", "repositoryUrl"):
-        value = inner.get(key)
-        if isinstance(value, str) and value.startswith("http"):
-            return value
-    remotes = inner.get("remotes")
-    if isinstance(remotes, list):
-        for remote in remotes:
-            url = remote.get("url") if isinstance(remote, dict) else remote
-            if isinstance(url, str) and url.startswith("http"):
-                return url
-    return ""
 
 
 def _fetch_mcp(client, start: datetime, end: datetime) -> list[dict]:
@@ -437,21 +320,6 @@ def _fetch_releases(
     return changes, in_window
 
 
-#: max items emitted per list/web source per run (anti-explosion, v5.30).
-WATCH_ITEMS_CAP = 50
-
-
-def _extract_markdown_links(text: str) -> list[tuple[str, str]]:
-    """[(titre, url)] des liens markdown `[titre](https://...)` (listes type awesome-*)."""
-    out: list[tuple[str, str]] = []
-    for m in re.finditer(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", text or ""):
-        title = re.sub(r"[*_`]", "", m.group(1)).strip()
-        url = m.group(2).rstrip(".,;")
-        if title and url.startswith("http"):
-            out.append((title[:120], url))
-    return out
-
-
 def _link_category(url: str) -> str:
     """Heuristique de catégorie pour un lien de veille (défaut plugin)."""
     low = url.lower()
@@ -523,232 +391,6 @@ def _fetch_watch_list(client, repo: str, end: datetime, state_dir: Path) -> list
     ]
 
 
-def _rss_date(value: str | None):
-    """Date d'un flux RSS/Atom : RFC822 (pubDate) ou ISO (updated/published)."""
-    if not value:
-        return None
-    parsed = parse_iso_ts(value)
-    if parsed is not None:
-        return parsed
-    try:
-        return parsedate_to_datetime(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _fetch_rss(client, url: str, start: datetime, end: datetime) -> list[dict]:
-    """Flux RSS/Atom (type rss, v5.30) : items datés dans la fenêtre.
-
-    Parse défensif stdlib (ElementTree) : Atom (entry/updated) et RSS 2.0
-    (item/pubDate). Les items sans date sont ignorés (pas de datation fiable).
-    """
-    try:
-        resp = client.get(url, timeout=15)
-    except Exception as exc:  # noqa: BLE001
-        raise SourceError(f"rss {url}: {exc}") from exc
-    if resp.status_code >= 400:
-        raise SourceError(f"rss {url}: HTTP {resp.status_code}")
-    try:
-        root = ET.fromstring(resp.text or "")
-    except ET.ParseError as exc:
-        raise SourceError(f"rss {url}: XML invalide") from exc
-
-    items: list[dict] = []
-    for node in root.iter():
-        mapped = _rss_map_node(node, url, start, end)
-        if mapped is not None:
-            items.append(mapped)
-    return items
-
-
-# ---------------------------------------------------------------- radar ------
-#: Version de protocole MCP annoncée à l'initialize (streamable-http).
-MCP_PROTOCOL_VERSION = "2025-06-18"
-
-_RADAR_HEADERS = {
-    "Content-Type": "application/json",
-    "Accept": "application/json, text/event-stream",
-}
-
-_RADAR_DATE_RE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
-
-
-def _radar_mcp_url(project_root: Path | None, name: str) -> str:
-    """URL du serveur MCP ``name`` lue dans ``<project_root>/opencode.json``.
-
-    Le fichier opencode.json du kit est la source unique de vérité : aucune URL
-    de radar n'est codée en dur. Lève :class:`SourceError` avec un message nommant
-    la clé manquante quand la déclaration est absente ou mal formée.
-    """
-    if project_root is None:
-        raise SourceError(f"radar {name}: project_root non défini — opencode.json introuvable")
-    path = Path(project_root) / "opencode.json"
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise SourceError(f"radar {name}: {path} illisible ({exc})") from exc
-    except ValueError as exc:  # inclut json.JSONDecodeError
-        raise SourceError(f"radar {name}: {path} JSON invalide ({exc})") from exc
-    url = ""
-    if isinstance(raw, dict):
-        servers = raw.get("mcp")
-        if isinstance(servers, dict):
-            conf = servers.get(name)
-            if isinstance(conf, dict) and isinstance(conf.get("url"), str):
-                url = conf["url"]
-    if not url.startswith("http"):
-        raise SourceError(
-            f"radar {name}: clé mcp.{name}.url absente de opencode.json — "
-            "déclarer le serveur MCP dans la configuration du kit"
-        )
-    return url
-
-
-def _decode_mcp_body(text: str) -> dict:
-    """Corps de réponse JSON-RPC : JSON brut ou flux SSE (dernière ligne ``data:``)."""
-    body = (text or "").strip()
-    if body.startswith(("event:", "data:", "id:", "retry:")):
-        chunks = [ln[5:].strip() for ln in body.splitlines() if ln.startswith("data:")]
-        if not chunks:
-            raise ValueError("flux SSE sans ligne data:")
-        body = chunks[-1]
-    payload = json.loads(body or "{}")
-    if not isinstance(payload, dict):
-        raise ValueError("réponse JSON-RPC non objet")
-    return payload
-
-
-def _radar_post(client, url: str, payload: dict, *, session: str | None) -> tuple[dict, str | None]:
-    """POST JSON-RPC streamable-http ; renvoie (réponse décodée, mcp-session-id reçu).
-
-    Toute erreur (transport, HTTP ≥ 400, corps illisible, ``error`` JSON-RPC)
-    devient :class:`SourceError` — l'appelant bascule alors sur le repli RSS.
-    """
-    headers = dict(_RADAR_HEADERS)
-    if session:
-        headers["mcp-session-id"] = session
-    try:
-        resp = client.post(url, json=payload, headers=headers)
-    except Exception as exc:  # noqa: BLE001 - transport → repli RSS
-        raise SourceError(f"{url}: {exc}") from exc
-    if resp.status_code >= 400:
-        raise SourceError(f"{url}: HTTP {resp.status_code}")
-    try:
-        decoded = _decode_mcp_body(resp.text or "")
-    except ValueError as exc:
-        raise SourceError(f"{url}: réponse illisible ({exc})") from exc
-    rpc_error = decoded.get("error")
-    if isinstance(rpc_error, dict):
-        raise SourceError(f"{url}: erreur JSON-RPC {rpc_error.get('message') or rpc_error}")
-    session_out = resp.headers.get("mcp-session-id")
-    return decoded, session_out
-
-
-def _radar_markdown(client, entry: Mapping, url: str) -> str:
-    """Poignée MCP : ``initialize`` puis ``tools/call`` → texte markdown agrégé."""
-    name = str(entry.get("name") or "")
-    _init, session = _radar_post(
-        client,
-        url,
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": MCP_PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": {"name": "weekly-advisor-engine", "version": __version__},
-            },
-        },
-        session=None,
-    )
-    call, _session2 = _radar_post(
-        client,
-        url,
-        {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {"name": str(entry.get("tool") or ""), "arguments": {}},
-        },
-        session=session,
-    )
-    result = call.get("result")
-    if not isinstance(result, dict):
-        raise SourceError(f"radar {name}: réponse tools/call sans résultat")
-    content = result.get("content")
-    parts = (
-        [part.get("text") for part in content if isinstance(part, dict)]
-        if isinstance(content, list)
-        else []
-    )
-    text = "\n".join(part for part in parts if isinstance(part, str))
-    if not text.strip():
-        raise SourceError(f"radar {name}: contenu vide")
-    return text
-
-
-def _fetch_radar(
-    client,
-    entry: Mapping,
-    start: datetime,
-    end: datetime,
-    *,
-    project_root: Path | None,
-) -> list[dict]:
-    """Radar MCP (type radar) : liens datés du digest, repli RSS configuré.
-
-    1. URL résolue depuis ``<project_root>/opencode.json`` (``mcp[name].url``).
-    2. JSON-RPC brut : POST ``initialize`` puis POST ``tools/call``, session
-       reprise du header ``mcp-session-id``.
-    3. Liens markdown ``[titre](url)`` ; une date ISO sur la ligne fait foi
-       (``published_at``), les lignes non datées sont exclues — le digest
-       quotidien du radar retombe donc toujours dans la fenêtre hebdomadaire.
-    4. Échec MCP → repli ``rss_fallback`` via :func:`_fetch_rss` ; les deux
-       morts lèvent :class:`SourceError` (warning par source, run inchangé).
-    """
-    name = str(entry.get("name") or "")
-    fallback = str(entry.get("rss_fallback") or "")
-    # Résolution AVANT le try : une déclaration absente est une erreur de config
-    # (message clair immédiat), pas une panne MCP justifiant le repli RSS.
-    url = _radar_mcp_url(project_root, name)
-    try:
-        text = _radar_markdown(client, entry, url)
-    except Exception as exc:  # noqa: BLE001 - tout échec MCP bascule sur le RSS
-        if not fallback:
-            raise SourceError(
-                f"radar {name}: MCP indisponible et aucun rss_fallback ({exc})"
-            ) from exc
-        return _fetch_rss(client, fallback, start, end)
-
-    items: list[dict] = []
-    for line in text.splitlines():
-        links = _extract_markdown_links(line)
-        if not links:
-            continue
-        stamp = _RADAR_DATE_RE.search(line)
-        if stamp is None:
-            continue  # non daté → exclu (pas de datation fiable)
-        published = datetime(int(stamp[1]), int(stamp[2]), int(stamp[3]), tzinfo=UTC)
-        if not (start <= published <= end):
-            continue
-        for title, url in links:
-            items.append(
-                {
-                    "name": title,
-                    "category": "repo",
-                    "repo_url": url,
-                    "npm_package": None,
-                    "description": f"Lien partagé par le radar {name} le {published:%Y-%m-%d}",
-                    "published_at": published,
-                    "found_via": ["radar"],
-                    "new_repo": False,
-                }
-            )
-    return items[:WATCH_ITEMS_CAP]
-
-
-# ---------------------------------------------------------------- watch ------
 def _split_repo(repo: str) -> tuple[str, str]:
     """`owner/name` → (owner, name); case kept for display, slugified for the URL."""
     parts = str(repo or "").strip().strip("/").split("/")
@@ -1031,4 +673,104 @@ __all__ = [
     "_merge_into",
     "_preferred_record",
     "run",
+]
+
+
+__all__ = [
+    "__version__",
+    "_add_item",
+    "_build_ecosystem",
+    "_canonical_found_via",
+    "_collect",
+    "_collect_release_changes",
+    "_collect_watch_sources",
+    "_decode_mcp_body",
+    "_dedup_key",
+    "_dumps",
+    "_extract_markdown_links",
+    "_fail_message",
+    "_fetch_github_topics",
+    "_fetch_mcp",
+    "_fetch_npm",
+    "_fetch_radar",
+    "_fetch_releases",
+    "_fetch_rss",
+    "_fetch_watch_list",
+    "_fetch_watch_repos",
+    "_finalize_items",
+    "_get_json",
+    "_gh_api",
+    "_github_headers",
+    "_github_json",
+    "_HttpClient",
+    "_iso",
+    "_link_category",
+    "_load_snapshot",
+    "_mcp_map_entry",
+    "_mcp_repo_url",
+    "_merge_into",
+    "_npm_category",
+    "_npm_fetch_pages",
+    "_npm_map_object",
+    "_parse_anchor",
+    "_partition_watch_entries",
+    "_preferred_record",
+    "_process_watch_repo",
+    "_RADAR_DATE_RE",
+    "_RADAR_HEADERS",
+    "_radar_markdown",
+    "_radar_mcp_url",
+    "_radar_post",
+    "_release_summary",
+    "_Response",
+    "_RETRIES",
+    "_rss_date",
+    "_rss_local",
+    "_rss_map_node",
+    "_save_snapshot",
+    "_snapshot_path",
+    "_split_repo",
+    "_watch_repo_activity_fallback",
+    "_watch_repo_display_fields",
+    "_watch_repo_release_items",
+    "annotations",
+    "apply_lookback_override",
+    "base64",
+    "datetime",
+    "ET",
+    "FOUND_VIA_ORDER",
+    "HTTPError",
+    "json",
+    "Mapping",
+    "MCP_PROTOCOL_VERSION",
+    "NPM_MAX_ROWS",
+    "NPM_PAGE_SIZE",
+    "NPM_QUERY",
+    "os",
+    "parse_iso_ts",
+    "parsedate_to_datetime",
+    "Path",
+    "quote",
+    "re",
+    "RELEASES_PER_PAGE",
+    "Request",
+    "run",
+    "SOURCE_GITHUB",
+    "SOURCE_MCP",
+    "SOURCE_NPM",
+    "SOURCE_RELEASES",
+    "SOURCE_WATCH",
+    "SourceError",
+    "subprocess",
+    "time",
+    "timedelta",
+    "URL_GITHUB_TOPICS",
+    "URL_MCP",
+    "URL_NPM",
+    "URL_RELEASES",
+    "urlencode",
+    "URLError",
+    "urlopen",
+    "UTC",
+    "WATCH_ITEMS_CAP",
 ]
