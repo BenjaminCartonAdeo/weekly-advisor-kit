@@ -135,8 +135,10 @@ jobs:
           path: artifacts
       - name: Gates repowise (non bloquantes au démarrage)
         # Repowise resolves every path from the repository root, NOT from the
-        # package dir the test job defaults to, so this step runs from `.`
-        # explicitly rather than inheriting the job default.
+        # package dir the test job defaults to. This job declares no
+        # `defaults.run`, so its steps already run from the repository root --
+        # and `working-directory` is deliberately absent here because GitHub
+        # rejects that key on a `uses` step (it is only valid on `run`).
         uses: repowise-dev/repowise@v0.55.0
         # Deliberate for the first runs: the gates are untested against this
         # repository, and a first red gate must not block every pull request.
@@ -158,4 +160,3 @@ jobs:
           risk-fail-above-percentile: 95
           # Same release as the `uses:` ref, so the action installs exactly that.
           version: v0.55.0
-        working-directory: .
