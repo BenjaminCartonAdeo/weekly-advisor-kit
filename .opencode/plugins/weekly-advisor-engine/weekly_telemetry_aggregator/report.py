@@ -3196,10 +3196,19 @@ _WRITTEN_COUNT_RE = re.compile(
     r"vingt|trente|quarante|cinquante|soixante|cent|mille"
     r")\s+(?:" + _COUNT_UNITS + r")(?![\w-])"
 )
+#: Cue FAIBLE : admis devant deux→sept, mais PAS devant un/une. « sur une
+#: session » est l'article indéfini (« on a session »), pas un décompte : le cue
+#: `sur` est trop faible pour transformer « une » en nombre.
 _WRITTEN_COUNT_CUE_RE = re.compile(
     r"(?<![\w-])(?:plus de|plus qu[ei']|sur|exactement|au total|total de|en tout|"
-    r"au nombre de|combien de)\s+(?:un|une|deux|trois|quatre|cinq|six|sept)"
+    r"au nombre de|combien de)\s+(?:deux|trois|quatre|cinq|six|sept)"
     r"\s+(?:" + _COUNT_UNITS + r")(?![\w-])"
+)
+#: Cue FORT : seul contexte où « un/une » dénote réellement un décompte
+#: (« exactement une alerte », « au total une session »). `sur` est exclu.
+_WRITTEN_COUNT_STRONG_CUE_RE = re.compile(
+    r"(?<![\w-])(?:exactement|au total|total de|en tout|au nombre de|combien de)"
+    r"\s+(?:un|une)\s+(?:" + _COUNT_UNITS + r")(?![\w-])"
 )
 
 #: Entrées de l'index publiées dans weekly-report-gates.json. L'index complet sert
@@ -3374,7 +3383,7 @@ def validate_llm_blocks(text: str, findings: dict | None, insights: dict | None)
     # C4 : la forme écrite est le contournement du check « chiffres » — « huit
     # sessions » passe là où « 8 sessions » est refusé. Ancrée sur une unité
     # comptable (+ cue pour les petits nombres) pour ne pas tuer « un constat ».
-    for pattern in (_WRITTEN_COUNT_RE, _WRITTEN_COUNT_CUE_RE):
+    for pattern in (_WRITTEN_COUNT_RE, _WRITTEN_COUNT_CUE_RE, _WRITTEN_COUNT_STRONG_CUE_RE):
         match = pattern.search(text)
         if match:
             line = text.count("\n", 0, match.start()) + 1

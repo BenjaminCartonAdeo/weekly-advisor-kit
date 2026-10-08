@@ -2284,6 +2284,42 @@ def test_validate_llm_blocks_rejects_small_number_with_a_counting_cue():
     assert any("nombre écrit interdit" in v for v in violations), violations
 
 
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "La régression a été observée sur une session isolée [F:s1#loop].",
+        "Le signal est apparu dans une session de refactoring [F:s1#loop].",
+    ],
+)
+def test_validate_llm_blocks_allows_indefinite_article_after_weak_cue(phrase):
+    """C4 : « sur une session » est l'article indéfini, pas un décompte.
+
+    Régression run 2026-10-07 : le cue faible `sur` transformait « une » en
+    nombre écrit et rejetait un bloc pourtant valide.
+    """
+    from weekly_telemetry_aggregator.report import validate_llm_blocks
+
+    violations, _ = validate_llm_blocks(f"{phrase}\n", _BAND_FINDINGS, _BAND_INSIGHTS)
+
+    assert not any("nombre écrit interdit" in v for v in violations), violations
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "Le décompte est exactement une alerte ouverte [A:weekly_budget_usd].",
+        "La boucle a été déclenchée, au total une session a suffi [F:s1#loop].",
+    ],
+)
+def test_validate_llm_blocks_rejects_un_with_a_strong_cue(phrase):
+    """C4 : devant un cue FORT, « un/une » est bien un décompte écrit."""
+    from weekly_telemetry_aggregator.report import validate_llm_blocks
+
+    violations, _ = validate_llm_blocks(f"{phrase}\n", _BAND_FINDINGS, _BAND_INSIGHTS)
+
+    assert any("nombre écrit interdit" in v for v in violations), violations
+
+
 def test_number_band_index_publishes_scalars_and_counts():
     """C2 : l'index doit rendre le refus auditables (scalaires + cardinances)."""
     from weekly_telemetry_aggregator.report import number_band_index
