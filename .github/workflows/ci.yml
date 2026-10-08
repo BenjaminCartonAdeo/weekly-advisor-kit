@@ -37,10 +37,12 @@ jobs:
       - name: Tests (aucun réseau)
         # Keep test and check-flow-docs collection in the same uv/Python environment.
         run: uv run python -m pytest -q
-      - name: Coverage (lcov)
-        # Une seule fois : un seul rapport pour la gate et pour l'ingest.
-        if: runner.os == 'Linux'
+        if: runner.os == 'Windows'
+      - name: Tests + coverage (lcov)
+        # Single pytest pass per runner; the Linux run also emits the lcov report
+        # consumed by the repowise job.
         run: uv run python -m pytest -q --cov=weekly_telemetry_aggregator --cov-report=lcov:coverage/lcov.info
+        if: runner.os == 'Linux'
       - name: Packaging
         run: uv build
       - name: Wheel content (template inclus)
