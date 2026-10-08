@@ -23,8 +23,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .identities import normalize_npm_package
 from .util import load_jsonc, parse_anchor, parse_iso_ts, truncate_text
-from .watch_context import normalize_npm_package
 from .watch_memory import (
     append_entries,
     build_digest,

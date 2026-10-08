@@ -21,7 +21,9 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
 
+from .identities import _package_spec_parts, normalize_npm_package
 from .util import casefold, iso, load_jsonc, parse_iso_ts, relative_path
+from .watch_distill import DEFAULT_WEIGHTS, score_item, truncate_summary
 from .watch_memory import normalize_id
 
 ExistingState = Literal["absent", "declared", "observed", "unknown"]
@@ -31,10 +33,6 @@ PluginSource = Literal["config", "local_file"]
 SCHEMA_VERSION = 1
 _CONFIG_NAMES = ("opencode.json", "opencode.jsonc")
 _PLUGIN_FILE_SUFFIXES = {".cjs", ".cts", ".js", ".mjs", ".mts", ".ts", ".tsx"}
-_NPM_PACKAGE_RE = re.compile(
-    r"^(?:@[a-z0-9._~-]+/)?[a-z0-9._~-]+$",
-    re.IGNORECASE,
-)
 
 #: Schéma du fichier ``watch-candidates-enriched-<date>.json`` (T6).
 ENRICHED_SCHEMA_VERSION = 1
@@ -83,58 +81,6 @@ class EnvironmentInventory:
     config_valid: bool = False
     directories: dict[str, bool] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
-
-
-def normalize_npm_package(value: str | None) -> str | None:
-    """Return a normalized package identity without its version/specifier.
-
-    ``@scope/name@latest`` and ``@scope/name@1.2.3`` therefore both normalize
-    to ``@scope/name``.  Git, file, and URL specifications do not themselves
-    identify an npm package and return ``None``.  Package names are compared
-    case-insensitively because npm package identities are effectively
-    lower-case, while the returned value remains a normal package identity.
-    """
-
-    if not isinstance(value, str):
-        return None
-    text = value.strip()
-    if text.lower().startswith("npm:"):
-        text = text[4:].strip()
-    if not text or text.startswith((".", "/", "~", "git+", "git:", "ssh:")):
-        return None
-    if text.lower().startswith(
-        ("http://", "https://", "ssh://", "git://", "github:", "gitlab:", "bitbucket:")
-    ):
-        return None
-
-    if text.startswith("@"):
-        slash = text.find("/")
-        if slash <= 1:
-            return None
-        separator = text.find("@", slash + 1)
-    else:
-        separator = text.find("@")
-    identity = text if separator < 0 else text[:separator]
-    identity = identity.strip()
-    if not _NPM_PACKAGE_RE.fullmatch(identity):
-        return None
-    return identity.casefold()
-
-
-def _package_spec_parts(value: str) -> tuple[str, str | None]:
-    """Split a package spec into its package portion and optional suffix."""
-
-    text = value.strip()
-    if text.lower().startswith("npm:"):
-        text = text[4:].strip()
-    if text.startswith("@"):
-        slash = text.find("/")
-        separator = text.find("@", slash + 1) if slash >= 0 else -1
-    else:
-        separator = text.find("@")
-    if separator < 0:
-        return text, None
-    return text[:separator], text[separator + 1 :].strip() or None
 
 
 def normalize_repo_url(value: str | None) -> str | None:
@@ -843,14 +789,14 @@ def _residual_entries(
 ) -> list[dict[str, Any]]:
     """Bande sous cutoff : entrées compactes scorées, triées, plafonnées à 50.
 
-    Réutilise le scoring du distill (import tardif : évite le cycle
-    watch_distill → watch_context) avec les poids par défaut ; tri
+    Réutilise le scoring du distill avec les poids par défaut ; tri
     ``(-score, id)`` pour un plafonnage reproductible. Les ids exclus
     (candidats retenus + bloqués sécurité) n'y figurent jamais.
+
+    L'import est au niveau module : le cycle qui le motivait (``watch_distill``
+    → ``watch_context`` pour l'identité npm) est rompu, l'identité vit désormais
+    dans ``identities``.
     """
-
-    from .watch_distill import DEFAULT_WEIGHTS, score_item, truncate_summary
-
     keywords = tuple(extra_keywords)
     rows: list[tuple[float, str, dict[str, Any]]] = []
     for item in _ecosystem_items(ecosystem):
