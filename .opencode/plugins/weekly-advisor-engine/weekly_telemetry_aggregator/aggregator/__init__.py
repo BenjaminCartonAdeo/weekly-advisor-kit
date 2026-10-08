@@ -16,9 +16,6 @@ donc `from .aggregator import X` ne change pour aucun appelant.
 
 from __future__ import annotations
 
-import difflib
-import hashlib
-import math
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
@@ -30,30 +27,69 @@ from ..models import (
     OUTLIER_MIN_SESSIONS,
     AgentTypeUsage,
     CommandUsage,
-    CostOutlier,
     DailyTotal,
     HarnessUsage,
     ModelUsage,
     Period,
     SessionUsage,
-    SkillSimilarPair,
     SkillUsage,
     SubagentTotals,
     ToolUsage,
     TopSession,
     Totals,
-    UserPromptRepeat,
     WarningEntry,
     WeeklySummary,
     round6,
     split_canonical_session_id,
 )
-from ..util import descendants_by_parent, robust_z, root_and_orphan_ids
+from ..util import descendants_by_parent, root_and_orphan_ids
 
 # --- region text/noise : ré-exportée depuis `aggregator.text` -------------------
 # `from .aggregator import is_noise` doit continuer de résoudre : ces noms sont
 # importés ailleurs (main.py, tests/, rule_loader via son propre exemplaire).
+# --- régions repeats / outliers : ré-exportées depuis leurs sous-modules -------
+from .outliers import (
+    OUTLIER_MIN_ROOTS,
+    RESUME_FINGERPRINT_TURNS,
+    SKILL_BODY_WINDOW,
+    SKILL_PAIRS_CAP,
+    _cost_outliers,
+    _robust_z,
+    _skill_similar_pairs,
+    compute_cost_outliers_state,
+    dedup_resumed_usages,
+    resume_fingerprint,
+)
+from .repeats import (
+    PROMPT_REPEATS_CAP,
+    _accumulate_repeat_turn,
+    _accumulate_usage_repeats,
+    _build_skill_draft,
+    _emit_repeat_group,
+    _emit_repeat_list,
+    _is_repeat_candidate,
+    _new_repeat_bucket,
+    _prompt_repeat_groups,
+    _repeat_examples,
+)
 from .text import (
+    _CANCEL_TURNS,
+    _CODE_BLOCK_RE,
+    _COMPACTION_MARKERS,
+    _CONTROL_TURNS,
+    _CORRECTION_PREFIXES,
+    _FINGERPRINT_MIN_TOKENS,
+    _NOISE_MAX_CHARS,
+    _NOISE_SEPARATOR_RE,
+    _NOISE_YESNO_RE,
+    _NON_WORD_RE,
+    _NUMBER_RE,
+    _POSIX_PATH_RE,
+    _QUOTED_RE,
+    _STOPWORD_SOURCE,
+    _STOPWORDS,
+    _TOOL_NARRATION_RE,
+    _WINDOWS_PATH_RE,
     _canonical_prompt,
     _command_name,
     _is_cancel_turn,
@@ -71,38 +107,12 @@ __all__ = [
     "COMMAND_USAGE_COMPUTED",
     "COMMAND_USAGE_NO_DATA",
     "OUTLIER_MIN_ROOTS",
-    "OUTLIER_MIN_SESSIONS",
     "PROMPT_COMPARE_CHARS",
     "PROMPT_REPEATS_CAP",
     "RESUME_FINGERPRINT_TURNS",
     "SKILL_BODY_WINDOW",
     "SKILL_PAIRS_CAP",
     "TOKENS_PER_CHAR",
-    "_build_command_usage",
-    "_build_skill_draft",
-    "_build_skill_usage",
-    "_build_subagent_totals",
-    "_build_tool_usage",
-    "_cache_hit_rate",
-    "_cap_warnings",
-    "_canonical_prompt",
-    "_command_name",
-    "_cost_outliers",
-    "_descendants",
-    "_estimated_tokens",
-    "_is_cancel_turn",
-    "_is_compaction_artifact",
-    "_is_correction_turn",
-    "_is_exploitable_turn",
-    "_process_root",
-    "_prompt_repeat_groups",
-    "_repeat_examples",
-    "_robust_z",
-    "_RootTotals",
-    "_skill_similar_pairs",
-    "_strip_quotes",
-    "_unmeasurable_warnings",
-    "_usage_agg",
     "aggregate",
     "command_usage_state",
     "compute_cost_outliers_state",
@@ -113,6 +123,54 @@ __all__ = [
     "normalize_prompt",
     "resume_fingerprint",
     "session_duration",
+    "_CANCEL_TURNS",
+    "_CODE_BLOCK_RE",
+    "_COMPACTION_MARKERS",
+    "_CONTROL_TURNS",
+    "_CORRECTION_PREFIXES",
+    "_FINGERPRINT_MIN_TOKENS",
+    "_NOISE_MAX_CHARS",
+    "_NOISE_SEPARATOR_RE",
+    "_NOISE_YESNO_RE",
+    "_NON_WORD_RE",
+    "_NUMBER_RE",
+    "_POSIX_PATH_RE",
+    "_QUOTED_RE",
+    "_RootTotals",
+    "_STOPWORDS",
+    "_STOPWORD_SOURCE",
+    "_TOOL_NARRATION_RE",
+    "_WINDOWS_PATH_RE",
+    "_accumulate_repeat_turn",
+    "_accumulate_usage_repeats",
+    "_build_command_usage",
+    "_build_skill_draft",
+    "_build_skill_usage",
+    "_build_subagent_totals",
+    "_build_tool_usage",
+    "_cache_hit_rate",
+    "_canonical_prompt",
+    "_cap_warnings",
+    "_command_name",
+    "_cost_outliers",
+    "_descendants",
+    "_emit_repeat_group",
+    "_emit_repeat_list",
+    "_estimated_tokens",
+    "_is_cancel_turn",
+    "_is_compaction_artifact",
+    "_is_correction_turn",
+    "_is_exploitable_turn",
+    "_is_repeat_candidate",
+    "_new_repeat_bucket",
+    "_process_root",
+    "_prompt_repeat_groups",
+    "_repeat_examples",
+    "_robust_z",
+    "_skill_similar_pairs",
+    "_strip_quotes",
+    "_unmeasurable_warnings",
+    "_usage_agg",
 ]
 
 
@@ -122,15 +180,6 @@ ACTIVE_GAP_LIMIT = timedelta(minutes=5)
 TOKENS_PER_CHAR = 4
 #: Quasi-duplicate prompt comparison window (first N normalized chars, v5.19).
 PROMPT_COMPARE_CHARS = 100
-#: Cap on emitted prompt-repeat groups (spec §4: "plafonné à 20").
-PROMPT_REPEATS_CAP = 20
-#: Skill-similarity body window (v5.25: description + first 200 chars of body).
-SKILL_BODY_WINDOW = 200
-
-#: hard floor for any outlier computation (v5.28 K6).
-OUTLIER_MIN_ROOTS = 5
-#: Top-N output for skill_similar_pairs.
-SKILL_PAIRS_CAP = 5
 
 
 def _estimated_tokens(arg_chars: int) -> int:
@@ -171,308 +220,6 @@ def _descendants(by_id: dict[str, SessionUsage], root: SessionUsage) -> list[Ses
         ((u.session_id, u.parent_id) for u in by_id.values()), root.session_id
     )
     return [by_id[sid] for sid in ids]
-
-
-def _build_skill_draft(label: str, count: int, sessions: int, examples: list[str]) -> str:
-    """Brouillon markdown (# Skill / When to use / Steps / Example prompts)."""
-    samples = [e[:120] for e in examples[:3]]
-    lines = [
-        f"# Skill: {label}",
-        "",
-        "## When to use",
-        f"Réponse répétée {count}× sur {sessions} session(s) — automatiser ce flux.",
-        "",
-        "## Steps",
-        "1. Reproduire le flux récurrent et figer ses entrées/sorties.",
-        "2. Encapsuler la procédure dans un skill portable.",
-        "3. Valider sur un cas réel avant généralisation.",
-        "",
-        "## Example prompts",
-        *[f"- {sample}" for sample in samples],
-    ]
-    return "\n".join(lines)
-
-
-def _new_repeat_bucket() -> dict:
-    return {
-        "count": 0,
-        "chars_sum": 0,
-        "prompts": [],
-        "sessions": set(),
-        "harnesses": set(),
-        "cancels": 0,
-        "corrections": 0,
-        "first": None,
-        "last": None,
-    }
-
-
-def _accumulate_repeat_turn(
-    groups: dict[str, dict], usage: SessionUsage, turn: str, first_ts, last_ts
-) -> None:
-    fingerprint = normalize_fingerprint(turn)
-    if not fingerprint:
-        return
-    norm = normalize_prompt(turn)
-    group = groups.get(fingerprint)
-    if group is None:
-        group = _new_repeat_bucket()
-        groups[fingerprint] = group
-    group["count"] += 1
-    group["chars_sum"] += len(turn)
-    group["prompts"].append(turn)
-    group["sessions"].add(usage.session_id)
-    if usage.harness:
-        group["harnesses"].add(usage.harness)
-    if _is_cancel_turn(norm):
-        group["cancels"] += 1
-    if _is_correction_turn(norm):
-        group["corrections"] += 1
-    if first_ts is not None and (group["first"] is None or first_ts < group["first"]):
-        group["first"] = first_ts
-    if last_ts is not None and (group["last"] is None or last_ts > group["last"]):
-        group["last"] = last_ts
-
-
-def _repeat_examples(prompts: list[str], limit: int = 5) -> list[str]:
-    examples: list[str] = []
-    seen: set[str] = set()
-    for candidate in prompts:
-        stripped = candidate.strip()
-        if not stripped or stripped in seen:
-            continue
-        seen.add(stripped)
-        examples.append(stripped)
-        if len(examples) >= limit:
-            break
-    return examples
-
-
-def _emit_repeat_group(group: dict, *, repeat_min: int, min_chars: int) -> UserPromptRepeat | None:
-    count = group["count"]
-    if count < repeat_min:
-        return None
-    canonical = _canonical_prompt(group["prompts"])
-    preview = normalize_prompt(canonical)
-    if len(preview) < min_chars:
-        return None
-    sessions = sorted(group["sessions"])
-    session_count = len(sessions)
-    examples = _repeat_examples(group["prompts"])
-    return UserPromptRepeat(
-        normalized_preview=preview[:80],
-        count=count,
-        session_id=sessions[0] if sessions else "",
-        avg_chars=round(group["chars_sum"] / count),
-        sessions_distinct=session_count,
-        harnesses_distinct=len(group["harnesses"]),
-        cancel_rate=round6(group["cancels"] / count),
-        avg_correction_turns=round6(group["corrections"] / session_count) if session_count else 0.0,
-        first_seen=group["first"].isoformat() if group["first"] else "",
-        last_seen=group["last"].isoformat() if group["last"] else "",
-        examples=examples,
-        skill_draft=_build_skill_draft(preview[:80], count, session_count, examples),
-        estimated_time_saved_mins=count * 2,
-    )
-
-
-def _is_repeat_candidate(turn: str) -> bool:
-    """Un tour est candidat s'il n'est ni compaction, ni bruit, ni vide normalisé."""
-    if _is_compaction_artifact(turn):
-        return False
-    if is_noise(turn):
-        return False
-    return bool(normalize_prompt(turn))
-
-
-def _accumulate_usage_repeats(groups: dict[str, dict], usage: SessionUsage) -> None:
-    """Indexe les tours candidats d'un usage (sessions enfants exclues)."""
-    if usage.parent_id is not None:
-        return  # v5.30 (7) : tours des sessions enfants exclus
-    step_ts = [s.timestamp for s in usage.steps]
-    first_ts = min(step_ts) if step_ts else None
-    last_ts = max(step_ts) if step_ts else None
-    for turn in usage.user_turns:
-        if not _is_repeat_candidate(turn):
-            continue
-        _accumulate_repeat_turn(groups, usage, turn, first_ts, last_ts)
-
-
-def _emit_repeat_list(
-    groups: dict[str, dict], *, repeat_min: int, min_chars: int
-) -> list[UserPromptRepeat]:
-    """Émet, trie et plafonne les groupes répétés."""
-    out: list[UserPromptRepeat] = []
-    for group in groups.values():
-        emitted = _emit_repeat_group(group, repeat_min=repeat_min, min_chars=min_chars)
-        if emitted is not None:
-            out.append(emitted)
-    out.sort(key=lambda r: (-r.count, r.session_id))
-    return out[:PROMPT_REPEATS_CAP]
-
-
-def _prompt_repeat_groups(
-    uses: list[SessionUsage],
-    *,
-    repeat_min: int,
-    similarity: float,  # noqa: ARG001 — vestigial, conservé pour compat d'appel (v5.30 P3)
-    min_chars: int,
-) -> list[UserPromptRepeat]:
-    """User prompts repeated across the window, grouped by O(n) fingerprint (v5.30, P3).
-
-    Filtre bruit / compaction / sessions enfants, puis indexe les tours par
-    `normalize_fingerprint` (bucket map) — plus de `difflib` ni de scan quadratique.
-    Un groupe est émis si `count >= repeat_min` et que son prompt canonique atteint
-    `min_chars`. Sortie triée `(-count, session_id)`, plafonnée à `PROMPT_REPEATS_CAP`.
-
-    NOTE B4.2 — le seuil de support RELATIF demandé par le plan est ici VOLONTAIREMENT
-    absent, et c'est un refus argumenté, pas un oubli. Plafonner la part du corpus
-    (`count / total > seuil ⇒ bruit de fond`) tue la tête de la métrique : sur le
-    stress-test `test_prompt_repeats_large_volume_is_fast`, 100 prompts identiques =
-    100 % du corpus, et l'assertion « les répétitions exactes par tâche sont détectées »
-    tombe. Un plancher proportionnel (`max(repeat_min, total / N)`) se heurte au même
-    test par l'autre côté : 20 répétitions réelles sur 2000 tours. Il n'existe donc
-    aucun calibrage « relatif » qui distingue « la même intention, 100 fois » de « la
-    narration de l'agent, 100 fois » — les deux sont, par construction, dominants.
-    Ce qui les distingue est leur NATURE, pas leur poids : c'est le filtre de
-    boilerplate (`normalize_fingerprint` → "") qui fait le travail. Le seuil reste
-    absolu, et `repeat_min` reste le seul levier.
-    """
-    groups: dict[str, dict] = {}
-
-    for usage in sorted(uses, key=lambda u: u.session_id):
-        _accumulate_usage_repeats(groups, usage)
-
-    return _emit_repeat_list(groups, repeat_min=repeat_min, min_chars=min_chars)
-
-
-def _skill_similar_pairs(entries, min_similarity: float) -> list[SkillSimilarPair]:
-    """difflib on description + first 200 chars of body (v5.25) → top 5 pairs."""
-    pairs: list[SkillSimilarPair] = []
-    names = sorted(e.name for e in entries)
-    by_name = {e.name: e for e in entries}
-    for i in range(len(names)):
-        for j in range(i + 1, len(names)):
-            a = by_name[names[i]]
-            b = by_name[names[j]]
-            ta = normalize_prompt(f"{a.description} {a.body[:SKILL_BODY_WINDOW]}")
-            tb = normalize_prompt(f"{b.description} {b.body[:SKILL_BODY_WINDOW]}")
-            ratio = difflib.SequenceMatcher(None, ta, tb).ratio()
-            if ratio >= min_similarity:
-                pairs.append(SkillSimilarPair(skills=[a.name, b.name], similarity=round6(ratio)))
-    pairs.sort(key=lambda p: (-p.similarity, p.skills[0], p.skills[1]))
-    return pairs[:SKILL_PAIRS_CAP]
-
-
-def _robust_z(values: list[float]) -> dict[str, float]:
-    """Robust z-scores per index (median + MAD, shared core in util); 6-decimal rounding."""
-    return {str(i): round6(z) for i, z in enumerate(robust_z(values))}
-
-
-def _cost_outliers(
-    root_costs: list[tuple[str, float]],
-    *,
-    z_min: float,
-    min_cost: float,
-) -> list[CostOutlier]:
-    """Median+MAD robust outliers among root window costs (cost >= floor).
-
-    v5.28 (K6): z-scores computed on log10(cost) — heavy-tail cost distributions
-    otherwise drown small-but-flagged sessions; the floor still applies on $.
-    """
-    values = [c for _sid, c in root_costs]
-    zs = _robust_z([math.log10(max(c, 1e-6)) for c in values])
-    out = []
-    for i, (sid, cost) in enumerate(root_costs):
-        if zs.get(str(i), 0.0) >= z_min and cost >= min_cost:
-            out.append(CostOutlier(session_id=sid, cost_usd=cost, z_score=zs[str(i)]))
-    out.sort(key=lambda o: (-o.z_score, o.session_id))
-    return out
-
-
-#: Nombre de turns de tête (user_turns, y c. textes synthétiques) hachés pour la
-#: détection de session reprise (v6.1 R3). Une reprise OpenCode copie tout le
-#: transcript sous un NOUVEL id de session ; les 30 premiers parts restent
-#: byte-identiques (vérifié sur données terrain), alors que deux invocations
-#: distinctes d'une même commande ne partagent que le prompt initial (1/30).
-RESUME_FINGERPRINT_TURNS = 8
-
-
-def resume_fingerprint(usage: SessionUsage) -> str | None:
-    """Empreinte SHA-256 des premiers turns d'une session — None si trop courte.
-
-    Les sessions plus courtes que `RESUME_FINGERPRINT_TURNS` ne participent pas
-    au dédup : deux vraies sessions peuvent partager leur unique prompt initial
-    (invocations répétées d'une même commande) sans être des reprises.
-    """
-    turns = [t for t in usage.user_turns if t and t.strip()]
-    if len(turns) < RESUME_FINGERPRINT_TURNS:
-        return None
-    joined = "\x1f".join(turns[:RESUME_FINGERPRINT_TURNS])
-    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
-
-
-def dedup_resumed_usages(
-    usages: list[SessionUsage],
-) -> tuple[list[SessionUsage], list[dict]]:
-    """Fusionne les copies de sessions reprises (resume-fork) dans l'original.
-
-    Cause racine (R3) : une reprise OpenCode copie le transcript sous un nouvel
-    id de session en conservant les timestamps d'origine des messages → la copie
-    retombe dans la fenêtre avec les mêmes coûts/tokens que l'original : les deux
-    ids sont comptés comme 2 sessions distinctes (totaux, top sessions,
-    candidats d'audit). Aucune métadonnée de lineage n'existe dans le schéma DB
-    (`session` V1 sans fork_session_id) → détection par contenu.
-
-    Clé de dédup : (harness, project_path, empreinte des premiers turns).
-    Primaire conservé = transcript le plus complet (la continuation) ;
-    tie-break = session_id lexicographiquement minimal. Déterministe.
-    """
-    groups: dict[tuple[str, str, str], list[int]] = {}
-    for i, usage in enumerate(usages):
-        fp = resume_fingerprint(usage)
-        if fp is None:
-            continue
-        groups.setdefault((usage.harness or "", usage.project_path or "", fp), []).append(i)
-    dropped: dict[int, int] = {}  # index supprimé -> index conservé
-    for _key, idxs in sorted(groups.items()):
-        if len(idxs) < 2:
-            continue
-        ordered = sorted(idxs, key=lambda i: (-len(usages[i].user_turns), usages[i].session_id))
-        kept_index = ordered[0]
-        for i in ordered[1:]:
-            dropped[i] = kept_index
-    if not dropped:
-        return usages, []
-    kept = [u for i, u in enumerate(usages) if i not in dropped]
-    records = [
-        {
-            "kept_session_id": usages[kept_index].session_id,
-            "dropped_session_id": usages[i].session_id,
-        }
-        for i, kept_index in sorted(dropped.items())
-    ]
-    return kept, records
-
-
-def compute_cost_outliers_state(
-    n_roots: int, outlier_min_sessions: int, all_warnings: list[WarningEntry]
-) -> str:
-    """État de fiabilité des cost_outliers selon la taille d'échantillon (+ warning si petit)."""
-    if n_roots == 0:
-        return "no-data"
-    if n_roots < OUTLIER_MIN_ROOTS:
-        all_warnings.append(
-            WarningEntry(
-                session_id=None,
-                message=f"sample trop petit ({n_roots} sessions < {OUTLIER_MIN_ROOTS}), cost_outliers peu fiables",
-            )
-        )
-        return "skipped:small-sample"
-    if n_roots < outlier_min_sessions:
-        # K6: MAD robuste sur log-cost — fiable dès 5 racines (état dédié).
-        return "computed:small-sample"
-    return "computed"
 
 
 def _build_tool_usage(
