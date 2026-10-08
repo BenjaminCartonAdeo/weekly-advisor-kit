@@ -1920,7 +1920,7 @@ def _audit_artifact_declarations(payload: object) -> list[str]:
 
 def _declared_run_filename(item: str, out: Path | None = None) -> str | None:
     """Return a declaration filename only when its run-local path is exact."""
-    if not item or "\\" in item:
+    if not item:
         return None
     path = Path(item)
     if path.is_absolute():
@@ -1934,7 +1934,10 @@ def _declared_run_filename(item: str, out: Path | None = None) -> str | None:
             return resolved.name
         except (OSError, RuntimeError):
             return None
-    if "/" in item or item.startswith("."):
+    # Relatif : un séparateur (ou un préfixe « . ») signalerait une traversée. Le
+    # garde « \ » ne vaut que pour les chemins relatifs — sous Windows c'est le
+    # séparateur natif, et un chemin absolu est déjà traité ci-dessus.
+    if "\\" in item or "/" in item or item.startswith("."):
         return None
     return item
 

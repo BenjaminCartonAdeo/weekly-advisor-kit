@@ -15,6 +15,7 @@ ni `_is_blocking_security_rule`.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,13 @@ from weekly_telemetry_aggregator.report import (
 
 DATE = "2026-10-08"
 SID = "ses_f6ed03e11ffetdQstFHu2pb7B5"
+
+_IS_WINDOWS = os.name == "nt"
+# Chemins ABSOLUS valides sur la plateforme courante : « /etc/hosts » ne l'est pas
+# pour pathlib sous Windows, ce qui inversait le résultat attendu des tests.
+EXTERNAL_FILE = "C:/Windows/System32/drivers/etc/hosts" if _IS_WINDOWS else "/etc/hosts"
+EXTERNAL_DIR = "C:/Windows/System32" if _IS_WINDOWS else "/tmp"
+EXTERNAL_WORKTREE = "C:/work/some-worktree" if _IS_WINDOWS else "/tmp/some-worktree"
 
 
 # =====================================================================
@@ -491,7 +499,7 @@ def test_warning_is_nonblocking_report_only_requires_verified_external_path(
         "status": "report-only",
         "category": "external-permission-refusal",
         "permission_denied": "permission denied",
-        "target": "/etc/hosts",
+        "target": EXTERNAL_FILE,
     }
     assert (
         _warning_is_nonblocking(
@@ -649,7 +657,7 @@ def refusal() -> dict:
         "status": "report-only",
         "category": "external-permission-refusal",
         "permission_denied": "permission denied",
-        "target": "/etc/hosts",
+        "target": EXTERNAL_FILE,
     }
 
 
@@ -706,8 +714,8 @@ def test_is_report_only_record_without_project_root_is_false(refusal: dict):
 @pytest.mark.parametrize(
     ("target", "expected"),
     [
-        ("/etc/hosts", True),
-        ("/tmp", True),
+        (EXTERNAL_FILE, True),
+        (EXTERNAL_DIR, True),
         ("relative/path", False),
         ("", False),
         (None, False),
@@ -715,11 +723,11 @@ def test_is_report_only_record_without_project_root_is_false(refusal: dict):
     ],
 )
 def test_path_is_outside_worktree(target, expected):
-    assert _path_is_outside_worktree(target, "/tmp/some-worktree") is expected
+    assert _path_is_outside_worktree(target, EXTERNAL_WORKTREE) is expected
 
 
 def test_path_is_outside_worktree_requires_absolute_worktree():
-    assert _path_is_outside_worktree("/etc/hosts", "relative-root") is False
+    assert _path_is_outside_worktree(EXTERNAL_FILE, "relative-root") is False
 
 
 def test_path_is_outside_worktree_worktree_itself_is_inside(tmp_path: Path):
@@ -884,14 +892,14 @@ def test_branch_applicability_accepts_an_exact_run_local_absolute_path(run_dir: 
 def test_branch_applicability_rejects_absolute_path_outside_the_run(run_dir: Path):
     assert (
         _branch_applicability(
-            {"artifacts": ["/tmp/weekly-ecosystem-2026-10-08.json"]}, DATE, out=run_dir
+            {"artifacts": [f"{EXTERNAL_DIR}/weekly-ecosystem-2026-10-08.json"]}, DATE, out=run_dir
         )
         == {}
     )
 
 
 def test_branch_applicability_rejects_absolute_path_without_out():
-    assert _branch_applicability({"artifacts": ["/tmp/x-2026-10-08.json"]}, DATE) == {}
+    assert _branch_applicability({"artifacts": [f"{EXTERNAL_DIR}/x-2026-10-08.json"]}, DATE) == {}
 
 
 @pytest.mark.parametrize(

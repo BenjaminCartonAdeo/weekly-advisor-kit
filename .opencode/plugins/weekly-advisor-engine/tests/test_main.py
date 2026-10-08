@@ -2602,11 +2602,37 @@ def _char_cfg(tmp_path: Path) -> TelemetryConfig:
     return cfg
 
 
+def _windows_shim(script: str) -> str:
+    """Traduit le sous-ensemble shell des faux binaires en un `.CMD` équivalent.
+
+    Windows ne résout pas un fichier sans extension (PATHEXT) et CreateProcess
+    n'exécute un `.cmd` que par son chemin complet : `shutil.which` le résout
+    (cf. `_doctor_opencode_version`), puis le sous-processus le lance via cmd.exe.
+    """
+    lines = ["@echo off"]
+    for raw in script.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        to_stderr = ">&2" in line
+        line = line.replace(">&2", "").strip()
+        if line.startswith("echo "):
+            payload = line[len("echo ") :].strip().strip("'\"")
+            lines.append(f"echo {payload} 1>&2" if to_stderr else f"echo {payload}")
+        elif line.startswith("exit "):
+            lines.append("exit /b " + line[len("exit ") :].strip())
+    return "\r\n".join(lines) + "\r\n"
+
+
 def _isolated_path(tmp_path: Path, monkeypatch, scripts: dict[str, str]) -> None:
     """PATH réduit à un seul dossier : seuls les binaires listés sont résolvables."""
     bin_dir = tmp_path / "isolated-bin"
     bin_dir.mkdir(exist_ok=True)
     for name, script in scripts.items():
+        if os.name == "nt":
+            # Windows résout par PATHEXT : le faux binaire est un `.CMD`.
+            (bin_dir / f"{name}.CMD").write_text(_windows_shim(script), encoding="utf-8")
+            continue
         exe = bin_dir / name
         exe.write_text(script, encoding="utf-8")
         exe.chmod(0o755)

@@ -280,14 +280,17 @@ def _doctor_watch_repos(cfg: TelemetryConfig, warnings: list[str]) -> None:
     """watch_repos : gh présent au PATH et authentifié."""
     if not cfg.watch_repos:
         return
-    if shutil.which("gh") is None:
+    gh_bin = shutil.which("gh")
+    if gh_bin is None:
         warnings.append(
             "watch_repos configuré mais gh absent du PATH — repos privés/renommés non suivis"
         )
         return
     try:
+        # Chemin résolu, comme pour opencode : sous Windows un argv nu n'est pas
+        # exécutable tel quel (gh se résout en « gh.cmd » via PATHEXT).
         proc = subprocess.run(
-            ["gh", "auth", "status", "--active"],
+            [gh_bin, "auth", "status", "--active"],
             capture_output=True,
             encoding="utf-8",
             timeout=10,
