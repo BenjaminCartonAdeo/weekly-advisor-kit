@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import json
+import subprocess
 import urllib.error
 from datetime import UTC, datetime, timedelta
 
@@ -1128,3 +1130,651 @@ def test_config_parses_radar_watch_entry(tmp_path):
     }
     repo = next(w for w in cfg.watch if w["type"] == "repo")
     assert repo == {"type": "repo", "name": "openai/codex"}  # pas de clés fantômes
+
+
+# ============================================================ F1: HTTP client + dedup fan-in
+# Caractérisation (pas de code neuf) du cœur retry et du fan-in dedup de `releases`.
+
+
+class _UrllibRecorder:
+    """Stub de `releases.urlopen` : enregistre (url, timeout, data), rend un contexte."""
+
+    def __init__(self, status: int = 200, body: bytes = b"{}", headers: dict | None = None):
+        self.status = status
+        self.body = body
+        self.headers = headers if headers is not None else {"content-type": "application/json"}
+        self.calls: list[tuple[str, object, bytes | None]] = []
+
+    def __call__(self, request, timeout=None):
+        self.calls.append((request.full_url, timeout, request.data))
+        recorder = self
+
+        class _Ctx:
+            status = recorder.status
+            headers = recorder.headers
+
+            @staticmethod
+            def read() -> bytes:
+                return recorder.body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        return _Ctx()
+
+
+def test_response_decodes_utf8_replace_and_json():
+    """`_Response` : texte en errors=replace, `.json()` décode le texte (pas le payload)."""
+    resp = releases._Response(200, b'{"k": "caf\xe9"}', {"h": "v"})
+    assert resp.status_code == 200
+    assert resp.headers == {"h": "v"}
+    assert "�" in resp.text  # octet invalide remplacé, pas d'exception
+    assert resp.json() == {"k": "caf�"}
+
+
+def test_http_client_get_encodes_params_and_timeout(monkeypatch):
+    """GET : params encodés UTF-8 (%20 pour l'espace, %2B pour `+`), timeout du client."""
+    rec = _UrllibRecorder(body=b'{"ok": true}')
+    monkeypatch.setattr(releases, "urlopen", rec)
+    client = releases._HttpClient(timeout=7)
+
+    resp = client.get("https://x.test/s", params={"q": "a b+c", "per_page": 50})
+
+    assert json.loads(resp.text) == {"ok": True}
+    url, timeout, data = rec.calls[0]
+    assert url == "https://x.test/s?q=a%20b%2Bc&per_page=50"
+    assert timeout == 7
+    assert data is None
+
+
+def test_http_client_get_timeout_override_and_no_params(monkeypatch):
+    """Timeout par appel wins ; sans params, aucune query string n'est ajoutée."""
+    rec = _UrllibRecorder(body=b"[]")
+    monkeypatch.setattr(releases, "urlopen", rec)
+    client = releases._HttpClient(timeout=15)
+
+    client.get("https://x.test/s", timeout=1)
+    client.get("https://x.test/s")
+
+    assert [c[1] for c in rec.calls] == [1, 15]
+    assert rec.calls[1][0] == "https://x.test/s"
+
+
+def test_http_client_post_serializes_json(monkeypatch):
+    """POST : corps JSON sérialisé, aucun timeout par appel (celui du client)."""
+    rec = _UrllibRecorder(body=b'{"result": 1}')
+    monkeypatch.setattr(releases, "urlopen", rec)
+
+    releases._HttpClient(timeout=3).post(
+        "https://x.test/mcp", json={"method": "initialize"}, headers={"mcp-session-id": "s"}
+    )
+
+    url, timeout, data = rec.calls[0]
+    assert url == "https://x.test/mcp"
+    assert timeout == 3
+    assert json.loads(data) == {"method": "initialize"}
+
+
+def test_http_client_post_without_body_sends_no_data(monkeypatch):
+    """POST sans json → data None (le corps est porté par json=..., pas par data)."""
+    rec = _UrllibRecorder(body=b"")
+    monkeypatch.setattr(releases, "urlopen", rec)
+
+    releases._HttpClient().post("https://x.test/mcp")
+
+    assert rec.calls[0][2] is None
+
+
+def test_http_client_http_error_is_returned_not_raised(monkeypatch):
+    """HTTPError 4xx/5xx : corps lisible renvoyé en `_Response` (pas d'exception)."""
+
+    def boom(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, io.BytesIO(b"missing"))
+
+    monkeypatch.setattr(releases, "urlopen", boom)
+    resp = releases._HttpClient().get("https://x.test/s")
+
+    assert resp.status_code == 404
+    assert resp.text == "missing"
+
+
+def test_http_client_network_error_propagates(monkeypatch):
+    """URLError n'est pas capturé par le client : la politique retry est chez _get_json."""
+
+    def boom(request, timeout=None):
+        raise urllib.error.URLError("dns")
+
+    monkeypatch.setattr(releases, "urlopen", boom)
+    with pytest.raises(urllib.error.URLError):
+        releases._HttpClient().get("https://x.test/s")
+
+
+# --------------------------------------------------------- _get_json (retry core)
+class _CountingClient:
+    """Client scripté : renvoie une réponse/exception par appel, compte les tentatives."""
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls: list[tuple[str, dict | None, dict | None]] = []
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        self.calls.append((url, params, headers))
+        step = self.script[min(len(self.calls) - 1, len(self.script) - 1)]
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+    def close(self):
+        pass
+
+
+def _no_sleep(monkeypatch) -> list[float]:
+    """Neutralise time.sleep et enregistre les durées de backoff demandées."""
+    slept: list[float] = []
+    monkeypatch.setattr(releases.time, "sleep", slept.append)
+    return slept
+
+
+def test_get_json_returns_payload_on_200_without_retry():
+    """200 : un seul appel, pas de backoff."""
+    client = _CountingClient([FakeResponse({"v": 1})])
+    assert releases._get_json(client, "https://x.test/a", params={"p": 1}) == {"v": 1}
+    assert len(client.calls) == 1
+    assert client.calls[0] == ("https://x.test/a", {"p": 1}, None)
+
+
+def test_get_json_passes_through_non_error_statuses():
+    """2xx/3xx : le corps est retourné tel quel — la politique erreur est >= 400."""
+    for status in (200, 201, 204, 301, 399):
+        client = _CountingClient([FakeResponse({"s": status}, status=status)])
+        assert releases._get_json(client, "https://x.test/a") == {"s": status}
+        assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+def test_get_json_retries_retryable_statuses_then_raises(monkeypatch, status):
+    """{429, 5xx} : `_RETRIES` tentatives, backoff _BACKOFF, puis SourceError."""
+    slept = _no_sleep(monkeypatch)
+    client = _CountingClient([FakeResponse({}, status=status)])
+
+    with pytest.raises(
+        releases.SourceError, match=f"failed after {releases._RETRIES} attempts"
+    ) as ei:
+        releases._get_json(client, "https://x.test/a")
+
+    assert len(client.calls) == releases._RETRIES
+    assert slept == list(releases._BACKOFF)
+    assert f"HTTP {status}" in str(ei.value)  # la dernière cause est citée
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+def test_get_json_does_not_retry_client_4xx(monkeypatch, status):
+    """Tout 4xx : SourceError immédiat, un seul appel, aucun backoff (non retriable)."""
+    slept = _no_sleep(monkeypatch)
+    client = _CountingClient([FakeResponse({}, status=status)])
+
+    with pytest.raises(releases.SourceError, match=rf"https://x\.test/a: HTTP {status}"):
+        releases._get_json(client, "https://x.test/a")
+
+    assert len(client.calls) == 1
+    assert slept == []
+
+
+def test_get_json_recovers_on_second_attempt(monkeypatch):
+    """503 puis 200 : la 2e tentative renvoie le payload (retry non destructif)."""
+    slept = _no_sleep(monkeypatch)
+    client = _CountingClient([FakeResponse({}, status=503), FakeResponse({"ok": True})])
+
+    assert releases._get_json(client, "https://x.test/a") == {"ok": True}
+    assert len(client.calls) == 2
+    assert slept == [releases._BACKOFF[0]]
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        urllib.error.URLError("dns"),
+        ConnectionResetError("reset"),
+        TimeoutError("timed out"),
+        OSError("io"),
+    ],
+)
+def test_get_json_retries_network_errors(monkeypatch, exc):
+    """URLError/OSError/TimeoutError : retriés jusqu'à `_RETRIES` puis SourceError."""
+    slept = _no_sleep(monkeypatch)
+    client = _CountingClient([exc])
+
+    with pytest.raises(releases.SourceError, match="failed after 3 attempts"):
+        releases._get_json(client, "https://x.test/a")
+
+    assert len(client.calls) == releases._RETRIES
+    assert slept == list(releases._BACKOFF)
+
+
+def test_get_json_retries_undecodable_body(monkeypatch):
+    """Corps non-JSON : retrié comme une erreur réseau, puis SourceError."""
+    _no_sleep(monkeypatch)
+    client = _CountingClient([FakeResponse(None, text="<html>oops</html>")])
+
+    with pytest.raises(releases.SourceError, match="failed after 3 attempts"):
+        releases._get_json(client, "https://x.test/a")
+    assert len(client.calls) == releases._RETRIES
+
+
+def test_get_json_uses_client_default_timeout_only(monkeypatch):
+    """`_get_json` ne passe pas de timeout : la borne reste celle du client (15 s)."""
+    rec = _UrllibRecorder(body=b"{}")
+    monkeypatch.setattr(releases, "urlopen", rec)
+
+    releases._get_json(releases._HttpClient(timeout=15), "https://x.test/a")
+
+    assert rec.calls[0][1] == 15
+
+
+# --------------------------------------------------------- _github_headers / _github_json
+def test_github_headers_absent_without_token(monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    assert releases._github_headers() is None
+
+
+def test_github_headers_bearer_when_token_set(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_x")
+    assert releases._github_headers() == {"Authorization": "Bearer ghp_x"}
+
+
+def test_github_json_sends_token_header(monkeypatch):
+    """Le token d'env est transmis à `_get_json` (pas d'import client)."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_x")
+    seen: list[dict | None] = []
+
+    class Client:
+        def get(self, url, params=None, headers=None):
+            seen.append(headers)
+            return FakeResponse({"ok": True})
+
+    assert releases._github_json(Client(), "https://api.github.com/x") == {"ok": True}
+    assert seen == [{"Authorization": "Bearer ghp_x"}]
+
+
+def test_github_json_falls_back_to_gh_with_encoded_params(monkeypatch):
+    """Échec HTTP → `_gh_api(path?params)`, `+` préservé (safe='+'), espace en %20."""
+    seen: list[str] = []
+
+    def fake_gh(endpoint):
+        seen.append(endpoint)
+        return {"items": []}
+
+    monkeypatch.setattr(releases, "_gh_api", fake_gh)
+    client = _CountingClient([FakeResponse({}, status=404)])
+
+    assert releases._github_json(
+        client,
+        "https://api.github.com/search/repositories",
+        params={"q": "topic:oc stars:>5", "page": 2},
+    ) == {"items": []}
+
+    assert seen == ["search/repositories?q=topic%3Aoc%20stars%3A%3E5&page=2"]
+
+
+def test_github_json_falls_back_without_params(monkeypatch):
+    """Sans params, le endpoint gh est le path nu (pas de `?`)."""
+    seen: list[str] = []
+    monkeypatch.setattr(releases, "_gh_api", lambda ep: seen.append(ep) or [])
+    client = _CountingClient([FakeResponse({}, status=403)])
+
+    releases._github_json(client, "https://api.github.com/repos/anomalyco/opencode/releases")
+
+    assert seen == ["repos/anomalyco/opencode/releases"]
+
+
+def test_github_json_propagates_gh_failure(monkeypatch):
+    """Si le fallback gh échoue aussi, son SourceError remonte au run_source."""
+    monkeypatch.setattr(releases, "_gh_api", no_gh)
+    client = _CountingClient([FakeResponse({}, status=404)])
+
+    with pytest.raises(releases.SourceError, match="gh indisponible"):
+        releases._github_json(client, "https://api.github.com/x")
+
+
+# ------------------------------------------------------------------ _gh_api (gh CLI)
+class _Proc:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_gh_api_parses_json_stdout(monkeypatch):
+    """`gh api <endpoint> --paginate` : stdout parsé en JSON, timeout=30."""
+    seen: list[tuple] = []
+
+    def fake_run(argv, **kw):
+        seen.append((argv, kw))
+        return _Proc(stdout='{"full_name": "a/b"}')
+
+    monkeypatch.setattr(releases.subprocess, "run", fake_run)
+
+    assert releases._gh_api("repos/a/b") == {"full_name": "a/b"}
+    argv, kw = seen[0]
+    assert argv == ["gh", "api", "repos/a/b", "--paginate"]
+    assert kw["capture_output"] is True
+    assert kw["timeout"] == 30
+
+
+def test_gh_api_non_zero_exit_truncates_stderr(monkeypatch):
+    """rc != 0 : SourceError avec stderr tronqué à 180 caractères."""
+    monkeypatch.setattr(
+        releases.subprocess, "run", lambda argv, **kw: _Proc(returncode=1, stderr="E" * 300)
+    )
+    with pytest.raises(releases.SourceError) as excinfo:
+        releases._gh_api("repos/a/b")
+    assert "E" * 180 in str(excinfo.value)
+    assert "E" * 181 not in str(excinfo.value)
+
+
+def test_gh_api_invalid_json_raises(monkeypatch):
+    monkeypatch.setattr(releases.subprocess, "run", lambda argv, **kw: _Proc(stdout="not json"))
+    with pytest.raises(releases.SourceError, match="sortie JSON invalide"):
+        releases._gh_api("repos/a/b")
+
+
+@pytest.mark.parametrize("exc", [OSError("gh absent"), subprocess.TimeoutExpired("gh", 30)])
+def test_gh_api_transport_failure_raises(monkeypatch, exc):
+    """Binaire absent ou timeout → SourceError (jamais d'exception subprocess brute)."""
+    monkeypatch.setattr(releases.subprocess, "run", _raise(exc))
+    with pytest.raises(releases.SourceError, match="gh api repos/a/b"):
+        releases._gh_api("repos/a/b")
+
+
+def _raise(exc):
+    def boom(argv, **kw):
+        raise exc
+
+    return boom
+
+
+# --------------------------------------------------------------------- dedup fan-in
+def _item(name="n", **kw) -> dict:
+    base = {
+        "name": name,
+        "category": "plugin",
+        "repo_url": "",
+        "npm_package": None,
+        "description": "",
+        "published_at": PERIOD_END,
+        "found_via": [],
+        "new_repo": False,
+    }
+    base.update(kw)
+    return base
+
+
+def test_dedup_key_precedence():
+    """repo_url > npm_package > name > chaîne vide."""
+    assert releases._dedup_key(_item(repo_url="https://u")) == "https://u"
+    assert releases._dedup_key(_item(npm_package="pkg")) == "pkg"
+    assert releases._dedup_key(_item(name="only-name")) == "only-name"
+    assert releases._dedup_key({"name": ""}) == ""
+
+
+def test_preferred_record_prefers_non_empty_description():
+    a = _item(description="from npm")
+    b = _item(description="")
+    assert releases._preferred_record(a, b) is a
+    assert releases._preferred_record(b, a) is a
+
+
+def test_preferred_record_earliest_published_at_when_both_described():
+    """Descriptions égales → le published_at le plus ancien gagne."""
+    a = _item(description="d", published_at=PERIOD_END)
+    b = _item(description="d", published_at=PERIOD_START)
+    assert releases._preferred_record(a, b) is b
+    assert releases._preferred_record(b, a) is b
+
+
+def test_preferred_record_dated_beats_undated():
+    dated = _item(description="d", published_at=PERIOD_START)
+    undated = _item(description="d", published_at=None)
+    assert releases._preferred_record(undated, dated) is dated
+    assert releases._preferred_record(dated, undated) is dated
+
+
+def test_merge_into_keeps_existing_identity_and_unions_found_via():
+    """Survivre = l'enregistrement préféré ; repo_url/npm_package/found_via sont cumulés."""
+    existing = _item(
+        name="npm-name",
+        description="from npm",
+        repo_url="https://u",
+        npm_package=None,
+        found_via=[S_NPM],
+    )
+    incoming = _item(
+        name="gh-name",
+        description="",
+        repo_url="",
+        npm_package="pkg",
+        published_at=PERIOD_START,
+        found_via=[S_GITHUB, S_NPM],  # doublon : ne doit pas être dupliqué
+        new_repo=True,
+    )
+
+    merged = releases._merge_into(existing, incoming)
+
+    assert merged["name"] == "npm-name"  # description non vide ⇒ existing survit
+    assert merged["description"] == "from npm"
+    assert merged["repo_url"] == "https://u"  # existing gagne, sinon incoming
+    assert merged["npm_package"] == "pkg"  # existing vide ⇒ repris depuis incoming
+    assert merged["found_via"] == [S_NPM, S_GITHUB]  # union, ordre d'insertion
+    assert merged["new_repo"] is True  # OU logique
+    assert merged["published_at"] == PERIOD_END  # enregistrement préféré = existing
+
+
+def test_merge_into_falls_back_to_incoming_repo_url():
+    existing = _item(description="x", repo_url="", found_via=[S_NPM])
+    incoming = _item(description="", repo_url="https://u2", found_via=[S_GITHUB])
+    merged = releases._merge_into(existing, incoming)
+    assert merged["repo_url"] == "https://u2"
+    assert merged["description"] == "x"
+
+
+def test_add_item_inserts_then_merges():
+    """Première occurrence : copie défensive. Seconde : fusion sur la même clé."""
+    items: dict[str, dict] = {}
+    first = _item(name="a", repo_url="https://u", found_via=[S_NPM])
+    releases._add_item(items, first)
+
+    first["name"] = "mutated"  # la copie stockée ne suit pas
+    assert items["https://u"]["name"] == "a"
+
+    releases._add_item(items, _item(name="b", repo_url="https://u", found_via=[S_MCP]))
+    assert list(items) == ["https://u"]
+    assert items["https://u"]["found_via"] == [S_NPM, S_MCP]
+
+
+def test_canonical_found_via_reorders_to_canonical_sequence():
+    assert releases._canonical_found_via([S_MCP, S_GITHUB, S_NPM]) == [S_NPM, S_GITHUB, S_MCP]
+    # une seule source canonique suffit à basculer sur le filtre canonique :
+    # les sources hors séquence (radar/rss) sont alors abandonnées.
+    assert releases._canonical_found_via(["radar", S_NPM]) == [S_NPM]
+    # aucune source canonique : la liste est renvoyée telle quelle
+    assert releases._canonical_found_via(["rss:https://f", "radar"]) == ["rss:https://f", "radar"]
+
+
+def test_finalize_items_sorting_and_defaults():
+    """Tri published_at DESC puis name ASC ; défauts name/category/published_at."""
+    items = releases._finalize_items(
+        {
+            "k1": _item(name="bbb", published_at=PERIOD_START),
+            "k2": _item(name="aaa", published_at=PERIOD_START),
+            "k3": _item(name="ccc", published_at=PERIOD_END),
+            "k4": {"name": "zzz"},  # aucun champ optionnel
+        }
+    )
+    assert [i["name"] for i in items] == ["ccc", "aaa", "bbb", "zzz"]
+    last = items[-1]
+    assert last["category"] == "plugin"
+    assert last["repo_url"] == ""
+    assert last["npm_package"] is None
+    assert last["description"] == ""
+    assert last["published_at"] == "1970-01-01T00:00:00Z"  # epoch, pas None
+    assert last["found_via"] == []
+    assert last["new_repo"] is False
+
+
+def test_finalize_items_canonicalizes_found_via_at_the_edge():
+    """La canonicalisation n'est appliquée qu'au final, pas au dedup interne."""
+    items = releases._finalize_items({"k": _item(found_via=[S_MCP, S_NPM])})
+    assert items[0]["found_via"] == [S_NPM, S_MCP]
+
+
+def test_build_ecosystem_counts_only_known_categories():
+    """`counts_by_category` ne compte que les 5 catégories du schéma (clé figée)."""
+    items = {
+        "a": _item(name="p", category="plugin"),
+        "b": _item(name="s", category="skill"),
+        "c": _item(name="x", category="article"),  # non compté
+        "d": _item(name="m", category="mcp-server"),
+    }
+    payload = releases._build_ecosystem(
+        make_cfg(watch_repos=["a/b"]), PERIOD_START, PERIOD_END, items, [], {S_NPM: 4}, []
+    )
+    assert payload["counts_by_category"] == {
+        "plugin": 1,
+        "skill": 1,
+        "agent": 0,
+        "mcp-server": 1,
+        "repo": 0,
+    }
+    assert payload["schema_version"] == 2
+    assert payload["period"] == {"start": "2026-08-03T06:00:00Z", "end": "2026-08-10T06:00:00Z"}
+    assert payload["generated_at"] == "2026-08-10T06:00:00Z"
+    assert payload["watch_repos"] == ["a/b"]
+    assert payload["counts_by_source"] == {S_NPM: 4}
+
+
+def test_build_ecosystem_sorts_core_changes_by_date_desc_then_version():
+    changes = [
+        {
+            "version": "v1.0.0",
+            "date": "2026-08-05",
+            "summary": "",
+            "matched_keywords": [],
+            "relevance_flag": "medium",
+        },
+        {
+            "version": "v2.0.0",
+            "date": "2026-08-09",
+            "summary": "",
+            "matched_keywords": [],
+            "relevance_flag": "medium",
+        },
+        {
+            "version": "v0.9.0",
+            "date": "2026-08-05",
+            "summary": "",
+            "matched_keywords": [],
+            "relevance_flag": "medium",
+        },
+    ]
+    payload = releases._build_ecosystem(make_cfg(), PERIOD_START, PERIOD_END, {}, changes, {}, [])
+    assert [c["version"] for c in payload["core_changes"]] == ["v2.0.0", "v0.9.0", "v1.0.0"]
+
+
+def test_collect_seeds_counts_for_every_canonical_source():
+    """`_collect` pré-remplit les 5 sources canoniques à 0, même sans config watch."""
+    handler = make_handler(
+        {
+            URL_NPM: npm_payload(),
+            URL_GITHUB: {"items": []},
+            URL_MCP: {"servers": []},
+            URL_RELEASES: [],
+        }
+    )
+    cfg = make_cfg()
+    payload, rc = releases._collect(cfg, FakeClient(handler), PERIOD_START, PERIOD_END)
+
+    assert rc == 0
+    assert payload["counts_by_source"] == {
+        S_NPM: 0,
+        S_GITHUB: 0,
+        S_MCP: 0,
+        S_RELEASES: 0,
+        S_WATCH: 0,
+    }
+    assert payload["warnings"] == []
+
+
+def test_collect_exit_1_when_every_source_fails(monkeypatch):
+    """rc=1 seulement si AUCUNE source n'a réussi (0 item mais source ok ⇒ rc=0)."""
+    monkeypatch.setattr(releases, "_gh_api", no_gh)
+    _no_sleep(monkeypatch)
+
+    def handler(url, params, headers):
+        raise urllib.error.URLError("down")
+
+    payload, rc = releases._collect(make_cfg(), FakeClient(handler), PERIOD_START, PERIOD_END)
+
+    assert rc == 1
+    assert [w["source"] for w in payload["warnings"]] == [S_NPM, S_GITHUB, S_MCP, S_RELEASES]
+    assert payload["new_items"] == []
+
+
+def test_collect_watch_repos_fallback_to_watch_entries(monkeypatch):
+    """`watch` vide + `watch_repos` non vide → des entrées repo sont synthétisées."""
+    _no_sleep(monkeypatch)
+    seen: dict = {}
+
+    def fake_watch_repos(client, repos, start, end):
+        seen["repos"] = repos
+        return []
+
+    monkeypatch.setattr(releases, "_fetch_watch_repos", fake_watch_repos)
+    handler = make_handler(
+        {
+            URL_NPM: npm_payload(),
+            URL_GITHUB: {"items": []},
+            URL_MCP: {"servers": []},
+            URL_RELEASES: [],
+        }
+    )
+
+    payload, rc = releases._collect(
+        make_cfg(watch_repos=["a/b", "c/d"]), FakeClient(handler), PERIOD_START, PERIOD_END
+    )
+
+    assert seen["repos"] == ["a/b", "c/d"]
+    assert rc == 0
+    assert payload["warnings"] == []
+
+
+def test_collect_empty_watch_does_not_inflate_ok_sources(monkeypatch):
+    """Pas d'entrée watch ⇒ pas de source no-op : un échec réseau seul donne rc=1."""
+    _no_sleep(monkeypatch)
+    monkeypatch.setattr(releases, "_gh_api", no_gh)
+    called: list[int] = []
+    monkeypatch.setattr(releases, "_collect_watch_sources", lambda *a, **k: called.append(1))
+
+    def handler(url, params, headers):
+        raise urllib.error.URLError("down")
+
+    _, rc = releases._collect(make_cfg(), FakeClient(handler), PERIOD_START, PERIOD_END)
+
+    assert called == []
+    assert rc == 1
+
+
+def test_fail_message_truncates_long_text():
+    """Le message d'échec est préfixé et borné à 120 caractères + `…`."""
+    short = releases._fail_message(ValueError("boom"))
+    assert short.startswith("API indisponible / rate-limitated; source ignorée pour ce run (boom)")
+    long = releases._fail_message(ValueError("x" * 300))
+    assert long.endswith("…)")
+    assert "x" * 120 in long
+    assert "x" * 121 not in long
+
+
+def test_fail_message_uses_exception_class_when_message_empty():
+    assert releases._fail_message(ValueError()).endswith("(ValueError)")
