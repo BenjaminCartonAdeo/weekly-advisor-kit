@@ -9,25 +9,27 @@ from pathlib import Path
 from weekly_telemetry_aggregator.cli import main
 from weekly_telemetry_aggregator.util import load_jsonc
 from weekly_telemetry_aggregator.watch_context import (
-    EnvironmentInventory,
-    FileRecord,
-    PluginRecord,
     _category_is_observable,
     _config_evidence,
-    _markdown_description,
     _market_identifiers,
     _match_market_item,
     _match_summary,
     _observed_evidence,
+    build_watch_context,
+    enrich_candidates,
+    normalize_npm_package,
+)
+from weekly_telemetry_aggregator.watch_inventory import (
+    EnvironmentInventory,
+    FileRecord,
+    PluginRecord,
+    _markdown_description,
     _record_to_dict,
     _repo_slug,
     _unique_identities,
     build_local_inventory,
-    build_watch_context,
-    enrich_candidates,
     hints_for,
     inventory_environment,
-    normalize_npm_package,
     normalize_repo_url,
     parse_plugin_spec,
 )
@@ -656,8 +658,9 @@ def test_unique_identities_dedups_blanks_but_is_case_sensitive() -> None:
     distinct = [value for value in identities if value not in {"A", "a"}]
     assert distinct == ["b", "c"]
     assert _unique_identities([]) == ()
-    # Idempotent : ré-appliquer sur sa propre sortie ne change rien.
-    assert _unique_identities(identities) == identities
+    # Idempotent quant au CONTENU seulement : l'ordre relatif de deux variantes
+    # de casse dépend de l'itération du ``set`` interne, donc du hash seed.
+    assert set(_unique_identities(identities)) == set(identities)
 
 
 # ------------------------------------------- identité : specs de plugins

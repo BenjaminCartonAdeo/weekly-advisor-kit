@@ -371,11 +371,11 @@ def _cmd_watch_context(args, cfg) -> int:
     from .main import EXIT_OK, EXIT_TOTAL_FAILURE, _parse_anchor
     from .util import load_jsonc
     from .watch_context import (
-        build_local_inventory,
         build_watch_context,
         enrich_candidates,
         load_ecosystem_report,
     )
+    from .watch_inventory import build_local_inventory
     from .writer import write_json_atomic
 
     run_time = _parse_anchor(args.anchor)

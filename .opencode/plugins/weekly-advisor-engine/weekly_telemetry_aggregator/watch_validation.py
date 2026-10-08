@@ -29,7 +29,7 @@ from typing import Any
 
 from .identities import normalize_npm_package
 from .util import casefold, parse_iso_ts
-from .watch_context import build_local_inventory, normalize_repo_url
+from .watch_inventory import build_local_inventory, normalize_repo_url
 from .watch_memory import append_entries, normalize_id, week_of
 
 INPUT_CATEGORIES = frozenset({"install-new", "improve-existing", "ignore"})
