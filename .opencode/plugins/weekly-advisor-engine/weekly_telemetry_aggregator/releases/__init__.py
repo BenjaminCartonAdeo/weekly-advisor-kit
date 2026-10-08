@@ -94,12 +94,33 @@ from ._radar import (
     _radar_post,
 )
 from ._sources import (
+    RELEASES_PER_PAGE,
+    URL_GITHUB_TOPICS,
+    URL_MCP,
+    URL_RELEASES,
     WATCH_ITEMS_CAP,
     _extract_markdown_links,
+    _fetch_github_topics,
+    _fetch_mcp,
+    _fetch_releases,
     _fetch_rss,
+    _fetch_watch_list,
+    _link_category,
+    _load_snapshot,
+    _release_summary,
     _rss_date,
     _rss_local,
     _rss_map_node,
+    _save_snapshot,
+    _snapshot_path,
+    _split_repo,
+)
+from ._watch_repos import (
+    _fetch_watch_repos,
+    _process_watch_repo,
+    _watch_repo_activity_fallback,
+    _watch_repo_display_fields,
+    _watch_repo_release_items,
 )
 from .dedup import (
     FOUND_VIA_ORDER,
@@ -115,13 +136,6 @@ from .dedup import (
     _merge_into,
     _preferred_record,
 )
-
-RELEASES_PER_PAGE = 100
-
-# URLs (one per source, resolved per run).
-URL_GITHUB_TOPICS = "https://api.github.com/search/repositories"
-URL_MCP = "https://registry.modelcontextprotocol.io/v0.1/servers"
-URL_RELEASES = "https://api.github.com/repos/anomalyco/opencode/releases"
 
 
 def _partition_watch_entries(watch_entries: list) -> tuple[list, list, list, list, list]:
@@ -209,364 +223,6 @@ def _build_ecosystem(cfg, start, end, items, changes, counts_by_source, warnings
         "watch_repos": list(cfg.watch_repos),
         "warnings": warnings,
     }
-
-
-def _fetch_github_topics(
-    client, topic: str, start: datetime, end: datetime, min_stars: int
-) -> list[dict]:
-    """GitHub topic search (type topic, v5.30) — API datée (pushed_at/created_at).
-
-    Une seule implémentation pour tous les topics (y compris opencode-plugin,
-    le topic historique de la Partie 2). Query pré-construite : le + serait
-    encodé en %2B par urlencode/quote et GitHub le chercherait comme terme littéral.
-    """
-    query = f"q=topic:{quote(topic)}%20stars:%3E{min_stars}&sort=updated&per_page=50"
-    payload = _github_json(client, f"{URL_GITHUB_TOPICS}?{query}")
-    repos = payload.get("items") if isinstance(payload, dict) else []
-    if not isinstance(repos, list):
-        repos = []
-    items: list[dict] = []
-    for repo in repos:
-        if not isinstance(repo, dict):
-            continue
-        pushed = parse_iso_ts(repo.get("pushed_at"))
-        if pushed is None or not (start <= pushed <= end):
-            continue
-        created = parse_iso_ts(repo.get("created_at"))
-        items.append(
-            {
-                "name": str(repo.get("full_name") or ""),
-                "category": "plugin",
-                "repo_url": str(repo.get("html_url") or ""),
-                "npm_package": None,
-                "description": str(repo.get("description") or ""),
-                "published_at": pushed,
-                "found_via": [f"github:topic:{topic}"],
-                "new_repo": bool(created is not None and start <= created <= end),
-            }
-        )
-    return items
-
-
-def _fetch_mcp(client, start: datetime, end: datetime) -> list[dict]:
-    """MCP registry, filtered client-side: deleted, non-latest, out-of-window."""
-    payload = _get_json(
-        client,
-        URL_MCP,
-        params={"updated_since": _iso(start), "version": "latest"},
-    )
-    servers = payload.get("servers") if isinstance(payload, dict) else []
-    if not isinstance(servers, list):
-        servers = []
-
-    items: list[dict] = []
-    for entry in servers:
-        mapped = _mcp_map_entry(entry, start, end)
-        if mapped is not None:
-            items.append(mapped)
-    return items
-
-
-# ---------------------------------------------------------------- releases ---
-def _release_summary(body: str) -> str:
-    """First ~5 non-empty lines joined with " · ", capped at 400 chars."""
-    lines: list[str] = []
-    for line in body.splitlines():
-        text = line.strip().lstrip("-* ").strip()
-        if text:
-            lines.append(text)
-        if len(lines) >= 5:
-            break
-    joined = " · ".join(lines)
-    if len(joined) > 400:
-        joined = joined[:400].rstrip() + "…"
-    return joined
-
-
-def _fetch_releases(
-    client, start: datetime, end: datetime, keywords: list[str]
-) -> tuple[list[dict], int]:
-    """OpenCode releases → (changes, in_window_count).
-
-    Only in-window releases with ≥1 keyword match become `core_changes` (0-keyword
-    releases are still counted by source, per spec), so the source count is the
-    number of in-window releases regardless of keyword matches.
-    """
-    payload = _github_json(client, URL_RELEASES, params={"per_page": RELEASES_PER_PAGE})
-    releases = payload if isinstance(payload, list) else []
-
-    changes: list[dict] = []
-    in_window = 0
-    for release in releases:
-        if not isinstance(release, dict):
-            continue
-        published = parse_iso_ts(release.get("published_at"))
-        if published is None or not (start <= published <= end):
-            continue
-        in_window += 1
-        body = str(release.get("body") or "")
-        matched = [kw for kw in keywords if re.search(rf"\b{re.escape(kw)}\b", body, re.IGNORECASE)]
-        if not matched:  # 0-keyword release: counted by source, not emitted
-            continue
-        changes.append(
-            {
-                "version": str(release.get("tag_name") or ""),
-                "date": published.strftime("%Y-%m-%d"),
-                "summary": _release_summary(body),
-                "matched_keywords": matched,
-                "relevance_flag": "high" if len(matched) >= 2 else "medium",
-            }
-        )
-    return changes, in_window
-
-
-def _link_category(url: str) -> str:
-    """Heuristique de catégorie pour un lien de veille (défaut plugin)."""
-    low = url.lower()
-    if "mcp" in low:
-        return "mcp-server"
-    if "skill" in low:
-        return "skill"
-    if "agent" in low:
-        return "agent"
-    return "plugin"
-
-
-def _snapshot_path(state_dir: Path, key: str) -> Path:
-    state_dir.mkdir(parents=True, exist_ok=True)
-    return state_dir / f"{key}.txt"
-
-
-def _load_snapshot(path: Path) -> set[str]:
-    try:
-        return {
-            line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
-        }
-    except OSError:
-        return set()
-
-
-def _save_snapshot(path: Path, urls: set[str]) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text("\n".join(sorted(urls)), encoding="utf-8")
-    tmp.replace(path)
-
-
-def _fetch_watch_list(client, repo: str, end: datetime, state_dir: Path) -> list[dict]:
-    """README diff d'un repo de curation (type list, v5.30).
-
-    Les nouveautés = liens markdown présents dans le README actuel et absents du
-    snapshot précédent. Premier run = baseline silencieuse (snapshot initialisé,
-    zéro item) pour ne pas inonder le rapport de la liste complète.
-    """
-    owner, name = _split_repo(repo)
-    payload = _github_json(client, f"https://api.github.com/repos/{owner}/{name}/readme")
-    content = payload.get("content") if isinstance(payload, dict) else None
-    if not content:
-        return []
-    try:
-        readme = base64.b64decode(content).decode("utf-8", errors="replace")
-    except (ValueError, TypeError):
-        return []
-    links = _extract_markdown_links(readme)
-    urls_now = {url for _t, url in links}
-    path = _snapshot_path(state_dir, f"list-{owner}-{name}")
-    previous = _load_snapshot(path)
-    _save_snapshot(path, urls_now)
-    if not previous:  # baseline : premier run silencieux
-        return []
-    fresh = [(t, u) for t, u in links if u not in previous][:WATCH_ITEMS_CAP]
-    return [
-        {
-            "name": title or url,
-            "category": _link_category(url),
-            "repo_url": url,
-            "npm_package": None,
-            "description": f"Nouveau lien dans la liste {repo}",
-            "published_at": end,
-            "found_via": [f"watch:list:{repo}"],
-            "new_repo": False,
-        }
-        for title, url in fresh
-    ]
-
-
-def _split_repo(repo: str) -> tuple[str, str]:
-    """`owner/name` → (owner, name); case kept for display, slugified for the URL."""
-    parts = str(repo or "").strip().strip("/").split("/")
-    if len(parts) != 2 or not all(parts):
-        raise ValueError(f"watch_repos doit être 'owner/name', reçu: {repo!r}")
-
-    return quote(parts[0]), quote(parts[1])
-
-
-def _watch_repo_release_items(
-    display_name: str,
-    html_url: str,
-    description: str,
-    releases: object,
-    start: datetime,
-    end: datetime,
-) -> list[dict]:
-    """Items release in-window d'un repo suivi."""
-    items: list[dict] = []
-    for release in releases if isinstance(releases, list) else []:
-        if not isinstance(release, dict):
-            continue
-        published = parse_iso_ts(release.get("published_at"))
-        if published is None or not (start <= published <= end):
-            continue
-        tag = str(release.get("tag_name") or release.get("name") or "")
-        items.append(
-            {
-                "name": f"{display_name} {tag}" if tag else f"{display_name} (release)",
-                "category": "repo",
-                "repo_url": html_url,
-                "npm_package": None,
-                "description": _release_summary(str(release.get("body") or "")) or description,
-                "published_at": published,
-                "found_via": [SOURCE_WATCH],
-                "new_repo": False,
-            }
-        )
-    return items
-
-
-def _watch_repo_activity_fallback(
-    client,
-    owner: str,
-    name: str,
-    display_name: str,
-    html_url: str,
-    description: str,
-    info: object,
-    start: datetime,
-    end: datetime,
-) -> list[dict]:
-    """Repli push/commits quand aucune release in-window — [] si rien ne bouge."""
-    publish = parse_iso_ts(info.get("pushed_at")) if isinstance(info, dict) else None
-    if publish is not None and start <= publish <= end:
-        return [
-            {
-                "name": display_name,
-                "category": "repo",
-                "repo_url": html_url,
-                "npm_package": None,
-                "description": (
-                    f"Activité du dépôt (dernier push {publish:%Y-%m-%d}) — {description}"
-                )[:200],
-                "published_at": publish,
-                "found_via": [SOURCE_WATCH],
-                "new_repo": False,
-            }
-        ]
-    # v5.30 (3) : le dernier push peut être post-clôture alors que le repo a
-    # travaillé DANS la fenêtre — fallback sur les commits de la fenêtre.
-    try:
-        commits = _github_json(
-            client,
-            f"https://api.github.com/repos/{owner}/{name}/commits",
-            params={"since": _iso(start), "until": _iso(end), "per_page": 5},
-        )
-    except SourceError:
-        commits = []
-    in_window = [
-        c
-        for c in commits
-        if isinstance(c, dict)
-        and parse_iso_ts(((c.get("commit") or {}).get("author") or {}).get("date")) is not None
-    ]
-    if not in_window:
-        return []
-    latest = max(
-        in_window,
-        key=lambda c: parse_iso_ts(c["commit"]["author"]["date"]),
-    )
-    last_commit = parse_iso_ts(latest["commit"]["author"]["date"])
-    return [
-        {
-            "name": display_name,
-            "category": "repo",
-            "repo_url": html_url,
-            "npm_package": None,
-            "description": (
-                f"Activité du dépôt ({len(in_window)} commit(s) dans la fenêtre, "
-                f"dernier le {last_commit:%Y-%m-%d}) — {description}"
-            )[:200],
-            "published_at": last_commit,
-            "found_via": [SOURCE_WATCH],
-            "new_repo": False,
-        }
-    ]
-
-
-def _watch_repo_display_fields(repo: str, info: object) -> tuple[str, str, str]:
-    """display_name/description/html_url d'un repo suivi (+ mention rename)."""
-    full_name = str(info.get("full_name") or repo) if isinstance(info, dict) else repo
-    display_name = full_name if "/" in full_name else repo
-    description = str(info.get("description") or "") if isinstance(info, dict) else ""
-    if display_name.lower() != repo.lower():
-        rename = f"Renommé de {repo}"
-        description = f"{rename} ; {description}" if description else rename
-    html_url = (
-        str(info.get("html_url") or f"https://github.com/{full_name}")
-        if isinstance(info, dict)
-        else f"https://github.com/{full_name}"
-    )
-    return display_name, description, html_url
-
-
-def _process_watch_repo(
-    client, repo: str, start: datetime, end: datetime
-) -> tuple[list[dict], bool]:
-    """Un repo suivi → (items, ok). False = repo en échec (split ou API)."""
-    try:
-        owner, name = _split_repo(repo)
-    except ValueError:
-        return [], False
-    try:
-        info = _github_json(client, f"https://api.github.com/repos/{owner}/{name}")
-        releases = _github_json(
-            client,
-            f"https://api.github.com/repos/{owner}/{name}/releases",
-            params={"per_page": 10},
-        )
-    except SourceError:
-        return [], False
-    display_name, description, html_url = _watch_repo_display_fields(repo, info)
-    repo_items = _watch_repo_release_items(
-        display_name, html_url, description, releases, start, end
-    )
-    if not repo_items:
-        # Aucune release émise pour ce repo → repli activité.
-        repo_items = _watch_repo_activity_fallback(
-            client, owner, name, display_name, html_url, description, info, start, end
-        )
-    return repo_items, True
-
-
-def _fetch_watch_repos(
-    client, watch_repos: list[str], start: datetime, end: datetime
-) -> list[dict]:
-    """Arbitrary-repo watch: per-repo latest release(s) in window, else last push.
-
-    A repo with zero in-window activity emits nothing (veille = ce qui bouge cette
-    semaine). If *every* repo fails, a :class:`SourceError` is raised so the caller
-    records one warning instead of silently succeeding.
-    """
-    items: list[dict] = []
-    if not watch_repos:
-        return items
-    failures = 0
-    for repo in watch_repos:
-        repo_items, ok = _process_watch_repo(client, repo, start, end)
-        if not ok:
-            failures += 1
-            continue
-        items.extend(repo_items)
-    if failures and failures == len(watch_repos):
-        raise SourceError("github:watch-repos — tous les repos suivis ont échoué (API GitHub)")
-    return items
 
 
 def _collect(cfg, client, start: datetime, end: datetime) -> tuple[dict, int]:
