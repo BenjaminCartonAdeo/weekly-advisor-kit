@@ -37,6 +37,10 @@ jobs:
       - name: Tests (aucun réseau)
         # Keep test and check-flow-docs collection in the same uv/Python environment.
         run: uv run python -m pytest -q
+      - name: Coverage (lcov)
+        # Une seule fois : un seul rapport pour la gate et pour l'ingest.
+        if: runner.os == 'Linux'
+        run: uv run python -m pytest -q --cov=weekly_telemetry_aggregator --cov-report=lcov:coverage/lcov.info
       - name: Packaging
         run: uv build
       - name: Wheel content (template inclus)
