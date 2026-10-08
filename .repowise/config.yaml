@@ -1,0 +1,34 @@
+# Repowise config for weekly-advisor-kit.
+#
+# Scope: what the index is allowed to treat as source, and how to line the CI
+# coverage report up with the repo-root file tree.
+
+# --- Index scope -----------------------------------------------------------
+# Generated render output, not source. One generator run emits the .png, the
+# .svg and the .html of the same diagram, so all three families are excluded
+# together. Without this they are scored as source and drag down the governance
+# / ownership metrics.
+exclude_patterns:
+  - "doc/diagrams/*.png"
+  - "doc/diagrams/*.svg"
+  - "doc/diagrams/*.html"
+  # `.opencode/package-lock.json` is a lockfile, which repowise already excludes
+  # as a built-in; listed explicitly so the intent survives if that default moves.
+
+# NOT excluded on purpose: doc/architecture/schemas/*.json. Those are not
+# generated — their README calls them "documentaires" and they are hand-written
+# contracts that scripts/check-flow-docs.mjs validates against, so dropping them
+# would hide real source from the graph.
+
+# --- Coverage --------------------------------------------------------------
+# The package root is .opencode/plugins/weekly-advisor-engine/ and CI runs pytest
+# with that directory as cwd, so the lcov `SF:` records are package-relative
+# (weekly_telemetry_aggregator/main.py) while repowise's tree is repo-root
+# relative. `path_prefix` re-roots them; without it the whole report comes back
+# unmatched.
+coverage:
+  paths:
+    - path: ".opencode/plugins/weekly-advisor-engine/coverage/lcov.info"
+      path_prefix: ".opencode/plugins/weekly-advisor-engine"
+  fail_under: 0          # non-blocking to start; the real number is not known yet
+  min_coverable_lines: 5 # small-change tolerance for the patch-coverage gate
