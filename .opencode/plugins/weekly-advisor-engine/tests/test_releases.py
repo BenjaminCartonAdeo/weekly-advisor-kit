@@ -1778,3 +1778,475 @@ def test_fail_message_truncates_long_text():
 
 def test_fail_message_uses_exception_class_when_message_empty():
     assert releases._fail_message(ValueError()).endswith("(ValueError)")
+
+
+# ============================================================ F2: npm / MCP mapping
+# Caractérisation du mapping objet → item : valeurs exactes, normalisation, fallbacks.
+
+
+def _npm_pkg(name="pkg", date="2026-08-05T10:00:00Z", **kw) -> dict:
+    base = {"name": name, "description": "d", "date": date, "keywords": ["opencode"]}
+    base.update(kw)
+    return base
+
+
+def _mcp_entry(server=None, official=None, wrap=True) -> dict:
+    entry: dict = {}
+    if wrap:
+        entry["server"] = server or {}
+    elif server:
+        entry.update(server)
+    if official is not None:
+        entry["_meta"] = {"io.modelcontextprotocol.registry/official": official}
+    return entry
+
+
+def _official(**kw) -> dict:
+    base = {"status": "active", "isLatest": True, "publishedAt": "2026-08-04T12:00:00Z"}
+    base.update(kw)
+    return base
+
+
+# ------------------------------------------------------------------- _npm_category
+@pytest.mark.parametrize(
+    ("package", "expected"),
+    [
+        ({"name": "opencode-skill-kit"}, "skill"),
+        ({"name": "oc-plugin", "keywords": ["Skill", "OpenCode"]}, "skill"),
+        ({"name": "OC-SKILL"}, "skill"),  # name lowercased avant recherche
+        ({"name": "oc-plugin", "keywords": ["skill"]}, "skill"),
+        ({"name": "oc-plugin", "keywords": ["opencode-plugin"]}, "plugin"),
+        ({"name": "oc-plugin"}, "plugin"),  # keywords absent ⇒ pas de heuristique
+        ({"name": "oc-plugin", "keywords": "skill"}, "plugin"),  # non-list ⇒ ignoré
+        ({"name": "", "keywords": ["skill"]}, "skill"),
+    ],
+)
+def test_npm_category_heuristic(package, expected):
+    assert releases._npm_category(package) == expected
+
+
+# ----------------------------------------------------------------- _npm_map_object
+def test_npm_map_object_exact_item():
+    """Objet npm search → item : valeurs exactes, `found_via` unique, pas de version."""
+    item = releases._npm_map_object(
+        {"package": _npm_pkg(links={"repository": "https://github.com/acme/p"})},
+        PERIOD_START,
+        PERIOD_END,
+    )
+    assert item == {
+        "name": "pkg",
+        "category": "plugin",
+        "repo_url": "https://github.com/acme/p",
+        "npm_package": "pkg",
+        "description": "d",
+        "published_at": datetime(2026, 8, 5, 10, 0, tzinfo=UTC),
+        "found_via": [S_NPM],
+        "new_repo": False,
+    }
+
+
+def test_npm_map_object_window_is_inclusive():
+    """Les deux bornes de la fenêtre sont incluses (start <= published <= end)."""
+    at_start = releases._npm_map_object(
+        {"package": _npm_pkg(date="2026-08-03T06:00:00Z")}, PERIOD_START, PERIOD_END
+    )
+    at_end = releases._npm_map_object(
+        {"package": _npm_pkg(date="2026-08-10T06:00:00Z")}, PERIOD_START, PERIOD_END
+    )
+    before = releases._npm_map_object(
+        {"package": _npm_pkg(date="2026-08-03T05:59:59Z")}, PERIOD_START, PERIOD_END
+    )
+    after = releases._npm_map_object(
+        {"package": _npm_pkg(date="2026-08-10T06:00:01Z")}, PERIOD_START, PERIOD_END
+    )
+    assert at_start is not None and at_end is not None
+    assert before is None and after is None
+
+
+@pytest.mark.parametrize(
+    "obj",
+    [
+        {},  # pas de package
+        {"package": "not-a-dict"},
+        {"package": _npm_pkg(date="")},  # date vide
+        {"package": _npm_pkg(date="pas-une-date")},
+        {"package": _npm_pkg(date=None)},
+    ],
+)
+def test_npm_map_object_rejects_malformed(obj):
+    assert releases._npm_map_object(obj, PERIOD_START, PERIOD_END) is None
+
+
+def test_npm_map_object_absent_fields_fall_back():
+    """Champs absents : repo_url "", description "", npm_package=None (name vide)."""
+    item = releases._npm_map_object(
+        {"package": {"date": "2026-08-05T10:00:00Z"}}, PERIOD_START, PERIOD_END
+    )
+    assert item["name"] == ""
+    assert item["repo_url"] == ""
+    assert item["description"] == ""
+    assert item["npm_package"] is None
+    assert item["category"] == "plugin"
+
+
+def test_npm_map_object_links_fallback():
+    """`links` absent ou non-dict ⇒ repo_url vide, jamais une KeyError."""
+    assert (
+        releases._npm_map_object(
+            {"package": _npm_pkg(links="https://github.com/x")}, PERIOD_START, PERIOD_END
+        )["repo_url"]
+        == ""
+    )
+    assert (
+        releases._npm_map_object(
+            {"package": _npm_pkg(links={"repository": None})}, PERIOD_START, PERIOD_END
+        )["repo_url"]
+        == ""
+    )
+
+
+def test_npm_map_object_ignores_prerelease_marker_in_date():
+    """Une date ISO avec offset est normalisée en UTC avant le filtre de fenêtre."""
+    item = releases._npm_map_object(
+        {"package": _npm_pkg(date="2026-08-05T12:00:00+02:00")}, PERIOD_START, PERIOD_END
+    )
+    assert item["published_at"] == datetime(2026, 8, 5, 10, 0, tzinfo=UTC)
+
+
+# ---------------------------------------------------------------- _npm_fetch_pages
+class _PagingClient:
+    """Client npm paginé : enregistre les offsets demandés, sert les pages."""
+
+    def __init__(self, total: int, page_sizes: list[int]):
+        self.total = total
+        self.page_sizes = page_sizes
+        self.offsets: list[int | None] = []
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        self.offsets.append((params or {}).get("from"))
+        offset = (params or {}).get("from")
+        if offset is None:
+            objects = [
+                {"package": _npm_pkg(name=f"p{offset}")} for offset in range(self.page_sizes[0])
+            ]
+            return FakeResponse({"total": self.total, "objects": objects})
+        n = self.page_sizes[min(self.offsets.index(offset), len(self.page_sizes) - 1)]
+        return FakeResponse(
+            {"objects": [{"package": _npm_pkg(name=f"p{offset}-{i}")} for i in range(n)]}
+        )
+
+
+def test_npm_fetch_pages_single_page_when_total_fits():
+    """total <= NPM_PAGE_SIZE : une seule requête, pas de `from`."""
+    client = _PagingClient(total=10, page_sizes=[10])
+    objects = releases._npm_fetch_pages(client)
+    assert len(objects) == 10
+    assert client.offsets == [None]
+
+
+def test_npm_fetch_pages_paginates_while_total_exceeds():
+    """total > page : des pages `from=250, 500, ...` jusqu'à épuisement du total."""
+    client = _PagingClient(total=800, page_sizes=[3, 3, 3])
+    objects = releases._npm_fetch_pages(client)
+    assert client.offsets == [None, 250, 500, 750]
+    assert len(objects) == 12  # 3 (page 1) + 3 pages de 3
+
+
+def test_npm_fetch_pages_stops_on_empty_page():
+    """Une page vide interrompt la pagination (pas de boucle infinie)."""
+    client = _PagingClient(total=5000, page_sizes=[3, 0])
+    objects = releases._npm_fetch_pages(client)
+    assert client.offsets == [None, 250]
+    assert len(objects) == 3
+
+
+def test_npm_fetch_pages_never_exceeds_max_rows():
+    """La pagination s'arrête à NPM_MAX_ROWS même si `total` l'annonce plus grand."""
+    client = _PagingClient(total=10_000, page_sizes=[1])
+    releases._npm_fetch_pages(client)
+    last = max(o for o in client.offsets if o is not None)
+    assert last < releases.NPM_MAX_ROWS
+
+
+def test_npm_fetch_pages_tolerates_malformed_payload():
+    """Payload non-dict / objects non-list ⇒ liste vide, pas d'exception."""
+    assert releases._npm_fetch_pages(_PagingClient(total=0, page_sizes=[0])) == []
+
+    class Weird:
+        def get(self, url, params=None, headers=None, timeout=None):
+            return FakeResponse({"total": "12", "objects": "not-a-list"})
+
+    assert releases._npm_fetch_pages(Weird()) == []
+
+
+def test_npm_fetch_pages_query_constants():
+    client = _PagingClient(total=0, page_sizes=[0])
+    releases._npm_fetch_pages(client)
+    assert client.offsets == [None]
+    assert releases.NPM_PAGE_SIZE == 250
+    assert releases.NPM_MAX_ROWS == 1000
+    assert releases.NPM_QUERY == "keywords:opencode-plugin,opencode"
+    assert releases.URL_NPM == "https://registry.npmjs.org/-/v1/search"
+
+
+# --------------------------------------------------------------------- _fetch_npm
+def test_fetch_npm_maps_only_in_window_objects(monkeypatch):
+    """`_fetch_npm` filtre via `_npm_map_object` et saute les None."""
+    objects = [
+        {"package": _npm_pkg(name="in", date="2026-08-05T10:00:00Z")},
+        {"package": _npm_pkg(name="out", date="2026-01-01T00:00:00Z")},
+        {"bad": "object"},
+        {"package": _npm_pkg(name="in2", date="2026-08-06T10:00:00Z")},
+    ]
+    monkeypatch.setattr(releases, "_npm_fetch_pages", lambda client: objects)
+
+    items = releases._fetch_npm(None, PERIOD_START, PERIOD_END)
+
+    assert [i["name"] for i in items] == ["in", "in2"]
+    assert all(i["found_via"] == [S_NPM] for i in items)
+
+
+# ------------------------------------------------------------------ _mcp_repo_url
+@pytest.mark.parametrize(
+    ("server", "expected"),
+    [
+        ({"repository": "https://github.com/a/b"}, "https://github.com/a/b"),
+        ({"githubUrl": "https://github.com/a/b"}, "https://github.com/a/b"),
+        ({"homepage": "https://ex.test/p"}, "https://ex.test/p"),
+        ({"sourceUrl": "https://ex.test/s"}, "https://ex.test/s"),
+        ({"repositoryUrl": "https://ex.test/r"}, "https://ex.test/r"),
+        # priorité : la première clé directe qui vaut http gagne
+        (
+            {"homepage": "https://h.test", "githubUrl": "https://gh.test"},
+            "https://gh.test",
+        ),
+        # valeur non-http ignorée, on continue la liste
+        ({"repository": "ftp://x", "homepage": "https://h.test"}, "https://h.test"),
+        ({"remotes": [{"url": "https://r1.test"}, {"url": "https://r2.test"}]}, "https://r1.test"),
+        ({"remotes": ["https://raw.test"]}, "https://raw.test"),  # remote = str
+        ({"remotes": [{"url": "ftp://x"}, "https://ok.test"]}, "https://ok.test"),
+        ({"remotes": "not-a-list"}, ""),
+        ({"repository": 123}, ""),
+        ({}, ""),
+    ],
+)
+def test_mcp_repo_url_resolution(server, expected):
+    assert releases._mcp_repo_url(server) == expected
+
+
+def test_mcp_repo_url_direct_key_wins_over_remotes():
+    assert (
+        releases._mcp_repo_url(
+            {"repository": "https://direct.test", "remotes": [{"url": "https://remote.test"}]}
+        )
+        == "https://direct.test"
+    )
+
+
+# ----------------------------------------------------------------- _mcp_map_entry
+def test_mcp_map_entry_exact_item():
+    item = releases._mcp_map_entry(
+        _mcp_entry(
+            {"name": "acme/mcp", "description": "mcp", "repository": "https://github.com/a/b"},
+            _official(),
+        ),
+        PERIOD_START,
+        PERIOD_END,
+    )
+    assert item == {
+        "name": "acme/mcp",
+        "category": "mcp-server",
+        "repo_url": "https://github.com/a/b",
+        "npm_package": None,
+        "description": "mcp",
+        "published_at": datetime(2026, 8, 4, 12, 0, tzinfo=UTC),
+        "found_via": [S_MCP],
+        "new_repo": False,
+    }
+
+
+def test_mcp_map_entry_name_falls_back_to_title():
+    assert (
+        releases._mcp_map_entry(
+            _mcp_entry({"title": "Titre seul"}, _official()), PERIOD_START, PERIOD_END
+        )["name"]
+        == "Titre seul"
+    )
+    assert (
+        releases._mcp_map_entry(_mcp_entry({}, _official()), PERIOD_START, PERIOD_END)["name"] == ""
+    )
+
+
+def test_mcp_map_entry_reads_published_at_from_server_when_official_lacks_it():
+    """publishedAt : `_meta.official` d'abord, puis le serveur lui-même."""
+    assert releases._mcp_map_entry(
+        _mcp_entry(
+            {"name": "s", "publishedAt": "2026-08-06T00:00:00Z"}, _official(publishedAt=None)
+        ),
+        PERIOD_START,
+        PERIOD_END,
+    )["published_at"] == datetime(2026, 8, 6, tzinfo=UTC)
+
+
+def test_mcp_map_entry_rejects_non_latest_revision():
+    """isLatest False (révision non-latest) ⇒ entrée ignorée."""
+    assert (
+        releases._mcp_map_entry(
+            _mcp_entry({"name": "s"}, _official(isLatest=False)), PERIOD_START, PERIOD_END
+        )
+        is None
+    )
+
+
+def test_mcp_map_entry_accepts_latest_true_and_missing_flag():
+    """isLatest True ou absent ⇒ conservé (seul `is False` rejette)."""
+    assert (
+        releases._mcp_map_entry(
+            _mcp_entry({"name": "s"}, _official(isLatest=True)), PERIOD_START, PERIOD_END
+        )
+        is not None
+    )
+    assert (
+        releases._mcp_map_entry(
+            _mcp_entry({"name": "s"}, {"publishedAt": "2026-08-05T00:00:00Z"}),
+            PERIOD_START,
+            PERIOD_END,
+        )
+        is not None
+    )
+
+
+def test_mcp_map_entry_rejects_deleted_status():
+    """Statut `deleted` — comparaison exacte, sensible à la casse."""
+    assert (
+        releases._mcp_map_entry(
+            _mcp_entry({"name": "s"}, _official(status="deleted")), PERIOD_START, PERIOD_END
+        )
+        is None
+    )
+    # comportement caractérisé : "DELETED" n'est PAS filtré (casse non normalisée)
+    assert (
+        releases._mcp_map_entry(
+            _mcp_entry({"name": "s"}, _official(status="DELETED")), PERIOD_START, PERIOD_END
+        )
+        is not None
+    )
+
+
+def test_mcp_map_entry_deleted_status_read_from_server_or_official():
+    """Le statut `deleted` est lu sur le serveur comme sur `_meta.official`."""
+    assert (
+        releases._mcp_map_entry(
+            _mcp_entry({"name": "s", "status": "deleted"}, _official()), PERIOD_START, PERIOD_END
+        )
+        is None
+    )
+    assert (
+        releases._mcp_map_entry(
+            _mcp_entry({"name": "s"}, _official(status="deleted")), PERIOD_START, PERIOD_END
+        )
+        is None
+    )
+
+
+def test_mcp_map_entry_out_of_window_and_undated():
+    """Hors fenêtre (avant start) ou sans date exploitable ⇒ entrée ignorée."""
+    assert (
+        releases._mcp_map_entry(
+            _mcp_entry({"name": "s"}, _official(publishedAt="2026-08-03T05:59:59Z")),
+            PERIOD_START,
+            PERIOD_END,
+        )
+        is None
+    )
+    assert (
+        releases._mcp_map_entry(
+            _mcp_entry({"name": "s"}, _official(publishedAt="2026-08-10T06:00:01Z")),
+            PERIOD_START,
+            PERIOD_END,
+        )
+        is None
+    )
+    assert (
+        releases._mcp_map_entry(
+            _mcp_entry({"name": "s"}, _official(publishedAt=None)),
+            PERIOD_START,
+            PERIOD_END,
+        )
+        is None
+    )
+
+
+def test_mcp_map_entry_tolerates_non_dict_shapes():
+    assert releases._mcp_map_entry("not-a-dict", PERIOD_START, PERIOD_END) is None
+    assert releases._mcp_map_entry({}, PERIOD_START, PERIOD_END) is None
+    # entrée plate (pas de wrapper `server`) : l'entrée sert de source
+    flat = {"name": "flat", "publishedAt": "2026-08-05T00:00:00Z"}
+    assert releases._mcp_map_entry(flat, PERIOD_START, PERIOD_END)["name"] == "flat"
+    # `_meta` non-dict : traité comme absent
+    assert (
+        releases._mcp_map_entry(
+            {"server": {"name": "s"}, "_meta": "not-a-dict"},
+            PERIOD_START,
+            PERIOD_END,
+        )
+        is None
+    )
+
+
+def test_mcp_map_entry_repo_url_through_remotes():
+    item = releases._mcp_map_entry(
+        _mcp_entry({"name": "s", "remotes": [{"url": "https://gh.test/r"}]}, _official()),
+        PERIOD_START,
+        PERIOD_END,
+    )
+    assert item["repo_url"] == "https://gh.test/r"
+
+
+# --------------------------------------------------------------------- _fetch_mcp
+def test_fetch_mcp_filters_and_maps(monkeypatch):
+    """`_fetch_mcp` : query figée, mapping + suppression des entrées filtrées."""
+    seen: list[tuple] = []
+
+    class Client:
+        def get(self, url, params=None, headers=None, timeout=None):
+            seen.append((url, params))
+            return FakeResponse(
+                {
+                    "servers": [
+                        _mcp_entry({"name": "keep"}, _official()),
+                        _mcp_entry({"name": "old"}, _official(publishedAt="2026-01-01T00:00:00Z")),
+                        _mcp_entry({"name": "gone"}, _official(status="deleted")),
+                        _garbage,
+                    ]
+                }
+            )
+
+    _garbage = "pas un objet"
+    items = releases._fetch_mcp(Client(), PERIOD_START, PERIOD_END)
+
+    assert seen == [
+        (
+            "https://registry.modelcontextprotocol.io/v0.1/servers",
+            {"updated_since": "2026-08-03T06:00:00Z", "version": "latest"},
+        )
+    ]
+    assert [i["name"] for i in items] == ["keep"]
+
+
+def test_fetch_mcp_tolerates_malformed_payload():
+    class Client:
+        def get(self, url, params=None, headers=None, timeout=None):
+            return FakeResponse({"servers": "not-a-list"})
+
+    assert releases._fetch_mcp(Client(), PERIOD_START, PERIOD_END) == []
+
+    class DictClient:
+        def get(self, url, params=None, headers=None, timeout=None):
+            return FakeResponse({"unexpected": True})
+
+    assert releases._fetch_mcp(DictClient(), PERIOD_START, PERIOD_END) == []
+
+
+def test_mcp_registry_constants():
+    assert releases.URL_MCP == "https://registry.modelcontextprotocol.io/v0.1/servers"
