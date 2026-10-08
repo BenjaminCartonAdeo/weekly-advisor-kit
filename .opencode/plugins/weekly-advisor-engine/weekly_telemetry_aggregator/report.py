@@ -33,10 +33,10 @@ from .run_state import (
     rollback_current_link,
 )
 from .security_rules import BLOCKING_RULES, SECURITY_PARAPHRASE
+from .util import TRUNCATE_DEFAULT_LIMIT, parse_iso_ts, truncate_text
 from .util import iso as _iso
 from .util import load_json as _load_json
 from .util import parse_anchor as _parse_anchor
-from .util import parse_iso_ts
 from .util import read_text as _load_text
 
 
@@ -479,56 +479,16 @@ def _sort_maintenance_findings(insights: object) -> list[dict]:
 
 # --------------------------------------------------------------------------- rendu texte
 #
-# Une SEULE implémentation de la troncature pour tout le rendu de texte du rapport.
-# Elle coupe sur une frontière de mot : une puce ne doit jamais exposer un nom de
-# skill coupé en plein milieu (`loadtest-baseline-man`), c'est exactement ce qui
-# rendait les findings de cohérence illisibles.
+# La troncature elle-même (`truncate_text`) vit dans `util` : `watch_distill` en a
+# besoin et ne doit pas importer `report` (cycle via `config`). Ré-exportée ici
+# pour préserver l'API publique `report.truncate_text`.
 
 _EVIDENCE_LIMIT = 110  # section 5 — preuve d'un finding de cohérence (borne historique)
 _WATCH_DESC_LIMIT = 160  # section 6 — description d'un finding de veille (md ET HTML)
 _WATCH_EVIDENCE_LIMIT = 180
-_WATCH_SUMMARY_LIMIT = 200  # section 6 — résumé d'une évolution du cœur
+_WATCH_SUMMARY_LIMIT = TRUNCATE_DEFAULT_LIMIT  # section 6 — résumé d'une évolution du cœur
 _SESSION_TITLE_LIMIT = 80  # annexe « Toutes les sessions »
 _AUDIT_TEXT_LIMIT = 80  # texte court des candidats d'étape C
-
-
-def truncate_text(text: object, limit: int = _WATCH_SUMMARY_LIMIT) -> str:
-    """Texte normalisé (espaces) et tronqué à ``limit`` caractères, sans mot coupé.
-
-    Source UNIQUE de la troncature. `watch_distill.truncate_summary` délègue ici,
-    et les gabarits consomment des valeurs DÉJÀ tronquées : une limite écrite dans
-    un `.j2` serait un nombre magic dupliqué entre le markdown et le HTML, et le
-    contexte ne peut pas porter de callable (il est sérialisé en JSON pour le
-    payload HTML).
-
-    Trois sorties, par ordre de préférence :
-
-    1. fin de phrase (``. `` la plus proche de la borne, au moins au tiers de la
-       fenêtre) : le texte reste lisible, sans ellipse ;
-    2. frontière de mot : la dernière espace de la fenêtre, quand elle conserve au
-       moins la moitié de la borne ;
-    3. milieu d'un mot insécable (jeton plus long que la borne — chemin, identifiant) :
-       coupe franche à ``limit - 1`` + ellipse. La borne historique de
-       `main._truncate` est conservée — l'ellipse signale la troncature au lieu de
-       la rendre muette.
-    """
-    normalized = " ".join(str(text or "").split())
-    if len(normalized) <= limit:
-        return normalized
-    window = normalized[:limit]
-    dot = window.rfind(". ")
-    if dot == limit - 2:
-        # La phrase tombe pile sur la borne : sans ellipse, la ligne paraît entière.
-        return window[: dot + 1] + "…"
-    if dot >= limit // 3:
-        return window[: dot + 1]
-    # Frontière de mot : la DERNIÈRE espace de la fenêtre. Garde à la moitié — on ne
-    # sacrifie pas plus de la moitié de la fenêtre pour respecter une frontière (le
-    # cas « un seul mot plus long que la borne » est traité ci-dessous).
-    space = window.rfind(" ")
-    if space >= limit // 2:
-        return window[:space].rstrip() + "…"
-    return window.rstrip()[: limit - 1].rstrip() + "…"
 
 
 #: `skill 'weekly-foo' jamais chargé…` — nom cité entre guillemets dans la description.
