@@ -31,7 +31,8 @@ from .curation import (
     ttl_archive_candidates,
 )
 from .draft_targets import resolve_draft_targets
-from .main import _run_provenance, doctor, resolve_skill_surface, run
+from .main import _run_provenance, doctor, run
+from .skill_surface import resolve_skill_surface
 
 
 def _load_cfg(args) -> object:
@@ -810,7 +811,7 @@ def _auto_load_catalog(out: Path, cfg, date: str) -> list[dict]:
 def _skill_dirs_for(cfg) -> list[Path]:
     """Project-local skill roots eligible for future apply moves.
 
-    Source unique : `main.resolve_skill_surface`. Les racines apply sont les
+    Source unique : `skill_surface.resolve_skill_surface`. Les racines apply sont les
     cibles skills des harnais **résolus** (table unique A1) — donc exactement la
     surface que le catalogue a lue. Un harnais non résolu n'est plus éligible :
     `.claude/skills` sous le défaut opencode, ou `.agents/skills` (qui n'est

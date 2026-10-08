@@ -18,13 +18,18 @@ en réutilisant ``watch_memory`` si pertinent, sinon le fallback
 from __future__ import annotations
 
 import json
-import re
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+# La normalisation + l'atteignabilité A6 d'un skill vivent dans `skill_surface`
+# avec le scan qui les consomme : laissées ici, `scan_skill_catalog` devait
+# importer `curation` en différé et refermait le cycle. Ré-exportées pour
+# préserver l'API `curation.is_reachable_skill` / `curation._skill_fields`.
+from .skill_surface import _skill_fields as _skill_fields
+from .skill_surface import is_reachable_skill as is_reachable_skill
 from .util import parse_iso_ts
 
 # Actions de curation émises pour un finding dont le tag_action est pertinent.
@@ -50,7 +55,6 @@ _ACTION_PRIORITY = {
 }
 _SOURCE_PRIORITY = {"coherence": 0, "r4": 1, "ttl": 2}
 _VALID_ORIGINS = frozenset({"user", "bundled", "weekly-foreground", "weekly-background"})
-_NULL_TTLS = frozenset({"", "none", "null"})
 
 
 def manifest_metadata(
@@ -73,42 +77,6 @@ def _text_field(value: object) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def _normalized_ttl(value: object) -> str | None:
-    text = _text_field(value)
-    if text is None or text.casefold() in _NULL_TTLS:
-        return None
-    return text.casefold()
-
-
-def _skill_fields(entry: Mapping[str, Any] | object) -> tuple[str | None, str | None, str | None]:
-    """Normalise (skill_id, origin, ttl_policy) depuis une entrée de catalogue.
-
-    Accepte aussi bien ``{skill_id, origin, ttl_policy, metadata{...}}`` que
-    ``{metadata:{skill_id, origin, ttl_policy}}``.
-    """
-    if not isinstance(entry, Mapping):
-        return None, None, None
-    raw_meta = entry.get("metadata")
-    meta = raw_meta if isinstance(raw_meta, Mapping) else {}
-    skill_id = _text_field(entry.get("skill_id")) or _text_field(meta.get("skill_id"))
-    origin_values = [
-        value.casefold()
-        for value in (_text_field(meta.get("origin")), _text_field(entry.get("origin")))
-        if value is not None
-    ]
-    # A duplicate/merged row must never weaken explicit user protection.
-    origin = "user" if "user" in origin_values else (origin_values[0] if origin_values else None)
-    ttl_values = [
-        _normalized_ttl(value) for value in (meta.get("ttl_policy"), entry.get("ttl_policy"))
-    ]
-    ttl = (
-        "pin"
-        if "pin" in ttl_values
-        else next((value for value in ttl_values if value is not None), None)
-    )
-    return skill_id, origin, ttl
-
-
 def _split_skill_ids(value: object) -> list[str]:
     """Return trimmed skill ids from list/scalar legacy finding shapes."""
     if isinstance(value, str):
@@ -118,32 +86,6 @@ def _split_skill_ids(value: object) -> list[str]:
     else:
         values = ()
     return [item.strip() for item in values if isinstance(item, str) and item.strip()]
-
-
-#: A6 — description qui déclare le skill non chargeable seul (« the harness only
-#: reaches it from another skill »). Un tel skill ne peut structurellement pas
-#: apparaître dans « jamais chargé » : son absence d'appel est la conséquence de
-#: sa déclaration, pas un défaut d'usage. Cas réel : `weekly-safety-guardrails`.
-_NEVER_STANDALONE_RE = re.compile(
-    r"\b(?:never|not|non)\b[^.;]{0,40}?\b"
-    r"(?:load|use|run|invoke|call)(?:ed|ing)?\s*"
-    r"(?:standalone|alone|on\s+its\s+own|by\s+itself|directly)\b",
-    re.IGNORECASE,
-)
-
-
-def is_reachable_skill(entry: Mapping[str, Any] | object, description: str = "") -> bool:
-    """A6 — un skill est-il atteignable par le harnais résolu ?
-
-    Réutilise la normalisation de protection existante (``_skill_fields``) au
-    lieu d'une seconde règle : ``origin == 'user'`` est hors périmètre de la
-    revue, donc jamais recommandé ; « never load standalone » est unreachable
-    par construction. Les deuxProduce exactement le faux positif que la curation
-    protége déjà de son côté.
-    """
-    if _skill_fields(entry)[1] == "user":
-        return False
-    return not _NEVER_STANDALONE_RE.search(description or "")
 
 
 def _signal_archive_ids(signal: object) -> list[str]:
@@ -475,7 +417,7 @@ def build_catalog_from_skills(
     pour la protection ``user``/``pin``.
 
     A5 : PLUS de second scanner. Ce n'est qu'un rendu du scan unique
-    (``main.scan_skill_records``) — même surface, même dédup par chemin
+    (``skill_surface.scan_skill_records``) — même surface, même dédup par chemin
     canonique, même exclusion `_archive` (A6). ``resolved_drafts`` /
     ``global_roots`` absents ⇒ racines projet = cible skills du harnais résolu
     ou, à défaut, ``.opencode/skills`` ; racines globales = défaut documenté.
@@ -483,7 +425,7 @@ def build_catalog_from_skills(
     Entrée : ``{"skill_id": <nom dossier>, "metadata": {origin, ttl_policy, usage}}``.
     """
     from .draft_targets import DEFAULT_DRAFT_HARNESS, DRAFT_HARNESS_TARGETS
-    from .main import SkillSurface, resolve_skill_surface, scan_skill_records
+    from .skill_surface import SkillSurface, resolve_skill_surface, scan_skill_records
 
     surface = resolve_skill_surface(project_root, resolved_drafts, global_roots)
     if not surface.project_roots:

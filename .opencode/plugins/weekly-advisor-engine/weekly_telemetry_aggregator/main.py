@@ -18,7 +18,7 @@ import tempfile
 import warnings
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from warnings import warn as _warn_user
 
 from .aggregator import _cap_warnings, aggregate, dedup_resumed_usages
@@ -37,7 +37,6 @@ from .harness_scope import (
 from .models import (
     Period,
     SessionUsage,
-    SkillCatalogEntry,
     WarningEntry,
     canonical_session_id,
     round6,
@@ -46,6 +45,18 @@ from .models import (
 from .providers import SessionProvider, build_providers
 from .providers.base import HARNESS_OPENCODE, HarnessSession
 from .run_state import RUNS_DIR, activate_run, resolve_active_run_dir
+
+# La surface skills (résolution + scan, A4/A5/A6) vit dans `skill_surface` :
+# `curation` en dépend, et la garder ici imposait un import différé dans les deux
+# sens. Ré-exportée pour préserver l'API `main.resolve_skill_surface` etc.
+from .skill_surface import SKILL_ARCHIVE_DIR_NAME as SKILL_ARCHIVE_DIR_NAME
+from .skill_surface import SkillRecord as SkillRecord
+from .skill_surface import SkillSurface as SkillSurface
+from .skill_surface import _is_archived_skill as _is_archived_skill
+from .skill_surface import _parse_skill_md as _parse_skill_md
+from .skill_surface import resolve_skill_surface as resolve_skill_surface
+from .skill_surface import scan_skill_catalog as scan_skill_catalog
+from .skill_surface import scan_skill_records as scan_skill_records
 from .sqlite_reader import MIGRATION_MIN_V1, DataSourceError, SessionMeta, _to_ms, detect_db
 from .util import (
     HARNESS_BASELINE_FILE,
@@ -123,8 +134,8 @@ def _run_provenance(
 ACTIVE_CUTOFF_MINUTES = 10
 #: Cross-check tolerance for lifetime parts-cost vs session_v2 aggregate.
 CROSS_CHECK_ABS = 0.01
-#: A6 — un skill sous ce segment est archivé : plus chargeable, donc hors catalogue.
-SKILL_ARCHIVE_DIR_NAME = "_archive"
+# NOTE: `SKILL_ARCHIVE_DIR_NAME` (A6) vit dans `skill_surface` avec le scan qui
+# l'utilise, et est ré-exporté par le bloc d'imports ci-dessus.
 
 # ---- coûts estimés multi-harnais (cost_estimates optionnels) -----------------
 #
@@ -145,226 +156,6 @@ def _truncate(text: str, limit: int = 80) -> str | None:
     if not text:
         return None
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
-
-
-# --------------------------------------------------------------------------- skills catalog
-#
-# A4+A5 — UNE seule surface skills, deux floors (projet / global lecture seule).
-# racines **projet** (projétables : cible de projection, origine de draft) et de
-# racines **globales** strictement LECTURE SEULE (A4). Une racine globale alimente
-# le catalogue — l'audit et le report la voient — mais ne peut structurellement
-# apparaître ni comme destination de projection ni comme origine de draft.
-
-
-@dataclasses.dataclass(frozen=True, slots=True)
-class SkillSurface:
-    """Racines skills résolues, séparées par eligibilité à l'écriture."""
-
-    #: Racines sous `project_root` : surface projetable (projection, draft).
-    project_roots: tuple[Path, ...] = ()
-    #: Racines utilisateur : lecture seule, jamais écrites (A4).
-    global_roots: tuple[Path, ...] = ()
-
-    @property
-    def read_roots(self) -> tuple[Path, ...]:
-        """Toutes les racines lues par le scan, projet d'abord (ordre stable)."""
-        return (*self.project_roots, *self.global_roots)
-
-    def is_global(self, path: Path) -> bool:
-        """True si `path` est sous une racine globale — donc jamais écrivable."""
-        try:
-            resolved = path.resolve()
-        except (OSError, RuntimeError):
-            return False
-        for root in self.global_roots:
-            try:
-                if resolved.is_relative_to(root.resolve()):
-                    return True
-            except (OSError, RuntimeError):
-                continue
-        return False
-
-
-def resolve_skill_surface(
-    project_root: Path | None = None,
-    resolved_drafts: object | None = None,
-    global_roots: Iterable[Path] | None = None,
-) -> SkillSurface:
-    """Surface skills unifiée (A5) : racines projet résolues + racines globales (A4).
-
-    Les racines projet ne sont plus une constante codée en dur (`SKILL_LAYOUTS`,
-    supprimée) : ce sont les cibles skills des harnais **résolus** par
-    `resolve_draft_targets`, donc la table unique A1. Zéro harnais résolu ⇒
-    aucune racine projet : le catalogue se réduit aux racines globales, ce qui
-    est le comportement correct (une surface non déclarée n'est pas inventée).
-
-    `global_roots=None` ⇒ défaut documenté (racine skills OpenCode) ; `[]` ⇒
-    aucune racine globale, et le scan se comporte comme si le champ n'existait pas.
-    """
-    if global_roots is None:
-        from .config import DEFAULT_GLOBAL_SKILL_ROOT
-
-        roots: list[Path] = [DEFAULT_GLOBAL_SKILL_ROOT]
-    else:
-        roots = [Path(root) for root in global_roots]
-
-    harnesses = tuple(getattr(resolved_drafts, "harnesses", ()) or ())
-    root = project_root or Path.cwd()
-    project: list[Path] = []
-    seen: set[Path] = set()
-    for harness in harnesses:
-        for target in DRAFT_HARNESS_TARGETS.get(str(harness), ()):
-            candidate = root.joinpath(*PurePosixPath(str(target)).parts)
-            if candidate not in seen:
-                seen.add(candidate)
-                project.append(candidate)
-    # Une racine globale ne doit jamais être projetable : on la retire explicitement
-    # plutôt que de laisser une racine dupliquée par config.
-    writable = [candidate for candidate in project if not any(candidate == g for g in roots)]
-    return SkillSurface(project_roots=tuple(writable), global_roots=tuple(roots))
-
-
-def _parse_skill_md(path: Path) -> tuple[str, str, list[str]]:
-    """Minimal YAML-free frontmatter parse: (description, body[:2000], target_agents).
-
-    Réutilise le parseur unique `frontmatter_blocks` (safe_git_write) qui gère
-    l'imbrication metadata + listes YAML — plus de parseur dupliqué (v5.30 audit).
-    """
-    from .safe_git_write import frontmatter_blocks
-
-    meta, body, err = frontmatter_blocks(path)
-    if err:
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return "", "", []
-        return "", text[:2000], []
-    description = (meta.get("description") or "").strip()
-    targets = [
-        x.strip().strip("\"'[] ") for x in (meta.get("target_agents") or "").split(",") if x.strip()
-    ]
-    return description, body[:2000], targets
-
-
-def _is_archived_skill(path: Path) -> bool:
-    """A6 — un skill sous `_archive/**` n'est plus chargeable : hors catalogue."""
-    return SKILL_ARCHIVE_DIR_NAME in path.parts
-
-
-@dataclasses.dataclass(frozen=True, slots=True)
-class SkillRecord:
-    """Un `SKILL.md` lu UNE fois, vu sous ses deux formes consumers.
-
-    A5 : le scan ne déduplique plus par nom mais par **chemin canonique** —
-    deux skills homonymes dans deux racines sont deux fichiers distincts, pas un
-    doublon. `is_global` (A4) marque l'appartenance à une racine lecture seule.
-    """
-
-    skill_id: str
-    path: Path
-    description: str
-    body: str
-    target_agents: tuple[str, ...]
-    metadata: dict
-    is_global: bool = False
-
-    def as_catalog_entry(self) -> SkillCatalogEntry:
-        return SkillCatalogEntry(
-            name=self.skill_id,
-            description=self.description,
-            body=self.body,
-            target_agents=list(self.target_agents),
-        )
-
-    def as_protection_entry(self) -> dict:
-        """Forme attendue par `decide_actions` (origin/ttl_policy/usage)."""
-        return {
-            "skill_id": self.skill_id,
-            "metadata": {
-                "origin": self.metadata.get("origin"),
-                "ttl_policy": self.metadata.get("ttl_policy"),
-                "usage": self.metadata.get("usage"),
-            },
-        }
-
-
-def scan_skill_records(surface: SkillSurface, extra_dirs: Iterable[Path] = ()) -> list[SkillRecord]:
-    """Scan UNIQUE de la surface skills (A5) — une lecture par `SKILL.md`.
-
-    Dédup par chemin canonique résolu : symlink et inclusion d'une racine par
-    une autre ne produisent qu'une fiche. `_archive/**` est exclu (A6).
-    Un `SKILL.md` lu une seule fois ; ordre = ordre de la surface (projet
-    d'abord, puis lecture seule), chemins triés dans chaque racine.
-    """
-    from .safe_git_write import frontmatter_blocks
-
-    records: dict[Path, SkillRecord] = {}
-    order: list[Path] = []
-    roots = [*surface.read_roots, *extra_dirs]
-    for root in roots:
-        try:
-            candidates = sorted(root.glob("**/SKILL.md"))
-        except OSError:
-            continue
-        for skill_md in candidates:
-            if not skill_md.is_file() or _is_archived_skill(skill_md):
-                continue
-            try:
-                canonical = skill_md.resolve()
-            except (OSError, RuntimeError):
-                continue
-            if canonical in records:
-                continue
-            meta, body, _err = frontmatter_blocks(skill_md)
-            description = str(meta.get("description") or "").strip()
-            targets = tuple(
-                x.strip().strip("\"'[] ")
-                for x in str(meta.get("target_agents") or "").split(",")
-                if x.strip()
-            )
-            nested = meta.get("metadata")
-            nested = nested if isinstance(nested, Mapping) else {}
-            records[canonical] = SkillRecord(
-                skill_id=skill_md.parent.name,
-                path=canonical,
-                description=description,
-                body=(body or "")[:2000],
-                target_agents=targets,
-                # `frontmatter_blocks` is intentionally a tiny parser; nested
-                # YAML keys also appear at the top level.  Read both forms so
-                # protection remains effective on disk.
-                metadata={
-                    "origin": nested.get("origin") or meta.get("origin"),
-                    "ttl_policy": nested.get("ttl_policy") or meta.get("ttl_policy"),
-                    "usage": nested.get("usage") or meta.get("usage"),
-                },
-                is_global=surface.is_global(skill_md),
-            )
-            order.append(canonical)
-    return [records[key] for key in order]
-
-
-def scan_skill_catalog(
-    records: Iterable[SkillRecord],
-) -> tuple[list[str], int, list[SkillCatalogEntry]]:
-    """Catalogue dérivé de l'unique scan (A5) : (noms atteignables, count, entries).
-
-    Les `entries` couvrent TOUTE la surface lue (moins `_archive`, A6) : l'audit
-    et le report doivent voir les skills `origin=user`, qu'ils décrivent. Les
-    `names` — seule source de `skills_never_loaded` — sont restreints aux skills
-    **atteignables** (A6) : ni `origin=user`, ni « never load standalone ».
-    """
-    from .curation import is_reachable_skill
-
-    entries = [record.as_catalog_entry() for record in records]
-    names = sorted(
-        {
-            record.skill_id
-            for record in records
-            if is_reachable_skill(record.as_protection_entry(), record.description)
-        }
-    )
-    return names, len(names), entries
 
 
 # --------------------------------------------------------------------------- session usage
