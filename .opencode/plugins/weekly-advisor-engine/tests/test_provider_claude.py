@@ -16,6 +16,15 @@ from weekly_telemetry_aggregator.providers.implementations.claude_code import (
     HARNESS_CLAUDE_CODE,
     PROVIDER_TYPE,
     ClaudeCodeSessionProvider,
+    _JsonlSession,
+    _Line,
+    _load_sessions,
+    _merge_session,
+    _parse_ts,
+    _read_jsonl,
+    _record_cost,
+    _usage_tokens,
+    _windowed,
     build_provider,
 )
 from weekly_telemetry_aggregator.sqlite_reader import SchemaError
@@ -386,3 +395,206 @@ def test_check_schema_raises_without_parsable_jsonl(tmp_path: Path):
 def test_close_is_idempotent_noop(provider):
     provider.close()
     provider.close()  # aucune ressource persistante → aucun effet, aucune erreur
+
+
+# --- couche de parsing JSONL (caractérisation) -----------------------------------
+# Ces tests pinent le comportement des helpers module-level qui alimentent
+# `ClaudeCodeSessionProvider` ; ils constituent le filet de sécurité du découpage
+# `_jsonl` et doivent être lus comme la spécification de la couche.
+
+
+def test_parse_ts_tolerates_z_suffix_and_assumes_utc_when_naive():
+    assert _parse_ts("2026-07-30T10:00:00Z") == T0
+    assert _parse_ts("2026-07-30T10:00:00+00:00") == T0
+    naive = _parse_ts("2026-07-30T10:00:00")  # pas d'offset → UTC imputé
+    assert naive == T0
+    assert naive is not None and naive.tzinfo is not None
+
+
+def test_parse_ts_rejects_missing_blank_and_unparseable():
+    assert _parse_ts(None) is None
+    assert _parse_ts("") is None
+    assert _parse_ts("   ") is None
+    assert _parse_ts("pas-une-date") is None
+    assert _parse_ts(1753879200) is None  # non-string : jamais deviné
+
+
+def test_read_jsonl_drops_lines_without_usable_timestamp(tmp_path: Path):
+    directory = tmp_path / "-tmp-x"
+    directory.mkdir(parents=True)
+    without_ts = _user(SID_OLD, T0, "/tmp/x", "no timestamp")
+    del without_ts["timestamp"]
+    entries = [
+        without_ts,
+        {**_user(SID_OLD, T0, "/tmp/x", "null timestamp"), "timestamp": None},
+        {**_user(SID_OLD, T0, "/tmp/x", "blank timestamp"), "timestamp": "  "},
+        {**_user(SID_OLD, T0, "/tmp/x", "garbage timestamp"), "timestamp": "hier"},
+        _user(SID_OLD, T0, "/tmp/x", "kept"),
+    ]
+    _write_jsonl(directory, "stem-x", entries)
+    costs: dict[str, float] = {}
+    lines, session_id = _read_jsonl(directory / "stem-x.jsonl", costs)
+    assert [ln.entry["message"]["content"] for ln in lines] == ["kept"]
+    assert session_id == SID_OLD
+    assert costs == {}
+
+
+def test_read_jsonl_keeps_first_session_id_and_files_cost_state(tmp_path: Path):
+    directory = tmp_path / "-tmp-x"
+    directory.mkdir(parents=True)
+    entries = [
+        _user(SID_OLD, T0, "/tmp/x", "first"),
+        # un autre sessionId plus loin ne réécrit pas le premier retenu
+        _user(SID_POP, tzutc(2026, 7, 30, 10, 1, 0), "/tmp/x", "second"),
+        {"type": "cost-state", "sessionId": SID_OLD, "totalCostUSD": 0.42},
+    ]
+    _write_jsonl(directory, "stem-x", entries)
+    costs: dict[str, float] = {}
+    lines, session_id = _read_jsonl(directory / "stem-x.jsonl", costs)
+    assert len(lines) == 2
+    assert session_id == SID_OLD
+    assert costs == {SID_OLD: 0.42}
+
+
+def test_read_jsonl_cost_state_without_session_id_uses_running_then_stem(tmp_path: Path):
+    directory = tmp_path / "-tmp-x"
+    directory.mkdir(parents=True)
+    # cost-state avant toute ligne conversationnelle → clé = stem du fichier
+    _write_jsonl(
+        directory,
+        "stem-orphan",
+        [{"type": "cost-state", "totalCostUSD": 1.5}, _user(SID_OLD, T0, "/tmp/x", "later")],
+    )
+    costs: dict[str, float] = {}
+    _read_jsonl(directory / "stem-orphan.jsonl", costs)
+    assert costs == {"stem-orphan": 1.5}
+
+    # cost-state après une ligne conversationnelle → clé = sessionId en cours
+    _write_jsonl(
+        directory,
+        "stem-running",
+        [_user(SID_OLD, T0, "/tmp/x", "hi"), {"type": "cost-state", "totalCostUSD": 2.0}],
+    )
+    costs = {}
+    _read_jsonl(directory / "stem-running.jsonl", costs)
+    assert costs == {SID_OLD: 2.0}
+
+
+def test_merge_session_sorts_on_creation_and_extends_in_place():
+    late = _Line(ts=tzutc(2026, 7, 30, 10, 5, 0), ms=MS0 + 300_000, entry={"i": 2})
+    early = _Line(ts=tzutc(2026, 7, 30, 10, 0, 0), ms=MS0, entry={"i": 1})
+    sessions: dict[str, _JsonlSession] = {}
+    _merge_session(sessions, SID_OLD, [late, early])
+    created = sessions[SID_OLD]
+    assert [ln.ms for ln in created.lines] == [MS0, MS0 + 300_000]  # tri à la création
+    created.cost = 3.0
+
+    middle = _Line(ts=tzutc(2026, 7, 30, 10, 2, 0), ms=MS0 + 120_000, entry={"i": 3})
+    _merge_session(sessions, SID_OLD, [middle])
+    # même objet (pas de remplacement), lignes fusionnées re-triées, coût préservé
+    assert sessions[SID_OLD] is created
+    assert [ln.ms for ln in created.lines] == [MS0, MS0 + 120_000, MS0 + 300_000]
+    assert created.cost == 3.0
+    assert len(sessions) == 1
+
+
+def test_usage_tokens_extracts_five_counters_and_never_reasoning():
+    message = {
+        "usage": {
+            "input_tokens": 1200,
+            "output_tokens": 340,
+            "cache_read_input_tokens": 900,
+            "cache_creation_input_tokens": 50,
+        }
+    }
+    assert _usage_tokens(message) == (1200.0, 340.0, 0.0, 900.0, 50.0)
+    # compteurs absents / non positifs → 0.0 ; reasoning jamais déduit
+    assert _usage_tokens({"usage": {"input_tokens": 7}}) == (7.0, 0.0, 0.0, 0.0, 0.0)
+    assert _usage_tokens({"usage": {"input_tokens": -3, "output_tokens": 4}}) == (
+        0.0,
+        4.0,
+        0.0,
+        0.0,
+        0.0,
+    )
+
+
+def test_usage_tokens_returns_none_without_exploitable_counts():
+    assert _usage_tokens(None) is None
+    assert _usage_tokens({"role": "assistant"}) is None  # pas de bloc usage
+    assert _usage_tokens({"usage": "nope"}) is None
+    # cache seul, ou in/out nuls : pas de télémétrie exploitable
+    assert _usage_tokens({"usage": {"cache_read_input_tokens": 900}}) is None
+    assert _usage_tokens({"usage": {"input_tokens": 0, "output_tokens": 0}}) is None
+
+
+def test_record_cost_keeps_max_and_ignores_invalid_rows():
+    costs: dict[str, float] = {}
+    _record_cost(costs, {"sessionId": SID_OLD, "totalCostUSD": 1.0}, None, "fallback")
+    _record_cost(costs, {"sessionId": SID_OLD, "totalCostUSD": 0.5}, None, "fallback")
+    assert costs == {SID_OLD: 1.0}  # le max gagne, pas le dernier lu
+
+    _record_cost(costs, {"sessionId": SID_OLD, "totalCostUSD": -2.0}, None, "fallback")
+    _record_cost(costs, {"sessionId": SID_OLD, "totalCostUSD": "beaucoup"}, None, "fallback")
+    _record_cost(costs, {"sessionId": SID_OLD}, None, "fallback")
+    assert costs == {SID_OLD: 1.0}
+
+    # priorité de clé : sessionId de la ligne > session courant > fallback
+    _record_cost(costs, {"totalCostUSD": 5.0}, SID_POP, "fallback")
+    assert costs[SID_POP] == 5.0
+    _record_cost(costs, {"sessionId": "", "totalCostUSD": 5.0}, SID_EMPTY, "fallback")
+    assert costs[SID_EMPTY] == 5.0
+    _record_cost(costs, {"totalCostUSD": 5.0}, None, "stem-only")
+    assert costs["stem-only"] == 5.0
+
+
+def test_load_sessions_merges_same_sid_across_dirs_and_keeps_max_cost(tmp_path: Path):
+    root = tmp_path / "projects"
+    _write_jsonl(
+        root / "-tmp-a",
+        SID_POP,
+        [
+            _user(SID_POP, T0, "/tmp/a", "hello"),
+            {"type": "cost-state", "totalCostUSD": 2.0},
+        ],
+    )
+    _write_jsonl(
+        root / "-tmp-b",
+        "other-file",
+        [
+            _user(SID_POP, tzutc(2026, 7, 30, 10, 2, 0), "/tmp/b", "again"),
+            {"type": "cost-state", "totalCostUSD": 3.0},
+        ],
+    )
+    sessions = _load_sessions(root)
+    assert set(sessions) == {SID_POP}  # même sid, deux répertoires → une session
+    merged = sessions[SID_POP]
+    assert [ln.ms for ln in merged.lines] == [MS0, MS0 + 120_000]
+    assert merged.cost == 3.0
+    assert merged.title == "hello"  # premier texte utilisateur, cwd majoritaire
+    assert merged.directory == "/tmp/a"
+    assert (merged.first_ms, merged.last_ms) == (MS0, MS0 + 120_000)
+
+
+def test_load_sessions_skips_files_without_conversational_lines(tmp_path: Path):
+    root = tmp_path / "projects"
+    # seul un cost-state : aucune ligne de conversation → aucune session
+    _write_jsonl(root / "-tmp-a", "cost-only", [{"type": "cost-state", "totalCostUSD": 9.0}])
+    # lignes sans horodatage exploitable : également ignorées
+    _write_jsonl(
+        root / "-tmp-a",
+        "no-ts",
+        [{"type": "user", "sessionId": SID_OLD, "message": {"role": "user", "content": "x"}}],
+    )
+    assert _load_sessions(root) == {}
+
+
+def test_windowed_boundaries_are_inclusive():
+    lines = [
+        _Line(ts=T0, ms=1000, entry={"i": 1}),
+        _Line(ts=T0, ms=2000, entry={"i": 2}),
+        _Line(ts=T0, ms=3000, entry={"i": 3}),
+    ]
+    assert [ln.ms for ln in _windowed(lines, 2000, 3000)] == [2000, 3000]  # bornes incluses
+    assert [ln.ms for ln in _windowed(lines, 1001, 2999)] == [2000]
+    assert _windowed(lines, 4000, 5000) == []

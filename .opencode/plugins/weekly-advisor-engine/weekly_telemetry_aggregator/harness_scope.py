@@ -25,7 +25,7 @@ from .draft_targets import (
     DRAFT_HARNESS_LAYOUTS,
     HARNESS_OPENCODE,
 )
-from .util import relative_path
+from .util import iter_inspection_sections, relative_path
 
 
 @dataclass(slots=True)
@@ -415,6 +415,16 @@ def remap_digest_paths(value: Any, projection_root: Path) -> Any:
     return value
 
 
+#: Inspection section → scanned directory prefix used to resolve a path by name.
+_SECTION_DIRECTORIES: tuple[tuple[str, str], ...] = (
+    ("skill", ".opencode/skills/"),
+    ("agent", ".opencode/agents/"),
+    ("command", ".opencode/commands/"),
+    ("plugin", ".opencode/plugins/"),
+    ("claude_md", ".opencode/"),
+)
+
+
 def attach_component_paths(digest: dict[str, Any], scope: HarnessScope) -> None:
     """Attach project-relative paths when harness-eval identifies only names.
 
@@ -428,7 +438,7 @@ def attach_component_paths(digest: dict[str, Any], scope: HarnessScope) -> None:
         return
 
     _attach_uncategorized_paths(digest, inspection)
-    for section, directory in (("command", ".opencode/commands/"), ("claude_md", ".opencode/")):
+    for section, directory in _SECTION_DIRECTORIES:
         _attach_section_paths(inspection, scope, section, directory)
 
 
@@ -460,6 +470,17 @@ def _attach_uncategorized_paths(digest: dict[str, Any], inspection: dict) -> Non
                 component["path"] = path
 
 
+def _component_matches(section: str, path: str, name: str) -> bool:
+    """Match a component ``name`` against a scanned path.
+
+    Skills are directories (``<skills>/<id>/SKILL.md``) so their identity is the
+    parent directory; every other section names a file by its stem.
+    """
+    if section == "skill":
+        return Path(path).parent.name.casefold() == name.casefold()
+    return Path(path).stem.casefold() == Path(name).stem.casefold()
+
+
 def _attach_section_paths(
     inspection: dict, scope: HarnessScope, section: str, directory: str
 ) -> None:
@@ -476,8 +497,7 @@ def _attach_section_paths(
         candidates = [
             path
             for path in scope.included_files
-            if path.startswith(directory)
-            and Path(path).stem.casefold() == Path(name).stem.casefold()
+            if path.startswith(directory) and _component_matches(section, path, name)
         ]
         if len(candidates) == 1:
             component["path"] = candidates[0]
@@ -486,17 +506,18 @@ def _attach_section_paths(
 def _digest_components(
     inspection_map: Mapping[str, object],
 ) -> list[tuple[str, Mapping[str, object]]]:
-    """Composants (path, mapping) des 3 sections d'inspection, index de repli inclus."""
+    """Composants (path, mapping) de toutes les sections, index de repli inclus."""
     components: list[tuple[str, Mapping[str, object]]] = []
-    for section in ("command", "claude_md", "uncategorized"):
-        values = inspection_map.get(section)
-        if not isinstance(values, list):
-            continue
+    for section, values in iter_inspection_sections(inspection_map):
         for index, component in enumerate(values):
             if isinstance(component, Mapping):
                 path = str(component.get("path") or f"{section}[{index}]")
                 components.append((path, component))
     return components
+
+
+#: Repli de nom de composant produit par :func:`_digest_components` sans ``path``.
+_SYNTHETIC_COMPONENT_PATH = re.compile(r"[a-z_]+\[\d+\]")
 
 
 def _digest_files_scanned(
@@ -510,9 +531,7 @@ def _digest_files_scanned(
         files = _first_count(metadata_map, "files_scanned")
     if files is None:
         paths = {
-            path
-            for path, _component in components
-            if not path.startswith(("command[", "claude_md[", "uncategorized["))
+            path for path, _component in components if not _SYNTHETIC_COMPONENT_PATH.fullmatch(path)
         }
         files = len(paths) if paths else None
     return files

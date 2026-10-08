@@ -98,7 +98,22 @@ def _finding_record(
     }
 
 
-_INSPECTION_SECTIONS = ("command", "claude_md", "uncategorized")
+#: Inspection keys that never hold component records (summary metrics only).
+_NON_COMPONENT_SECTIONS = frozenset({"summary"})
+
+
+def iter_inspection_sections(inspection: Mapping[str, Any]) -> Iterator[tuple[str, list]]:
+    """Yield ``(section, components)`` for every component section of a digest.
+
+    harness-eval section names are version-dependent: 7.9.0 emits ``skill`` and
+    ``command`` while older digests emitted ``claude_md``.  Enumerating the
+    mapping instead of a hardcoded tuple keeps every component family in scope;
+    a fixed list silently dropped all ``skill`` findings (audit 2026-10-07).
+    """
+    for section, components in inspection.items():
+        if section in _NON_COMPONENT_SECTIONS or not isinstance(components, list):
+            continue
+        yield str(section), components
 
 
 def _rules_finding(
@@ -177,10 +192,7 @@ def iter_digest_findings(digest: object) -> Iterator[dict[str, Any]]:
     if not isinstance(inspection, Mapping):
         return
     uncategorized_files = digest.get("uncategorized_files")
-    for section in _INSPECTION_SECTIONS:
-        components = inspection.get(section)
-        if not isinstance(components, list):
-            continue
+    for section, components in iter_inspection_sections(inspection):
         for index, component in enumerate(components):
             if isinstance(component, Mapping):
                 yield from _iter_component_findings(component, section, index, uncategorized_files)
@@ -382,3 +394,58 @@ def robust_z(values: list[float]) -> list[float]:
     if mad == 0:
         return [0.0] * len(values)
     return [0.6745 * (v - median) / mad for v in values]
+
+
+# --------------------------------------------------------------------------- troncature
+#
+# Une SEULE implémentation de la troncature pour tout le rendu de texte du rapport.
+# Elle coupe sur une frontière de mot : une puce ne doit jamais exposer un nom de
+# skill coupé en plein milieu (`loadtest-baseline-man`), c'est exactement ce qui
+# rendait les findings de cohérence illisibles.
+#
+# Vit ici, et non dans `report`, parce que `watch_distill` en a besoin : `report`
+# importe `config`, qui importe `watch_distill`. Garder la troncature dans `report`
+# imposait un import différé dans `watch_distill` (cycle|workaround). `util` est la
+# feuille stdlib du paquet, donc le lien reste unidirectionnel.
+
+#: Borne par défaut d'un résumé de veille — section 6, résumé d'une évolution du cœur.
+TRUNCATE_DEFAULT_LIMIT = 200
+
+
+def truncate_text(text: object, limit: int = TRUNCATE_DEFAULT_LIMIT) -> str:
+    """Texte normalisé (espaces) et tronqué à ``limit`` caractères, sans mot coupé.
+
+    Source UNIQUE de la troncature. `watch_distill.truncate_summary` délègue ici,
+    et les gabarits consomment des valeurs DÉJÀ tronquées : une limite écrite dans
+    un `.j2` serait un nombre magic dupliqué entre le markdown et le HTML, et le
+    contexte ne peut pas porter de callable (il est sérialisé en JSON pour le
+    payload HTML).
+
+    Trois sorties, par ordre de préférence :
+
+    1. fin de phrase (``. `` la plus proche de la borne, au moins au tiers de la
+       fenêtre) : le texte reste lisible, sans ellipse ;
+    2. frontière de mot : la dernière espace de la fenêtre, quand elle conserve au
+       moins la moitié de la borne ;
+    3. milieu d'un mot insécable (jeton plus long que la borne — chemin, identifiant) :
+       coupe franche à ``limit - 1`` + ellipse. La borne historique de
+       `main._truncate` est conservée — l'ellipse signale la troncature au lieu de
+       la rendre muette.
+    """
+    normalized = " ".join(str(text or "").split())
+    if len(normalized) <= limit:
+        return normalized
+    window = normalized[:limit]
+    dot = window.rfind(". ")
+    if dot == limit - 2:
+        # La phrase tombe pile sur la borne : sans ellipse, la ligne paraît entière.
+        return window[: dot + 1] + "…"
+    if dot >= limit // 3:
+        return window[: dot + 1]
+    # Frontière de mot : la DERNIÈRE espace de la fenêtre. Garde à la moitié — on ne
+    # sacrifie pas plus de la moitié de la fenêtre pour respecter une frontière (le
+    # cas « un seul mot plus long que la borne » est traité ci-dessous).
+    space = window.rfind(" ")
+    if space >= limit // 2:
+        return window[:space].rstrip() + "…"
+    return window.rstrip()[: limit - 1].rstrip() + "…"

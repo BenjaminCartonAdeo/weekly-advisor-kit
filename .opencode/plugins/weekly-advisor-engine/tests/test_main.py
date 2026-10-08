@@ -21,16 +21,46 @@ from helpers import (
 from weekly_telemetry_aggregator.config import TelemetryConfig
 from weekly_telemetry_aggregator.costing import self_cost
 from weekly_telemetry_aggregator.main import (
+    ACTIVE_CUTOFF_MINUTES,
+    CROSS_CHECK_ABS,
+    DEFAULT_HARNESS_COST_RATE_USD_PER_MTOK,
     EXIT_OK,
     EXIT_PARTIAL,
     EXIT_TOTAL_FAILURE,
+    HARNESS_COST_RATES_USD_PER_MTOK,
+    _audit_record,
+    _check_migrations,
+    _copilot_doctor_details,
+    _doctor_draft_targets,
+    _doctor_harness_eval_version,
+    _doctor_opencode_version,
+    _doctor_output_dir_guard,
+    _doctor_output_probe,
+    _doctor_project_root,
+    _doctor_session_providers,
+    _doctor_tool_presence,
+    _doctor_watch_repos,
+    _fetch_session_reads,
+    _harness_cost_rates,
     _placeholder_fields,
+    _placeholder_message,
+    _session_part_timestamps,
+    _SessionReads,
+    _truncate,
+    _unknown_session_source_types,
+    _usage_active_excluded,
+    _usage_advisor_excluded,
+    _usage_cost_warnings,
+    _usage_no_steps_status,
+    _version_tuple,
     build_usage,
     doctor,
+    estimate_costs,
     harness,
     run,
 )
-from weekly_telemetry_aggregator.models import Period, WarningEntry
+from weekly_telemetry_aggregator.models import Period, SessionUsage, StepFinish, WarningEntry
+from weekly_telemetry_aggregator.sqlite_reader import PartRecord
 
 RUN_TIME = tzutc(2026, 8, 12)
 
@@ -2553,3 +2583,1346 @@ def test_skill_dirs_for_never_returns_a_global_root(tmp_path, monkeypatch):
     assert _skill_dirs_for(cfg) == []
     # Le catalogage opencode, lui, n'est pas concerné : `.opencode/skills` passe.
     assert _skill_dirs_for(_curate_cfg(home)) == [home.resolve() / ".opencode" / "skills"]
+
+
+# ==================================================================== E1 : checks du doctor
+#
+# Le bloc doctor n'était couvert qu'À TRAVERS `doctor()` (et via `test_cli`) :
+# chaque check intermédiaire n'était donc jamais asserté sur son verdict exact
+# (liste `problems` / `warnings`, valeur de retour, texte imprimé). Ces tests
+# figent ce contrat AVANT l'extraction du bloc hors de `main` : ce sont eux qui
+# détectent une dérive de comportement pendant un déplacement de code.
+
+
+def _char_cfg(tmp_path: Path) -> TelemetryConfig:
+    """Config minimale et valide pour exercer un check isolé (jamais le run)."""
+    cfg = TelemetryConfig()
+    cfg.output_dir = tmp_path / "out"
+    cfg.project_root = tmp_path
+    return cfg
+
+
+def _windows_shim(script: str) -> str:
+    """Traduit le sous-ensemble shell des faux binaires en un `.CMD` équivalent.
+
+    Windows ne résout pas un fichier sans extension (PATHEXT) et CreateProcess
+    n'exécute un `.cmd` que par son chemin complet : `shutil.which` le résout
+    (cf. `_doctor_opencode_version`), puis le sous-processus le lance via cmd.exe.
+    """
+    lines = ["@echo off"]
+    for raw in script.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        to_stderr = ">&2" in line
+        line = line.replace(">&2", "").strip()
+        if line.startswith("echo "):
+            payload = line[len("echo ") :].strip().strip("'\"")
+            lines.append(f"echo {payload} 1>&2" if to_stderr else f"echo {payload}")
+        elif line.startswith("exit "):
+            lines.append("exit /b " + line[len("exit ") :].strip())
+    return "\r\n".join(lines) + "\r\n"
+
+
+def _isolated_path(tmp_path: Path, monkeypatch, scripts: dict[str, str]) -> None:
+    """PATH réduit à un seul dossier : seuls les binaires listés sont résolvables."""
+    bin_dir = tmp_path / "isolated-bin"
+    bin_dir.mkdir(exist_ok=True)
+    for name, script in scripts.items():
+        if os.name == "nt":
+            # Windows résout par PATHEXT : le faux binaire est un `.CMD`.
+            (bin_dir / f"{name}.CMD").write_text(_windows_shim(script), encoding="utf-8")
+            continue
+        exe = bin_dir / name
+        exe.write_text(script, encoding="utf-8")
+        exe.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+
+class _Meta:
+    """Descripteur de session minimal — champs lus par `_audit_record`/`build_usage`."""
+
+    def __init__(self, **over):
+        self.session_id = "ses_1"
+        self.title = "Titre"
+        self.directory = None
+        self.agent = "build"
+        self.parent_id = None
+        self.cost = 1.5
+        self.time_updated = None
+        self.__dict__.update(over)
+
+
+class _Row(dict):
+    pass
+
+
+class _Query:
+    def __init__(self, row):
+        self._row = row
+
+    def fetchone(self):
+        return self._row
+
+
+class _Conn:
+    """Double de `sqlite3.Connection` — une réponse (int ou Exception) par table."""
+
+    def __init__(self, answers: dict[str, int | Exception]):
+        self.answers = answers
+        self.queries: list[str] = []
+
+    def execute(self, sql: str):
+        self.queries.append(sql)
+        answer = self.answers[sql.split("FROM ")[-1].strip()]
+        if isinstance(answer, Exception):
+            raise answer
+        return _Query(_Row({"n": answer}))
+
+
+class _SqliteAdapter:
+    def __init__(self, conn: _Conn):
+        self.conn = conn
+
+
+class _ProviderWithMigrations(FakeSessionProvider):
+    """Provider exposant `db_path` + un adapter SQLite (chemin `_doctor_*`)."""
+
+    def __init__(self, harness, conn):
+        super().__init__(harness, [])
+        self.db_path = "/stub/sessions.db"
+        self._adapter = _SqliteAdapter(conn)
+
+
+class _BrokenProvider(FakeSessionProvider):
+    def check_schema(self) -> None:
+        raise RuntimeError("boom")
+
+
+# --------------------------------------------------------------- _version_tuple
+
+
+def test_version_tuple_pads_and_truncates_to_three_numbers():
+    assert _version_tuple("1.18.0") == (1, 18, 0)
+    assert _version_tuple("1.18") == (1, 18, 0)  # complété par des zéros
+    assert _version_tuple("7") == (7, 0, 0)
+    assert _version_tuple("1.2.3.4") == (1, 2, 3)  # tronqué au 3e nombre
+    assert _version_tuple("v2.3.4") == (2, 3, 4)  # préfixe non numérique ignoré
+
+
+def test_version_tuple_without_digit_is_none():
+    assert _version_tuple("unknown") is None
+    assert _version_tuple("") is None
+
+
+# --------------------------------------------------------------- _check_migrations
+
+
+def test_check_migrations_reads_the_migration_counter():
+    conn = _Conn({"migration": 42})
+    assert _check_migrations(_SqliteAdapter(conn)) == 42
+    assert conn.queries == ["SELECT count(*) AS n FROM migration"]
+
+
+def test_check_migrations_falls_back_to_data_migration_table():
+    conn = _Conn({"migration": RuntimeError("no such table"), "data_migration": 7})
+    assert _check_migrations(_SqliteAdapter(conn)) == 7
+    assert conn.queries == [
+        "SELECT count(*) AS n FROM migration",
+        "SELECT count(*) AS n FROM data_migration",
+    ]
+
+
+def test_check_migrations_absent_on_non_standard_schema_is_none():
+    conn = _Conn({"migration": RuntimeError("x"), "data_migration": RuntimeError("y")})
+    assert _check_migrations(_SqliteAdapter(conn)) is None
+
+
+# --------------------------------------------------------------- _doctor_project_root
+
+
+def test_placeholder_message_names_the_fields_and_the_file():
+    assert _placeholder_message(["project_root", "output_dir"]) == (
+        "config jamais adaptée à cette installation — substituer "
+        "project_root/output_dir dans weekly-telemetry-config.json "
+        "(placeholders /path/to/ détectés)"
+    )
+
+
+def test_doctor_project_root_none_names_the_missing_field(tmp_path: Path):
+    cfg = _char_cfg(tmp_path)
+    cfg.project_root = None
+    problems: list[str] = []
+    warnings: list[str] = []
+    _doctor_project_root(cfg, tmp_path, config_loaded=True, problems=problems, warnings=warnings)
+    assert problems == ["project_root manquant dans la config"]
+    assert warnings == []
+
+
+def test_doctor_project_root_without_opencode_dir_is_problem(tmp_path: Path):
+    cfg = _char_cfg(tmp_path)  # project_root=tmp_path, aucun .opencode
+    problems: list[str] = []
+    warnings: list[str] = []
+    _doctor_project_root(cfg, tmp_path, config_loaded=True, problems=problems, warnings=warnings)
+    assert problems == [
+        f"project_root {tmp_path} ne contient pas .opencode/ — "
+        "adapter la config (clone : project_root = chemin absolu de votre repo)"
+    ]
+    assert warnings == []
+
+
+def test_doctor_project_root_healthy_tree_is_silent(tmp_path: Path):
+    _ = (tmp_path / ".opencode").mkdir()
+    cfg = _char_cfg(tmp_path)
+    problems: list[str] = []
+    warnings: list[str] = []
+    _doctor_project_root(cfg, tmp_path, config_loaded=True, problems=problems, warnings=warnings)
+    assert problems == []
+    assert warnings == []
+
+
+def test_doctor_project_root_warns_only_when_the_config_is_nowhere(tmp_path: Path):
+    _ = (tmp_path / ".opencode").mkdir()
+    cfg = _char_cfg(tmp_path)
+    problems: list[str] = []
+    warnings: list[str] = []
+    _doctor_project_root(cfg, tmp_path, config_loaded=False, problems=problems, warnings=warnings)
+    assert problems == []
+    assert warnings == [
+        f"config introuvable au cwd ({tmp_path}) ni au project_root — vérifier --dir du cron"
+    ]
+    # config présente au cwd → plus aucun warning
+    _ = (tmp_path / "weekly-telemetry-config.json").write_text("{}", encoding="utf-8")
+    problems, warnings = [], []
+    _doctor_project_root(cfg, tmp_path, config_loaded=False, problems=problems, warnings=warnings)
+    assert warnings == []
+
+
+def test_doctor_project_root_config_loaded_suppresses_the_cwd_hint(tmp_path: Path):
+    _ = (tmp_path / ".opencode").mkdir()
+    cfg = _char_cfg(tmp_path)
+    problems: list[str] = []
+    warnings: list[str] = []
+    _doctor_project_root(
+        cfg, tmp_path / "elsewhere", config_loaded=True, problems=problems, warnings=warnings
+    )
+    assert problems == []
+    assert warnings == []
+
+
+# --------------------------------------------------------------- _doctor_output_dir_guard
+
+
+def test_doctor_output_dir_guard_flags_the_plugins_tree(tmp_path: Path):
+    plugin_reports = tmp_path / "kit" / ".opencode" / "plugins" / "engine" / "reports"
+    plugin_reports.mkdir(parents=True)
+    cfg = _char_cfg(tmp_path)
+    cfg.output_dir = plugin_reports
+    warnings: list[str] = []
+    _doctor_output_dir_guard(cfg, warnings)
+    assert len(warnings) == 1
+    assert warnings[0].startswith("output_dir résout sous l'arbre plugins")
+    assert warnings[0].endswith(
+        "run probablement lancé depuis le dossier du moteur ; déplacer reports/ "
+        "hors du plugin et relancer les étapes depuis la racine du projet"
+    )
+
+
+def test_doctor_output_dir_guard_silent_outside_the_plugins_tree(tmp_path: Path):
+    cfg = _char_cfg(tmp_path)
+    cfg.output_dir = tmp_path / "reports"
+    warnings: list[str] = []
+    _doctor_output_dir_guard(cfg, warnings)
+    assert warnings == []
+
+
+def test_doctor_output_dir_guard_requires_plugins_right_after_opencode(tmp_path: Path):
+    """`.opencode` seul, ou `plugins` plus loin dans le chemin : pas un plugin tree."""
+    sibling = tmp_path / ".opencode" / "skills" / "plugins" / "reports"
+    sibling.mkdir(parents=True)
+    cfg = _char_cfg(tmp_path)
+    cfg.output_dir = sibling
+    warnings: list[str] = []
+    _doctor_output_dir_guard(cfg, warnings)
+    assert warnings == []
+
+
+# --------------------------------------------------------------- _doctor_opencode_version
+
+
+def test_doctor_opencode_version_passes_at_or_above_the_pin(tmp_path: Path, monkeypatch):
+    _isolated_path(tmp_path, monkeypatch, {"opencode": "#!/bin/sh\necho '1.18.0'\n"})
+    cfg = _char_cfg(tmp_path)
+    problems: list[str] = []
+    warnings: list[str] = []
+    _doctor_opencode_version(cfg, "opencode", problems, warnings)
+    assert problems == []
+    assert warnings == []
+
+
+def test_doctor_opencode_version_below_the_pin_is_problem(tmp_path: Path, monkeypatch):
+    _isolated_path(tmp_path, monkeypatch, {"opencode": "#!/bin/sh\necho '1.0.0'\n"})
+    cfg = _char_cfg(tmp_path)
+    problems: list[str] = []
+    warnings: list[str] = []
+    _doctor_opencode_version(cfg, "opencode", problems, warnings)
+    assert problems == ["opencode 1.0.0 < 1.18.0 — épinglage du schéma non garanti"]
+    assert warnings == []
+
+
+def test_doctor_opencode_version_unreachable_binary_is_warning_only(tmp_path: Path, monkeypatch):
+    """v6.0.f : un PATH étroit (cron) ne bloque pas la revue — le pin devient une note."""
+    _isolated_path(tmp_path, monkeypatch, {"opencode": "#!/bin/sh\necho '1.18.0'\n"})
+    cfg = _char_cfg(tmp_path)
+    problems: list[str] = []
+    warnings: list[str] = []
+    _doctor_opencode_version(cfg, "opencode_absent_zzz", problems, warnings)
+    assert problems == []
+    assert warnings == ["opencode introuvable ou non exécutable (opencode_absent_zzz)"]
+
+
+# --------------------------------------------------------------- _doctor_session_providers
+
+
+def test_doctor_session_providers_reports_source_and_migrations(
+    tmp_path: Path, monkeypatch, capsys
+):
+    import weekly_telemetry_aggregator.main as main_mod
+
+    source = _ProviderWithMigrations("opencode", _Conn({"migration": 42}))
+    monkeypatch.setattr(main_mod, "build_providers", lambda _cfg: [source])
+    problems: list[str] = []
+    warnings: list[str] = []
+    partial = _doctor_session_providers(_char_cfg(tmp_path), problems, warnings)
+    assert partial is False  # 1 source sur 1 → pas de dégradation partielle
+    assert problems == []
+    assert warnings == []
+    assert source.closed is True
+    assert capsys.readouterr().out.splitlines() == [
+        "doctor: [opencode] OK (/stub/sessions.db, migrations=42)"
+    ]
+
+
+def test_doctor_session_providers_returns_partial_on_mixed_sources(tmp_path: Path, monkeypatch):
+    import weekly_telemetry_aggregator.main as main_mod
+
+    ok_source = FakeSessionProvider("opencode", [])
+    ko_source = _BrokenProvider("alpha", [])
+    monkeypatch.setattr(main_mod, "build_providers", lambda _cfg: [ok_source, ko_source])
+    problems: list[str] = []
+    warnings: list[str] = []
+    partial = _doctor_session_providers(_char_cfg(tmp_path), problems, warnings)
+    assert partial is True
+    assert problems == []
+    assert warnings == ["[alpha] schéma illisible (boom)"]
+    assert ok_source.closed is True
+    assert ko_source.closed is True  # close() garanti même quand check_schema() lève
+
+
+def test_doctor_session_providers_all_broken_is_problem_not_partial(tmp_path: Path, monkeypatch):
+    import weekly_telemetry_aggregator.main as main_mod
+
+    sources = [_BrokenProvider("alpha", []), _BrokenProvider("beta", [])]
+    monkeypatch.setattr(main_mod, "build_providers", lambda _cfg: sources)
+    problems: list[str] = []
+    warnings: list[str] = []
+    partial = _doctor_session_providers(_char_cfg(tmp_path), problems, warnings)
+    assert partial is False  # 0 source utilisable → PROBLEM, jamais un partiel
+    assert problems == [
+        "aucune source de sessions disponible — vérifier session_sources / bases locales"
+    ]
+    assert warnings == ["[alpha] schéma illisible (boom)", "[beta] schéma illisible (boom)"]
+
+
+def test_doctor_session_providers_no_source_configured_is_problem(tmp_path: Path, monkeypatch):
+    import weekly_telemetry_aggregator.main as main_mod
+
+    monkeypatch.setattr(main_mod, "build_providers", lambda _cfg: [])
+    problems: list[str] = []
+    warnings: list[str] = []
+    partial = _doctor_session_providers(_char_cfg(tmp_path), problems, warnings)
+    assert partial is False
+    assert problems == [
+        "aucune source de sessions disponible — vérifier session_sources / bases locales"
+    ]
+    assert warnings == []
+
+
+def test_doctor_session_providers_weak_migration_counter_warns(tmp_path: Path, monkeypatch):
+    import weekly_telemetry_aggregator.main as main_mod
+
+    source = _ProviderWithMigrations("opencode", _Conn({"migration": 41}))
+    monkeypatch.setattr(main_mod, "build_providers", lambda _cfg: [source])
+    problems: list[str] = []
+    warnings: list[str] = []
+    assert _doctor_session_providers(_char_cfg(tmp_path), problems, warnings) is False
+    assert problems == []
+    assert warnings == [
+        "[opencode] compteur de migrations faible (41) — vérifier la version du harnais"
+    ]
+
+
+def test_doctor_session_providers_non_standard_schema_warns(tmp_path: Path, monkeypatch):
+    """Adapter SQLite sans les deux tables de migrations : warning, jamais une erreur."""
+    import weekly_telemetry_aggregator.main as main_mod
+
+    source = _ProviderWithMigrations(
+        "opencode",
+        _Conn({"migration": RuntimeError("x"), "data_migration": RuntimeError("y")}),
+    )
+    monkeypatch.setattr(main_mod, "build_providers", lambda _cfg: [source])
+    problems: list[str] = []
+    warnings: list[str] = []
+    assert _doctor_session_providers(_char_cfg(tmp_path), problems, warnings) is False
+    assert problems == []
+    assert warnings == ["[opencode] compteur de migrations introuvable — schéma non standard"]
+
+
+# --------------------------------------------------------------- _doctor_output_probe
+
+
+def test_doctor_output_probe_creates_the_dir_and_removes_the_probe(tmp_path: Path, capsys):
+    cfg = _char_cfg(tmp_path)
+    problems: list[str] = []
+    _doctor_output_probe(cfg, problems)
+    assert problems == []
+    assert cfg.output_dir.is_dir()
+    assert not (cfg.output_dir / ".doctor-write-probe").exists()
+    assert capsys.readouterr().out.splitlines() == [
+        f"doctor: output_dir accessible en écriture: {cfg.output_dir}"
+    ]
+
+
+def test_doctor_output_probe_unwritable_output_dir_is_problem(tmp_path: Path):
+    blocker = tmp_path / "blocker"
+    _ = blocker.write_text("x", encoding="utf-8")
+    cfg = _char_cfg(tmp_path)
+    cfg.output_dir = blocker
+    problems: list[str] = []
+    _doctor_output_probe(cfg, problems)
+    assert len(problems) == 1
+    assert problems[0].startswith("output_dir non accessible en écriture:")
+
+
+# --------------------------------------------------------------- _doctor_tool_presence
+
+
+def test_doctor_tool_presence_warns_once_per_missing_tool(tmp_path: Path, monkeypatch):
+    empty = tmp_path / "empty-bin"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    warnings: list[str] = []
+    _doctor_tool_presence(warnings)
+    assert warnings == [
+        "harness-eval absent du PATH (rien n'est lancé, mais l'étape correspondante sera dégradée)",
+        "git absent du PATH (rien n'est lancé, mais l'étape correspondante sera dégradée)",
+    ]
+
+
+def test_doctor_tool_presence_silent_when_both_tools_present(tmp_path: Path, monkeypatch):
+    _isolated_path(
+        tmp_path, monkeypatch, {"harness-eval": "#!/bin/sh\nexit 0\n", "git": "#!/bin/sh\nexit 0\n"}
+    )
+    warnings: list[str] = []
+    _doctor_tool_presence(warnings)
+    assert warnings == []
+
+
+# --------------------------------------------------------------- _doctor_harness_eval_version
+
+
+def test_doctor_harness_eval_version_silent_when_absent_from_path(tmp_path: Path, monkeypatch):
+    _isolated_path(tmp_path, monkeypatch, {})
+    cfg = _char_cfg(tmp_path)
+    warnings: list[str] = []
+    _doctor_harness_eval_version(cfg, warnings)
+    assert warnings == []
+
+
+def test_doctor_harness_eval_version_silent_without_a_configured_minimum(
+    tmp_path: Path, monkeypatch
+):
+    _isolated_path(tmp_path, monkeypatch, {"harness-eval": "#!/bin/sh\necho '1.0.0'\n"})
+    cfg = _char_cfg(tmp_path)
+    cfg.harness_eval_version = ""
+    warnings: list[str] = []
+    _doctor_harness_eval_version(cfg, warnings)
+    assert warnings == []
+
+
+def test_doctor_harness_eval_version_below_minimum_warns(tmp_path: Path, monkeypatch):
+    _isolated_path(tmp_path, monkeypatch, {"harness-eval": "#!/bin/sh\necho '7.1.0'\n"})
+    cfg = _char_cfg(tmp_path)
+    warnings: list[str] = []
+    _doctor_harness_eval_version(cfg, warnings)
+    assert warnings == [
+        "harness-eval 7.1.0 < minimum requis 7.9.0 — mettre à jour : "
+        "uv tool install --upgrade harness-eval"
+    ]
+
+
+def test_doctor_harness_eval_version_unreadable_version_warns(tmp_path: Path, monkeypatch):
+    _isolated_path(tmp_path, monkeypatch, {"harness-eval": "#!/bin/sh\necho 'nightly'\n"})
+    cfg = _char_cfg(tmp_path)
+    warnings: list[str] = []
+    _doctor_harness_eval_version(cfg, warnings)
+    assert warnings == ["harness-eval --version illisible ('nightly') — attendu ≥ 7.9.0"]
+
+
+# --------------------------------------------------------------- _doctor_watch_repos
+
+
+def test_doctor_watch_repos_silent_when_not_configured(tmp_path: Path):
+    cfg = _char_cfg(tmp_path)
+    assert cfg.watch_repos == []
+    warnings: list[str] = []
+    _doctor_watch_repos(cfg, warnings)
+    assert warnings == []
+
+
+def test_doctor_watch_repos_warns_when_gh_absent(tmp_path: Path, monkeypatch):
+    _isolated_path(tmp_path, monkeypatch, {})
+    cfg = _char_cfg(tmp_path)
+    cfg.watch_repos = ["o/r"]
+    warnings: list[str] = []
+    _doctor_watch_repos(cfg, warnings)
+    assert warnings == [
+        "watch_repos configuré mais gh absent du PATH — repos privés/renommés non suivis"
+    ]
+
+
+def test_doctor_watch_repos_warns_when_gh_not_authenticated(tmp_path: Path, monkeypatch):
+    _isolated_path(tmp_path, monkeypatch, {"gh": "#!/bin/sh\necho 'not logged in' >&2\nexit 1\n"})
+    cfg = _char_cfg(tmp_path)
+    cfg.watch_repos = ["o/r"]
+    warnings: list[str] = []
+    _doctor_watch_repos(cfg, warnings)
+    assert warnings == [
+        "watch_repos configuré mais gh non authentifié — repos privés indisponibles (gh auth login)"
+    ]
+
+
+# --------------------------------------------------------------- _doctor_draft_targets
+
+
+def test_doctor_draft_targets_prints_target_and_remediation_surface(tmp_path: Path, capsys):
+    _ = (tmp_path / ".opencode").mkdir()
+    cfg = _char_cfg(tmp_path)
+    warnings: list[str] = []
+    _doctor_draft_targets(cfg, warnings)
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == "doctor: cibles de drafting: opencode (défaut)"
+    assert out[1].startswith("doctor: surface de remédiation 5.5: ")
+    # aucun draft_targets explicite → le défaut est annoncé, la cible reste opencode
+    assert warnings == [
+        f"aucun draft_targets explicite en config ({cfg.project_root}) — "
+        "défaut opencode appliqué pour la projection des drafts"
+    ]
+
+
+def test_doctor_draft_targets_names_the_missing_projection_surface(tmp_path: Path):
+    """Marqueur absent : le warning nomme en plus la surface absente du projet."""
+    empty_root = tmp_path / "vide"
+    empty_root.mkdir()  # aucun marqueur, aucun draft_targets explicite
+    cfg = _char_cfg(tmp_path)
+    cfg.project_root = empty_root
+    warnings: list[str] = []
+    _doctor_draft_targets(cfg, warnings)
+    assert warnings == [
+        f"aucun draft_targets explicite en config ({empty_root}) — défaut opencode appliqué "
+        "pour la projection des drafts ; aucun marqueur pour la cible résolue (opencode) : "
+        ".opencode/ — surface de projection absente du projet"
+    ]
+
+
+# --------------------------------------------------------------- _unknown_session_source_types
+
+
+def test_unknown_session_source_types_accepts_known_and_skips_disabled(tmp_path: Path, monkeypatch):
+    from weekly_telemetry_aggregator.providers import registry
+
+    monkeypatch.setattr(
+        registry, "discover_provider_factories", lambda: {"opencode": object(), "codex": object()}
+    )
+    cfg = _char_cfg(tmp_path)
+    cfg.session_sources = [{"type": "opencode"}, {"type": "inconnu", "enabled": False}]
+    assert _unknown_session_source_types(cfg) == ([], ["codex", "opencode"])
+
+
+def test_unknown_session_source_types_reports_every_unknown_shape(tmp_path: Path, monkeypatch):
+    from weekly_telemetry_aggregator.providers import registry
+
+    monkeypatch.setattr(
+        registry, "discover_provider_factories", lambda: {"opencode": object(), "codex": object()}
+    )
+    cfg = _char_cfg(tmp_path)
+    cfg.session_sources = [{"type": "zzz"}, {"type": 42}, "pas-un-dict"]
+    unknown, supported = _unknown_session_source_types(cfg)
+    assert supported == ["codex", "opencode"]
+    # repr() de chaque forme : l'int non-str devient "42" (sans guillemets)
+    assert unknown == ["'pas-un-dict'", "'zzz'", "42"]  # trié, dédupliqué
+
+
+def test_unknown_session_source_types_fail_soft_on_an_illisible_registry(
+    tmp_path: Path, monkeypatch
+):
+    from weekly_telemetry_aggregator.providers import registry
+
+    def _boom():
+        raise RuntimeError("registre cassé")
+
+    monkeypatch.setattr(registry, "discover_provider_factories", _boom)
+    assert _unknown_session_source_types(_char_cfg(tmp_path)) == ([], [])
+
+
+# --------------------------------------------------------------- _copilot_doctor_details
+
+
+def test_copilot_doctor_details_lists_home_schema_sessions_and_fts():
+    provider = type(
+        "P",
+        (),
+        {
+            "harness": "copilot-cli",
+            "home": "/home/u/.copilot",
+            "schema_version": 4,
+            "_sessions": {"a": 1, "b": 2},
+            "_tables": {"search_index"},
+        },
+    )()
+    assert _copilot_doctor_details(provider) == [
+        "home=/home/u/.copilot",
+        "schema_version=4",
+        "sessions=2",
+        "fts=oui",
+    ]
+
+
+def test_copilot_doctor_details_marks_absent_fields_with_question_marks():
+    provider = type("P", (), {"harness": "copilot-cli"})()
+    assert _copilot_doctor_details(provider) == ["home=?", "schema_version=?"]
+
+
+def test_copilot_doctor_details_reports_a_missing_fts_index():
+    provider = type("P", (), {"harness": "copilot-cli", "_tables": {"autre"}})()
+    assert _copilot_doctor_details(provider) == ["home=?", "schema_version=?", "fts=non"]
+
+
+def test_copilot_doctor_details_ignores_other_harnesses():
+    provider = type("P", (), {"harness": "opencode", "home": "/x"})()
+    assert _copilot_doctor_details(provider) == []
+
+
+def test_copilot_doctor_details_never_raises():
+    class _Boom:
+        @property
+        def harness(self):
+            raise RuntimeError("boom")
+
+    assert _copilot_doctor_details(_Boom()) == []
+
+
+# --------------------------------------------------------------- doctor() : code de sortie
+
+
+def test_doctor_problems_outrank_partial_sources(tmp_path: Path, monkeypatch, capsys):
+    """Un PROBLEM (rc 2) l'emporte sur la dégradation partielle (rc 1) : l'ordre de
+    décision de doctor() est figé ici, pas seulement « rc != 0 »."""
+    import weekly_telemetry_aggregator.main as main_mod
+
+    _isolated_path(tmp_path, monkeypatch, {"opencode": "#!/bin/sh\necho '1.0.0'\n"})
+    _ = (tmp_path / ".opencode").mkdir()
+    ok_source, ko_source = FakeSessionProvider("opencode", []), _BrokenProvider("alpha", [])
+    monkeypatch.setattr(main_mod, "build_providers", lambda _cfg: [ok_source, ko_source])
+    cfg = _char_cfg(tmp_path)
+
+    assert doctor(cfg) == EXIT_TOTAL_FAILURE  # et non EXIT_PARTIAL
+
+    out = capsys.readouterr().out.splitlines()
+    problems = [line for line in out if line.startswith("doctor: PROBLEM: ")]
+    warnings = [line for line in out if line.startswith("doctor: WARNING: ")]
+    assert problems == [
+        "doctor: PROBLEM: opencode 1.0.0 < 1.18.0 — épinglage du schéma non garanti"
+    ]
+    assert "doctor: WARNING: [alpha] schéma illisible (boom)" in warnings
+    # tous les WARNING sont imprimés avant les PROBLEM
+    assert out.index(warnings[0]) < out.index(problems[0])
+
+
+def test_doctor_mixed_sources_without_problem_returns_partial(tmp_path: Path, monkeypatch):
+    import weekly_telemetry_aggregator.main as main_mod
+
+    _isolated_path(tmp_path, monkeypatch, {"opencode": "#!/bin/sh\necho '1.18.0'\n"})
+    _ = (tmp_path / ".opencode").mkdir()
+    ok_source, ko_source = FakeSessionProvider("opencode", []), _BrokenProvider("alpha", [])
+    monkeypatch.setattr(main_mod, "build_providers", lambda _cfg: [ok_source, ko_source])
+    assert doctor(_char_cfg(tmp_path)) == EXIT_PARTIAL
+
+
+# ================================================================= E1 : build_usage
+#
+# Idem : `build_usage` et ses helpers n'étaient testés qu'à travers trois cas
+# d'intégration. Les vérifications de fenêtre (bornes), d'agrégation, d'ordre
+# d'émission et de forme des sorties vides sont figées ici.
+
+
+class _ReadsAdapter:
+    """Adapter de lecture déterministe — une clé par méthode du protocol utilisé."""
+
+    harness = "opencode"
+
+    def __init__(self, *, fail: str | None = None):
+        self.fail = fail
+        self.windows: list[tuple[str, int, int]] = []
+
+    def _call(self, value):
+        if self.fail is not None:
+            raise RuntimeError(self.fail)
+        return value
+
+    def _window(self, session_id, start_ms, end_ms):
+        self.windows.append((session_id, start_ms, end_ms))
+
+    def has_telemetry_rows(self, session_id) -> bool:
+        return self._call(True)
+
+    def session_steps(self, session_id, start_ms, end_ms):
+        self._window(session_id, start_ms, end_ms)
+        return self._call(
+            [StepFinish(session_id=session_id, timestamp=RUN_TIME, model="m", cost=0.5)]
+        )
+
+    def session_tools(self, session_id, start_ms, end_ms):
+        return self._call(({"edit": 2}, {"edit": 40}, {"ma-skill": 1}))
+
+    def session_tool_fingerprints(self, session_id, start_ms, end_ms):
+        return self._call(({"edit": {"fp": 1}}, {"edit": {"fp2": 1}}))
+
+    def session_user_turns(self, session_id, start_ms, end_ms):
+        return self._call(["fais ça"])
+
+    def session_context_chars(self, session_id, start_ms, end_ms):
+        return self._call({"m": 120})
+
+    def session_aggregates(self, session_id):
+        return self._call({"cost": 0.5})
+
+    def session_parts(self, session_id):
+        return self._call([])
+
+
+def _period() -> Period:
+    return Period(start=RUN_TIME - timedelta(days=7), end=RUN_TIME)
+
+
+def _step(model: str = "m", cost: float | None = 1.0, tokens: float = 0.0) -> StepFinish:
+    return StepFinish(
+        session_id="s",
+        timestamp=RUN_TIME,
+        model=model,
+        tokens_input=tokens,
+        cost=cost,
+    )
+
+
+# --------------------------------------------------------------- _truncate
+
+
+def test_truncate_collapses_whitespace_and_drops_empties():
+    assert _truncate("") is None
+    assert _truncate("   \n\t ") is None
+    assert _truncate("a  b\tc\nd") == "a b c d"
+
+
+def test_truncate_boundary_is_exact_limit_characters():
+    assert _truncate("abcdefghij", limit=10) == "abcdefghij"  # pile au seuil : inchangé
+    assert _truncate("abcdefghijk", limit=10) == "abcdefghi…"  # seuil+1 : ellipsis comprise
+    assert len(_truncate("x" * 500)) == 80  # jamais plus que la limite
+    assert _truncate("x" * 500)[-1] == "…"
+
+
+# --------------------------------------------------------------- _audit_record
+
+
+def test_audit_record_traces_the_disposition():
+    assert _audit_record(_Meta(), "included") == {
+        "session_id": "ses_1",
+        "title": "Titre",
+        "agent": "build",
+        "parent_id": None,
+        "cost": 1.5,
+        "updated": "",
+        "status": "included",
+    }
+
+
+def test_audit_record_normalises_title_and_truncates_at_60():
+    assert _audit_record(_Meta(title="  a|b\tc  "), "included")["title"] == "a¦b c"
+    assert _audit_record(_Meta(title="z" * 80), "included")["title"] == "z" * 60 + "..."
+    assert _audit_record(_Meta(title="   "), "included")["title"] is None
+
+
+def test_audit_record_renders_the_update_timestamp_as_text():
+    record = _audit_record(_Meta(time_updated=RUN_TIME), "included")
+    assert record["updated"] == str(RUN_TIME)
+
+
+def test_audit_record_keeps_worker_outcomes_only_when_present():
+    plain = _audit_record(_Meta(), "included")
+    assert not {"rc", "truncated", "worker_status"} & set(plain)
+    rich = _audit_record(_Meta(rc=1, truncated=True, worker_status="done"), "error")
+    assert (rich["rc"], rich["truncated"], rich["worker_status"]) == (1, True, "done")
+    only_rc = _audit_record(_Meta(rc=0, truncated=None), "included")
+    assert only_rc["rc"] == 0
+    assert "truncated" not in only_rc
+
+
+# --------------------------------------------------------------- _SessionReads
+
+
+def test_session_reads_dataclass_exposes_the_raw_read_shape():
+    import dataclasses
+
+    assert [f.name for f in dataclasses.fields(_SessionReads)] == [
+        "steps",
+        "tool_calls",
+        "tool_arg_chars",
+        "skills",
+        "tool_arg_fps",
+        "tool_result_fps",
+        "turns",
+        "context_chars",
+        "aggregates",
+    ]
+    reads = _SessionReads(
+        steps=[],
+        tool_calls={},
+        tool_arg_chars={},
+        skills={},
+        tool_arg_fps={},
+        tool_result_fps={},
+        turns=[],
+        context_chars={},
+        aggregates=None,
+    )
+    assert reads.aggregates is None
+
+
+# --------------------------------------------------------------- _usage_active_excluded
+
+
+def test_usage_active_excluded_boundary_is_inclusive_at_the_cutoff(tmp_path: Path):
+    # le seuil est un LITTERAL (10 min, v5.18) : la constante importée ne doit pas
+    # pouvoir suivre une dérive du comportement — c'est le contrat qui est figé ici.
+    assert ACTIVE_CUTOFF_MINUTES == 10
+    cfg = _char_cfg(tmp_path)
+    warnings: list[WarningEntry] = []
+    audit: list[dict] = []
+    meta = _Meta(time_updated=RUN_TIME - timedelta(minutes=10))
+    assert _usage_active_excluded(meta, RUN_TIME, cfg, warnings, audit) is True
+    assert [w.message for w in warnings] == [
+        "session active exclue des totaux (télémétrie incomplète)"
+    ]
+    assert warnings[0].partial is False  # exclusion opérationnelle, pas un telemetry gap
+    assert [r["status"] for r in audit] == ["active"]
+
+
+def test_usage_active_excluded_just_outside_the_cutoff(tmp_path: Path):
+    cfg = _char_cfg(tmp_path)
+    warnings: list[WarningEntry] = []
+    audit: list[dict] = []
+    meta = _Meta(time_updated=RUN_TIME - timedelta(minutes=11))  # 1 min hors du cutoff
+    assert _usage_active_excluded(meta, RUN_TIME, cfg, warnings, audit) is False
+    assert warnings == []
+    assert audit == []
+
+
+def test_usage_active_excluded_disabled_by_config(tmp_path: Path):
+    cfg = _char_cfg(tmp_path)
+    cfg.exclude_active_sessions = False
+    warnings: list[WarningEntry] = []
+    audit: list[dict] = []
+    assert (
+        _usage_active_excluded(_Meta(time_updated=RUN_TIME), RUN_TIME, cfg, warnings, audit)
+        is False
+    )
+    assert warnings == []
+    assert audit == []
+
+
+def test_usage_active_excluded_ignores_a_session_without_update_time(tmp_path: Path):
+    cfg = _char_cfg(tmp_path)
+    warnings: list[WarningEntry] = []
+    audit: list[dict] = []
+    assert _usage_active_excluded(_Meta(), RUN_TIME, cfg, warnings, audit) is False
+    assert warnings == []
+    assert audit == []
+
+
+# --------------------------------------------------------------- _usage_advisor_excluded
+
+
+def test_usage_advisor_excluded_is_silent_by_design(tmp_path: Path):
+    cfg = _char_cfg(tmp_path)
+    warnings: list[WarningEntry] = []
+    audit: list[dict] = []
+    assert _usage_advisor_excluded(_Meta(title=cfg.advisor_run_title), cfg, audit) is True
+    assert [r["status"] for r in audit] == ["advisor"]
+    assert warnings == []  # jamais de warning : l'auto-pollution est exclue par design
+
+
+def test_usage_advisor_excluded_keeps_other_sessions(tmp_path: Path):
+    cfg = _char_cfg(tmp_path)
+    audit: list[dict] = []
+    assert _usage_advisor_excluded(_Meta(title="Autre"), cfg, audit) is False
+    assert audit == []
+    # l'audit est optionnel : aucun crash quand il est désactivé
+    assert _usage_advisor_excluded(_Meta(title=cfg.advisor_run_title), cfg, None) is True
+
+
+# --------------------------------------------------------------- _fetch_session_reads
+
+
+def test_fetch_session_reads_returns_the_raw_reads():
+    warnings: list[WarningEntry] = []
+    audit: list[dict] = []
+    reads = _fetch_session_reads(_ReadsAdapter(), _Meta(), 1, 2, warnings, audit)
+    assert isinstance(reads, _SessionReads)
+    assert reads.tool_calls == {"edit": 2}
+    assert reads.tool_arg_chars == {"edit": 40}
+    assert reads.skills == {"ma-skill": 1}
+    assert reads.tool_arg_fps == {"edit": {"fp": 1}}
+    assert reads.tool_result_fps == {"edit": {"fp2": 1}}
+    assert reads.turns == ["fais ça"]
+    assert reads.context_chars == {"m": 120}
+    assert reads.aggregates == {"cost": 0.5}
+    assert warnings == []
+    assert audit == []
+
+
+def test_fetch_session_reads_failure_is_partial_and_audited():
+    """Une lecture ratée ne tue jamais le run : warning partial + audit « error »."""
+    warnings: list[WarningEntry] = []
+    audit: list[dict] = []
+    assert _fetch_session_reads(_ReadsAdapter(fail="boom"), _Meta(), 1, 2, warnings, audit) is None
+    assert [w.message for w in warnings] == ["session read failed: boom"]
+    assert warnings[0].partial is True  # telemetry gap → EXIT_PARTIAL
+    assert [r["status"] for r in audit] == ["error"]
+
+
+# --------------------------------------------------------------- _usage_no_steps_status
+
+
+def test_usage_no_steps_status_is_silent_without_audit():
+    warnings: list[WarningEntry] = []
+    assert _usage_no_steps_status(_ReadsAdapter(), _Meta(), None, warnings) is None
+    assert warnings == []
+
+
+def test_usage_no_steps_status_reports_no_activity():
+    warnings: list[WarningEntry] = []
+    audit: list[dict] = []
+    _usage_no_steps_status(_ReadsAdapter(), _Meta(), audit, warnings)
+    assert [r["status"] for r in audit] == ["no-activity"]
+    assert warnings == []
+
+
+def test_usage_no_steps_status_reports_an_unflushed_session():
+    class _NoRows(_ReadsAdapter):
+        def has_telemetry_rows(self, session_id) -> bool:
+            return False
+
+    warnings: list[WarningEntry] = []
+    audit: list[dict] = []
+    _usage_no_steps_status(_NoRows(), _Meta(), audit, warnings)
+    assert [r["status"] for r in audit] == ["unflushed"]
+    assert [w.message for w in warnings] == [
+        "session sans télémétrie persistée en DB (0 message/part — client actif ?)"
+    ]
+
+
+# --------------------------------------------------------------- _session_part_timestamps
+
+
+def test_session_part_timestamps_splits_user_from_edit_write():
+    base = RUN_TIME - timedelta(minutes=10)
+
+    class _Parts(_ReadsAdapter):
+        def session_parts(self, session_id):
+            return [
+                PartRecord(ts=base + timedelta(seconds=30), kind="tool", tool_name="Edit"),
+                PartRecord(ts=base, kind="user"),
+                PartRecord(ts=base + timedelta(seconds=10), kind="tool", tool_name="read"),
+                PartRecord(ts=base + timedelta(seconds=20), kind="reasoning"),
+            ]
+
+    users, edits, parts = _session_part_timestamps(_Parts(), _Meta())
+    assert users == [base]
+    assert edits == [base + timedelta(seconds=30)]  # casse normalisée, ordre conservé
+    assert len(parts) == 4
+
+
+def test_session_part_timestamps_tolerates_a_provider_without_parts():
+    class _NoParts(_ReadsAdapter):
+        def session_parts(self, session_id):
+            raise RuntimeError("provider sans parts")
+
+    assert _session_part_timestamps(_NoParts(), _Meta()) == ([], [], [])
+
+
+def test_session_part_timestamps_empty_input_shapes():
+    assert _session_part_timestamps(_ReadsAdapter(), _Meta()) == ([], [], [])
+
+
+# --------------------------------------------------------------- _usage_cost_warnings
+
+
+def test_usage_cost_warnings_reports_missing_pricing_sorted_and_deduped(tmp_path: Path):
+    cfg = _char_cfg(tmp_path)
+    warnings: list[WarningEntry] = []
+    steps = [_step("zeta", None), _step("alpha", None), _step("zeta", None)]
+    _usage_cost_warnings(_Meta(), cfg, steps, None, [], None, warnings)
+    assert [w.message for w in warnings] == ["missing-pricing:alpha", "missing-pricing:zeta"]
+    assert all(w.partial is False for w in warnings)
+    assert all(w.parts_cost is None for w in warnings)
+
+
+def test_usage_cost_warnings_cross_check_parts_against_lifetime(tmp_path: Path):
+    cfg = _char_cfg(tmp_path)
+    warnings: list[WarningEntry] = []
+    parts = [PartRecord(ts=RUN_TIME, kind="step-finish", cost=5.0)]
+    _usage_cost_warnings(_Meta(), cfg, [_step(cost=1.0)], {"cost": 1.0}, parts, 1.0, warnings)
+    assert [w.message for w in warnings] == [
+        "cross-check mismatch: parts cost $5.0000 vs session_v2 $1.0000"
+    ]
+    assert (warnings[0].parts_cost, warnings[0].session_v2_cost) == (5.0, 1.0)
+
+
+def test_usage_cost_warnings_detects_windowed_cost_above_lifetime(tmp_path: Path):
+    cfg = _char_cfg(tmp_path)
+    warnings: list[WarningEntry] = []
+    parts = [PartRecord(ts=RUN_TIME, kind="step-finish", cost=10.0)]
+    _usage_cost_warnings(_Meta(), cfg, [_step(cost=20.0)], {"cost": 10.0}, parts, 10.0, warnings)
+    assert [w.message for w in warnings] == [
+        "windowed cost $20.0000 > lifetime $10.0000 "
+        "(enfants/compaction non couverts par session.cost)"
+    ]
+    assert (warnings[0].parts_cost, warnings[0].session_v2_cost) == (20.0, 10.0)
+
+
+def test_usage_cost_warnings_cross_check_abs_is_a_floor(tmp_path: Path):
+    """Tolérance = max(CROSS_CHECK_ABS, pct × coût) : le plancher absolu gagne quand le
+    pourcentage sous-estimerait l'écart, et la comparaison reste stricte."""
+    cfg = _char_cfg(tmp_path)
+    cfg.cross_check_tolerance_pct = 0.0
+    assert CROSS_CHECK_ABS == 0.01
+    warnings: list[WarningEntry] = []
+    parts = [PartRecord(ts=RUN_TIME, kind="step-finish", cost=0.02)]
+    _usage_cost_warnings(_Meta(), cfg, [_step(cost=0.01)], {"cost": 0.01}, parts, 0.01, warnings)
+    assert warnings == []  # écart == plancher : pas de warning (strict >)
+    parts = [PartRecord(ts=RUN_TIME, kind="step-finish", cost=0.05)]
+    _usage_cost_warnings(_Meta(), cfg, [_step(cost=0.01)], {"cost": 0.01}, parts, 0.01, warnings)
+    assert [w.message for w in warnings] == [
+        "cross-check mismatch: parts cost $0.0500 vs session_v2 $0.0100"
+    ]
+
+
+def test_usage_cost_warnings_silent_when_cross_checks_agree(tmp_path: Path):
+    cfg = _char_cfg(tmp_path)
+    warnings: list[WarningEntry] = []
+    parts = [PartRecord(ts=RUN_TIME, kind="step-finish", cost=1.0)]
+    _usage_cost_warnings(_Meta(), cfg, [_step(cost=1.0)], {"cost": 1.0}, parts, 1.0, warnings)
+    assert warnings == []
+
+
+def test_usage_cost_warnings_without_reported_cost_skips_the_cross_checks(tmp_path: Path):
+    cfg = _char_cfg(tmp_path)
+    warnings: list[WarningEntry] = []
+    parts = [PartRecord(ts=RUN_TIME, kind="step-finish", cost=99.0)]
+    _usage_cost_warnings(_Meta(), cfg, [_step("m", None)], {"cost": 99.0}, parts, None, warnings)
+    assert [w.message for w in warnings] == ["missing-pricing:m"]
+
+
+def test_usage_cost_warnings_cross_check_is_best_effort(tmp_path: Path):
+    """Un agrégat illisible ne doit jamais transformer un cross-check en crash."""
+    cfg = _char_cfg(tmp_path)
+    warnings: list[WarningEntry] = []
+    parts = [PartRecord(ts=RUN_TIME, kind="step-finish", cost=5.0)]
+    _usage_cost_warnings(_Meta(), cfg, [_step(cost=1.0)], None, parts, 1.0, warnings)
+    assert warnings == []
+
+
+def test_usage_cost_warnings_empty_input_adds_nothing(tmp_path: Path):
+    cfg = _char_cfg(tmp_path)
+    warnings: list[WarningEntry] = []
+    _usage_cost_warnings(_Meta(), cfg, [], None, [], None, warnings)
+    assert warnings == []
+
+
+# --------------------------------------------------------------- _harness_cost_rates
+
+
+def test_harness_cost_rates_defaults_without_overrides(tmp_path: Path):
+    assert HARNESS_COST_RATES_USD_PER_MTOK == {"opencode": 9.0}  # taux documenté
+    cfg = _char_cfg(tmp_path)
+    assert _harness_cost_rates(cfg) == dict(HARNESS_COST_RATES_USD_PER_MTOK)
+
+
+def test_harness_cost_rates_overrides_per_source_type(tmp_path: Path):
+    cfg = _char_cfg(tmp_path)
+    cfg.session_sources = [{"type": "opencode"}, {"type": "codex", "cost_rate_usd_per_mtok": 2.5}]
+    assert _harness_cost_rates(cfg) == {**HARNESS_COST_RATES_USD_PER_MTOK, "codex": 2.5}
+
+
+def test_harness_cost_rates_keeps_the_default_on_an_unreadable_rate(tmp_path: Path):
+    cfg = _char_cfg(tmp_path)
+    cfg.session_sources = [
+        {"type": "opencode", "cost_rate_usd_per_mtok": "pas-un-nombre"},
+        {"type": "codex", "cost_rate_usd_per_mtok": None},
+        "pas-un-dict",
+    ]
+    assert _harness_cost_rates(cfg) == dict(HARNESS_COST_RATES_USD_PER_MTOK)
+
+
+# --------------------------------------------------------------- estimate_costs
+
+
+def _usage_with(steps, session_id="ses_1", harness="") -> SessionUsage:
+    return SessionUsage(session_id=session_id, steps=steps, harness=harness)
+
+
+def test_estimate_costs_empty_input_is_an_empty_mapping():
+    assert estimate_costs([]) == {}
+    assert estimate_costs([], rates={"opencode": 9.0}) == {}
+
+
+def test_estimate_costs_prices_only_priceless_sessions_with_tokens():
+    usages = [
+        _usage_with([_step("m", None, tokens=1_000_000.0)], "ses_a", "opencode"),
+        _usage_with([_step("m", 1.0, tokens=1_000_000.0)], "ses_b", "opencode"),
+        _usage_with([_step("m", None, tokens=0.0)], "ses_c", "opencode"),
+        _usage_with([], "ses_d", "opencode"),
+    ]
+    assert estimate_costs(usages, rates={"opencode": 9.0}) == {"ses_a": 9.0}
+
+
+def test_estimate_costs_falls_back_to_the_default_rate_for_an_unknown_harness():
+    assert DEFAULT_HARNESS_COST_RATE_USD_PER_MTOK == 5.0  # taux documenté
+    usages = [_usage_with([_step("m", None, tokens=1_000_000.0)], "ses_a", "inconnu")]
+    assert estimate_costs(usages, rates={"opencode": 9.0}) == {
+        "ses_a": DEFAULT_HARNESS_COST_RATE_USD_PER_MTOK
+    }
+
+
+def test_estimate_costs_honours_an_explicit_default_rate():
+    usages = [_usage_with([_step("m", None, tokens=1_000_000.0)], "ses_a", "x")]
+    assert estimate_costs(usages, rates={}, default_rate=3.0) == {"ses_a": 3.0}
+
+
+def test_estimate_costs_derives_the_harness_from_the_canonical_session_id():
+    usages = [_usage_with([_step("m", None, tokens=1_000_000.0)], "codex:ses_a", "")]
+    # la clé du résultat reste l'id canonique complet ; seul le harnais est dérivé
+    assert estimate_costs(usages, rates={"codex": 1.0}) == {"codex:ses_a": 1.0}
+
+
+def test_estimate_costs_uses_the_documented_defaults_without_rates():
+    assert estimate_costs(
+        [_usage_with([_step("m", None, tokens=1_000_000.0)], "opencode:ses_a", "")]
+    ) == {"opencode:ses_a": HARNESS_COST_RATES_USD_PER_MTOK["opencode"]}
+
+
+# --------------------------------------------------------------- build_usage
+
+
+def test_build_usage_windows_every_read_on_the_period(tmp_path: Path):
+    period = _period()
+    adapter = _ReadsAdapter()
+    usage, failed = build_usage(
+        _Meta(),
+        adapter,
+        period=period,
+        run_time=RUN_TIME,
+        cfg=_char_cfg(tmp_path),
+        warnings=[],
+    )
+    assert failed is False
+    assert usage is not None
+    assert adapter.windows == [
+        ("ses_1", int(period.start.timestamp() * 1000), int(period.end.timestamp() * 1000))
+    ]
+    assert adapter.windows[0][1] < adapter.windows[0][2]  # fenêtre non inversée
+
+
+def test_build_usage_maps_every_read_into_the_usage(tmp_path: Path):
+    audit: list[dict] = []
+    usage, failed = build_usage(
+        _Meta(title="Mon titre"),
+        _ReadsAdapter(),
+        period=_period(),
+        run_time=RUN_TIME,
+        cfg=_char_cfg(tmp_path),
+        warnings=[],
+        audit=audit,
+    )
+    assert failed is False
+    assert usage is not None
+    assert usage.session_id == "ses_1"
+    assert usage.title == "Mon titre"
+    assert usage.agent_type == "build"
+    assert usage.tool_calls == {"edit": 2}
+    assert usage.tool_arg_chars == {"edit": 40}
+    assert usage.skills_loaded == {"ma-skill": 1}
+    assert usage.tool_arg_fingerprints == {"edit": {"fp": 1}}
+    assert usage.tool_result_fingerprints == {"edit": {"fp2": 1}}
+    assert usage.user_turns == ["fais ça"]
+    assert usage.context_chars == {"m": 120}
+    assert usage.first_user_text == "fais ça"
+    assert usage.reported_cost_usd_lifetime == 0.5
+    assert usage.harness == "opencode"  # repris de l'adapter quand la meta n'en porte pas
+    assert [r["status"] for r in audit] == ["included"]
+
+
+def test_build_usage_first_user_text_is_truncated_at_80(tmp_path: Path):
+    class _LongTurns(_ReadsAdapter):
+        def session_user_turns(self, session_id, start_ms, end_ms):
+            return ["   ", "b" * 200]
+
+    usage, failed = build_usage(
+        _Meta(),
+        _LongTurns(),
+        period=_period(),
+        run_time=RUN_TIME,
+        cfg=_char_cfg(tmp_path),
+        warnings=[],
+    )
+    assert failed is False
+    assert usage is not None
+    assert usage.first_user_text == "b" * 79 + "…"  # le premier tour non vide gagne
+
+
+def test_build_usage_active_session_is_excluded_before_any_read(tmp_path: Path):
+    adapter = _ReadsAdapter()
+    warnings: list[WarningEntry] = []
+    usage, failed = build_usage(
+        _Meta(time_updated=RUN_TIME - timedelta(minutes=1)),
+        adapter,
+        period=_period(),
+        run_time=RUN_TIME,
+        cfg=_char_cfg(tmp_path),
+        warnings=warnings,
+    )
+    assert (usage, failed) == (None, False)  # exclusion, pas un telemetry gap
+    assert adapter.windows == []
+    assert [w.message for w in warnings] == [
+        "session active exclue des totaux (télémétrie incomplète)"
+    ]
+
+
+def test_build_usage_advisor_session_is_excluded_silently(tmp_path: Path):
+    cfg = _char_cfg(tmp_path)
+    adapter = _ReadsAdapter()
+    warnings: list[WarningEntry] = []
+    audit: list[dict] = []
+    usage, failed = build_usage(
+        _Meta(title=cfg.advisor_run_title),
+        adapter,
+        period=_period(),
+        run_time=RUN_TIME,
+        cfg=cfg,
+        warnings=warnings,
+        audit=audit,
+    )
+    assert (usage, failed) == (None, False)
+    assert adapter.windows == []
+    assert warnings == []
+    assert [r["status"] for r in audit] == ["advisor"]
+
+
+def test_build_usage_read_failure_is_reported_as_failed_and_partial(tmp_path: Path):
+    warnings: list[WarningEntry] = []
+    audit: list[dict] = []
+    usage, failed = build_usage(
+        _Meta(),
+        _ReadsAdapter(fail="boom"),
+        period=_period(),
+        run_time=RUN_TIME,
+        cfg=_char_cfg(tmp_path),
+        warnings=warnings,
+        audit=audit,
+    )
+    assert (usage, failed) == (None, True)
+    assert [w.partial for w in warnings] == [True]
+    assert [r["status"] for r in audit] == ["error"]
+
+
+def test_build_usage_empty_window_returns_none_not_failed(tmp_path: Path):
+    class _NoSteps(_ReadsAdapter):
+        def session_steps(self, session_id, start_ms, end_ms):
+            return []
+
+    audit: list[dict] = []
+    usage, failed = build_usage(
+        _Meta(),
+        _NoSteps(),
+        period=_period(),
+        run_time=RUN_TIME,
+        cfg=_char_cfg(tmp_path),
+        warnings=[],
+        audit=audit,
+    )
+    assert (usage, failed) == (None, False)
+    assert [r["status"] for r in audit] == ["no-activity"]
+
+
+def test_build_usage_without_audit_still_builds_the_usage(tmp_path: Path):
+    usage, failed = build_usage(
+        _Meta(),
+        _ReadsAdapter(),
+        period=_period(),
+        run_time=RUN_TIME,
+        cfg=_char_cfg(tmp_path),
+        warnings=[],
+    )
+    assert failed is False
+    assert usage is not None
+    assert usage.session_id == "ses_1"
+
+
+def test_build_usage_reports_no_lifetime_cost_without_aggregates(tmp_path: Path):
+    class _NoAggregates(_ReadsAdapter):
+        def session_aggregates(self, session_id):
+            return None
+
+    usage, failed = build_usage(
+        _Meta(),
+        _NoAggregates(),
+        period=_period(),
+        run_time=RUN_TIME,
+        cfg=_char_cfg(tmp_path),
+        warnings=[],
+    )
+    assert failed is False
+    assert usage is not None
+    assert usage.reported_cost_usd_lifetime is None
+
+
+def test_build_usage_emits_missing_pricing_for_the_session(tmp_path: Path):
+    class _Unpriced(_ReadsAdapter):
+        def session_steps(self, session_id, start_ms, end_ms):
+            return [_step("gpt-x", None)]
+
+        def session_aggregates(self, session_id):
+            return None  # pas de référence lifetime → aucun cross-check
+
+    warnings: list[WarningEntry] = []
+    usage, failed = build_usage(
+        _Meta(),
+        _Unpriced(),
+        period=_period(),
+        run_time=RUN_TIME,
+        cfg=_char_cfg(tmp_path),
+        warnings=warnings,
+    )
+    assert failed is False
+    assert usage is not None
+    assert [w.message for w in warnings] == ["missing-pricing:gpt-x"]

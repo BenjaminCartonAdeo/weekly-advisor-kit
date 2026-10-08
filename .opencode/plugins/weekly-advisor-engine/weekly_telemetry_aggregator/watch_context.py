@@ -9,422 +9,72 @@ global skills, telemetry, or a network service.
 The public builder returns ordinary JSON-compatible dictionaries so the module
 can be used by the CLI and by the LLM-facing report stages without introducing
 another persistence format or a cross-run state file.
+
+The worktree inventory itself (plugins, skills, commands, agents and the
+identity normalisers) lives in :mod:`watch_inventory`; the names it used to
+export are re-exported here for backwards compatibility.  What stays here is
+the evidence side: matching an ecosystem item against the inventory, scoping
+the market matches, and the residual band, which needs the distill scorer.
 """
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import unquote, urlsplit
 
-from .util import casefold, iso, load_jsonc, parse_iso_ts, relative_path
+from .identities import normalize_npm_package
+from .util import casefold, iso, load_jsonc, parse_iso_ts
+from .watch_distill import DEFAULT_WEIGHTS, score_item, truncate_summary
+from .watch_inventory import (
+    HINTS_CAP,
+    EnvironmentInventory,
+    FileRecord,
+    PluginRecord,
+    _environment_items,
+    _repo_slug,
+    build_local_inventory,
+    hints_for,
+    inventory_environment,
+    normalize_repo_url,
+)
 from .watch_memory import normalize_id
 
 ExistingState = Literal["absent", "declared", "observed", "unknown"]
 EXISTING_STATES = frozenset(("absent", "declared", "observed", "unknown"))
-PluginSource = Literal["config", "local_file"]
 
 SCHEMA_VERSION = 1
-_CONFIG_NAMES = ("opencode.json", "opencode.jsonc")
-_PLUGIN_FILE_SUFFIXES = {".cjs", ".cts", ".js", ".mjs", ".mts", ".ts", ".tsx"}
-_NPM_PACKAGE_RE = re.compile(
-    r"^(?:@[a-z0-9._~-]+/)?[a-z0-9._~-]+$",
-    re.IGNORECASE,
-)
 
 #: Schéma du fichier ``watch-candidates-enriched-<date>.json`` (T6).
 ENRICHED_SCHEMA_VERSION = 1
 #: Plafond d'entrées dans la bande résiduelle sous cutoff (T6).
 RESIDUAL_CAP = 50
-#: Plafond de noms locaux pertinents par fiche (T6).
-HINTS_CAP = 5
 #: Longueur maximale d'une description compacte (fiche/résiduel, T6).
 ENRICHED_DESCRIPTION_MAX_CHARS = 200
-_TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+")
 
-
-@dataclass(frozen=True, slots=True)
-class PluginRecord:
-    """One declared or locally observed project plugin."""
-
-    name: str
-    source: PluginSource
-    path: str
-    raw: str | None = None
-    npm_package: str | None = None
-    repo_url: str | None = None
-    identities: tuple[str, ...] = ()
-    declared: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class FileRecord:
-    """One project-local skill, command, or agent identity."""
-
-    name: str
-    path: str
-    identities: tuple[str, ...] = ()
-
-
-@dataclass(slots=True)
-class EnvironmentInventory:
-    """Inventory collected exclusively from a project worktree."""
-
-    plugins: list[PluginRecord] = field(default_factory=list)
-    skills: list[FileRecord] = field(default_factory=list)
-    commands: list[FileRecord] = field(default_factory=list)
-    agents: list[FileRecord] = field(default_factory=list)
-    config_files: list[str] = field(default_factory=list)
-    config_available: bool = False
-    config_valid: bool = False
-    directories: dict[str, bool] = field(default_factory=dict)
-    warnings: list[str] = field(default_factory=list)
-
-
-def normalize_npm_package(value: str | None) -> str | None:
-    """Return a normalized package identity without its version/specifier.
-
-    ``@scope/name@latest`` and ``@scope/name@1.2.3`` therefore both normalize
-    to ``@scope/name``.  Git, file, and URL specifications do not themselves
-    identify an npm package and return ``None``.  Package names are compared
-    case-insensitively because npm package identities are effectively
-    lower-case, while the returned value remains a normal package identity.
-    """
-
-    if not isinstance(value, str):
-        return None
-    text = value.strip()
-    if text.lower().startswith("npm:"):
-        text = text[4:].strip()
-    if not text or text.startswith((".", "/", "~", "git+", "git:", "ssh:")):
-        return None
-    if text.lower().startswith(
-        ("http://", "https://", "ssh://", "git://", "github:", "gitlab:", "bitbucket:")
-    ):
-        return None
-
-    if text.startswith("@"):
-        slash = text.find("/")
-        if slash <= 1:
-            return None
-        separator = text.find("@", slash + 1)
-    else:
-        separator = text.find("@")
-    identity = text if separator < 0 else text[:separator]
-    identity = identity.strip()
-    if not _NPM_PACKAGE_RE.fullmatch(identity):
-        return None
-    return identity.casefold()
-
-
-def _package_spec_parts(value: str) -> tuple[str, str | None]:
-    """Split a package spec into its package portion and optional suffix."""
-
-    text = value.strip()
-    if text.lower().startswith("npm:"):
-        text = text[4:].strip()
-    if text.startswith("@"):
-        slash = text.find("/")
-        separator = text.find("@", slash + 1) if slash >= 0 else -1
-    else:
-        separator = text.find("@")
-    if separator < 0:
-        return text, None
-    return text[:separator], text[separator + 1 :].strip() or None
-
-
-def normalize_repo_url(value: str | None) -> str | None:
-    """Canonicalize a repository URL for deterministic exact matching.
-
-    The canonical form uses HTTPS, lower-cases the host (and GitHub path),
-    removes ``git+``/SSH transport decoration, query/fragment data, trailing
-    slashes, and a terminal ``.git`` suffix.  No URL is fetched or validated
-    against a remote service.
-    """
-
-    if not isinstance(value, str):
-        return None
-    text = value.strip()
-    if not text:
-        return None
-    if text.lower().startswith("git+"):
-        text = text[4:]
-
-    try:
-        parts = urlsplit(text)
-    except ValueError:
-        return None
-    if parts.scheme.lower() not in {"http", "https", "git", "ssh"} or not parts.hostname:
-        return None
-    host = parts.hostname.casefold()
-    path = unquote(parts.path or "")
-    path = "/" + "/".join(part for part in path.split("/") if part)
-    if path == "/":
-        return None
-    path = path.rstrip("/")
-    if path.lower().endswith(".git"):
-        path = path[:-4].rstrip("/")
-    if not path or path == "/":
-        return None
-    if host == "github.com":
-        path = path.casefold()
-    return f"https://{host}{path}"
-
-
-def _repo_slug(repo_url: str | None) -> str | None:
-    if not repo_url:
-        return None
-    slug = repo_url.rsplit("/", 1)[-1].strip()
-    return slug or None
-
-
-def _unique_identities(values: Sequence[str | None]) -> tuple[str, ...]:
-    identities: set[str] = set()
-    for value in values:
-        if isinstance(value, str) and value.strip():
-            identities.add(value.strip())
-    return tuple(sorted(identities, key=str.casefold))
-
-
-def parse_plugin_spec(value: str, *, path: str) -> PluginRecord:
-    """Parse one project ``plugin`` declaration into normalized identities."""
-
-    raw = value.strip()
-    npm_package = normalize_npm_package(raw)
-    _package, suffix = _package_spec_parts(raw) if npm_package else (raw, None)
-    if suffix:
-        repo_url = normalize_repo_url(suffix)
-    elif npm_package:
-        repo_url = None
-    else:
-        repo_url = normalize_repo_url(raw)
-
-    local_name: str | None = None
-    if raw.lower().startswith("file:"):
-        local_name = Path(raw[5:].split("#", 1)[0]).stem
-    elif raw.startswith((".", "/", "~")):
-        local_name = Path(raw.split("#", 1)[0]).stem
-
-    name = npm_package or _repo_slug(repo_url) or local_name or raw
-    identities = _unique_identities(
-        (
-            name,
-            npm_package,
-            repo_url,
-            _repo_slug(repo_url),
-            local_name,
-        )
-    )
-    return PluginRecord(
-        name=name,
-        source="config",
-        path=path,
-        raw=raw,
-        npm_package=npm_package,
-        repo_url=repo_url,
-        identities=identities,
-        declared=True,
-    )
-
-
-def _record_to_dict(record: PluginRecord | FileRecord) -> dict[str, Any]:
-    data = asdict(record)
-    if isinstance(record, PluginRecord | FileRecord):
-        data["identities"] = list(record.identities)
-    return data
-
-
-def _read_plugin_config(
-    project_root: Path,
-) -> tuple[list[PluginRecord], list[str], bool, bool, list[str]]:
-    records: list[PluginRecord] = []
-    config_files: list[str] = []
-    warnings: list[str] = []
-    available = False
-    valid = False
-    opencode_dir = project_root / ".opencode"
-    for name in _CONFIG_NAMES:
-        path = opencode_dir / name
-        try:
-            exists = path.is_file()
-        except OSError as exc:
-            warnings.append(f"cannot inspect {relative_path(path, project_root)}: {exc}")
-            continue
-        if not exists:
-            continue
-        available = True
-        config_files.append(relative_path(path, project_root))
-        payload = load_jsonc(path)
-        if payload is None:
-            warnings.append(f"invalid {relative_path(path, project_root)}: JSON illisible")
-            continue
-        if not isinstance(payload, Mapping):
-            warnings.append(f"invalid {relative_path(path, project_root)}: root must be an object")
-            continue
-        valid = True
-        declarations = payload.get("plugin", [])
-        if isinstance(declarations, str):
-            declarations = [declarations]
-        if not isinstance(declarations, Sequence) or isinstance(declarations, (bytes, bytearray)):
-            valid = False
-            warnings.append(
-                f"invalid {relative_path(path, project_root)}: plugin must be an array of strings"
-            )
-            continue
-        for declaration in declarations:
-            if isinstance(declaration, str) and declaration.strip():
-                records.append(
-                    parse_plugin_spec(declaration, path=relative_path(path, project_root))
-                )
-            else:
-                warnings.append(
-                    f"ignored non-string plugin declaration in {relative_path(path, project_root)}"
-                )
-    if not available:
-        warnings.append("plugin config not found under .opencode/ (opencode.json/opencode.jsonc)")
-    return records, sorted(config_files), available, valid, warnings
-
-
-def _local_plugin_records(project_root: Path) -> tuple[list[PluginRecord], list[str], bool]:
-    directory = project_root / ".opencode" / "plugins"
-    warnings: list[str] = []
-    try:
-        directory_exists = directory.is_dir()
-    except OSError as exc:
-        return [], [f"cannot inspect .opencode/plugins: {exc}"], False
-    if not directory_exists:
-        return [], [], False
-    try:
-        paths = sorted(path for path in directory.rglob("*") if path.is_file())
-    except OSError as exc:
-        return [], [f"cannot scan .opencode/plugins: {exc}"], True
-
-    records: list[PluginRecord] = []
-    for path in paths:
-        # Direct files are accepted even without an extension (a useful escape
-        # hatch for executable plugin shims); nested package directories are
-        # restricted to JS/TS plugin extensions so the Python engine package
-        # itself is not mistaken for dozens of plugins.
-        direct_file = path.parent == directory
-        if not direct_file and path.suffix.casefold() not in _PLUGIN_FILE_SUFFIXES:
-            continue
-        if path.name.startswith("."):
-            continue
-        basename = path.name
-        parent_name = path.parent.name if path.parent != directory else None
-        file_stem = path.stem or basename
-        name = parent_name or file_stem
-        identities = _unique_identities((name, file_stem, basename, parent_name))
-        records.append(
-            PluginRecord(
-                name=name,
-                source="local_file",
-                path=relative_path(path, project_root),
-                identities=identities,
-                declared=False,
-            )
-        )
-    return records, warnings, True
-
-
-def _markdown_records(
-    project_root: Path,
-    relative_directory: str,
-    *,
-    skill: bool = False,
-    parent_identity: bool = False,
-) -> tuple[list[FileRecord], bool, list[str]]:
-    directory = project_root / relative_directory
-    warnings: list[str] = []
-    try:
-        directory_exists = directory.is_dir()
-    except OSError as exc:
-        return [], False, [f"cannot inspect {relative_directory}: {exc}"]
-    if not directory_exists:
-        return [], False, []
-    try:
-        paths = sorted(path for path in directory.rglob("*.md") if path.is_file())
-    except OSError as exc:
-        return [], True, [f"cannot scan {relative_directory}: {exc}"]
-
-    records: list[FileRecord] = []
-    for path in paths:
-        if skill and path.name != "SKILL.md":
-            continue
-        stem = path.stem
-        parent_name = path.parent.name if path.parent != directory else None
-        name = parent_name if (skill or parent_identity) and parent_name else stem
-        identities = _unique_identities((name,) if skill else (name, stem, path.name, parent_name))
-        records.append(
-            FileRecord(name=name, path=relative_path(path, project_root), identities=identities)
-        )
-    return records, True, warnings
-
-
-def inventory_environment(project_root: Path) -> EnvironmentInventory:
-    """Inventory project plugins, skills, commands, and agents.
-
-    Only ``project_root/.opencode`` is inspected.  Missing files and malformed
-    JSONC are represented as warnings and do not make the deterministic
-    inventory crash.
-    """
-
-    root = Path(project_root)
-    warnings: list[str] = []
-    try:
-        root_exists = root.is_dir()
-    except OSError as exc:
-        root_exists = False
-        warnings.append(f"cannot inspect project_root: {exc}")
-    if not root_exists:
-        warnings.append(f"project_root does not exist: {root}")
-
-    declared, config_files, config_available, config_valid, config_warnings = _read_plugin_config(
-        root
-    )
-    local_plugins, local_warnings, plugins_dir_exists = _local_plugin_records(root)
-    skills, skills_dir_exists, skill_warnings = _markdown_records(
-        root, ".opencode/skills", skill=True
-    )
-    commands, commands_dir_exists, command_warnings = _markdown_records(root, ".opencode/commands")
-    agents, agents_dir_exists, agent_warnings = _markdown_records(
-        root, ".opencode/agents", parent_identity=True
-    )
-    warnings.extend(config_warnings)
-    warnings.extend(local_warnings)
-    warnings.extend(skill_warnings)
-    warnings.extend(command_warnings)
-    warnings.extend(agent_warnings)
-
-    plugins = sorted(
-        [*declared, *local_plugins],
-        key=lambda record: (
-            0 if record.declared else 1,
-            record.name.casefold(),
-            record.path.casefold(),
-            record.raw or "",
-        ),
-    )
-    return EnvironmentInventory(
-        plugins=plugins,
-        skills=skills,
-        commands=commands,
-        agents=agents,
-        config_files=config_files,
-        config_available=config_available,
-        config_valid=config_valid,
-        directories={
-            "plugins": plugins_dir_exists,
-            "skills": skills_dir_exists,
-            "commands": commands_dir_exists,
-            "agents": agents_dir_exists,
-        },
-        warnings=warnings,
-    )
+#: Surface publique. Les réexports ``watch_inventory`` sont listés pour que les
+#: importateurs historiques continuent de résoudre ces noms ici.
+__all__ = [
+    "EXISTING_STATES",
+    "ENRICHED_DESCRIPTION_MAX_CHARS",
+    "ENRICHED_SCHEMA_VERSION",
+    "HINTS_CAP",
+    "RESIDUAL_CAP",
+    "SCHEMA_VERSION",
+    "EnvironmentInventory",
+    "ExistingState",
+    "FileRecord",
+    "PluginRecord",
+    "build_local_inventory",
+    "build_watch_context",
+    "enrich_candidates",
+    "hints_for",
+    "inventory_environment",
+    "load_ecosystem_report",
+    "normalize_npm_package",
+    "normalize_repo_url",
+]
 
 
 def _json_safe(value: Any) -> Any:
@@ -435,15 +85,6 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, list | tuple):
         return [_json_safe(inner) for inner in value]
     return value
-
-
-def _environment_items(inventory: EnvironmentInventory) -> dict[str, list[dict[str, Any]]]:
-    return {
-        "plugins": [_record_to_dict(record) for record in inventory.plugins],
-        "skills": [_record_to_dict(record) for record in inventory.skills],
-        "commands": [_record_to_dict(record) for record in inventory.commands],
-        "agents": [_record_to_dict(record) for record in inventory.agents],
-    }
 
 
 def _market_identifiers(item: Mapping[str, Any]) -> tuple[str | None, str | None, set[str]]:
@@ -678,108 +319,6 @@ def _ecosystem_items(ecosystem: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return []
 
 
-# ------------------------------------------- T6 : inventaire local + crosswalk
-
-
-def _markdown_description(path: Path) -> str:
-    """Description d'un markdown local : frontmatter ``description:`` sinon
-    première ligne utile (titres ``#`` décapités) ; ``""`` si illisible."""
-
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError):
-        return ""
-    body = lines
-    if lines and lines[0].strip() == "---":
-        body = lines[1:]
-        for index, line in enumerate(lines[1:], start=1):
-            stripped = line.strip()
-            if stripped == "---":
-                body = lines[index + 1 :]
-                break
-            if stripped.startswith("description:"):
-                value = stripped[len("description:") :].strip().strip("\"'")
-                if value:
-                    return value
-    for line in body:
-        text = line.strip()
-        if text:
-            return text.lstrip("#").strip()
-    return ""
-
-
-def build_local_inventory(project_root: Path) -> dict[str, Any]:
-    """Inventaire structuré des capacités locales du projet (zéro LLM/réseau).
-
-    Agrège sous ``project_root/.opencode`` les skills (SKILL.md), commands,
-    agents et plugins (locaux + déclarés) en entrées compactes
-    ``{name, kind, path, description}``. Réutilise les scanners déterministes
-    existants ; toute anomalie de lecture devient un warning, jamais un crash.
-    """
-
-    root = Path(project_root)
-    skills, _, skill_warnings = _markdown_records(root, ".opencode/skills", skill=True)
-    commands, _, command_warnings = _markdown_records(root, ".opencode/commands")
-    agents, _, agent_warnings = _markdown_records(root, ".opencode/agents", parent_identity=True)
-    local_plugins, plugin_warnings, _ = _local_plugin_records(root)
-    declared_plugins, _, _, _, config_warnings = _read_plugin_config(root)
-
-    items: list[dict[str, Any]] = []
-    for records, kind in ((skills, "skill"), (commands, "command"), (agents, "agent")):
-        for record in records:
-            items.append(
-                {
-                    "name": record.name,
-                    "kind": kind,
-                    "path": record.path,
-                    "description": _markdown_description(root / record.path),
-                }
-            )
-    # Plugin : aucune description locale fiable (spec brute ou fichier vide).
-    for record in [*local_plugins, *declared_plugins]:
-        items.append(
-            {"name": record.name, "kind": "plugin", "path": record.path, "description": ""}
-        )
-    items.sort(key=lambda item: (item["kind"], casefold(item["name"]), item["path"]))
-    warnings = [
-        *skill_warnings,
-        *command_warnings,
-        *agent_warnings,
-        *plugin_warnings,
-        *config_warnings,
-    ]
-    return {"items": items, "warnings": sorted(set(warnings))}
-
-
-def _tokens(text: object) -> frozenset[str]:
-    """Jetons normalisés d'un texte : minuscules, split non-alphanum, ≥3 chars."""
-
-    return frozenset(
-        token for token in _TOKEN_SPLIT_RE.split(str(text or "").casefold()) if len(token) >= 3
-    )
-
-
-def hints_for(fiche: Mapping[str, Any], inventory_items: Sequence[Mapping[str, Any]]) -> list[str]:
-    """Noms locaux pertinents pour une fiche, par intersection de jetons (cap 5).
-
-    Jetons de ``name+summary`` (côté fiche) croisés avec ceux de la seule
-    ``description`` locale ; un seul jeton commun suffit. Déterministe : ordre
-    de l'inventaire, noms dédoublonnés.
-    """
-
-    fiche_tokens = _tokens(f"{fiche.get('name') or ''} {fiche.get('summary') or ''}")
-    if not fiche_tokens:
-        return []
-    hints: list[str] = []
-    for item in inventory_items:
-        name = str(item.get("name") or "")
-        if not name or name in hints or len(hints) >= HINTS_CAP:
-            continue
-        if fiche_tokens & _tokens(item.get("description")):
-            hints.append(name)
-    return hints
-
-
 def _validate_candidates(payload: object) -> str | None:
     """Contrat minimal d'un snapshot watch-candidates ; message d'erreur sinon."""
 
@@ -843,14 +382,14 @@ def _residual_entries(
 ) -> list[dict[str, Any]]:
     """Bande sous cutoff : entrées compactes scorées, triées, plafonnées à 50.
 
-    Réutilise le scoring du distill (import tardif : évite le cycle
-    watch_distill → watch_context) avec les poids par défaut ; tri
+    Réutilise le scoring du distill avec les poids par défaut ; tri
     ``(-score, id)`` pour un plafonnage reproductible. Les ids exclus
     (candidats retenus + bloqués sécurité) n'y figurent jamais.
+
+    L'import est au niveau module : le cycle qui le motivait (``watch_distill``
+    → ``watch_context`` pour l'identité npm) est rompu, l'identité vit désormais
+    dans ``identities``.
     """
-
-    from .watch_distill import DEFAULT_WEIGHTS, score_item, truncate_summary
-
     keywords = tuple(extra_keywords)
     rows: list[tuple[float, str, dict[str, Any]]] = []
     for item in _ecosystem_items(ecosystem):
@@ -880,75 +419,68 @@ def _residual_entries(
     return [row[2] for row in rows[:RESIDUAL_CAP]]
 
 
-def build_watch_context(
-    project_root: Path,
-    ecosystem: Mapping[str, Any],
-    *,
-    generated_at: datetime | str | None = None,
-    ecosystem_path: Path | None = None,
-    candidates_path: Path | None = None,
-    extra_keywords: Sequence[str] = (),
-    harness_scope: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build a deterministic watch context from one ecosystem report.
+def _resolve_run_time(generated_at: datetime | str | None) -> tuple[datetime, str]:
+    """Normalise l'ancre du run en ``(run_time UTC, generated ISO)``.
 
-    ``ecosystem`` is treated as an input snapshot.  The function does not
-    fetch, mutate, deduplicate across runs, or write lifecycle state.  The
-    caller controls the timestamp so repeated runs with the same anchor and
-    worktree produce stable context content apart from filesystem changes.
-
-    Crosswalk candidats (T6) : si ``candidates_path`` pointe un snapshot
-    ``watch-candidates-<date>.json`` valide (mode ``distill``), les
-    ``market_matches`` sont restreints aux fiches retenues ET aux items
-    résiduels sous cutoff (plafonnés, hors annexe sécurité) afin que leurs
-    findings passent la validation 3.6. Snapshot absent → comportement legacy
-    inchangé ; corrompu/invalide → legacy + warning.
+    ``None`` et une chaîne illisible retombent sur l'heure courante plutôt que
+    de lever : l'appelant veut un contexte, pas une erreur d'ancre. Un datetime
+    naïf est interprété comme déjà expressed en UTC.
     """
 
-    inventory = inventory_environment(Path(project_root))
-    candidates, candidates_error = _load_valid_candidates(candidates_path)
-    if candidates_error is not None:
-        inventory.warnings.append(candidates_error)
     if generated_at is None:
         run_time = datetime.now(UTC)
-        generated = iso(run_time)
     elif isinstance(generated_at, datetime):
         run_time = (
             generated_at.astimezone(UTC)
             if generated_at.tzinfo
             else generated_at.replace(tzinfo=UTC)
         )
-        generated = iso(run_time)
     else:
         parsed = parse_iso_ts(str(generated_at))
         run_time = parsed.astimezone(UTC) if parsed is not None else datetime.now(UTC)
-        generated = iso(run_time)
-    environment = _environment_items(inventory)
-    eco_items = _ecosystem_items(ecosystem)
-    if candidates is not None:
-        # Scope appliqué dès que le snapshot est valide, même si aucune fiche
-        # n'est retenue : les bloqués sécurité doivent être exclus des deux
-        # artefacts (contexte ET enrichi), jamais seulement de l'un.
-        kept_ids, blocked_ids = _candidate_ids(candidates)
-        residual = _residual_entries(
-            ecosystem,
-            exclude_ids=kept_ids | blocked_ids,
-            now=run_time,
-            extra_keywords=extra_keywords,
-        )
-        scope_ids = kept_ids | {row["id"] for row in residual}
-        eco_items = [item for item in eco_items if _item_identity(item) in scope_ids]
-    market_matches = [_match_market_item(item, inventory) for item in eco_items]
-    market_matches.sort(
-        key=lambda item: (
-            str(item.get("name") or "").casefold(),
-            str(item.get("npm_package") or "").casefold(),
-            str(item.get("repo_url") or "").casefold(),
-        )
+    return run_time, iso(run_time)
+
+
+def _match_residuals(
+    ecosystem: Mapping[str, Any],
+    eco_items: Sequence[Mapping[str, Any]],
+    candidates: Mapping[str, Any] | None,
+    run_time: datetime,
+    extra_keywords: Sequence[str],
+) -> list[Mapping[str, Any]]:
+    """Restreint les items écosystème au scope candidats + bande résiduelle.
+
+    Sans snapshot valide (``candidates is None``) la liste est renvoyée telle
+    quelle : c'est le comportement legacy. Le scope s'applique dès que le
+    snapshot est valide, même si aucune fiche n'est retenue : les bloqués
+    sécurité doivent être exclus des deux artefacts (contexte ET enrichi), jamais
+    seulement de l'un.
+    """
+
+    if candidates is None:
+        return list(eco_items)
+    kept_ids, blocked_ids = _candidate_ids(candidates)
+    residual = _residual_entries(
+        ecosystem,
+        exclude_ids=kept_ids | blocked_ids,
+        now=run_time,
+        extra_keywords=extra_keywords,
     )
-    counts = {name: len(items) for name, items in environment.items()}
-    counts["declared_plugins"] = sum(1 for record in inventory.plugins if record.declared)
-    counts["local_plugins"] = sum(1 for record in inventory.plugins if not record.declared)
+    scope_ids = kept_ids | {row["id"] for row in residual}
+    return [item for item in eco_items if _item_identity(item) in scope_ids]
+
+
+def _architecture_section(
+    inventory: EnvironmentInventory,
+    environment: Mapping[str, list[dict[str, Any]]],
+    counts: dict[str, int],
+    market_matches: list[dict[str, Any]],
+    *,
+    run_time: datetime,
+    generated: str,
+    harness_scope: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Assemble the deterministic context payload, architecture projection included."""
 
     context: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -977,10 +509,84 @@ def build_watch_context(
     context["architecture_observations"] = _architecture_observations(
         inventory, market_matches, harness_scope
     )
+    return context
+
+
+def _attach_ecosystem_provenance(
+    context: dict[str, Any], ecosystem: Mapping[str, Any], ecosystem_path: Path | None
+) -> None:
+    """Rattache les deux clés de provenance, seulement quand la source existe."""
+
     if ecosystem_path is not None:
         context["ecosystem_file"] = ecosystem_path.name
     if isinstance(ecosystem.get("generated_at"), str):
         context["ecosystem_generated_at"] = ecosystem["generated_at"]
+
+
+def build_watch_context(
+    project_root: Path,
+    ecosystem: Mapping[str, Any],
+    *,
+    generated_at: datetime | str | None = None,
+    ecosystem_path: Path | None = None,
+    candidates_path: Path | None = None,
+    extra_keywords: Sequence[str] = (),
+    harness_scope: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a deterministic watch context from one ecosystem report.
+
+    ``ecosystem`` is treated as an input snapshot.  The function does not
+    fetch, mutate, deduplicate across runs, or write lifecycle state.  The
+    caller controls the timestamp so repeated runs with the same anchor and
+    worktree produce stable context content apart from filesystem changes.
+
+    Crosswalk candidats (T6) : si ``candidates_path`` pointe un snapshot
+    ``watch-candidates-<date>.json`` valide (mode ``distill``), les
+    ``market_matches`` sont restreints aux fiches retenues ET aux items
+    résiduels sous cutoff (plafonnés, hors annexe sécurité) afin que leurs
+    findings passent la validation 3.6. Snapshot absent → comportement legacy
+    inchangé ; corrompu/invalide → legacy + warning.
+
+    Les étapes sont déléguées à des helpers (_resolve_run_time,
+    _match_residuals, _architecture_section, _attach_ecosystem_provenance) ;
+    l'ordre des opérations est inchangé.
+    """
+
+    inventory = inventory_environment(Path(project_root))
+    candidates, candidates_error = _load_valid_candidates(candidates_path)
+    if candidates_error is not None:
+        inventory.warnings.append(candidates_error)
+    run_time, generated = _resolve_run_time(generated_at)
+    environment = _environment_items(inventory)
+    eco_items = _match_residuals(
+        ecosystem,
+        _ecosystem_items(ecosystem),
+        candidates,
+        run_time,
+        extra_keywords,
+    )
+    market_matches = [_match_market_item(item, inventory) for item in eco_items]
+    market_matches.sort(
+        key=lambda item: (
+            str(item.get("name") or "").casefold(),
+            str(item.get("npm_package") or "").casefold(),
+            str(item.get("repo_url") or "").casefold(),
+        )
+    )
+    counts = {name: len(items) for name, items in environment.items()}
+    counts["declared_plugins"] = sum(1 for record in inventory.plugins if record.declared)
+    counts["local_plugins"] = sum(1 for record in inventory.plugins if not record.declared)
+
+    context = _architecture_section(
+        inventory,
+        environment,
+        counts,
+        market_matches,
+        run_time=run_time,
+        generated=generated,
+        harness_scope=harness_scope,
+    )
+    _attach_ecosystem_provenance(context, ecosystem, ecosystem_path)
     return context
 
 

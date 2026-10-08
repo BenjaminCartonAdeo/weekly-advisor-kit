@@ -8,7 +8,7 @@ license = { text = "MIT" }
 dependencies = ["jinja2>=3.1"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0.0", "ruff>=0.1.0"]
+dev = ["pytest>=8.0.0", "pytest-cov>=5.0.0", "ruff>=0.1.0"]
 
 [project.scripts]
 weekly-telemetry-aggregator = "weekly_telemetry_aggregator.cli:main"
@@ -20,6 +20,8 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = [
     "weekly_telemetry_aggregator",
+    "weekly_telemetry_aggregator.aggregator",
+    "weekly_telemetry_aggregator.releases",
     "weekly_telemetry_aggregator.providers",
     "weekly_telemetry_aggregator.providers.implementations",
 ]

@@ -16,15 +16,14 @@ import subprocess
 import sys
 import tempfile
 import warnings
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from datetime import datetime, timedelta
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from warnings import warn as _warn_user
 
 from .aggregator import _cap_warnings, aggregate, dedup_resumed_usages
-from .classifiers import _EDIT_WRITE_TOOLS
 from .config import TelemetryConfig, apply_lookback_override
-from .draft_targets import DRAFT_HARNESS_TARGETS, describe_draft_target, resolve_draft_targets
+from .draft_targets import DRAFT_HARNESS_TARGETS, resolve_draft_targets
 from .harness_scope import (
     copy_scope_to_projection,
     enrich_harness_digest,
@@ -37,16 +36,46 @@ from .harness_scope import (
 from .models import (
     Period,
     SessionUsage,
-    SkillCatalogEntry,
     WarningEntry,
     canonical_session_id,
-    round6,
-    split_canonical_session_id,
 )
 from .providers import SessionProvider, build_providers
-from .providers.base import HARNESS_OPENCODE, HarnessSession
 from .run_state import RUNS_DIR, activate_run, resolve_active_run_dir
-from .sqlite_reader import MIGRATION_MIN_V1, DataSourceError, SessionMeta, _to_ms, detect_db
+
+# La surface skills (résolution + scan, A4/A5/A6) vit dans `skill_surface` :
+# `curation` en dépend, et la garder ici imposait un import différé dans les deux
+# sens. Ré-exportée pour préserver l'API `main.resolve_skill_surface` etc.
+from .skill_surface import SKILL_ARCHIVE_DIR_NAME as SKILL_ARCHIVE_DIR_NAME
+from .skill_surface import SkillRecord as SkillRecord
+from .skill_surface import SkillSurface as SkillSurface
+from .skill_surface import _is_archived_skill as _is_archived_skill
+from .skill_surface import _parse_skill_md as _parse_skill_md
+from .skill_surface import resolve_skill_surface as resolve_skill_surface
+from .skill_surface import scan_skill_catalog as scan_skill_catalog
+from .skill_surface import scan_skill_records as scan_skill_records
+from .sqlite_reader import DataSourceError, _to_ms, detect_db
+
+# La construction des `SessionUsage` (fenêtre, exclusions, cross-checks de coût) vit
+# dans `usage` : c'est le bloc le plus volumineux de `main` et il ne dépend que de
+# `models`/`config`/`providers` — le garder ici imposait un import différé dès que
+# `usage` aurait besoin d'un nom de `main`. Ré-exporté pour préserver l'API
+# `main.build_usage`, `main._truncate`, `main.ACTIVE_CUTOFF_MINUTES`, etc.
+from .usage import ACTIVE_CUTOFF_MINUTES as ACTIVE_CUTOFF_MINUTES
+from .usage import CROSS_CHECK_ABS as CROSS_CHECK_ABS
+from .usage import DEFAULT_HARNESS_COST_RATE_USD_PER_MTOK as DEFAULT_HARNESS_COST_RATE_USD_PER_MTOK
+from .usage import HARNESS_COST_RATES_USD_PER_MTOK as HARNESS_COST_RATES_USD_PER_MTOK
+from .usage import _audit_record as _audit_record
+from .usage import _fetch_session_reads as _fetch_session_reads
+from .usage import _harness_cost_rates as _harness_cost_rates
+from .usage import _session_part_timestamps as _session_part_timestamps
+from .usage import _SessionReads as _SessionReads
+from .usage import _truncate as _truncate
+from .usage import _usage_active_excluded as _usage_active_excluded
+from .usage import _usage_advisor_excluded as _usage_advisor_excluded
+from .usage import _usage_cost_warnings as _usage_cost_warnings
+from .usage import _usage_no_steps_status as _usage_no_steps_status
+from .usage import build_usage as build_usage
+from .usage import estimate_costs as estimate_costs
 from .util import (
     HARNESS_BASELINE_FILE,
     _abs,
@@ -61,6 +90,36 @@ from .writer import write_json_atomic, write_summary
 EXIT_OK = 0
 EXIT_PARTIAL = 1
 EXIT_TOTAL_FAILURE = 2
+
+# Surface déplacée dans `doctor` (doctor(), ses checks, `_check_migrations`).
+# `doctor` importe de `main`, donc `main` ne peut pas l'importer au niveau module
+# sans créer un cycle — d'où PEP 562 : `from .main import doctor` reste valide,
+# l'attribut est résolu à la première utilisation, jamais au chargement.
+_DOCTOR_SURFACE = frozenset(
+    {
+        "_check_migrations",
+        "_copilot_doctor_details",
+        "_doctor_draft_targets",
+        "_doctor_harness_eval_version",
+        "_doctor_opencode_version",
+        "_doctor_output_dir_guard",
+        "_doctor_output_probe",
+        "_doctor_project_root",
+        "_doctor_session_providers",
+        "_doctor_tool_presence",
+        "_doctor_watch_repos",
+        "_unknown_session_source_types",
+        "doctor",
+    }
+)
+
+
+def __getattr__(name: str):
+    if name in _DOCTOR_SURFACE:
+        from . import doctor as _doctor
+
+        return getattr(_doctor, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -119,569 +178,8 @@ def _run_provenance(
     return result
 
 
-#: Sessions updated within this many minutes of run_time are still active (v5.18: < 10 min).
-ACTIVE_CUTOFF_MINUTES = 10
-#: Cross-check tolerance for lifetime parts-cost vs session_v2 aggregate.
-CROSS_CHECK_ABS = 0.01
-#: A6 — un skill sous ce segment est archivé : plus chargeable, donc hors catalogue.
-SKILL_ARCHIVE_DIR_NAME = "_archive"
-
-# ---- coûts estimés multi-harnais (cost_estimates optionnels) -----------------
-#
-# Quand un harnais n'enregistre pas de prix (steps `cost=None` → warnings
-# `missing-pricing`), un coût ESTIMÉ est calculé : total_tokens × taux du
-# harnais. Taux en USD par million de tokens — ordres de grandeur blended
-# (input+output) des grilles publiques, jamais des montants facturés.
-# Surcharge par source : clé extra "cost_rate_usd_per_mtok" dans l'entrée
-# correspondante de `cfg.session_sources` (clés extra conservées au parsing).
-DEFAULT_HARNESS_COST_RATE_USD_PER_MTOK = 5.0
-HARNESS_COST_RATES_USD_PER_MTOK: dict[str, float] = {
-    HARNESS_OPENCODE: 9.0,  # blend modèles premium (claude/gpt class)
-}
-
-
-def _truncate(text: str, limit: int = 80) -> str | None:
-    text = " ".join(str(text).split())
-    if not text:
-        return None
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
-
-
-# --------------------------------------------------------------------------- skills catalog
-#
-# A4+A5 — UNE seule surface skills, deux floors (projet / global lecture seule).
-# racines **projet** (projétables : cible de projection, origine de draft) et de
-# racines **globales** strictement LECTURE SEULE (A4). Une racine globale alimente
-# le catalogue — l'audit et le report la voient — mais ne peut structurellement
-# apparaître ni comme destination de projection ni comme origine de draft.
-
-
-@dataclasses.dataclass(frozen=True, slots=True)
-class SkillSurface:
-    """Racines skills résolues, séparées par eligibilité à l'écriture."""
-
-    #: Racines sous `project_root` : surface projetable (projection, draft).
-    project_roots: tuple[Path, ...] = ()
-    #: Racines utilisateur : lecture seule, jamais écrites (A4).
-    global_roots: tuple[Path, ...] = ()
-
-    @property
-    def read_roots(self) -> tuple[Path, ...]:
-        """Toutes les racines lues par le scan, projet d'abord (ordre stable)."""
-        return (*self.project_roots, *self.global_roots)
-
-    def is_global(self, path: Path) -> bool:
-        """True si `path` est sous une racine globale — donc jamais écrivable."""
-        try:
-            resolved = path.resolve()
-        except (OSError, RuntimeError):
-            return False
-        for root in self.global_roots:
-            try:
-                if resolved.is_relative_to(root.resolve()):
-                    return True
-            except (OSError, RuntimeError):
-                continue
-        return False
-
-
-def resolve_skill_surface(
-    project_root: Path | None = None,
-    resolved_drafts: object | None = None,
-    global_roots: Iterable[Path] | None = None,
-) -> SkillSurface:
-    """Surface skills unifiée (A5) : racines projet résolues + racines globales (A4).
-
-    Les racines projet ne sont plus une constante codée en dur (`SKILL_LAYOUTS`,
-    supprimée) : ce sont les cibles skills des harnais **résolus** par
-    `resolve_draft_targets`, donc la table unique A1. Zéro harnais résolu ⇒
-    aucune racine projet : le catalogue se réduit aux racines globales, ce qui
-    est le comportement correct (une surface non déclarée n'est pas inventée).
-
-    `global_roots=None` ⇒ défaut documenté (racine skills OpenCode) ; `[]` ⇒
-    aucune racine globale, et le scan se comporte comme si le champ n'existait pas.
-    """
-    if global_roots is None:
-        from .config import DEFAULT_GLOBAL_SKILL_ROOT
-
-        roots: list[Path] = [DEFAULT_GLOBAL_SKILL_ROOT]
-    else:
-        roots = [Path(root) for root in global_roots]
-
-    harnesses = tuple(getattr(resolved_drafts, "harnesses", ()) or ())
-    root = project_root or Path.cwd()
-    project: list[Path] = []
-    seen: set[Path] = set()
-    for harness in harnesses:
-        for target in DRAFT_HARNESS_TARGETS.get(str(harness), ()):
-            candidate = root.joinpath(*PurePosixPath(str(target)).parts)
-            if candidate not in seen:
-                seen.add(candidate)
-                project.append(candidate)
-    # Une racine globale ne doit jamais être projetable : on la retire explicitement
-    # plutôt que de laisser une racine dupliquée par config.
-    writable = [candidate for candidate in project if not any(candidate == g for g in roots)]
-    return SkillSurface(project_roots=tuple(writable), global_roots=tuple(roots))
-
-
-def _parse_skill_md(path: Path) -> tuple[str, str, list[str]]:
-    """Minimal YAML-free frontmatter parse: (description, body[:2000], target_agents).
-
-    Réutilise le parseur unique `frontmatter_blocks` (safe_git_write) qui gère
-    l'imbrication metadata + listes YAML — plus de parseur dupliqué (v5.30 audit).
-    """
-    from .safe_git_write import frontmatter_blocks
-
-    meta, body, err = frontmatter_blocks(path)
-    if err:
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return "", "", []
-        return "", text[:2000], []
-    description = (meta.get("description") or "").strip()
-    targets = [
-        x.strip().strip("\"'[] ") for x in (meta.get("target_agents") or "").split(",") if x.strip()
-    ]
-    return description, body[:2000], targets
-
-
-def _is_archived_skill(path: Path) -> bool:
-    """A6 — un skill sous `_archive/**` n'est plus chargeable : hors catalogue."""
-    return SKILL_ARCHIVE_DIR_NAME in path.parts
-
-
-@dataclasses.dataclass(frozen=True, slots=True)
-class SkillRecord:
-    """Un `SKILL.md` lu UNE fois, vu sous ses deux formes consumers.
-
-    A5 : le scan ne déduplique plus par nom mais par **chemin canonique** —
-    deux skills homonymes dans deux racines sont deux fichiers distincts, pas un
-    doublon. `is_global` (A4) marque l'appartenance à une racine lecture seule.
-    """
-
-    skill_id: str
-    path: Path
-    description: str
-    body: str
-    target_agents: tuple[str, ...]
-    metadata: dict
-    is_global: bool = False
-
-    def as_catalog_entry(self) -> SkillCatalogEntry:
-        return SkillCatalogEntry(
-            name=self.skill_id,
-            description=self.description,
-            body=self.body,
-            target_agents=list(self.target_agents),
-        )
-
-    def as_protection_entry(self) -> dict:
-        """Forme attendue par `decide_actions` (origin/ttl_policy/usage)."""
-        return {
-            "skill_id": self.skill_id,
-            "metadata": {
-                "origin": self.metadata.get("origin"),
-                "ttl_policy": self.metadata.get("ttl_policy"),
-                "usage": self.metadata.get("usage"),
-            },
-        }
-
-
-def scan_skill_records(surface: SkillSurface, extra_dirs: Iterable[Path] = ()) -> list[SkillRecord]:
-    """Scan UNIQUE de la surface skills (A5) — une lecture par `SKILL.md`.
-
-    Dédup par chemin canonique résolu : symlink et inclusion d'une racine par
-    une autre ne produisent qu'une fiche. `_archive/**` est exclu (A6).
-    Un `SKILL.md` lu une seule fois ; ordre = ordre de la surface (projet
-    d'abord, puis lecture seule), chemins triés dans chaque racine.
-    """
-    from .safe_git_write import frontmatter_blocks
-
-    records: dict[Path, SkillRecord] = {}
-    order: list[Path] = []
-    roots = [*surface.read_roots, *extra_dirs]
-    for root in roots:
-        try:
-            candidates = sorted(root.glob("**/SKILL.md"))
-        except OSError:
-            continue
-        for skill_md in candidates:
-            if not skill_md.is_file() or _is_archived_skill(skill_md):
-                continue
-            try:
-                canonical = skill_md.resolve()
-            except (OSError, RuntimeError):
-                continue
-            if canonical in records:
-                continue
-            meta, body, _err = frontmatter_blocks(skill_md)
-            description = str(meta.get("description") or "").strip()
-            targets = tuple(
-                x.strip().strip("\"'[] ")
-                for x in str(meta.get("target_agents") or "").split(",")
-                if x.strip()
-            )
-            nested = meta.get("metadata")
-            nested = nested if isinstance(nested, Mapping) else {}
-            records[canonical] = SkillRecord(
-                skill_id=skill_md.parent.name,
-                path=canonical,
-                description=description,
-                body=(body or "")[:2000],
-                target_agents=targets,
-                # `frontmatter_blocks` is intentionally a tiny parser; nested
-                # YAML keys also appear at the top level.  Read both forms so
-                # protection remains effective on disk.
-                metadata={
-                    "origin": nested.get("origin") or meta.get("origin"),
-                    "ttl_policy": nested.get("ttl_policy") or meta.get("ttl_policy"),
-                    "usage": nested.get("usage") or meta.get("usage"),
-                },
-                is_global=surface.is_global(skill_md),
-            )
-            order.append(canonical)
-    return [records[key] for key in order]
-
-
-def scan_skill_catalog(
-    records: Iterable[SkillRecord],
-) -> tuple[list[str], int, list[SkillCatalogEntry]]:
-    """Catalogue dérivé de l'unique scan (A5) : (noms atteignables, count, entries).
-
-    Les `entries` couvrent TOUTE la surface lue (moins `_archive`, A6) : l'audit
-    et le report doivent voir les skills `origin=user`, qu'ils décrivent. Les
-    `names` — seule source de `skills_never_loaded` — sont restreints aux skills
-    **atteignables** (A6) : ni `origin=user`, ni « never load standalone ».
-    """
-    from .curation import is_reachable_skill
-
-    entries = [record.as_catalog_entry() for record in records]
-    names = sorted(
-        {
-            record.skill_id
-            for record in records
-            if is_reachable_skill(record.as_protection_entry(), record.description)
-        }
-    )
-    return names, len(names), entries
-
-
-# --------------------------------------------------------------------------- session usage
-
-
-def _audit_record(meta, status: str) -> dict:
-    """Trace why a window-touched session was or wasn't counted (v5.28 audit)."""
-    title = " ".join((meta.title or "").split()).replace("|", "¦")
-    if len(title) > 60:
-        title = title[:60] + "..."
-    record = {
-        "session_id": meta.session_id,
-        "title": title or None,
-        "agent": meta.agent,
-        "parent_id": meta.parent_id,
-        "cost": meta.cost,
-        "updated": str(meta.time_updated or ""),
-        "status": status,
-    }
-    # Providers may attach worker outcome metadata to session descriptors. Keep
-    # it in the audit trace; downstream artifacts must expose partial results.
-    for key in ("rc", "truncated", "worker_status"):
-        value = getattr(meta, key, None)
-        if value is not None:
-            record[key] = value
-    return record
-
-
-@dataclasses.dataclass(slots=True)
-class _SessionReads:
-    """Lectures brutes d'une session sur la fenêtre (build_usage)."""
-
-    steps: list
-    tool_calls: dict[str, int]
-    tool_arg_chars: dict[str, int]
-    skills: dict[str, int]
-    tool_arg_fps: dict[str, dict[str, int]]
-    tool_result_fps: dict[str, dict[str, int]]
-    turns: list[str]
-    context_chars: dict[str, int]
-    aggregates: dict | None
-
-
-def _usage_active_excluded(
-    meta,
-    run_time: datetime,
-    cfg: TelemetryConfig,
-    warnings: list[WarningEntry],
-    audit: list[dict] | None,
-) -> bool:
-    """Exclusion session active (télémétrie incomplète) — True = exclu."""
-    if not (
-        cfg.exclude_active_sessions
-        and meta.time_updated is not None
-        and meta.time_updated >= run_time - timedelta(minutes=ACTIVE_CUTOFF_MINUTES)
-    ):
-        return False
-    warnings.append(
-        WarningEntry(
-            session_id=meta.session_id,
-            message="session active exclue des totaux (télémétrie incomplète)",
-        )
-    )
-    if audit is not None:
-        audit.append(_audit_record(meta, "active"))
-    return True
-
-
-def _usage_advisor_excluded(meta, cfg: TelemetryConfig, audit: list[dict] | None) -> bool:
-    """Exclusion anti auto-pollution par titre (v5.12) — True = exclu, silencieux."""
-    if not (cfg.advisor_run_title and meta.title == cfg.advisor_run_title):
-        return False
-    if audit is not None:
-        audit.append(_audit_record(meta, "advisor"))
-    return True
-
-
-def _fetch_session_reads(
-    adapter,
-    meta,
-    start_ms: int,
-    end_ms: int,
-    warnings: list[WarningEntry],
-    audit: list[dict] | None,
-) -> _SessionReads | None:
-    """Reads brutes sur la fenêtre — None + warning/audit si lecture impossible."""
-    try:
-        steps = adapter.session_steps(meta.session_id, start_ms, end_ms)
-        tool_calls, tool_arg_chars, skills = adapter.session_tools(
-            meta.session_id, start_ms, end_ms
-        )
-        tool_arg_fps, tool_result_fps = adapter.session_tool_fingerprints(
-            meta.session_id, start_ms, end_ms
-        )
-        return _SessionReads(
-            steps=steps,
-            tool_calls=tool_calls,
-            tool_arg_chars=tool_arg_chars,
-            skills=skills,
-            tool_arg_fps=tool_arg_fps,
-            tool_result_fps=tool_result_fps,
-            turns=adapter.session_user_turns(meta.session_id, start_ms, end_ms),
-            context_chars=adapter.session_context_chars(meta.session_id, start_ms, end_ms),
-            aggregates=adapter.session_aggregates(meta.session_id),
-        )
-    except Exception as exc:  # noqa: BLE001 - one session must never kill the run (spec §8)
-        warnings.append(
-            WarningEntry(
-                session_id=meta.session_id,
-                message=f"session read failed: {exc}",
-                partial=True,  # telemetry gap → run is partial, not ok
-            )
-        )
-        if audit is not None:
-            audit.append(_audit_record(meta, "error"))
-        return None
-
-
-def _usage_no_steps_status(
-    adapter, meta, audit: list[dict] | None, warnings: list[WarningEntry]
-) -> None:
-    """Session sans steps : audit no-activity/unflushed + warning si unflushed."""
-    if audit is None:
-        return
-    status = (
-        "no-activity"
-        if adapter.has_telemetry_rows(meta.session_id)
-        else "unflushed"  # aucune ligne message/part en DB — client actif (K1)
-    )
-    audit.append(_audit_record(meta, status))
-    if status == "unflushed":
-        warnings.append(
-            WarningEntry(
-                session_id=meta.session_id,
-                message="session sans télémétrie persistée en DB (0 message/part — client actif ?)",
-            )
-        )
-
-
-def _session_part_timestamps(adapter, meta) -> tuple[list, list, list]:
-    """Timestamps (user, edit/write) + parts — parts vides si provider sans parts."""
-    try:
-        parts = adapter.session_parts(meta.session_id)
-    except Exception:  # noqa: BLE001 - parts are optional per provider
-        parts = []
-    user_turn_timestamps = sorted(p.ts for p in parts if p.kind == "user")
-    edit_write_timestamps = sorted(
-        p.ts for p in parts if p.kind == "tool" and (p.tool_name or "").lower() in _EDIT_WRITE_TOOLS
-    )
-    return user_turn_timestamps, edit_write_timestamps, parts
-
-
-def _usage_cost_warnings(
-    meta,
-    cfg: TelemetryConfig,
-    steps: list,
-    aggregates: dict | None,
-    parts: list,
-    reported_cost: float | None,
-    warnings: list[WarningEntry],
-) -> None:
-    """Cross-checks coût (missing-pricing, parts-lifetime, windowed-vs-lifetime)."""
-    missing = sorted({s.model for s in steps if s.cost is None})
-    for model in missing:
-        warnings.append(
-            WarningEntry(session_id=meta.session_id, message=f"missing-pricing:{model}")
-        )
-    if not reported_cost:
-        return
-    try:
-        lifetime = 0.0
-        for rec in parts:
-            if rec.kind == "step-finish" and rec.cost is not None:
-                lifetime += rec.cost
-        tolerance = cfg.cross_check_tolerance_pct
-        if abs(lifetime - reported_cost) > max(CROSS_CHECK_ABS, tolerance * reported_cost):
-            warnings.append(
-                WarningEntry(
-                    session_id=meta.session_id,
-                    message=f"cross-check mismatch: parts cost ${lifetime:.4f} vs session_v2 ${aggregates['cost']:.4f}",
-                    parts_cost=round6(lifetime),
-                    session_v2_cost=round6(aggregates["cost"]),
-                )
-            )
-    except Exception:  # noqa: BLE001 - cross-check is best-effort
-        pass
-    window_cost = sum(st.cost for st in steps if st.cost is not None)
-    if window_cost > reported_cost * (1.0 + cfg.cross_check_tolerance_pct) + CROSS_CHECK_ABS:
-        # v5.30 (4) : le coût FENÊTRÉ dépasse le lifetime session (enfants au coût non
-        # répercuté dans session.cost, ou compaction) — le cross-check parts-lifetime est
-        # aveugle à ce cas.
-        warnings.append(
-            WarningEntry(
-                session_id=meta.session_id,
-                message=(
-                    f"windowed cost ${window_cost:.4f} > lifetime ${reported_cost:.4f} "
-                    "(enfants/compaction non couverts par session.cost)"
-                ),
-                parts_cost=round6(window_cost),
-                session_v2_cost=round6(reported_cost),
-            )
-        )
-
-
-def build_usage(
-    meta: SessionMeta | HarnessSession,
-    adapter,
-    *,
-    period: Period,
-    run_time: datetime,
-    cfg: TelemetryConfig,
-    warnings: list[WarningEntry],
-    audit: list[dict] | None = None,
-) -> tuple[SessionUsage | None, bool]:
-    """Window-limited SessionUsage from a session. Returns (usage|None, read_failed).
-
-    Active-session exclusion (updated < 10 min before run_time) and
-    advisor-run-title exclusion (anti auto-pollution, v5.12) are applied here.
-    `meta` peut être une SessionMeta brute ou une HarnessSession multi-harnais
-    (ids canoniques) ; `adapter` est toute source exposant le protocol
-    `SessionProvider` (un provider ou l'adaptateur SQLite historique).
-    """
-    start_ms = _to_ms(period.start)
-    end_ms = _to_ms(period.end)
-
-    if _usage_active_excluded(meta, run_time, cfg, warnings, audit):
-        return None, False
-    if _usage_advisor_excluded(meta, cfg, audit):
-        return None, False  # silent: excluded by design (v5.12)
-
-    reads = _fetch_session_reads(adapter, meta, start_ms, end_ms, warnings, audit)
-    if reads is None:
-        return None, True
-    steps = reads.steps
-    aggregates = reads.aggregates
-
-    if not steps:
-        _usage_no_steps_status(adapter, meta, audit, warnings)
-        return None, False
-
-    user_turn_timestamps, edit_write_timestamps, parts = _session_part_timestamps(adapter, meta)
-
-    # Cross-check: lifetime step-finish costs vs session_v2 aggregate (spec §8).
-    reported_cost = (
-        round6(aggregates["cost"]) if aggregates and aggregates.get("cost") is not None else None
-    )
-    _usage_cost_warnings(meta, cfg, steps, aggregates, parts, reported_cost, warnings)
-    first_user = next((_truncate(t) for t in reads.turns if t.strip()), None)
-    if audit is not None:
-        audit.append(_audit_record(meta, "included"))
-    return (
-        SessionUsage(
-            session_id=meta.session_id,
-            title=meta.title or None,
-            project_path=meta.directory,
-            agent_type=meta.agent,
-            parent_id=meta.parent_id,
-            steps=steps,
-            tool_calls=reads.tool_calls,
-            tool_arg_chars=reads.tool_arg_chars,
-            tool_arg_fingerprints=reads.tool_arg_fps,
-            tool_result_fingerprints=reads.tool_result_fps,
-            skills_loaded=reads.skills,
-            user_turns=reads.turns,
-            context_chars=reads.context_chars,
-            first_user_text=first_user,
-            edit_write_timestamps=edit_write_timestamps,
-            user_turn_timestamps=user_turn_timestamps,
-            reported_cost_usd_lifetime=reported_cost,
-            harness=getattr(meta, "harness", "") or getattr(adapter, "harness", "") or "",
-        ),
-        False,
-    )
-
-
-def _harness_cost_rates(cfg: TelemetryConfig) -> dict[str, float]:
-    """Taux $/Mtok par harnais : défauts documentés + surcharges par source.
-
-    Une entrée `session_sources` peut porter la clé extra
-    "cost_rate_usd_per_mtok" (valeur numérique) ; illisible → défaut conservé.
-    """
-    rates = dict(HARNESS_COST_RATES_USD_PER_MTOK)
-    for source in cfg.session_sources:
-        if not isinstance(source, dict) or source.get("cost_rate_usd_per_mtok") is None:
-            continue
-        try:
-            rates[str(source.get("type"))] = float(source["cost_rate_usd_per_mtok"])
-        except (TypeError, ValueError):
-            continue  # taux illisible → défaut conservé
-    return rates
-
-
-def estimate_costs(
-    usages: Iterable[SessionUsage],
-    *,
-    rates: dict[str, float] | None = None,
-    default_rate: float = DEFAULT_HARNESS_COST_RATE_USD_PER_MTOK,
-) -> dict[str, float]:
-    """Coûts estimés ($, round6) des sessions sans AUCUN coût enregistré.
-
-    Cible : `usage.cost_usd` null au sens télémétrique — tous les steps ont
-    `cost=None` (harnais sans grille de prix). Estimation = total_tokens ×
-    taux du harnais / 1e6 ; session avec au moins un coût enregistré ou sans
-    tokens → absente du résultat (champ optionnel : absent = rien à estimer).
-    """
-    if rates is None:
-        rates = HARNESS_COST_RATES_USD_PER_MTOK
-    estimates: dict[str, float] = {}
-    for usage in usages:
-        if not usage.steps or any(s.cost is not None for s in usage.steps):
-            continue
-        tokens = sum(s.total_tokens for s in usage.steps)
-        if tokens <= 0:
-            continue
-        harness = usage.harness or split_canonical_session_id(usage.session_id)[0] or ""
-        estimates[usage.session_id] = round6(tokens * rates.get(harness, default_rate) / 1e6)
-    return estimates
+# NOTE: `SKILL_ARCHIVE_DIR_NAME` (A6) vit dans `skill_surface` avec le scan qui
+# l'utilise, et est ré-exporté par le bloc d'imports ci-dessus.
 
 
 def _build_selection(
@@ -1092,7 +590,11 @@ def run(
     return EXIT_PARTIAL if any(w.partial for w in summary.warnings) else EXIT_OK
 
 
-# --------------------------------------------------------------------------- doctor / self-cost
+# ------------------------------------- doctor : helpers partagés + harness / self-cost
+#
+# Le diagnostic lui-même vit dans `doctor` ; seuls les noms utilisés par
+# `run()`/`harness()` restent ici (voir l'en-tête de `doctor` pour le sens des
+# imports).
 
 
 def _version_tuple(version: str) -> tuple[int, ...] | None:
@@ -1100,17 +602,6 @@ def _version_tuple(version: str) -> tuple[int, ...] | None:
     if not nums:
         return None
     return tuple(nums[:3]) + (0,) * (3 - len(nums[:3]))
-
-
-def _check_migrations(adapter) -> int | None:
-    for table in ("migration", "data_migration"):
-        try:
-            row = adapter.conn.execute(f"SELECT count(*) AS n FROM {table}").fetchone()
-            if row is not None:
-                return int(row["n"])
-        except Exception:  # noqa: BLE001
-            continue
-    return None
 
 
 def _placeholder_fields(cfg: TelemetryConfig) -> list[str]:
@@ -1131,333 +622,6 @@ def _placeholder_message(fields: list[str]) -> str:
         + "/".join(fields)
         + " dans weekly-telemetry-config.json (placeholders /path/to/ détectés)"
     )
-
-
-def _copilot_doctor_details(provider) -> list[str]:
-    """Détails doctor Copilot — best-effort, jamais de raise."""
-    try:
-        harness = getattr(provider, "harness", "")
-        sessions = getattr(provider, "_sessions", None)
-        n = len(sessions) if isinstance(sessions, dict) else None
-        if harness == "copilot-cli":
-            home = getattr(provider, "home", None)
-            version = getattr(provider, "schema_version", None)
-            tables = getattr(provider, "_tables", None)
-            out = [f"home={home}" if home is not None else "home=?"]
-            out.append(f"schema_version={version if version is not None else '?'}")
-            if n is not None:
-                out.append(f"sessions={n}")
-            if isinstance(tables, (set, frozenset)):
-                out.append(f"fts={'oui' if 'search_index' in tables else 'non'}")
-            return out
-    except Exception:  # noqa: BLE001 — diagnostic best-effort uniquement
-        return []
-    return []
-
-
-def _unknown_session_source_types(cfg: TelemetryConfig) -> tuple[list[str], list[str]]:
-    """Types session_sources inconnus du registre — ([], []) si registre illisible."""
-    try:
-        from .providers.registry import discover_provider_factories as _discover_factories
-
-        supported = set(_discover_factories().keys())
-        unknown: list[str] = []
-        for src in cfg.session_sources:
-            if not isinstance(src, dict):
-                unknown.append(repr(src))
-                continue
-            if src.get("enabled", True) is False:
-                continue
-            t = src.get("type")
-            if not isinstance(t, str) or t not in supported:
-                unknown.append(repr(t))
-        if unknown:
-            return sorted(set(unknown)), sorted(supported)
-        return [], sorted(supported)
-    except Exception:  # pragma: no cover - diagnostic best-effort
-        return [], []
-
-
-def _doctor_project_root(
-    cfg: TelemetryConfig,
-    cwd: Path,
-    *,
-    config_loaded: bool,
-    problems: list[str],
-    warnings: list[str],
-) -> None:
-    """Contrôles project_root : présence .opencode/ + config localisable."""
-    if cfg.project_root is None:
-        problems.append("project_root manquant dans la config")
-        return
-    if not (cfg.project_root / ".opencode").is_dir():
-        problems.append(
-            f"project_root {cfg.project_root} ne contient pas .opencode/ — "
-            "adapter la config (clone : project_root = chemin absolu de votre repo)"
-        )
-    if not config_loaded:
-        try:
-            # layout kit : cwd = moteur (config lue au cwd) ≠ project_root (repo audité) —
-            # le vrai défaut est une config introuvable (cron lancé d'un dossier quelconque)
-            _cfg_nearby = (cwd / "weekly-telemetry-config.json").is_file()
-            _cfg_at_root = (cfg.project_root / "weekly-telemetry-config.json").is_file()
-            if not _cfg_nearby and not _cfg_at_root:
-                warnings.append(
-                    f"config introuvable au cwd ({cwd}) ni au project_root — vérifier --dir du cron"
-                )
-        except OSError:
-            warnings.append("project_root non résoluble — chemins à vérifier")
-
-
-def _doctor_output_dir_guard(cfg: TelemetryConfig, warnings: list[str]) -> None:
-    """Garde-fou : output_dir sous .opencode/plugins/ = run lancé depuis le moteur."""
-    resolved_out = Path(_abs(cfg.output_dir)).resolve()
-    parts = resolved_out.parts
-    if (
-        ".opencode" in parts
-        and "plugins" in parts
-        and parts.index(".opencode") + 1 == parts.index("plugins")
-    ):
-        warnings.append(
-            f"output_dir résout sous l'arbre plugins ({resolved_out}) — run "
-            "probablement lancé depuis le dossier du moteur ; déplacer reports/ "
-            "hors du plugin et relancer les étapes depuis la racine du projet"
-        )
-
-
-def _doctor_opencode_version(
-    cfg: TelemetryConfig, opencode_bin: str, problems: list[str], warnings: list[str]
-) -> None:
-    """Binaire opencode : présence PATH + épinglage version minimale."""
-    try:
-        # Windows : shutil.which résout "opencode" → "opencode.cmd"/".exe" (un
-        # argv nu n'est pas exécutable tel quel via subprocess sans shell).
-        resolved = shutil.which(opencode_bin) or opencode_bin
-        proc = subprocess.run(
-            [resolved, "--version"], capture_output=True, encoding="utf-8", timeout=15
-        )
-        version = (proc.stdout or proc.stderr).strip()
-    except (OSError, subprocess.TimeoutExpired):
-        # Non fatal (v6.0.f) : le run est lancé PAR opencode (binaire absolu du cron) et
-        # le pipeline lit opencode.db directement — un PATH étroit (cron) rend le binaire
-        # invisible au sous-processus sans casser la revue. Le version-pin devient une
-        # note, comme harness-eval.
-        warnings.append(f"opencode introuvable ou non exécutable ({opencode_bin})")
-        version = "?"
-
-    if version and version != "?":
-        cur = _version_tuple(version)
-        minv = _version_tuple(cfg.opencode_version_min or "0")
-        if cur is not None and minv is not None and cur < minv:
-            problems.append(
-                f"opencode {version} < {cfg.opencode_version_min} — épinglage du schéma non garanti"
-            )
-
-
-def _doctor_session_providers(
-    cfg: TelemetryConfig, problems: list[str], warnings: list[str]
-) -> bool:
-    """Itération générique sur les providers actifs — aucun harnais en dur.
-
-    Retourne True si dégradation partielle (≥1 source OK et ≥1 KO, #13).
-    """
-    providers = build_providers(cfg)
-    usable = 0
-    for provider in providers:
-        name = getattr(provider, "harness", type(provider).__name__)
-        try:
-            try:
-                provider.check_schema()
-            except Exception as exc:  # noqa: BLE001 — diagnostic fail-soft par source
-                warnings.append(f"[{name}] schéma illisible ({exc})")
-                print(f"doctor: [{name}] KO ({exc})")
-                continue
-            usable += 1
-            details: list[str] = []
-            src = getattr(provider, "db_path", None)
-            if src is not None:
-                details.append(str(src))
-            adapter = getattr(provider, "_adapter", None)
-            if adapter is not None:
-                # Check migrations conservé pour les providers SQLite qui exposent
-                # leur adapter ; les autres (non-SQLite) sautent proprement.
-                migrations = _check_migrations(adapter)
-                n = migrations if migrations is not None else 0
-                if migrations is None:
-                    warnings.append(
-                        f"[{name}] compteur de migrations introuvable — schéma non standard"
-                    )
-                elif n < MIGRATION_MIN_V1:
-                    warnings.append(
-                        f"[{name}] compteur de migrations faible ({n}) — vérifier la version du harnais"
-                    )
-                details.append(f"migrations={n}")
-            # Détails Copilot (home/schema_version/sessions/events/fts,
-            # user_dirs/workspaces/orphans/index) — best-effort, fail-soft.
-            details.extend(_copilot_doctor_details(provider))
-            suffix = f" ({', '.join(details)})" if details else ""
-            print(f"doctor: [{name}] OK{suffix}")
-        finally:
-            provider.close()
-    if not usable:
-        problems.append(
-            "aucune source de sessions disponible — vérifier session_sources / bases locales"
-        )
-        print("doctor: sources de sessions: aucune disponible")
-    # #13 : ≥1 source utilisable ET ≥1 source KO → dégradation partielle réelle,
-    # signalée par EXIT_PARTIAL au lieu d'un 0 muet.
-    return bool(providers) and 0 < usable < len(providers)
-
-
-def _doctor_draft_targets(cfg: TelemetryConfig, warnings: list[str]) -> None:
-    """Cibles de drafting (cellule 2.1) : override > marqueurs > défaut ; [] = legacy."""
-    resolved = resolve_draft_targets(cfg.project_root, cfg.draft_targets)
-    print(f"doctor: cibles de drafting: {describe_draft_target(resolved)}")
-    if resolved.warning:
-        warnings.append(resolved.warning)
-    # Matrice de décision 5.5 (cellule 2.2) : surface de remédiation déduite
-    # du harnais résolu — affichée seule ; la règle portability.yaml = cellule 3.1.
-    surface = resolve_remediation_surface(resolved.harnesses, resolved.mode)
-    print(f"doctor: surface de remédiation 5.5: {surface.decision} — {surface.reason}")
-
-
-def _doctor_output_probe(cfg: TelemetryConfig, problems: list[str]) -> None:
-    """Probe d'écriture output_dir (seule écriture du doctor)."""
-    try:
-        cfg.output_dir.mkdir(parents=True, exist_ok=True)
-        probe = cfg.output_dir / ".doctor-write-probe"
-        probe.write_text("x", encoding="utf-8")
-        probe.unlink()
-        print(f"doctor: output_dir accessible en écriture: {cfg.output_dir}")
-    except OSError as exc:
-        problems.append(f"output_dir non accessible en écriture: {exc}")
-
-
-def _doctor_tool_presence(warnings: list[str]) -> None:
-    """Présence harness-eval/git au PATH (étapes dégradées si absents)."""
-    for tool in ("harness-eval", "git"):
-        if shutil.which(tool) is None:
-            warnings.append(
-                f"{tool} absent du PATH (rien n'est lancé, mais l'étape correspondante sera dégradée)"
-            )
-
-
-def _doctor_harness_eval_version(cfg: TelemetryConfig, warnings: list[str]) -> None:
-    """Version minimum harness-eval (v6.1.a — plancher acceptant les versions supérieures)."""
-    if shutil.which("harness-eval") is not None and cfg.harness_eval_version:
-        try:
-            proc = subprocess.run(
-                ["harness-eval", "--version"], capture_output=True, encoding="utf-8", timeout=15
-            )
-            version = (proc.stdout or proc.stderr).strip()
-            installed = _version_tuple(version)
-            required = _version_tuple(cfg.harness_eval_version)
-            if installed is not None and required is not None:
-                if installed < required:
-                    warnings.append(
-                        f"harness-eval {version} < minimum requis {cfg.harness_eval_version}"
-                        " — mettre à jour : uv tool install --upgrade harness-eval"
-                    )
-            elif version and cfg.harness_eval_version not in version:
-                warnings.append(
-                    f"harness-eval --version illisible ({version!r})"
-                    f" — attendu ≥ {cfg.harness_eval_version}"
-                )
-        except (OSError, subprocess.TimeoutExpired):
-            warnings.append("harness-eval --version indisponible")
-
-
-def _doctor_watch_repos(cfg: TelemetryConfig, warnings: list[str]) -> None:
-    """watch_repos : gh présent au PATH et authentifié."""
-    if not cfg.watch_repos:
-        return
-    if shutil.which("gh") is None:
-        warnings.append(
-            "watch_repos configuré mais gh absent du PATH — repos privés/renommés non suivis"
-        )
-        return
-    try:
-        proc = subprocess.run(
-            ["gh", "auth", "status", "--active"],
-            capture_output=True,
-            encoding="utf-8",
-            timeout=10,
-        )
-        if proc.returncode != 0:
-            warnings.append(
-                "watch_repos configuré mais gh non authentifié — repos privés indisponibles (gh auth login)"
-            )
-    except (OSError, subprocess.TimeoutExpired):
-        warnings.append("gh auth status indisponible — vérifier l'authentification gh")
-
-
-def doctor(
-    cfg: TelemetryConfig,
-    *,
-    cwd: Path | None = None,
-    opencode_bin: str = "opencode",
-    config_loaded: bool = False,
-) -> int:
-    """Diagnose the installation — reads/writes nothing but a probe file in output_dir."""
-    cwd = Path(cwd) if cwd is not None else Path.cwd()
-    problems: list[str] = []
-    warnings: list[str] = []
-
-    _doctor_project_root(
-        cfg, cwd, config_loaded=config_loaded, problems=problems, warnings=warnings
-    )
-
-    # Sentinelle d'installation : placeholders « /path/to/... » jamais substitués
-    # dans weekly-telemetry-config.json — le fatal générique ci-dessus n'est pas
-    # actionnable, on nomme le vrai défaut et les champs exacts à corriger.
-    _fields = _placeholder_fields(cfg)
-    if _fields:
-        problems.append(_placeholder_message(_fields))
-
-    # ses_f55 : session_sources avec type inconnu (ex. copilot-app) passait en
-    # warning fail-soft côté registry → coût 0.0 malgré tokens → alertes fausses.
-    # Doctor doit être strict : type inconnu = PROBLEM rc2, pas un warning muet.
-    _unknown, _supported = _unknown_session_source_types(cfg)
-    if _unknown:
-        problems.append(
-            f"session_sources contient des types inconnus {_unknown}"
-            f" — types supportés: {_supported} — corriger weekly-telemetry-config.json"
-        )
-
-    _doctor_output_dir_guard(cfg, warnings)
-
-    _doctor_opencode_version(cfg, opencode_bin, problems, warnings)
-
-    # Sources de sessions : itération générique sur les providers actifs du
-    # registre — aucun harnais connu en dur du doctor (un nouveau provider
-    # s'affiche ici sans modification de ce bloc). close() est garanti pour
-    # chaque provider (try/finally), même si check_schema() lève (#9).
-    partial_sources = _doctor_session_providers(cfg, problems, warnings)
-
-    _doctor_draft_targets(cfg, warnings)
-
-    _doctor_output_probe(cfg, problems)
-
-    _doctor_tool_presence(warnings)
-
-    _doctor_harness_eval_version(cfg, warnings)
-
-    _doctor_watch_repos(cfg, warnings)
-
-    for msg in warnings:
-        print(f"doctor: WARNING: {msg}")
-    for msg in problems:
-        print(f"doctor: PROBLEM: {msg}")
-
-    if problems:
-        return EXIT_TOTAL_FAILURE
-    if partial_sources:
-        # #13 : sources mixtes OK/KO — setup dégradé, pas un échec total (2)
-        # ni un setup sain (0).
-        return EXIT_PARTIAL
-    # Warnings (harness-eval absent, cwd hint, migrations bas) sont des notes
-    # d'opération — un setup sain retourne 0 avec les notes imprimées.
-    return EXIT_OK
 
 
 # ---- cellule 2.2 : kit root + baseline findings -------------------------------

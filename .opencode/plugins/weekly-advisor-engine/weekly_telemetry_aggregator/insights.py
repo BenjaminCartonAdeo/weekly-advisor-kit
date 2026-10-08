@@ -28,6 +28,19 @@ from .config import InsightsConfig, TelemetryConfig
 from .curation import _skill_fields, is_reachable_skill
 from .harness_scope import harness_digest_problems
 from .main import EXIT_OK, EXIT_TOTAL_FAILURE
+
+# Les cœurs partagés (3 fonctions + 3 seuils) sont owned par `rule_context`, qui
+# les consomme pour construire le contexte des règles. Ré-exportés ici : leur API
+# historique est `insights.<nom>` et plusieurs appelants/test s'y réfèrent.
+from .rule_context import (
+    AGENT_LOOP_MIN_REPEATS_DEFAULT,
+    AGENT_LOOP_TASK_MIN_REPEATS_DEFAULT,
+    ARCHITECTURE_DRIFT_RUNS_DEFAULT,
+    build_context,
+)
+from .rule_context import _architecture_drift as _architecture_drift
+from .rule_context import _architecture_observation as _architecture_observation
+from .rule_context import _robust_z_scores as _robust_z_scores
 from .rule_loader import DEFAULT_SINK, load_rules
 
 #: The single batch entry point for the declarative rules, and the producer of the
@@ -38,7 +51,7 @@ from .rule_loader import DEFAULT_SINK, load_rules
 from .rule_pipeline import evaluate_rules
 from .run_state import RUNS_DIR, active_run_meta, resolve_active_run_dir
 from .util import iso as _iso
-from .util import iter_digest_findings, parse_iso_ts, period_hours, robust_z
+from .util import iter_digest_findings, parse_iso_ts, period_hours
 from .util import load_json as _load
 from .util import parse_anchor as _parse_anchor
 from .writer import write_json_atomic
@@ -48,43 +61,11 @@ DEFAULT_CATALOG_COUNT = 0
 #: plafond du z-score daily_spike — un MAD≈0 produit des z astronomiques
 #: (ex. 99,19) qui sont un artefact, pas un signal plus fort (v5.31).
 DAILY_SPIKE_Z_CAP = 10.0
-ARCHITECTURE_DRIFT_RUNS_DEFAULT = 2
-AGENT_LOOP_MIN_REPEATS_DEFAULT = 8
-AGENT_LOOP_TASK_MIN_REPEATS_DEFAULT = 3
 #: D5 — part maximale de sessions « active » exclues avant alerte. Au-delà, les
 #: totaux du run sont biaisés (télémétrie incomplète) : le run 2026-10-03 était à
 #: 53/178 = 29,8 %. Constante module (config.py hors périmètre) ; surchargeable
 #: via un attribut `exclusion_rate_max` sur InsightsConfig.
 EXCLUSION_RATE_MAX_DEFAULT = 0.20
-
-
-def _architecture_observation(summary: dict | None) -> dict | None:
-    """Extract the optional read-only watch-context architecture projection."""
-    if not isinstance(summary, dict):
-        return None
-    value = summary.get("architecture_observations")
-    if isinstance(value, dict):
-        return value
-    context = summary.get("watch_context")
-    if isinstance(context, dict) and isinstance(context.get("architecture_observations"), dict):
-        return context["architecture_observations"]
-    return None
-
-
-def _architecture_drift(current: dict | None, previous: dict | None) -> list[str]:
-    """Compare stable architecture facts; unknown/missing snapshots are ignored."""
-    if not current or not previous:
-        return []
-    changed: list[str] = []
-    for key in ("state_counts", "config", "inventory_counts", "harness_scope"):
-        if current.get(key) != previous.get(key):
-            changed.append(key)
-    return changed
-
-
-def _robust_z_scores(values: list[float]) -> list[float]:
-    """Robust z (median + MAD, shared core in util); 2-decimal rounding kept."""
-    return [round(z, 2) for z in robust_z(values)]
 
 
 def _window_hours(period: dict) -> float | None:
@@ -481,10 +462,6 @@ def _production_rule_results(
     ``compute()`` reuses the adapter's own baseline count instead of walking the
     summaries a second time.
     """
-    # Imported here, not at module level: `rule_context` imports the shared cores
-    # back from `insights`, so a top-level import would close a cycle.
-    from .rule_context import build_context
-
     context, extra = build_context(
         current_summary,
         previous_summary=previous_summary,

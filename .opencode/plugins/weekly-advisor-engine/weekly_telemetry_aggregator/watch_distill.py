@@ -23,8 +23,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .util import load_jsonc, parse_anchor, parse_iso_ts
-from .watch_context import normalize_npm_package
+from .identities import normalize_npm_package
+from .util import load_jsonc, parse_anchor, parse_iso_ts, truncate_text
 from .watch_memory import (
     append_entries,
     build_digest,
@@ -336,12 +336,10 @@ def truncate_summary(description: object, limit: int = SUMMARY_MAX_CHARS) -> str
      Coupe de préférence en fin de phrase ; sinon sur une FRONTIÈRE DE MOT avec
      ellipse — plus jamais au milieu d'un mot.
 
-    Source unique : ``report.truncate_text``. L'import est différé parce que
-     ``report`` importe ``config``, qui importe ``watch_distill`` : un lien au
-     niveau module serait circulaire.
+    Source unique : ``util.truncate_text``. L'import est au niveau module parce que
+    la troncature vit dans ``util`` (feuille stdlib) : l'ancien lien vers ``report``
+    était un contournement de cycle (`report` → `config` → `watch_distill`).
     """
-    from .report import truncate_text
-
     return truncate_text(description, limit)
 
 

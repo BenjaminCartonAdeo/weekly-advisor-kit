@@ -22,3 +22,13 @@ dist/
 docs/
 
 .idea
+
+# artefacts de couverture (générés par la gate CI, jamais versionnés)
+coverage/
+htmlcov/
+.coverage
+.coverage.*
+
+# index repowise : le CONFIG est versionné, l'état d'index est un cache local
+.repowise/*
+!.repowise/config.yaml

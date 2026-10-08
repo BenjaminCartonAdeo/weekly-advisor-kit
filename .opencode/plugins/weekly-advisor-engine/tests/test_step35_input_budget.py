@@ -24,10 +24,10 @@ import pytest
 from weekly_telemetry_aggregator import watch_distill as wd
 from weekly_telemetry_aggregator.util import parse_anchor
 from weekly_telemetry_aggregator.watch_context import (
-    build_local_inventory,
     build_watch_context,
     enrich_candidates,
 )
+from weekly_telemetry_aggregator.watch_inventory import build_local_inventory
 from weekly_telemetry_aggregator.writer import write_json_atomic
 
 ANCHOR = "2026-08-24T12:00:00Z"
