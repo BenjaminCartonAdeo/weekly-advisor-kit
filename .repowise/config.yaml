@@ -20,15 +20,10 @@ exclude_patterns:
 # contracts that scripts/check-flow-docs.mjs validates against, so dropping them
 # would hide real source from the graph.
 
-# --- Coverage --------------------------------------------------------------
-# The package root is .opencode/plugins/weekly-advisor-engine/ and CI runs pytest
-# with that directory as cwd, so the lcov `SF:` records are package-relative
-# (weekly_telemetry_aggregator/main.py) while repowise's tree is repo-root
-# relative. `path_prefix` re-roots them; without it the whole report comes back
-# unmatched.
-coverage:
-  paths:
-    - path: ".opencode/plugins/weekly-advisor-engine/coverage/lcov.info"
-      path_prefix: ".opencode/plugins/weekly-advisor-engine"
-  fail_under: 0          # non-blocking to start; the real number is not known yet
-  min_coverable_lines: 5 # small-change tolerance for the patch-coverage gate
+# Coverage is deliberately NOT configured here.
+# The only lcov report is produced by CI (see .github/workflows/ci.yml, job `repowise`)
+# and is a gitignored build artifact, so the hosted indexer — which reads the git
+# repository — can never resolve a path to it. Keeping a `coverage.paths` entry here
+# only made the index advertise a source it cannot read (`file_count_with_coverage: 0`,
+# every `line_coverage_pct: null`). The CI gate stays the single coverage authority;
+# it reads the report through the action input `coverage-report`, not through this file.
