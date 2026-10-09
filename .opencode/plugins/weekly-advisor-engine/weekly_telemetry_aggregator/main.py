@@ -91,36 +91,6 @@ EXIT_OK = 0
 EXIT_PARTIAL = 1
 EXIT_TOTAL_FAILURE = 2
 
-# Surface déplacée dans `doctor` (doctor(), ses checks, `_check_migrations`).
-# `doctor` importe de `main`, donc `main` ne peut pas l'importer au niveau module
-# sans créer un cycle — d'où PEP 562 : `from .main import doctor` reste valide,
-# l'attribut est résolu à la première utilisation, jamais au chargement.
-_DOCTOR_SURFACE = frozenset(
-    {
-        "_check_migrations",
-        "_copilot_doctor_details",
-        "_doctor_draft_targets",
-        "_doctor_harness_eval_version",
-        "_doctor_opencode_version",
-        "_doctor_output_dir_guard",
-        "_doctor_output_probe",
-        "_doctor_project_root",
-        "_doctor_session_providers",
-        "_doctor_tool_presence",
-        "_doctor_watch_repos",
-        "_unknown_session_source_types",
-        "doctor",
-    }
-)
-
-
-def __getattr__(name: str):
-    if name in _DOCTOR_SURFACE:
-        from . import doctor as _doctor
-
-        return getattr(_doctor, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class RunProvenance:
