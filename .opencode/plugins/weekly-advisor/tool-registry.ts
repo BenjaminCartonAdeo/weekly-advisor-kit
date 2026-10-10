@@ -969,5 +969,5 @@ export const CLI_COMMANDS: readonly string[] = deepFreeze(
 type AbortableStaysRuntimeApi = AbortableRuntimeApi extends RuntimeApi ? true : never;
 type RuntimeImplementsAbortable = WeeklyRuntime extends AbortableRuntimeApi ? true : never;
 
-export const _ABORT_CONTRACT_CONFORMS: AbortableStaysRuntimeApi & RuntimeImplementsAbortable =
+const _ABORT_CONTRACT_CONFORMS: AbortableStaysRuntimeApi & RuntimeImplementsAbortable =
   true;
