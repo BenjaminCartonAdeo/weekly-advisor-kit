@@ -133,6 +133,20 @@ jobs:
         with:
           name: coverage-lcov
           path: artifacts
+      - name: Le rapport de couverture est résolu (garde-fou)
+        # Le step repowise porte `continue-on-error: true` (voir ci-dessous) :
+        # si l'action ne résout pas le rapport, elle sort non zéro et le job
+        # passe quand même. On bloque donc ici, avant l'action, et seulement
+        # là : le chemin testé est celui nommé par l'input `coverage-report`
+        # (partie avant le `=`). Le verdict « no measurable changed lines »
+        # reste un PASS — il est calculé plus bas, pas ici.
+        # `if-no-files-found: error` côté upload couvre déjà l'upload vide ;
+        # ce step couvre le cas download réussi + chemin non résolu.
+        run: |
+          if ! test -s artifacts/lcov.info; then
+            echo "::error::coverage report introuvable ou vide : artifacts/lcov.info (input coverage-report du step repowise)"
+            exit 1
+          fi
       - name: Gates repowise (non bloquantes au démarrage)
         # Repowise resolves every path from the repository root, NOT from the
         # package dir the test job defaults to. This job declares no
