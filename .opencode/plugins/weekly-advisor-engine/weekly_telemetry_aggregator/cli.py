@@ -30,8 +30,9 @@ from .curation import (
     select_catalog_entry,
     ttl_archive_candidates,
 )
+from .doctor import doctor
 from .draft_targets import resolve_draft_targets
-from .main import _run_provenance, doctor, run
+from .main import _run_provenance, run
 from .skill_surface import resolve_skill_surface
 
 

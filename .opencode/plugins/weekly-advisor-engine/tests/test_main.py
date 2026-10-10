@@ -20,15 +20,7 @@ from helpers import (
 
 from weekly_telemetry_aggregator.config import TelemetryConfig
 from weekly_telemetry_aggregator.costing import self_cost
-from weekly_telemetry_aggregator.main import (
-    ACTIVE_CUTOFF_MINUTES,
-    CROSS_CHECK_ABS,
-    DEFAULT_HARNESS_COST_RATE_USD_PER_MTOK,
-    EXIT_OK,
-    EXIT_PARTIAL,
-    EXIT_TOTAL_FAILURE,
-    HARNESS_COST_RATES_USD_PER_MTOK,
-    _audit_record,
+from weekly_telemetry_aggregator.doctor import (
     _check_migrations,
     _copilot_doctor_details,
     _doctor_draft_targets,
@@ -40,6 +32,18 @@ from weekly_telemetry_aggregator.main import (
     _doctor_session_providers,
     _doctor_tool_presence,
     _doctor_watch_repos,
+    _unknown_session_source_types,
+    doctor,
+)
+from weekly_telemetry_aggregator.main import (
+    ACTIVE_CUTOFF_MINUTES,
+    CROSS_CHECK_ABS,
+    DEFAULT_HARNESS_COST_RATE_USD_PER_MTOK,
+    EXIT_OK,
+    EXIT_PARTIAL,
+    EXIT_TOTAL_FAILURE,
+    HARNESS_COST_RATES_USD_PER_MTOK,
+    _audit_record,
     _fetch_session_reads,
     _harness_cost_rates,
     _placeholder_fields,
@@ -47,14 +51,12 @@ from weekly_telemetry_aggregator.main import (
     _session_part_timestamps,
     _SessionReads,
     _truncate,
-    _unknown_session_source_types,
     _usage_active_excluded,
     _usage_advisor_excluded,
     _usage_cost_warnings,
     _usage_no_steps_status,
     _version_tuple,
     build_usage,
-    doctor,
     estimate_costs,
     harness,
     run,
