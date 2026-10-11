@@ -49,6 +49,20 @@
  * - Surface 5 : comptes de tests (inchangé, pytest)
  * - Surface 6 : étapes commande ↔ agent (inchangé, markdown)
  * - Surface 7-9 : doc cohérence (inchangé, markdown)
+ *
+ * **Split `cli.py` (v6.2, Task 7)**
+ *
+ * Les surfaces 1 et 2 lisaient le seul `cli.py`. Après le split, la façade ne
+ * définit plus que `_cmd_run` / `build_parser` / `main`, les 18 autres handlers
+ * vivent dans `cli_core` / `cli_debug` / `cli_report` / `cli_skill_curate` /
+ * `cli_watch`, et la table `_SUBCOMMANDS` est RETOURNÉE par
+ * `cli_commands.build_subcommands` puis instanciée par la façade.
+ *
+ * Les deux surfaces pointent donc sur les fichiers qui portent réellement la
+ * donnée (`CLI_FILES`, liste explicite et ordonnée). Elles ne suivent PAS les
+ * ré-exports de la façade : traquer un `from .cli_core import _cmd_x` se
+ * cassera à chaque prochain déplacement, alors que lire le module propriétaire
+ * ne casse que si le contrat doit changer — ce qui est le but.
  */
 import fs from "node:fs"
 import path from "node:path"
@@ -58,7 +72,23 @@ import { fileURLToPath } from "node:url"
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const REGISTRY_FILE = path.join(ROOT, ".opencode", "plugins", "weekly-advisor", "tool-registry.ts")
 const ENGINE = path.join(ROOT, ".opencode", "plugins", "weekly-advisor-engine")
-const CLI_FILE = path.join(ENGINE, "weekly_telemetry_aggregator", "cli.py")
+const CLI_DIR = path.join(ENGINE, "weekly_telemetry_aggregator")
+const CLI_FACADE_FILE = path.join(CLI_DIR, "cli.py")
+const CLI_TABLE_FILE = path.join(CLI_DIR, "cli_commands.py")
+// Split `cli.py` (v6.2) : la façade ne définit plus que `_cmd_run`, `build_parser`
+// et `main` ; les 18 autres handlers vivent dans les cinq modules `cli_*`, et la
+// table `_SUBCOMMANDS` est construite par `cli_commands.build_subcommands`. Le
+// contrat doit donc lire les fichiers qui portent RÉELLEMENT la donnée.
+// Liste EXPLICITE et ordonnée, jamais un glob : un glob accepterait en silence
+// un module laissé hors du contrat, et c'est précisément le silence que ces
+// surfaces doivent interdire.
+const CLI_FILES = [
+  CLI_FACADE_FILE,
+  CLI_TABLE_FILE,
+  ...["cli_core.py", "cli_debug.py", "cli_report.py", "cli_skill_curate.py", "cli_watch.py"].map((name) =>
+    path.join(CLI_DIR, name),
+  ),
+]
 const README_FILE = path.join(ROOT, "README.md")
 const INSTALL_FILE = path.join(ROOT, "INSTALL.md")
 const CI_FILE = path.join(ROOT, ".github", "workflows", "ci.yml")
@@ -168,21 +198,63 @@ export function registryCLICommands(src) {
   return cmds
 }
 
-/** Sous-commandes CLI (Python) : sous-parsers explicites ou entrées de la table déclarative. */
+/**
+ * Entrée de la table déclarative : `("nom", "aide", handler, options…)`.
+ * Calée sur la FORME de l'entrée, pas sur son indentation (8 espaces avant le
+ * split de `cli.py`, 12 dans le tuple retourné) ni sur le nom du paramètre
+ * injecté pour `run` — ces deux détails changent au prochain déplacement, la
+ * forme d'une entrée de table, non.
+ */
+const SUB_COMMAND_ENTRY = /\(\s*"([a-z][a-z-]+)",\s*"[^"]*",\s*([A-Za-z_][A-Za-z0-9_]*)\s*,/g
+
+/**
+ * Handlers câblés par la table `_SUBCOMMANDS`, sous forme `[nom, handler]`.
+ *
+ * L'entrée `run` ne porte pas un `_cmd_*` littéral : `build_subcommands` la reçoit
+ * en paramètre et la façade l'instancie avec `_cmd_run`. On résout ce paramètre via
+ * la signature ET le site d'appel réels — sans ce lien, `run` disparaîtrait du
+ * contrat (surface 1) ET `_cmd_run` deviendrait un orphelin (surface 2).
+ */
+function subCommandEntries(facadeSrc, tableSrc) {
+  const param = tableSrc.match(/def\s+build_subcommands\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*:/)?.[1] ?? null
+  const injected =
+    facadeSrc.match(/_SUBCOMMANDS\s*=\s*build_subcommands\(\s*(_cmd_[A-Za-z0-9_]*)\s*\)/)?.[1] ?? null
+  return [...tableSrc.matchAll(SUB_COMMAND_ENTRY)].map(([, name, token]) => [
+    name,
+    // Un paramètre non résolu reste un identifiant distinct : il ne peut ni égaler
+    // un `_cmd_*` défini, ni disparaître du câblage. Le contrat échoue, comme il doit.
+    param !== null && token === param ? (injected ?? `<${param} non résolu>`) : token,
+  ])
+}
+
+/** Contenu des modules CLI, indexés par nom de fichier. */
+function cliModuleSources() {
+  return Object.fromEntries(CLI_FILES.map((file) => [path.basename(file), read(file)]))
+}
+
+/** Sous-commandes CLI (Python) : entrées de la table déclarative, ou sous-parsers explicites. */
 function cliCommands(src) {
-  const cmds = new Set()
-  for (const m of src.matchAll(/sub\.add_parser\(\s*"([a-z][a-z-]+)"/g)) cmds.add(m[1])
-  for (const m of src.matchAll(/\(\s*"([a-z][a-z-]+)",\s*"[^"]*",\s*_cmd_[a-z_]+/g)) cmds.add(m[1])
+  const cmds = new Set(subCommandEntries(src["cli.py"], src["cli_commands.py"]).map(([name]) => name))
+  // Un sous-parser explicite (`sub.add_parser("x")`) reste un portage de
+  // commande. Union : ce chemin ne peut qu'élargir le contrat, jamais l'affaiblir.
+  for (const file of CLI_FILES) {
+    for (const m of src[path.basename(file)].matchAll(/sub\.add_parser\(\s*"([a-z][a-z-]+)"/g)) {
+      cmds.add(m[1])
+    }
+  }
   return cmds
 }
 
-/** Handlers : définis (def _cmd_*) et câblés (directement ou via la table déclarative `_SUBCOMMANDS`). */
+/**
+ * Handlers : définis (`def _cmd_*`, sur l'ensemble des modules CLI après le split)
+ * et câblés par la table `_SUBCOMMANDS` retournée par `cli_commands.build_subcommands`.
+ */
 function cliHandlers(src) {
   const defined = new Set()
-  for (const m of src.matchAll(/def (_cmd_[a-z_]+)\(/g)) defined.add(m[1])
-  const wired = new Set()
-  for (const m of src.matchAll(/set_defaults\(\s*func=(_cmd_[a-z_]+)/g)) wired.add(m[1])
-  for (const m of src.matchAll(/,\s*(_cmd_[a-z_]+)(?=\s*,)/g)) wired.add(m[1])
+  for (const file of CLI_FILES) {
+    for (const m of src[path.basename(file)].matchAll(/def (_cmd_[a-z_]+)\(/g)) defined.add(m[1])
+  }
+  const wired = new Set(subCommandEntries(src["cli.py"], src["cli_commands.py"]).map(([, handler]) => handler))
   return { defined, wired }
 }
 
@@ -207,7 +279,7 @@ const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPat
 
 if (isMain) {
 const registrySrc = read(REGISTRY_FILE)
-const cliSrc = read(CLI_FILE)
+const cliSrc = cliModuleSources()
 const tsCmds = registryCLICommands(registrySrc)
 const cliCmds = cliCommands(cliSrc)
 
