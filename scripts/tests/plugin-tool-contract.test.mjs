@@ -17,14 +17,24 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..")
-const ENGINE_CLI = path.join(
+const ENGINE_MODULE_DIR = path.join(
   ROOT,
   ".opencode",
   "plugins",
   "weekly-advisor-engine",
   "weekly_telemetry_aggregator",
-  "cli.py",
 )
+// Split `cli.py` (v6.2, Task 7) : la façade ne porte plus que `_cmd_run` / `build_parser`
+// / `main`, et la table `_SUBCOMMANDS` est RETOURNÉE par
+// `cli_commands.build_subcommands` (puis instanciée par la façade). Ce contrat doit
+// donc lire `cli_commands.py` — le fichier qui porte réellement la donnée — et non la
+// façade : suivre les ré-exports casserait à chaque prochain déplacement.
+const ENGINE_CLI_TABLE = path.join(ENGINE_MODULE_DIR, "cli_commands.py")
+// Entrée de la table : `("nom", "aide", handler, options…)`. Calée sur la FORME, pas sur
+// l'indentation (8 espaces avant le split, 12 dans le tuple retourné) ni sur le nom du
+// paramètre injecté pour `run` (`cmd_run`) : ces détails changent au prochain
+// déplacement, la forme d'une entrée de table, non.
+const SUB_COMMAND_ENTRY = /\(\s*"([a-z][a-z-]+)",\s*"[^"]*",\s*([A-Za-z_][A-Za-z0-9_]*)\s*,/g
 const CONTRACT = JSON.parse(
   fs.readFileSync(path.join(ROOT, "scripts", "fixtures", "weekly-advisor-tool-contract.json"), "utf8"),
 )
@@ -147,9 +157,21 @@ test("every tool description and field is non-empty", () => {
 })
 
 test("CLI commands match the engine subcommand table", () => {
-  const cli = fs.readFileSync(ENGINE_CLI, "utf8")
-  const table = cli.slice(cli.indexOf("_SUBCOMMANDS = ("))
-  const declared = [...table.matchAll(/^ {8}"([a-z][a-z-]*)",$/gm)].map((match) => match[1])
+  const table = fs.readFileSync(ENGINE_CLI_TABLE, "utf8")
+  // Garde-fou : une extraction vide doit échouer ICI, avec le nom du fichier et la
+  // cause, plutôt que plus bas sur un `includes()` qui n'expliquerait rien.
+  assert.ok(
+    table.includes("def build_subcommands("),
+    `table des sous-commandes introuvable dans ${path.basename(ENGINE_CLI_TABLE)}`,
+  )
+  const declared = [...table.matchAll(SUB_COMMAND_ENTRY)].map((match) => match[1])
+  // La table doit porter EXACTEMENT les sous-commandes exposées en outils plus celles
+  // qui ne le sont pas. Sans ce compte, une extraction partielle passerait en silence.
+  assert.equal(
+    declared.length,
+    CONTRACT.cliCommands.length + CONTRACT.cliCommandsNotExposedAsTools.length,
+    "la table déclare toutes les sous-commandes exposées et non exposées",
+  )
   for (const command of CONTRACT.cliCommands) {
     assert.ok(declared.includes(command), `sous-commande ${command} déclarée par le moteur`)
   }
