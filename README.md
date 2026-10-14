@@ -12,13 +12,13 @@ Schéma d'architecture : [`doc/diagrams/architecture.html`](doc/diagrams/archite
 
 Chaque lundi, le kit produit un rapport unique qui répond à vos questions : combien vous avez dépensé, ce qui a coûté cher et pourquoi, quels skills et commands sont inutilisés ou redondants, quoi surveiller dans l'écosystème, et quelles corrections peuvent être auto-rédigées (proposées, jamais imposées).
 
-Le cœur est 100 % déterministe : le moteur Python lit directement la télémétrie locale des harnais actifs (base SQLite OpenCode, transcripts JSONL Claude Code, sessions Copilot VS Code) et produit des JSON reproductibles, sans SDK ni serveur. Le LLM n'intervient que sur les étapes qualitatives, encadrées par des skills dédiés et des contrats anti-hallucination. Le pipeline complet (8 étapes, de la télémétrie au rapport final) est décrit dans la [spécification](doc/spec/README.md).
+Le cœur est 100 % déterministe : le moteur Python lit directement la télémétrie locale des harnais actifs (base SQLite OpenCode, transcripts JSONL Claude Code, base SQLite Copilot CLI (`~/.copilot/session-store.db`)) et produit des JSON reproductibles, sans SDK ni serveur. Le LLM n'intervient que sur les étapes qualitatives, encadrées par des skills dédiés et des contrats anti-hallucination. Le pipeline complet (8 étapes, de la télémétrie au rapport final) est décrit dans la [spécification](doc/spec/README.md).
 
 ## Fonctionnalités clés
 
 | Fonctionnalité | Ce que vous obtenez |
 |---|---|
-| Multi-harnais | Télémétrie OpenCode, Claude Code et Copilot VS Code via `session_sources`, extensible par source ; **Codex n'est jamais un provider de télémétrie** — cible de drafting seule (`.agents/`) |
+| Multi-harnais | Télémétrie OpenCode, Claude Code et Copilot CLI via `session_sources`, extensible par source ; **Codex n'est jamais un provider de télémétrie** — cible de drafting seule (`.agents/`) |
 | Chiffres déterministes | Moteur Python pur, zéro LLM sur les données : coûts, tokens, cache, outliers, prompts répétés par fingerprint (O(n)) |
 | Classification déterministe | Intent, spec-driven, relecture production (gap > 30 s), maturité de prompt (grades A–F) par session, sans LLM ; alimente l'audit |
 | Règles d'audit déclaratives | Règles `.md` versionnées + DSL `scan/match/aggregate/check`, tests embarqués, playground `debug-rule` en lecture seule |

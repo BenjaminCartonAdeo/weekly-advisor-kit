@@ -39,7 +39,7 @@
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1824 1936" role="img"
        aria-labelledby="uml-wak-title uml-wak-desc">
     <title id="uml-wak-title">UML classes — moteur weekly-advisor-kit</title>
-    <desc id="uml-wak-desc">Diagramme de classes UML du moteur : le protocol SessionProvider est réalisé par les providers OpenCode, Claude Code et Copilot VS Code ; WeeklySummary compose Totals, TopSession et WarningEntry ; TelemetryConfig compose cinq blocs de configuration dont WatchDistillConfig (vues lecture seule sources, storage, cost, curation) ; les constantes de draft_targets alimentent ResolvedDraftTarget puis RemediationSurface ; le sous-système veille regroupe les utilitaires watch_distill et watch_memory autour du contrat JSON fiche candidate, la curation WAVE 2.5 (decide_actions, ttl_archive_candidates).</desc>
+    <desc id="uml-wak-desc">Diagramme de classes UML du moteur : le protocol SessionProvider est réalisé par les providers OpenCode, Claude Code et Copilot CLI ; WeeklySummary compose Totals, TopSession et WarningEntry ; TelemetryConfig compose cinq blocs de configuration dont WatchDistillConfig (vues lecture seule sources, storage, cost, curation) ; les constantes de draft_targets alimentent ResolvedDraftTarget puis RemediationSurface ; le sous-système veille regroupe les utilitaires watch_distill et watch_memory autour du contrat JSON fiche candidate, la curation WAVE 2.5 (decide_actions, ttl_archive_candidates).</desc>
 
     <defs>
       <marker id="tri-a" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto">
@@ -310,16 +310,16 @@
     <text x="1320" y="510" font-family="var(--mono)" font-size="9" fill="#444a59">- _to_harness_session(s)</text>
     <text x="1320" y="526" font-family="var(--mono)" font-size="9" fill="#7a8399">… parse JSONL ~/.claude/projects</text>
 
-    <!-- CopilotVSCodeSessionProvider -->
+    <!-- CopilotCliSessionProvider -->
     <rect x="1552" y="400" width="208" height="160" rx="6" fill="#ffffff" stroke="#2d3142"/>
-    <text x="1656" y="421" text-anchor="middle" font-family="var(--sans)" font-size="10.5" font-weight="600" fill="#2d3142">CopilotVSCodeSessionProvider</text>
+    <text x="1656" y="421" text-anchor="middle" font-family="var(--sans)" font-size="10.5" font-weight="600" fill="#2d3142">CopilotCliSessionProvider</text>
     <line x1="1552" y1="432" x2="1760" y2="432" stroke="rgba(45,49,66,0.25)" stroke-width="0.8"/>
     <text x="1564" y="446" font-family="var(--mono)" font-size="9" fill="#444a59">+ user_dir: Path</text>
     <text x="1564" y="462" font-family="var(--mono)" font-size="9" fill="#444a59">- _sessions: dict[str, sess]</text>
     <text x="1564" y="478" font-family="var(--mono)" font-size="9" fill="#444a59">+ global_state_keys: int|None</text>
     <line x1="1552" y1="496" x2="1760" y2="496" stroke="rgba(45,49,66,0.25)" stroke-width="0.8"/>
     <text x="1564" y="510" font-family="var(--mono)" font-size="9" fill="#444a59">- _load_workspace_sessions()</text>
-    <text x="1564" y="526" font-family="var(--mono)" font-size="9" fill="#7a8399">… chatSessions/*.json · vscdb</text>
+    <text x="1564" y="526" font-family="var(--mono)" font-size="9" fill="#7a8399">… session-store.db · session-state/</text>
 
     <!-- SchemaAdapter (external) -->
     <rect x="1056" y="600" width="288" height="104" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-dasharray="4 3"/>
