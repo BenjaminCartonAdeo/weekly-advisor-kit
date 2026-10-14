@@ -1,0 +1,58 @@
+# Syntaxe et sémantique des workflows GitHub Actions.
+#
+# POURQUOI CE FICHIER EST SÉPARÉ DE ci.yml — la séparation EST le garde.
+# Un job ne s'exécute que si le workflow qui le contient a réussi à charger.
+# Ajouter l'étape de validation DANS ci.yml rendrait le garde structurellement
+# incapable de voir un ci.yml invalide : c'est la solution qui paraît évidente
+# et elle est incapable. GitHub parse chaque workflow indépendamment, donc ce
+# fichier tourne même quand ci.yml est cassé.
+#
+# LE DÉFAUT QUE CE GARDÉ A VU : `ci.yml` a été invalide sur sept commits
+# (d5b7139 → 531d550), ligne 59, `ScannerError: mapping values are not allowed
+# here`. Cause : un `run:` en scalaire plain dont la valeur contient `: `
+# (`'missing from wheel: '`). Corrigé en 4127b9b. Conséquence : GitHub ne
+# chargeant pas le workflow, la CI n'a jamais tourné une seule fois sur ces
+# commits — le pas « Wheel content » n'a jamais été exécuté.
+name: lint-workflows
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: actionlint (release officielle, version et sha256 pinnés)
+        # Téléchargement direct depuis la release GitHub plutôt qu'une action
+        # tierce du marketplace : le binaire est celui du projet amont, et le
+        # sha256 est vérifié contre le fichier de checksums publié avec la
+        # release. Aucun secret, aucune écriture.
+        #
+        # BUMP : changer ACTIONLINT_VERSION ET la ligne sha256 ci-dessous
+        # (valeurs dans actionlint_<version>_checksums.txt de la release).
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+        run: |
+          set -euo pipefail
+          version="${ACTIONLINT_VERSION}"
+          archive="actionlint_${version}_linux_amd64.tar.gz"
+          base="https://github.com/rhysd/actionlint/releases/download/v${version}"
+          curl -fsSL --retry 3 -o "${archive}" "${base}/${archive}"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  ${archive}" \
+            | sha256sum -c -
+          tar xzf "${archive}" actionlint
+
+      - name: Valider tous les workflows (y compris ci.yml et ce fichier)
+        # rc=1 → au moins un workflow invalide (bloquant).
+        # rc=2 → erreur interne d'actionlint (bloquant aussi : ne pas laisser
+        # passer un garde qui n'a rien vérifié).
+        # shellcheck et pyflakes sont facultatifs : actionlint saute ces
+        # contrôles s'ils sont absents, il ne les exige pas.
+        run: actionlint .github/workflows/*.yml

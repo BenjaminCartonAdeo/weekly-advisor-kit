@@ -87,6 +87,78 @@ veille `watch`). `~` est supporté des deux côtés — le moteur Python (`expan
 et le plugin TS (`os.homedir()`) l'expandent avec la même sémantique ; un chemin
 absolu reste recommandé. Personnalisez `watch` (sources de veille) et les budgets selon votre usage.
 
+#### Sources multiples — exemple opencode + Copilot CLI
+
+`session_sources` est une **liste d'objets**, une entrée par source. Une entrée sans
+`type`, de `type` inconnu, ou dont la source est absente du poste (base introuvable)
+est **ignorée avec un avertissement** : le run n'échoue jamais pour une source
+individuelle. `codex` n'est pas une source de sessions — cible de drafting seule.
+
+```json
+"session_sources": [
+  {"type": "opencode"},
+  {"type": "copilot-cli", "copilot_home": "~/.copilot"}
+]
+```
+
+| Clé d'entrée | Rôle | Défaut |
+|---|---|---|
+| `type` | **Obligatoire** — `opencode`, `claude-code`, `copilot-cli` (identifiants de harnais, sensibles à la casse) | — |
+| `enabled` | `false` = entrée ignorée silencieusement | `true` |
+| `copilot_home` | Racine Copilot CLI (dossier contenant `session-store.db`) ; `auto` explicite = repli sur la variable d'environnement puis sur le défaut OS | `COPILOT_CONFIG_DIR`, sinon `~/.copilot` (Linux/macOS) / `%USERPROFILE%\.copilot` (Windows) |
+| `cost_rate_usd_per_mtok` | Surcharge du taux d'estimation de **cette** entrée (nombre) | — |
+
+Les clés inconnues sont **conservées telles quelles** au parsing et transmises au
+provider : un provider peut accepter ses propres clés sans modification du moteur.
+
+> **Copilot CLI est désactivé par défaut.** Le fichier commité ne déclare pas
+> `session_sources` : seule la source `opencode` est active, ce qui reste
+> rétrocompatible. Ajouter l'entrée ci-dessus est le seul geste nécessaire — aucune
+> variable d'environnement n'est requise si `~/.copilot` (ou `%USERPROFILE%\.copilot`)
+> est le chemin réel.
+
+##### Taux d'estimation (`$/Mtok`)
+
+Le coût **facturé** lu dans la télémétrie fait foi et n'est **jamais** recalculé. Un
+coût **estimé** n'est produit que pour une session dont **aucun** step n'enregistre de
+prix : estimation = `tokens totaux × taux du harnais / 1e6`, versée dans
+`cost_estimates`, champ distinct et jamais additionné au coût facturé.
+
+| Harnais | Taux effectif | Origine |
+|---|---|---|
+| `opencode` | **9,0 $/Mtok** | seul harnais surchargé dans le moteur |
+| `copilot-cli` | **5,0 $/Mtok** | taux par défaut — **aucun** taux propre au CLI |
+| `claude-code` | **5,0 $/Mtok** | taux par défaut |
+| harnais inconnu | **5,0 $/Mtok** | taux par défaut |
+
+La surcharge se fait par source, via la clé `cost_rate_usd_per_mtok` de l'entrée :
+`{"type": "copilot-cli", "cost_rate_usd_per_mtok": <votre-taux>}`. Valeur absente,
+non numérique ou illisible → le taux par défaut est conservé.
+
+> **Ordres de grandeur blended, jamais des montants facturés** : ces taux sont des
+> moyennes entrée + sortie de grilles publiques. Un harnais qui journalise lui-même
+> son coût (Copilot CLI : colonnes `total_nano_aiu` / `token_details_json` ; Claude
+> Code : lignes `cost-state`) n'est **pas** estimé — son coût enregistré est lu tel
+> quel, et l'estimation ne s'applique qu'aux sessions dépourvues de tout coût.
+
+##### Recherche FTS (Copilot CLI)
+
+La base `session-store.db` de Copilot CLI expose une table **`search_index` en FTS5**,
+déclarée comme table optionnelle : absente → avertissement + repli, jamais bloquant.
+Le provider l'exploite via `search_content(query, session_id=None)`, qui exécute
+`SELECT session_id FROM search_index WHERE search_index MATCH ?` — requête mise entre
+guillemets, guillemets internes doublés — filtrée sur `session_id` si un id est fourni.
+Table absente ou erreur SQLite → `[]`, sans lever.
+
+> **Portée réelle, à connaître avant de compter dessus** : `search_content` est une
+> méthode du provider `copilot-cli` — elle ne fait **pas** partie du contrat
+> `SessionProvider` (12 méthodes) et le pipeline hebdomadaire ne l'appelle pas
+> aujourd'hui ; seul le test du provider l'exerce. La recherche de session dans le kit
+> passe par le contrat : `find_session_by_title` (titre exact du run) et
+> `session_parts` (transcript complet, `show-session`). Ajoutez la source pour la
+> **télémétrie** (tokens, coûts, prompts) ; n'attendez pas de la recherche plein
+> texte depuis le rapport.
+
 #### Lien de configuration vers la racine du kit
 
 Le moteur charge `weekly-telemetry-config.json` depuis le répertoire de travail
