@@ -93,14 +93,137 @@ def _json_default(obj: Any) -> Any:
     return str(obj)
 
 
+# ---------------------------------------------------------------- lot 01 / 1.5
+# Liste blanche du payload JSON embarqué. Les deux listes ne sont PAS devinées :
+# elles sont extraites de l'AST du gabarit
+#   * `_PAYLOAD_KEYS`          ← `jinja2.meta.find_undeclared_variables` (noms
+#     utilisés par `report_template.html.j2` et jamais écrits par lui) ;
+#   * `_SUMMARY_PAYLOAD_KEYS`  ← les appels `summary.get("…")` du même AST.
+# Les deux ensembles ont ensuite été croisés avec les clés que
+# `report.build_report_context` construit réellement. Méthode et commande
+# d'extraction : récapitulatif de la cellule `cell-9yv6id-mv759fgddrx`.
+#
+# Pourquoi c'est nécessaire : les trois maps `_PAYLOAD_EXCLUDED` pèsent 2,68 MiB
+# dans le payload alors que le gabarit ne les rend JAMAIS (seule occurrence : une
+# note en prose sur le canal « empreinte d'arguments », annexe C). Elles sont
+# nées le 2026-09-13 et expliquent 100 % de la croissance du livrable
+# (0,81 → 4,59 Mo de payload). Elles vivent sous `summary` — d'où la seconde
+# liste : une liste blanche de premier niveau ne suffirait pas à les évincer.
+_PAYLOAD_KEYS: tuple[str, ...] = (
+    # identité / période / KPI de l'en-tête et de l'Exec
+    "date",
+    "engine_version",
+    "period",
+    "daily_totals",
+    "summary",
+    "insights",
+    "models_top",
+    "top_sessions",
+    "top_next_steps",
+    "outliers",
+    "cost_outliers_state",
+    # self-cost (tuiles Exec + annexe E)
+    "self_cost",
+    "self_cost_tokens",
+    "self_cost_api_calls",
+    "self_cost_phase",
+    # opérations de dépôt : commits, fichiers dirty, curation, drafting
+    "auto_commits",
+    "dirty_files",
+    "pending_auto_commits",
+    "head_commit",
+    "run_dir",
+    "skill_curate",
+    "curation_detail",
+    "drafting",
+    "drafting_project_root",
+    "draft_candidates",
+    # audit / cohérence
+    "audit_candidates",
+    "audit_worker_statuses",
+    "coherence_findings",
+    "coherence_items",
+    "coherence_curation_signal",
+    "maint_sorted",
+    "warnings_grouped",
+    "warnings_occurrences",
+    # veille & écosystème
+    "ecosystem",
+    "watch_findings",
+    "watch_groups",
+    "watch_items",
+    # harness
+    "digest",
+    "harness_breakdown",
+    "harness_top_rules",
+    "harness_budget",
+    "harness_remediation",
+    # inventaire des artefacts du run (annexe G)
+    "run_artifacts",
+    "run_artifacts_total",
+    "run_artifacts_shown",
+    # jumeau de la liste des sessions (repli de `summary.all_sessions`)
+    "all_sessions",
+)
+
+# Sous-clés de `summary` lues par le gabarit. `top_sessions_by_cost` n'est pas
+# lu par le `.j2` : il est conservé parce que `tests/test_html_report.py:345`
+# (invariant d'échappement XSS) exige que le payload reste un JSON fidèle sur ce
+# chemin — le retirer reviendrait à affaiblir une assertion de sécurité, pas à
+# alléger le livrable.
+_SUMMARY_PAYLOAD_KEYS: tuple[str, ...] = (
+    "totals",
+    "selection",
+    "warnings",
+    "tool_usage",
+    "skill_usage",
+    "command_usage",
+    "skills_never_loaded",
+    "skill_catalog_count",
+    "by_harness",
+    "all_sessions",
+    "top_sessions_by_cost",
+)
+
+# Maps volumineuses que le gabarit ne rend jamais — garde-fou à l'import.
+_PAYLOAD_EXCLUDED: frozenset[str] = frozenset(
+    {"session_classifications", "tool_argument_fingerprints", "tool_result_fingerprints"}
+)
+if _PAYLOAD_EXCLUDED & (set(_PAYLOAD_KEYS) | set(_SUMMARY_PAYLOAD_KEYS)):
+    raise RuntimeError("liste blanche du payload : clé interdite réintroduite")
+
+
+def _payload_view(ctx: dict) -> dict:
+    """Projection du ctx sur les seules clés que le gabarit rend.
+
+    Copie VERBATIM (valeurs `None` comprises, cf. le passthrough
+    `top_next_steps` de `render_html_report`) : le payload est une donnée, pas
+    une normalisation. Les clés absentes du ctx restent absentes.
+    """
+    if not isinstance(ctx, dict):
+        return {}
+    view: dict[str, Any] = {}
+    for key in _PAYLOAD_KEYS:
+        if key not in ctx:
+            continue
+        value = ctx[key]
+        if key == "summary" and isinstance(value, dict):
+            value = {sub: value[sub] for sub in _SUMMARY_PAYLOAD_KEYS if sub in value}
+        view[key] = value
+    return view
+
+
 def _payload_json(ctx: dict) -> str:
     """ctx → JSON embarqué dans `<script type="application/json">`.
+
+    Le ctx est d'abord projeté sur `_PAYLOAD_KEYS` (`_payload_view`) : le
+    payload est la copie de ce que la page rend, pas un vidage du contexte.
 
     Sécurisation anti-breakout : `</` → séquence JSON `\\/` (échappement valide,
     neutralise la balise fermante) et `<!--` → `<\\u0021--` (neutralise l'état
     "escaped" du parser HTML).
     """
-    text = json.dumps(ctx, ensure_ascii=False, sort_keys=True, default=_json_default)
+    text = json.dumps(_payload_view(ctx), ensure_ascii=False, sort_keys=True, default=_json_default)
     return text.replace("</", "<\\/").replace("<!--", "<\\u0021--")
 
 

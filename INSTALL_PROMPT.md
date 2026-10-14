@@ -80,7 +80,6 @@ for f in INSTALL.md README.md doc/spec/README.md doc/architecture/README.md \
   .opencode/plugins/weekly-advisor.ts \
   .opencode/plugins/weekly-advisor/tool-registry.ts \
   .opencode/agents/weekly-advisor/weekly-advisor.md \
-  .opencode/agents/harness-remediator/harness-remediator.md \
   .opencode/skills/harness-remediation/SKILL.md \
   .opencode/commands/harness-remediate.md \
   .opencode/plugins/weekly-advisor-engine/pyproject.toml \

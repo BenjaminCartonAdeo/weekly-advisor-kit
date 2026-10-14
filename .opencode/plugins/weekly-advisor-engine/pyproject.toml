@@ -27,7 +27,10 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-weekly_telemetry_aggregator = ["templates/*.j2"]
+# rules/*.md : lu DEPUIS l'intérieur du paquet par rule_loader.py
+# (DEFAULT_RULES_DIR = Path(__file__).resolve().parent / "rules"). Sans cette
+# entrée, l'absence est silencieuse au build et RuleError à l'exécution.
+weekly_telemetry_aggregator = ["templates/*.j2", "rules/*.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

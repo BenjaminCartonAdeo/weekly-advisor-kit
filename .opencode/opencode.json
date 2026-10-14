@@ -1,10 +1,3 @@
 {
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "agents-radar": {
-      "type": "remote",
-      "url": "https://agents-radar-mcp.duanyytop.workers.dev/mcp",
-      "enabled": true
-    }
-  }
+  "$schema": "https://opencode.ai/config.json"
 }

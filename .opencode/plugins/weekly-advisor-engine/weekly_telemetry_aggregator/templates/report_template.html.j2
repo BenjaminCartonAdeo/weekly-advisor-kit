@@ -1,5 +1,8 @@
 {# Rapport hebdomadaire OpenCode — page HTML autonome (redesign « pro »). #}
-{# Contexte : dict complet de report_prep + payload_json (str, déjà sécurisé) + quality_html (Markup). #}
+{# Contexte : dict de report_prep PROJETÉ sur les seules variables lues ci-dessous
+   (html_report._PAYLOAD_KEYS) + payload_json (str, déjà sécurisé et filtré) +
+   quality_html (Markup). Une clé absente du ctx reste un Undefined : le gabarit
+   ne dépend d'aucune clé facultative. #}
 {% set totals = ((summary or {}).get("totals") or {}) %}
 {% set insights_d = (insights or {}) %}
 {% set alerts = (insights_d.get("alerts") or []) %}
@@ -947,7 +950,8 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
 </section>
 </main>
 <footer class="pagefoot">
-  Page autonome générée depuis les artefacts du run — données complètes dans le payload JSON embarqué.
+  Page autonome générée depuis les artefacts du run — le payload JSON embarqué dans cette page
+  reprend les données affichées ci-dessus, pas le contexte complet de l'exécution.
 </footer>
 <script type="application/json" id="weekly-payload">{{ payload_json | safe }}</script>
 <script>
