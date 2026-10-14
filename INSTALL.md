@@ -148,8 +148,29 @@ l'**annexe sécurité** du findings final (écrite par `watch-validate`, étape 
 
 Une entrée `"type": "radar"` dans `watch` interroge un serveur MCP déclaré dans
 le fichier `opencode.json` **à la racine du projet** (clé `mcp.<name>.url`) —
-le kit est livré avec `agents-radar` déjà déclaré ; sans cette déclaration, la
-source se dégrade en warning avec repli RSS (`rss_fallback`).
+c'est `<project_root>/opencode.json`, **pas** `.opencode/opencode.json` (seul
+`opencode.json` que le dépôt contient, et que le code ne lit pas).
+
+**Le kit ne déclare aucun serveur MCP.** Tant que cette déclaration manque,
+l'entrée radar livrée par défaut (`agents-radar`, dans
+`weekly-telemetry-config.json`) **ne produit aucun item** et ajoute un warning
+`radar:agents-radar` dans les `warnings` de l'artefact ecosystem ; le run
+continue, cette source est simplement vide. Deux sorties : déclarer l'URL, ou
+retirer l'entrée de `watch`.
+
+```json
+{
+  "mcp": { "agents-radar": { "url": "https://votre-serveur-mcp" } }
+}
+```
+
+**`rss_fallback` ne rattrape pas ce cas — il n'y a pas de filet de sécurité ici.**
+Le repli RSS n'est tenté qu'**après** résolution de la déclaration **et** échec
+de l'appel MCP (serveur déclaré mais mort) ; il est lui-même conditionné à une
+URL non vide, sinon la source échoue aussi. Une déclaration absente est une
+erreur de configuration, levée **avant** tout appel réseau : elle court-circuite
+le repli et se manifeste en warning, sans items.
+
 Le profil `strict` limite le lint aux surfaces de politique et aux entrypoints de
 plugins ; `advisory` ajoute `.opencode/skills/**/SKILL.md`, leurs références et leurs
 exemples. Les chemins sont toujours relatifs au projet et la projection est temporaire.
@@ -242,7 +263,7 @@ run cron (mesuré v5.32).
 
 ```sh
 cd .opencode/plugins/weekly-advisor-engine
-uv run python -m pytest -q     # 1212 tests — tout doit passer
+uv run python -m pytest -q     # 2081 tests collectés — le compte inclut les skips
 cd ../../..
 opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"
