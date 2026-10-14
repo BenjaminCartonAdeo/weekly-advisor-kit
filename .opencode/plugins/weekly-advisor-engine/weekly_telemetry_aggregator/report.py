@@ -3272,9 +3272,23 @@ def validate_llm_blocks(text: str, findings: dict | None, insights: dict | None)
     Checks : zéro chiffre (spec : le bloc ne cite que catégories/sévérités) ;
     balises de source [F:ses_xxx#cat] / [M:cat] / [A:rule] résolues dans les
     entrées ; bandes [N:…] résolues vers un scalaire des artefacts ; aucune
-    ligne de titre Markdown ; aucune forme écrite d'un décompte ; taille ≤ 60
-    lignes ; 1re ligne non vide ≠ titre `##`/`#` (le gabarit fournit déjà le
-    titre de la section 4) ; tout finding high doit être cité.
+    forme écrite d'un décompte ; taille ≤ 60 lignes ; tout finding high doit
+    être cité ; et DEUX contrôles distincts sur les titres Markdown, dont il
+    faut connaître la portée exacte de chacun :
+
+    - tête — la 1re ligne NON vide ne peut pas être un titre `##`/`#` (un ou
+      deux dièses suivis d'une espace ; le motif `^#{1,2}` + espace), d'où un
+      message dédié « en tête de bloc » : le gabarit fournit déjà le titre de
+      la section 4, un titre en tête y créerait un doublon ;
+    - nulle part — AUCUNE ligne ne peut être un titre Markdown, à aucun
+      niveau : `_MD_HEADING_RE` (`#{1,6}` puis une espace ou la fin de ligne,
+      donc `# Foo`…`###### Foo` et le `#` nu) ou la garde plus large
+      `line.startswith("#")`, qui ratisse en plus les `###Foo` sans espace et
+      les `#######Foo`. Une ligne de tête n'est ignorée par ce contrôle que si
+      le contrôle de tête l'a déjà signalée (jamais de double message).
+
+    Conjointement : aucun titre, à aucun niveau (`#`, `##`, `###`, …), nulle
+    part dans le bloc — commencer par une phrase.
 
     Portée : ce validateur ne voit QUE la prose de l'agent. Le brouillon
     automatique `-auto-` (qui porte volontairement des `###`) n'est jamais

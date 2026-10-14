@@ -7,6 +7,10 @@
 __pycache__/
 *.pyc
 *.egg-info/
+# `build/` NON ancré à dessein : PEP 517 (setuptools) crée build/ à la racine
+# DU PROJET, pas du dépôt — ici .opencode/plugins/weekly-advisor-engine/build/.
+# Un `/build/` ancré ne couvrirait pas ce cas. Aucun build/ suivi dans l'arbre.
+build/
 
 # artefacts du pipeline (jamais versionnés — reçus par le cron)
 # (`reports/*` plutôt que `reports/` : une négation ne peut pas réinclure
