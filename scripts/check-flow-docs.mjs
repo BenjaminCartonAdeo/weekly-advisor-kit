@@ -10,8 +10,11 @@
  *     `weekly-<étape>-` présent dans les sources du moteur).
  *  4. Chaînage : les dépendances d'ordre SÉQUENTIEL documentées dans le plugin
  *     TS existent aussi côté moteur (watch-context → ecosystem ; assemble → draft).
- *  5. Comptes de tests : README == INSTALL == ci.yml == pytest --collect-only
- *     réel (dérive C10 : les trois documents disaient 171/177/224).
+ *  5. Comptes de tests : **aucune dérive** entre les comptes que portent les
+ *     documents et la collecte `pytest --collect-only` réelle. Les trois états —
+ *     aucun littéral (cible) / littéraux égaux au réel / sinon ÉCHEC — sont
+ *     bloquants au sens du gate : l'ex-`WARN` advisory a été supprimé (dérive C10 :
+ *     les trois documents disaient 171/177/224, puis 1212, puis 2081).
  *  6. Étapes commande ↔ agent : les tokens d'outils (`weekly_*`) du
  *     « Déroulement » de la commande /weekly-review sont EXACTEMENT ceux du
  *     tableau de l'agent weekly-advisor, dans le même ordre (dérive observée :
@@ -138,18 +141,69 @@ export function canonicalPytestCommand({ cwd, selector }) {
   return ["uv", ["run", "python", "-m", "pytest", "-q", selector]]
 }
 
+/**
+ * Un compte de tests documenté = UN ENTIER PORTEUR D'UNE UNITÉ DE COMPTE, pas
+ * une formulation figée. On matche donc la NATURE (un nombre immédiatement suivi —
+ * ou précédé, pour les badges — de l'unité `test`), pas une liste de phrases :
+ *
+ *   - `2081 tests`, `1219 test`      (entier avant l'unité)
+ *   - `1219-test suite`              (unité accolée par un tiret)
+ *   - `tests-2081`, `tests_2081`     (badge, entier après l'unité)
+ *
+ * `(?<![.\d])` refuse un entier qui est le FRAGMENT d'une version : sans lui,
+ * « python 3.13 tests » rendrait `13` et le gate comparerait une version à un
+ * compte de suite. Symétriquement, un compte n'est retenu qu'au-dessus de
+ * `tests?` suivi d'une frontière de mot, donc `testsuite`/`testing` ne matchent pas.
+ *
+ * Élargir ce motif est sans danger pour le gate : plus de littéraux → plus de
+ * comparaisons, jamais l'inverse. Ce qui le rend sûr, c'est que l'état « aucun
+ * littéral » reste VERT (cf. `checkTestCounts`) — le motif peut donc agresser.
+ */
+const TEST_COUNT_RE = /(?<![.\d])(\d{1,7})[-\s]tests?\b|\btests[-_](\d{1,7})\b/g
+
 export function documentedTestCounts(contents) {
-  return contents.flatMap((source) => [...source.matchAll(/(\d+) tests?/g)].map((m) => Number(m[1])))
+  return contents.flatMap((source) =>
+    [...source.matchAll(TEST_COUNT_RE)].map((m) => Number(m[1] ?? m[2])),
+  )
 }
 
-/** Documentation drift is advisory; only inability to obtain a count blocks. */
+/**
+ * Contrat de comptes, TROIS ÉTATS et non deux :
+ *
+ *  1. aucun littéral dans les docs → OK. Rien à maintenir, donc rien qui peut
+ *     dériver. C'est l'ÉTAT CIBLE, pas un cas limite : un `unique.length !== 1`
+ *     naïf ferait échouer le tableau vide et casserait la CI sur le dépôt propre.
+ *  2. tous les littéraux présents, ÉGAUX entre eux ET ÉGALS au collect réel → OK.
+ *  3. sinon → BLOQUANT (l'ex-`WARN`).
+ *
+ * Les deux premiers états sont mutuellement exclusifs avec le troisième par les
+ * gardes `!hasLiterals` : l'absence de littéral ne peut jamais être lue comme un
+ * désaccord. `collectAgrees` reste `true` quand la collecte a échoué — le compte
+ * réel est alors INCONNU, pas divergent, et la panne de collecte est déjà
+ * signalée par son propre contrôle avec son diagnostic ; la compter deux fois
+ * ferait doublon sans rien apprendre.
+ */
 export function checkTestCounts({ docs, collection }) {
   const unique = [...new Set(docs)]
+  const hasLiterals = docs.length > 0
   const messages = []
-  if (unique.length !== 1) messages.push(`documentation counts differ: ${unique.join(", ") || "none"}`)
+  if (unique.length > 1) messages.push(`documentation counts differ: ${unique.join(", ")}`)
   if (collection.kind === "execution-failure") messages.push("pytest collection execution failed")
   if (collection.kind === "parser-failure") messages.push("pytest collection output could not be parsed")
-  return { blocking: collection.kind !== "ok", messages }
+  const countsAgree = !hasLiterals || unique.length === 1
+  // `countsAgree` est une PRÉCONDITION de `collectAgrees` : si les docs
+  // divergent entre eux, « le compte documenté » n'est pas défini, et le valider
+  // quand même afficherait un vert faux — le premier littéral serait comparé au
+  // réel au hasard de l'ordre de lecture des fichiers.
+  const collectAgrees =
+    !hasLiterals || collection.kind !== "ok" || (countsAgree && unique[0] === collection.collected)
+  return {
+    blocking: collection.kind !== "ok" || !countsAgree || !collectAgrees,
+    messages,
+    hasLiterals,
+    countsAgree,
+    collectAgrees,
+  }
 }
 
 // ---------------------------------------------------------------- collecteurs
@@ -389,21 +443,31 @@ for (const [label, regexPattern, pyNeedle] of DEPENDENCIES) {
 
 // ------------------------------------------------------------------ surface 5
 
-// Comptes de tests : les trois documents doivent porter le même nombre,
-// et ce nombre doit être le collect réel (C10).
+// Comptes de tests (surface 5). Le contrôle porte sur l'absence de DÉRIVE, pas
+// sur la présence d'un nombre : les documents n'ont aucun compte à porter (état
+// cible, cf. `checkTestCounts`), et s'ils en portent un, il doit être exact.
+// Un compte de tests change à chaque test ajouté — un littéral unique serait donc
+// un nouveau point de dérive, pas une garantie. C'est pourquoi le badge et les
+// deux extraits de commande ne portent aucun nombre : `pytest -q` l'affiche sur
+// stdout au moment où l'on s'en sert.
 const docsCounts = documentedTestCounts([README_FILE, INSTALL_FILE, CI_FILE].map(read))
 const collection = collectPytest({ cwd: ENGINE })
-console.log("— Surface 5 : comptes de tests cohérents")
 const countCheck = checkTestCounts({ docs: docsCounts, collection })
-// Documentation mismatch is advisory and never changes gate result.
-if (new Set(docsCounts).size === 1) console.log("ok  README/INSTALL/ci portent le même nombre")
-else console.log(`WARN README/INSTALL/ci counts differ: ${docsCounts.join(", ") || "none"}`)
-ok("pytest collection executable and parseable", !countCheck.blocking,
+console.log("— Surface 5 : comptes de tests cohérents")
+ok("pytest collection executable and parseable", collection.kind === "ok",
   collection.kind === "execution-failure" ? `status=${collection.status}; stderr=${collection.stderr}` :
     collection.kind === "parser-failure" ? `stdout=${collection.stdout}` : "")
-if (collection.kind === "ok" && docsCounts.length > 0 && collection.collected !== docsCounts[0]) {
-  console.log(`WARN collect réel (${collection.collected}) != docs (${docsCounts[0]})`)
-}
+ok(
+  "README/INSTALL/ci ne portent aucun compte de tests divergent",
+  countCheck.countsAgree,
+  countCheck.countsAgree ? "" : `comptes=[${docsCounts.join(", ")}]`,
+)
+ok(
+  "le compte documenté, s'il existe, égale la collecte réelle",
+  countCheck.collectAgrees,
+  countCheck.collectAgrees ? "" :
+    `collect réel=${collection.collected} != docs=${docsCounts.join(", ")}`,
+)
 
 // ------------------------------------------------------------------ surface 6
 

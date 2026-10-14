@@ -346,16 +346,34 @@ derniers résumés (historique local), seuils de configuration.
 3. **Écrasement protecteur** : ré-exécuter un run du même jour avec une fenêtre de durée différente
    détruit la baseline de comparaison ; le produit en avertit explicitement.
 
-**Règles — alertes (seuils en configuration)**
+**Règles — alertes (huit seuils en configuration, un seuil constant)**
 
-| Règle | Condition | Sévérité |
-|---|---|---|
-| Budget hebdomadaire | coût total de la semaine > **35 $** | haute |
-| Budget mensuel | somme des résumés des **30** derniers jours > **500 $** | haute |
-| Pic journalier | z-score (médiane+MAD) d'un jour vs les jours des 4 résumés précédents ≥ **3,0** ; **z borné à 10,0** (un MAD ≈ 0 produit des z astronomiques, artefact et non signal plus fort ; l'intensité observée = min(z brut, 10), avec note « MAD≈0, z borné » si dépassé) | moyenne |
-| Cache bas | ratio de cache hebdomadaire < **0,6** | moyenne |
-| Coût WoW | hausse de coût > **15 %** — sautée si fenêtres hétérogènes (delta `null`) | moyenne |
-| Violations déclaratives | somme des violations du digest > **10** | moyenne |
+Neuf alertes à seuil. La colonne *Source* donne la ligne qui porte le seuil et
+celle qui décide : le tableau se relit sans ouvrir le code, et se casse seul si
+le code dérive. Le câblage de chaque seuil est vérifié par
+`tests/test_spec_thresholds.py`.
+
+| Règle | Condition | Sévérité | Source |
+|---|---|---|---|
+| Budget hebdomadaire | coût total de la semaine > **35 $** | haute | `config.py:112`, `insights.py:161` |
+| Budget mensuel | somme des résumés des **30** derniers jours > **500 $** | haute | `config.py:113`, `insights.py:177` |
+| Pic journalier | z-score (médiane+MAD) d'un jour vs les jours des 4 résumés précédents ≥ **3,0** ; **z borné à 10,0** (un MAD ≈ 0 produit des z astronomiques, artefact et non signal plus fort ; l'intensité observée = min(z brut, 10), avec note « MAD≈0, z borné » si dépassé) | moyenne | `config.py:114`, cap `insights.py:63` ; détecteur déclaratif `rules/daily-spike.md` |
+| Cache bas | ratio de cache hebdomadaire < **0,6** | moyenne | `config.py:115`, `insights.py:192` |
+| Coût WoW | hausse de coût > **15 %** — sautée si fenêtres hétérogènes (delta `null`) | moyenne | `config.py:116`, `insights.py:202` |
+| Violations déclaratives | somme des violations du digest > **10** | moyenne | `config.py:117`, `insights.py:661` |
+| Couverture lint | couverture des surfaces `.opencode/` = scannées ÷ (scannées + hors allowlist) < **0,70** | basse | `config.py:119`, `insights.py:685` |
+| Sessions exclues | part des sessions « active » exclues (exclues ÷ sessions touchées) > **0,20** | moyenne | `insights.py:68`, `insights.py:741` — **constante de module, non configurable** (voir la note ci-dessous) |
+| Cache non écrit | `cache_write_tokens = 0` sur **≥ 2** runs consécutifs | moyenne | `config.py:125`, `insights.py:770` |
+
+> **« Sessions exclues » n'est pas câblable.** Son seuil est la constante de
+> module `EXCLUSION_RATE_MAX_DEFAULT` (`insights.py:68`), relue par
+> `getattr(insights_cfg, "exclusion_rate_max", EXCLUSION_RATE_MAX_DEFAULT)`
+> (`insights.py:739`). Or `InsightsConfig` est `frozen=True, slots=True`
+> (`config.py:109`) : l'attribut ne peut pas y être posé et **la branche
+> `getattr` est inatteignable**. Ajouter `exclusion_rate_max` à
+> `weekly-telemetry-config.json` créerait une clé paraissant configurable que
+> rien n'exécute. La lever suppose de promouvoir le seuil en champ de
+> `InsightsConfig`. Verrou : `test_spec_thresholds.py`.
 
 **Règles — maintenance (déterministe, R1-R6)** — les règles ignorent les constats listés en
 snooze manuel.

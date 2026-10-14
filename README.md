@@ -3,7 +3,7 @@
 Revue hebdomadaire automatisée de vos agents de code : analyse de la télémétrie locale, veille écosystème, audit des sessions coûteuses et rapport HTML interactif, avec un moteur 100 % déterministe, zéro LLM pour les chiffres.
 
 [![CI](https://github.com/BenjaminCartonAdeo/weekly-advisor-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/BenjaminCartonAdeo/weekly-advisor-kit/actions/workflows/ci.yml)
-[![tests 2081](https://img.shields.io/badge/tests-2081-brightgreen)](.opencode/plugins/weekly-advisor-engine)
+[![pytest](https://img.shields.io/badge/pytest-via%20%60uv%20run%20python%20-m%20pytest%20-q%60-informative)](.opencode/plugins/weekly-advisor-engine)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Schéma d'architecture : [`doc/diagrams/architecture.html`](doc/diagrams/architecture.html).
@@ -182,7 +182,7 @@ Contributions bienvenues, en particulier : nouveaux providers de harnais, règle
 Validation locale (depuis le dossier moteur `.opencode/plugins/weekly-advisor-engine`) :
 
 ```sh
-uv run python -m pytest -q    # 2081 tests collectés — le compte inclut les skips
+uv run python -m pytest -q    # le compte des tests collectés s'affiche ici
 uv run ruff check .           # lint
 uv run ruff format --check .  # format
 ```
@@ -191,8 +191,10 @@ uv run ruff format --check .  # format
 (toutes les tests passent) fait foi. Une collecte séparée (`uv run python -m
 pytest --collect-only -q`) est un **diagnostic explicite** uniquement : elle aide à
 expliquer une différence de décompte, mais ne remplace pas l'exécution des tests.
-Un écart entre le nombre affiché ici et le nombre collecté est **warning-only** ;
-il ne bloque pas le run. Les contrats de gate (contrats de flux, lint/format et
+Aucun compte n'est écrit dans cette page : il change à chaque test ajouté, donc
+un nombre ici serait un point de dérive à maintenir à la main. La gate G1 refuse
+quand même toute **dérive** — un compte publié qui contredit la collecte réelle est
+un échec, pas un avertissement. Les autres contrats de gate (lint/format et
 gates de portabilité) restent bloquants lorsqu'ils échouent.
 
 Gate docs ↔ code (depuis la racine du repo, node requis) :
@@ -201,7 +203,7 @@ Gate docs ↔ code (depuis la racine du repo, node requis) :
 node scripts/check-flow-docs.mjs   # G1 : comptes de tests cohérents + contrats de flux
 ```
 
-Le CI (`.github/workflows/ci.yml`) répète lint, format, la suite complète (2081 tests) et packaging sur Ubuntu et Windows, puis exécute les tests de contrat node (Ubuntu) et la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec/`](doc/spec/README.md), l'architecture dans [`doc/architecture/`](doc/architecture/README.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
+Le CI (`.github/workflows/ci.yml`) répète lint, format, la suite complète des tests et packaging sur Ubuntu et Windows, puis exécute les tests de contrat node (Ubuntu) et la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec/`](doc/spec/README.md), l'architecture dans [`doc/architecture/`](doc/architecture/README.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
 
 ## Documentation
 

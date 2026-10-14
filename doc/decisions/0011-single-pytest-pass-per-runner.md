@@ -8,9 +8,10 @@
 ## Context
 
 The CI matrix is `[ubuntu-latest, windows-latest]`. Two steps both invoked the full
-1219-test suite: a plain `pytest` step, and a Linux-gated coverage step. Both ran on
-Linux, so the Linux job paid for the suite twice — roughly **134 seconds** wasted per
-run.
+suite, which counted 1219 tests at that date (a historical figure, not a
+maintained one): a plain `pytest` step, and a Linux-gated coverage step. Both ran
+on Linux, so the Linux job paid for the suite twice — roughly **134 seconds**
+wasted per run.
 
 The two steps cannot simply be merged, because only the Linux runner emits the lcov
 report that the repowise job downloads (see

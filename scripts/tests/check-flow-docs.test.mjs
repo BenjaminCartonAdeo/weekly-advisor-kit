@@ -39,12 +39,92 @@ test("collection probe distinguishes parser failure", () => {
   assert.deepEqual(result, { kind: "parser-failure", stdout: "unexpected", stderr: "warning", status: 0, collected: null })
 })
 
-test("documentation count mismatch is informational while collection remains healthy", () => {
+test("documentation count mismatch between docs now BLOCKS the gate", () => {
+  // Régression de l'état warn-only : ce contrôle était structurellement incapable
+  // de faire échouer le gate, et son test encodait cette impuissance comme un
+  // comportement voulu (« mismatch is informational »).
   const docs = documentedTestCounts(["README: 10 tests", "INSTALL: 11 tests", "CI: 12 tests"])
   const result = checkTestCounts({ docs, collection: { kind: "ok", collected: 12 } })
 
-  assert.equal(result.blocking, false)
+  assert.equal(result.blocking, true)
+  assert.equal(result.countsAgree, false)
   assert.match(result.messages[0], /documentation counts differ/)
+})
+
+test("zero documented literal is the TARGET state and stays green", () => {
+  // Le piège d'implémentation : après le retrait des littéraux, `docs` est vide.
+  // Un `unique.length !== 1` naïf échouerait ici et casserait la CI sur le dépôt
+  // propre. « Rien à maintenir » ne peut pas être lu comme « désaccord ».
+  const result = checkTestCounts({ docs: [], collection: { kind: "ok", collected: 2081 } })
+
+  assert.equal(result.blocking, false)
+  assert.equal(result.hasLiterals, false)
+  assert.equal(result.countsAgree, true)
+  assert.equal(result.collectAgrees, true)
+})
+
+test("literals all equal to the real collection are green (the tolerated state)", () => {
+  const docs = documentedTestCounts(["README: 2081 tests", "INSTALL: 2081 tests"])
+  const result = checkTestCounts({ docs, collection: { kind: "ok", collected: 2081 } })
+
+  assert.equal(result.blocking, false)
+  assert.equal(result.hasLiterals, true)
+  assert.deepEqual(result.messages, [])
+})
+
+test("literals self-consistent but contradicting the real collection now BLOCK", () => {
+  // C'est la dérive que le warn-only ne pouvait structurellement pas voir :
+  // README, INSTALL et ci.yml qui portent TOUS le même mauvais nombre.
+  const docs = documentedTestCounts(["README: 9999 tests", "INSTALL: 9999 tests"])
+  const result = checkTestCounts({ docs, collection: { kind: "ok", collected: 2081 } })
+
+  assert.equal(result.countsAgree, true, "les docs sont cohérentes entre elles")
+  assert.equal(result.collectAgrees, false)
+  assert.equal(result.blocking, true)
+})
+
+test("collect agreement is not claimed when the docs disagree with each other", () => {
+  // Sans cette précondition, la ligne « le compte documenté égale la collecte »
+  // afficherait un vert faux : elle validerait le PREMIER littéral contre le réel
+  // au hasard de l'ordre de lecture des fichiers.
+  const docs = documentedTestCounts(["README: 9999 tests", "INSTALL: 2081 tests"])
+  const result = checkTestCounts({ docs, collection: { kind: "ok", collected: 2081 } })
+
+  assert.equal(result.collectAgrees, false)
+  assert.equal(result.blocking, true)
+})
+
+test("failed collection is reported once, not double-counted as a count mismatch", () => {
+  // Le compte réel est alors INCONNU, pas divergent. Le keeping de
+  // `collectAgrees` à true évite un doublon sans diagnostic nouveau ; la panne
+  // de collecte reste signalée par `blocking` et par son propre message.
+  const result = checkTestCounts({ docs: [2081], collection: { kind: "execution-failure" } })
+
+  assert.equal(result.blocking, true)
+  assert.equal(result.collectAgrees, true)
+  assert.deepEqual(result.messages, ["pytest collection execution failed"])
+})
+
+test("count extraction matches the NATURE of the defect, not a fixed phrasing", () => {
+  const cases = [
+    ["README: 2081 tests", [2081]], //           entier avant l'unité (forme d'origine)
+    ["README: 1 test", [1]], //                    singulier
+    ["the 1219-test suite", [1219]], //            unité accolée par un tiret — trou historique
+    ["badge/tests-2081-brightgreen", [2081]], //   badge, entier APRÈS l'unité — trou historique
+    ["badge/tests_2081-green", [2081]], //         idem, séparateur underscore
+  ]
+  for (const [source, expected] of cases) {
+    assert.deepEqual(documentedTestCounts([source]), expected, `for ${JSON.stringify(source)}`)
+  }
+})
+
+test("count extraction refuses the fragments that are not test counts", () => {
+  // Un motif élargi sur la NATURE doit rester précis : sans garde, « 3.13 »
+  // d'une version deviendrait un compte de suite et le gate comparerait une
+  // version à la collecte.
+  for (const source of ["python 3.13 tests", "v2.4 tests", "testsuite", "testing 900"]) {
+    assert.deepEqual(documentedTestCounts([source]), [], `for ${JSON.stringify(source)}`)
+  }
 })
 
 test("execution and parser failures remain blocking", () => {

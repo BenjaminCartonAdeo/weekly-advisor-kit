@@ -263,7 +263,7 @@ run cron (mesuré v5.32).
 
 ```sh
 cd .opencode/plugins/weekly-advisor-engine
-uv run python -m pytest -q     # 2081 tests collectés — le compte inclut les skips
+uv run python -m pytest -q     # le compte des tests collectés s'affiche ici
 cd ../../..
 opencode run --agent weekly-advisor --model <votre-modèle> \
     --dir . "Exécute weekly_doctor et donne son verdict"
@@ -273,11 +273,14 @@ Le résultat de l'exécution `pytest` est la **source de vérité** : la validat
 est réussie si les tests exécutés passent. Pour diagnostiquer une variation du
 décompte, lancer explicitement `uv run python -m pytest --collect-only -q`
 depuis le dossier moteur ; cette collecte est informative et ne remplace pas
-l'exécution. Un **count mismatch** entre documentation, collecte et exécution
-est un avertissement seulement, jamais un motif de blocage. En revanche, les
-contrats de gate restent bloquants : échec du doctor bloquant, d'une gate docs ↔
-code, du lint/format requis ou de la gate de portabilité arrête la validation ou
-refuse le commit selon l'étape.
+l'exécution. Aucun compte n'est écrit ici : il change à chaque test ajouté, donc
+un nombre dans la documentation serait un point de dérive à maintenir à la main.
+En revanche, un **count mismatch** — un compte publié qui contredit la collecte
+réelle, ou deux comptes publiés qui divergent l'un de l'autre — est un **échec
+bloquant** de la gate docs ↔ code, jamais un avertissement. Les autres contrats
+de gate restent bloquants eux aussi : échec du doctor bloquant, du lint/format
+requis ou de la gate de portabilité arrête la validation ou refuse le commit
+selon l'étape.
 
 Attendu : **« Kit OK ... Prêt pour un run »** (exit 0). Sinon, les causes sont listées
 (exit 1 = avertissements, exit 2 = blocant — voir §6 Dépannage).
