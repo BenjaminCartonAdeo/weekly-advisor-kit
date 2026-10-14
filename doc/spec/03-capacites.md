@@ -332,7 +332,7 @@ findings.
 appliquer des seuils configurables, et émettre des candidats d'action de maintenance. **100 %
 déterministe.**
 
-**Entrées** : résumé hebdo courant + précédent, digest déclaratif courant + précédent, les 4
+**Entrées** : résumé hebdo courant + précédent, digest déclaratif courant + précédent, les 7
 derniers résumés (historique local), seuils de configuration.
 
 **Sorties** : une donnée structurée « insights » (§7.6).
@@ -357,7 +357,7 @@ le code dérive. Le câblage de chaque seuil est vérifié par
 |---|---|---|---|
 | Budget hebdomadaire | coût total de la semaine > **35 $** | haute | `config.py:112`, `insights.py:161` |
 | Budget mensuel | somme des résumés des **30** derniers jours > **500 $** | haute | `config.py:113`, `insights.py:177` |
-| Pic journalier | z-score (médiane+MAD) d'un jour vs les jours des 4 résumés précédents ≥ **3,0** ; **z borné à 10,0** (un MAD ≈ 0 produit des z astronomiques, artefact et non signal plus fort ; l'intensité observée = min(z brut, 10), avec note « MAD≈0, z borné » si dépassé) | moyenne | `config.py:114`, cap `insights.py:63` ; détecteur déclaratif `rules/daily-spike.md` |
+| Pic journalier | z-score (médiane+MAD) d'un jour vs les jours des 7 résumés précédents ≥ **3,0** ; **z borné à 10,0** (un MAD ≈ 0 produit des z astronomiques, artefact et non signal plus fort ; l'intensité observée = min(z brut, 10), avec note « MAD≈0, z borné » si dépassé) | moyenne | `config.py:114`, cap `insights.py:63` ; détecteur déclaratif `rules/daily-spike.md` |
 | Cache bas | ratio de cache hebdomadaire < **0,6** | moyenne | `config.py:115`, `insights.py:192` |
 | Coût WoW | hausse de coût > **15 %** — sautée si fenêtres hétérogènes (delta `null`) | moyenne | `config.py:116`, `insights.py:202` |
 | Violations déclaratives | somme des violations du digest > **10** | moyenne | `config.py:117`, `insights.py:661` |

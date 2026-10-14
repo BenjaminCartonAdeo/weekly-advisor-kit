@@ -56,7 +56,15 @@ jobs:
         # Assert BOTH package-data directories. A single-directory assertion let a
         # wheel ship with 0 rules/*.md: rule_loader.py reads them from inside the
         # package, so load_rules() raised RuleError (rc=2) on every wheel install.
-        run: uv run python -c "import zipfile,glob,sys; names=zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist(); want=['templates/report_template.md.j2','templates/report_template.html.j2','rules/agent-loop.md']; missing=[w for w in want if not any(w in n for n in names)]; sys.exit('missing from wheel: '+', '.join(missing)) if missing else None"
+        #
+        # Block scalar, NOT a plain scalar. The failure message carries ': ', which
+        # YAML reads as a mapping-value indicator inside a plain scalar ("mapping
+        # values are not allowed here"). Shipped that way in the lot that added
+        # the gate, so GitHub Actions could not load this workflow and the step
+        # never ran at all. A block scalar keeps the shell command byte-identical
+        # while immunising the message against the next ': ' someone adds.
+        run: |
+          uv run python -c "import zipfile,glob,sys; names=zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist(); want=['templates/report_template.md.j2','templates/report_template.html.j2','rules/agent-loop.md']; missing=[w for w in want if not any(w in n for n in names)]; sys.exit('missing from wheel: '+', '.join(missing)) if missing else None"
 
       - name: Node 24 (type stripping TS natif)
         uses: actions/setup-node@v4
