@@ -75,9 +75,19 @@ jobs:
         run: node --test scripts/tests/*.test.mjs
         working-directory: .
 
-      - name: Contrat de flux docs ↔ code (G1, 7 surfaces)
+      - name: Contrat de flux docs ↔ code (G1, 9 surfaces)
         # Mediation TS→CLI, handlers, artefacts par étape, chaînage d'ordre,
-        # collecte pytest exécutable (documentation counts are advisory).
+        # collecte pytest exécutable.
+        #
+        # Les COMPTES DE TESTS (surface 5) sont BLOQUANTS, pas advisory :
+        # trois états — aucun littéral = vert, littéraux tous égaux au collect
+        # réel = vert, sinon exit 1. L'ex-WARN « advisory » a été supprimé au
+        # commit 362dab1 ; ne pas réintroduire cette formulation.
+        #
+        # CE FICHIER EST L'UN DES TROIS LUS PAR LA SURFACE 5 (README, INSTALL,
+        # ci.yml). Tout littéral « N tests » / « tests-N » y serait comparé au
+        # collect réel et aux deux autres docs → n'en introduire aucun ici ;
+        # `pytest -q` affiche le compte sur stdout quand on en a besoin.
         run: node scripts/check-flow-docs.mjs
         working-directory: .
 

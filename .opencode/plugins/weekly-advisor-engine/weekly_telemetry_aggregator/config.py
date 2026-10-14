@@ -131,6 +131,13 @@ class InsightsConfig:
     #: Calé sur ``session_outlier_min_cost_usd`` (0.5 $) pour que R3 et les
     #: cost-outliers ne se contredisent plus.
     session_cost_cap: float = 0.5
+    #: D5 — part maximale de sessions « active » exclues avant alerte (0,20).
+    #: Au-delà, les totaux publiés sont biaisés (télémétrie incomplète) : le run
+    #: 2026-10-03 était à 53/178 = 29,8 %. Promu ici depuis la constante de
+    #: module ``EXCLUSION_RATE_MAX_DEFAULT``, relue par un ``getattr`` qui ne
+    #: pouvait pas aboutir (``InsightsConfig`` est ``slots=True``) : la branche
+    #: était inatteignable et le seuil n'était configurable par aucun chemin.
+    exclusion_rate_max: float = 0.20
 
 
 @dataclass(frozen=True, slots=True)
@@ -540,6 +547,9 @@ def _parse_audit_insights(raw: dict, cfg: TelemetryConfig) -> None:
         ),
         session_token_cap=int(ins.get("session_token_cap", cfg.insights.session_token_cap)),
         session_cost_cap=float(ins.get("session_cost_cap", cfg.insights.session_cost_cap)),
+        exclusion_rate_max=float(
+            ins.get("exclusion_rate_max", cfg.insights.exclusion_rate_max)
+        ),
     )
 
 

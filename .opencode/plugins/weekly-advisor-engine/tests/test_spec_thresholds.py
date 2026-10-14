@@ -8,23 +8,29 @@ une personne, invérifiable par une machine. Ce fichier est la machine.
 
 Le plan 02 demandait d'asserter la « présence » de chaque seuil dans
 `InsightsConfig`. Une assertion de présence est **vide de sens** ici, et elle
-mentirait activement sur deux points :
+mentirait activement :
 
 1. Tout champ de dataclass porte un défaut Python. `hasattr(InsightsConfig(),
    "weekly_budget_usd")` est vrai que la configuration livrée câblle la clé ou
    non — l'assertion ne distingue jamais du code câblé du code mort.
-2. `exclusion_rate_max` n'est pas un champ du tout. Il est lu par
-   `getattr(insights_cfg, "exclusion_rate_max", EXCLUSION_RATE_MAX_DEFAULT)`
-   (`insights.py:739`) alors que `InsightsConfig` est `frozen=True, slots=True` :
-   l'attribut ne peut pas être posé, la branche `getattr` est inatteignable. Une
-   assertion de présence « verte » sur cette clé fabriquerait la preuve d'un
-   câblage inexistant.
+2. `exclusion_rate_max` **l'était** relu par un `getattr` sur une
+   `InsightsConfig` `frozen=True, slots=True` (`insights.py:739` à l'époque) :
+   l'attribut ne pouvait pas être posé, la branche était inatteignable, et une
+   assertion de présence « verte » sur cette clé aurait fabriqué la preuve d'un
+   câblage inexistant. Ce seuil est depuis devenu un champ réel (§ « le piège
+   `exclusion_rate_max` », en bas de fichier) — l'argument vaut pour tout seuil
+   futur, pas seulement pour celui-là.
 
 Ce que « câblé » doit signifier ici : **la valeur configurée est lue par le
 chemin de code qui décide de l'alerte**. On le prouve par le comportement —
 perturber le seuil et exiger que l'alerte suive, puis qu'elle se taise. Un
 seuil recodé en dur dans l'émetteur (`"threshold": 0.70` au lieu de
 `insights_cfg.lint_coverage_min`) fait rougir ce test ; un `hasattr`, jamais.
+
+Et « câblé » va plus loin que l'émetteur : une clé doit aussi survivre au
+parseur. `_parse_audit_insights` énumère ses clés une à une, donc un champ
+déclaré sans ligne de parsing passe la table D4 entière tout en restant mort à
+la lecture du JSON. D'où un test de chaîne, en bas de fichier.
 
 ## Ce que ce test ne fait pas
 
@@ -40,17 +46,23 @@ Sources : `doc/spec/08-criteres-acceptation.md:51-52` (D4),
 
 from __future__ import annotations
 
-from dataclasses import replace
+import ast
+import json
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from weekly_telemetry_aggregator.config import InsightsConfig
-from weekly_telemetry_aggregator.insights import (
-    EXCLUSION_RATE_MAX_DEFAULT,
-    compute,
-)
+from weekly_telemetry_aggregator import config as config_module
+from weekly_telemetry_aggregator.config import InsightsConfig, load_config
+from weekly_telemetry_aggregator.insights import compute
+
+#: Le fichier de configuration **livré** — celui que l'utilisateur édite.
+#: `tests/` → moteur/ ; le JSON est à la racine du moteur.
+SHIPPED_CONFIG = Path(config_module.__file__).resolve().parents[1] / "weekly-telemetry-config.json"
+INSIGHTS_PATH = Path(config_module.__file__).resolve().parent / "insights.py"
 
 RUN = datetime(2026, 8, 12, tzinfo=UTC)
 
@@ -75,6 +87,11 @@ SILENT_BELOW = -1.0
 #: valeurs ne viennent pas de D4 et ne doivent pas y être lues.
 PERTURBED_ABOVE = 9_000.0
 PERTURBED_BELOW = 0.05
+#: Seuil de *ratio* : doit rester entre le défaut (0,20) et l'observé de
+#: `_case_exclusion_rate` (0,50). Ainsi, un émetteur figé au défaut 0,20
+#: déclencherait quand même l'alerte — c'est le seuil **publié** qui le
+#: distingue, pas le fait que l'alerte parte.
+PERTURBED_RATE = 0.30
 
 
 # --------------------------------------------------------------------------
@@ -244,11 +261,32 @@ def _case_cache_write_zero():
     return dict(
         run_time=RUN,
         current_summary=cur,
-        previous_summary=prev,
+        previous_summary=None,
         current_digest=None,
         previous_digest=None,
         recent_summaries=[cur, prev],
     )
+
+
+def _case_exclusion_rate():
+    """D5 : la moitié des sessions touchées exclues → 0,50 observé."""
+    cur = _summary(("2026-08-05", "2026-08-12"))
+    cur["selection"] = {
+        "window_touched": 100,
+        "counted": 50,
+        "excluded_active": 50,
+        "excluded_no_activity": 0,
+        "excluded_unflushed": 0,
+    }
+    return dict(
+        run_time=RUN,
+        current_summary=cur,
+        previous_summary=None,
+        current_digest=None,
+        previous_digest=None,
+        recent_summaries=[cur],
+    )
+
 
 
 #: (champ `InsightsConfig`, nom d'alerte, cas qui la déclenche,
@@ -270,6 +308,7 @@ D4_THRESHOLDS = [
     ("lint_violations_max", "lint_violations_max", _case_lint_violations, SILENT_ABOVE, 45.0),
     ("lint_coverage_min", "lint_coverage", _case_lint_coverage, SILENT_BELOW, PERTURBED_BELOW),
     ("cache_write_zero_runs", "cache_write_zero_runs", _case_cache_write_zero, SILENT_ABOVE, 1.0),
+    ("exclusion_rate_max", "exclusion_rate", _case_exclusion_rate, SILENT_ABOVE, PERTURBED_RATE),
 ]
 
 _D4_IDS = [t[0] for t in D4_THRESHOLDS]
@@ -394,62 +433,98 @@ def test_d4_r1_evidence_floor_is_wired_to_config():
 
 
 # --------------------------------------------------------------------------
-# Le piège `exclusion_rate_max`
+# Le piège `exclusion_rate_max` — résolu, et prouvé par le maillon qui manquait
 # --------------------------------------------------------------------------
+#
+# Les trois tests ci-dessous partagent une idée : `exclusion_rate_max` est passé
+# de constante de module à champ de `InsightsConfig`. Une clé de configuration
+# newly-wired se prouve à trois profondeurs, et il faut les trois — chacune peut
+# mentir pendant que les deux autres passent :
+#
+#   1. le champ existe et l'émetteur le lit  → les trois tests de la table D4 ;
+#   2. le **parseur** ramène la clé JSON dans le champ ;
+#   3. la clé du fichier JSON **livré** atteint l'alerte.
+#
+# Les 27 tests de la table D4 partent tous de `replace(InsightsConfig(), …)` :
+# ils sauté le maillon 2 par construction. Un champ ajouté à la dataclass sans
+# ligne dans `_parse_audit_insights` passe donc les 27 — la clé du JSON livrée
+# resterait morte, ce qui est précisément l'avatar du défaut « 1212 tests ».
+# D'où les deux tests de chaîne ci-dessous.
 
 
-def test_c9_exclusion_rate_is_a_module_constant_not_a_config_field():
-    """Verrou anti-2.8 : `exclusion_rate_max` n'est pas câblable en l'état.
+def test_exclusion_rate_max_is_parsed_from_the_config_file(tmp_path):
+    """Maillon 2 : la clé du JSON atteint le champ.
 
-    La table C9 cite cette alerte. Son seuil est `EXCLUSION_RATE_MAX_DEFAULT`
-    (`insights.py:68`), relu par un `getattr` sur `InsightsConfig` — or
-    `InsightsConfig` est `frozen=True, slots=True` : l'attribut ne peut pas être
-    posé, la branche `getattr` est donc inatteignable et la valeur effective est
-    toujours la constante de module.
-
-    Conséquence : ajouter `exclusion_rate_max` à `weekly-telemetry-config.json`
-    créerait une clé *paraissant* configurable que rien n'exécute — exactement
-    le défaut que ce fichier existe pour empêcher. Le test est ici pour rendre
-    ce « correctif » impossible à rejouer par ignorance.
+    `_parse_audit_insights` énumère ses clés une à une — ce n'est pas un
+    `InsightsConfig(**ins)`. Un champ déclaré sans ligne de parsing ici est
+    silently ignoré : la clé passe au travers, sans erreur ni avertissement.
     """
-    assert "exclusion_rate_max" not in InsightsConfig.__dataclass_fields__, (
-        "InsightsConfig expose désormais exclusion_rate_max : la constante de "
-        "module insights.py:68 serait devenue une constante de configuration. "
-        "Mettre à jour la table C9 et cet avertissement."
-    )
-    assert pytest.approx(0.20) == EXCLUSION_RATE_MAX_DEFAULT, (
-        f"EXCLUSION_RATE_MAX_DEFAULT vaut {EXCLUSION_RATE_MAX_DEFAULT!r} "
-        f"(insights.py:68) ; la table C9 doit être resynchronisée"
-    )
+    path = tmp_path / "weekly-telemetry-config.json"
+    path.write_text(json.dumps({"insights": {"exclusion_rate_max": 0.35}}), encoding="utf-8")
+
+    assert load_config(path).insights.exclusion_rate_max == pytest.approx(0.35)
 
 
-def test_exclusion_rate_alert_reads_the_module_constant():
-    """Le seuil effectif de `exclusion_rate` est bien la constante (0,20).
+def test_shipped_config_key_moves_the_threshold_of_the_emitted_alert(tmp_path):
+    """Maillon 3, bout en bout : le fichier livré pilote l'alerte.
 
-    `InsightsConfig()` nu ne porte pas l'attribut : la valeur qui décide de
-    l'alerte vient de `insights.py:68`. On le prouve en passant une
-    `InsightsConfig` réelle (pas un `SimpleNamespace` coiffé de l'attribut,
-    comme le fait `test_insights.py`) et en observant le seuil publié.
+    On repart d'une copie du JSON **livré** (`weekly-telemetry-config.json`, le
+    fichier que l'utilisateur édite), on y déplace le seuil hors de sa valeur
+    par défaut, et on exige que le seuil publié par l'alerte suive. C'est le
+    critère d'acceptation littéral : une surcharge dans la config déplace le
+    seuil observé par l'alerte émise.
+
+    Le test échouerait sur l'état antérieur du dépôt pour la bonne raison — la clé
+    n'y était pas, et même ajoutée au JSON elle n'aurait rien piloté.
     """
-    summary = {
-        **_summary(("2026-08-05", "2026-08-12")),
-        "selection": {
-            "window_touched": 100,
-            "excluded_active": 50,
-            "excluded_no_activity": 0,
-            "excluded_unflushed": 0,
-        },
-    }
-    alerts = _run(
-        dict(
-            run_time=RUN,
-            current_summary=summary,
-            previous_summary=None,
-            current_digest=None,
-            previous_digest=None,
-            recent_summaries=[summary],
-        )
+    shipped = json.loads(SHIPPED_CONFIG.read_text(encoding="utf-8"))
+    assert "exclusion_rate_max" in shipped["insights"], (
+        "la clé n'est pas dans le JSON livré : l.configureur ne peut pas la "
+        "déplacer, même si le champ existe"
     )
+    shipped["insights"]["exclusion_rate_max"] = PERTURBED_RATE
+    path = tmp_path / "weekly-telemetry-config.json"
+    path.write_text(json.dumps(shipped), encoding="utf-8")
+
+    insights_cfg = load_config(path).insights
+    alerts = _run(_case_exclusion_rate(), **asdict(insights_cfg))
     alert = _alert(alerts, "exclusion_rate")
-    assert alert is not None, "50 % de sessions exclues doit dépasser 0,20"
-    assert alert["threshold"] == pytest.approx(EXCLUSION_RATE_MAX_DEFAULT)
+
+    assert alert is not None, "0,50 observé doit dépasser le seuil déplacé"
+    assert alert["threshold"] == pytest.approx(PERTURBED_RATE), (
+        f"l'alerte publie {alert['threshold']!r} au lieu du seuil du fichier "
+        f"livré ({PERTURBED_RATE!r}) : la chaîne JSON → parse → champ → émetteur "
+        "n'est pas câblée"
+    )
+
+
+def test_no_module_constant_still_carries_the_exclusion_threshold():
+    """Un seul littéral porte la valeur : celui du champ, dans `config.py`.
+
+    Une constante de module ré-exportée à côté du champ serait un second nom
+    pour la même valeur — et il faudrait choisir laquelle lire. `insights.py:46`
+    refuse déjà ce doublonnage pour `rule_pipeline`.
+
+    On vérifie l'**absence de liaison** du nom, pas l'absence de la chaîne : un
+    commentaire qui raconte pourquoi la constante a disparu est exact et
+    utile, un `EXCLUSION_RATE_MAX_DEFAULT = 0.20` ne l'est pas.
+    """
+    with pytest.raises(ImportError):
+        from weekly_telemetry_aggregator.insights import EXCLUSION_RATE_MAX_DEFAULT  # noqa: F401
+
+    source = Path(INSIGHTS_PATH).read_text(encoding="utf-8")
+    bound = [
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.Assign | ast.AnnAssign)
+        and any(getattr(t, "id", None) == "EXCLUSION_RATE_MAX_DEFAULT" for t in node.targets)
+    ]
+    assert not bound, (
+        "insights.py lie de nouveau EXCLUSION_RATE_MAX_DEFAULT : il y aurait "
+        "deux valeurs à choisir (le champ et la constante)"
+    )
+    # ...et le seuil est bien lu sur le champ, pas sur un littéral.
+    assert "threshold = insights_cfg.exclusion_rate_max" in source, (
+        "l'émetteur ne lit pas InsightsConfig.exclusion_rate_max — le seuil "
+        "n'est plus piloté par la configuration"
+    )

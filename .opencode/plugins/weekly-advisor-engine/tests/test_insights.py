@@ -8,9 +8,8 @@ from pathlib import Path
 
 from helpers import tzutc
 
-from weekly_telemetry_aggregator.config import InsightsConfig
+from weekly_telemetry_aggregator.config import InsightsConfig, load_config
 from weekly_telemetry_aggregator.insights import (
-    EXCLUSION_RATE_MAX_DEFAULT,
     compute,
     flatten_harness_findings,
     run,
@@ -1203,7 +1202,7 @@ def _summary_with_selection(selection: dict, warnings=None) -> dict:
     return summary
 
 
-def _compute(current: dict):
+def _compute(current: dict, **cfg_over):
     return compute(
         run_time=RUN,
         current_summary=current,
@@ -1211,7 +1210,7 @@ def _compute(current: dict):
         current_digest=None,
         previous_digest=None,
         recent_summaries=[current],
-        insights_cfg=_cfg(),
+        insights_cfg=_cfg(**cfg_over),
         ignored_findings=[],
     )
 
@@ -1242,7 +1241,9 @@ def test_exclusion_rate_alert_on_observed_run_shape():
     alert = next(a for a in _compute(current)["alerts"] if a["rule"] == "exclusion_rate")
 
     assert alert["severity"] == "medium"
-    assert alert["threshold"] == EXCLUSION_RATE_MAX_DEFAULT
+    # Le seuil en vigueur, lu sur le champ — la constante de module
+    # `EXCLUSION_RATE_MAX_DEFAULT` a disparu (cf. test_exclusion_rate_threshold_override).
+    assert alert["threshold"] == InsightsConfig().exclusion_rate_max
     assert alert["observed"] == round(53 / 178, 4)
     assert alert["note"] == "53 active(s), 5 no-activity, 11 unflushed sur 178 touchée(s)"
     # mécanisme de regroupement remonté au niveau de l'alerte
@@ -1270,21 +1271,75 @@ def test_exclusion_rate_silent_without_selection():
 
 
 def test_exclusion_rate_threshold_override():
-    """Seuil surchargeable : lu sur InsightsConfig quand l'attribut existe.
+    """D5 : le seuil est lu sur la config, et il décide.
 
-    `InsightsConfig` est `slots=True`, le setter est donc refusé en test — on
-    teste la branche de surcharge via un stub sur l'appel pur.
+    Ce test passing par une **vraie** `InsightsConfig` et par le chemin émetteur
+    complet (`compute()`), pas par un `types.SimpleNamespace(exclusion_rate_max=…)`.
+
+    L'ancienne version passait par le stub, et sa docstring annonçait « lu sur
+    InsightsConfig » : c'était faux, et c'est le `hasattr` que ce moteur refuse
+    sous une autre forme. Un stub duck-typé prouve qu'une fonction lit un
+    *attribut* — il passerait aussi bien avec n'importe quel objet portant ce
+    nom, y compris si `InsightsConfig` n'avait aucun champ du tout. On prouve ici
+    que l'objet est bien de la classe de configuration.
+
+    Ce que ce test ne prouve pas : que la clé du **fichier JSON** atteint le
+    champ. `_cfg()` court-circuite `_parse_audit_insights`, qui énumère ses clés
+    une à une. Ce maillon est couvert par `test_spec_thresholds.py`
+    (`test_shipped_config_key_moves_the_threshold_of_the_emitted_alert`).
     """
-    from types import SimpleNamespace
-
-    from weekly_telemetry_aggregator.insights import _exclusion_rate_alert
-
     summary = _summary_with_selection({"window_touched": 100, "excluded_active": 10})
-    alert = _exclusion_rate_alert(summary, SimpleNamespace(exclusion_rate_max=0.05))
+    # Observé = 0,10. Même observation, deux configs, deux décisions opposées :
+    # c'est le SEUIL qui tranche, et il vient bien de la configuration.
+    assert not any(a["rule"] == "exclusion_rate" for a in _compute(summary)["alerts"])
+    assert not any(
+        a["rule"] == "exclusion_rate"
+        for a in _compute(summary, exclusion_rate_max=0.5)["alerts"]
+    ), "un seuil de 0,50 doit étouffer un observé de 0,10"
 
+    # sous 0,05 (0,10 > 0,05) l'alerte part et publie la valeur CONFIGURÉE,
+    # pas le défaut du champ.
+    alert = next(
+        a
+        for a in _compute(summary, exclusion_rate_max=0.05)["alerts"]
+        if a["rule"] == "exclusion_rate"
+    )
     assert alert["threshold"] == 0.05
     assert alert["observed"] == 0.1
+    assert alert["threshold"] != InsightsConfig().exclusion_rate_max
     assert "repeated_warnings" not in alert  # aucun warning répété → clé absente
+
+
+def test_exclusion_rate_threshold_comes_from_the_parsed_config_file(tmp_path: Path):
+    """D5 : la valeur sort du **fichier** — on ne se fie plus à un stub.
+
+    Même jeu de données, mais le seuil passe par `load_config()`, donc par
+    `_parse_audit_insights`. C'est le seul test du fichier qui touche ce maillon :
+    tous les autres (`_cfg()`, `replace(InsightsConfig(), …)`) sautent le
+    parseur, et un champ déclaré sans ligne de parsing passerait leur suite
+    entière en restant mort à la lecture du JSON.
+    """
+    path = tmp_path / "weekly-telemetry-config.json"
+    path.write_text(json.dumps({"insights": {"exclusion_rate_max": 0.05}}), encoding="utf-8")
+    insights_cfg = load_config(path).insights
+
+    summary = _summary_with_selection({"window_touched": 100, "excluded_active": 10})
+    alerts = compute(
+        run_time=RUN,
+        current_summary=summary,
+        previous_summary=None,
+        current_digest=None,
+        previous_digest=None,
+        recent_summaries=[summary],
+        insights_cfg=insights_cfg,
+        ignored_findings=[],
+    )["alerts"]
+
+    alert = next(a for a in alerts if a["rule"] == "exclusion_rate")
+    assert alert["threshold"] == 0.05, (
+        f"le seuil publié ({alert['threshold']!r}) ne suit pas la clé du fichier — "
+        "la chaîne JSON → parseur → champ → émetteur n'est pas câblée"
+    )
 
 
 # ================================================ moteur de règles déclaratif (P1)

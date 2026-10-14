@@ -49,12 +49,13 @@ présente spécification. Chaque critère est **testable par un humain**.
 - [ ] D3. Les deltas sont `null` + avertissement si les fenêtres précédente et courante diffèrent
       de plus d'1 heure.
 - [ ] D4. Les alertes et règles R1-R5 appliquent les seuils du § C9 (35 / 500 / 3 (cap
-      10) / 0,6 / 15 / 10 / 0,70 / 2 ; R1 ≥ 4 runs ; R2 = R1 + chevauchement ; R5 jamais
-      automatique). Les huit seuils d'alerte sont des champs de `InsightsConfig`
-      (`config.py:112-125`) ; la neuvième alerte, « Sessions exclues », se règle sur une
-      constante de module (`insights.py:68`) et n'est pas configurable. Chaque seuil est
-      comparé en inégalité stricte, jamais par égalité. Le câblage de chacun est vérifié
-      par `tests/test_spec_thresholds.py`.
+      10) / 0,6 / 15 / 10 / 0,70 / 0,20 / 2 ; R1 ≥ 4 runs ; R2 = R1 + chevauchement ; R5 jamais
+      automatique). Les neuf seuils d'alerte sont des champs de `InsightsConfig`
+      (`config.py:112-140`), y compris « Sessions exclues » : ce seuil était une
+      constante de module relue par un `getattr` inatteignable, il est désormais un champ
+      configurable de bout en bout (clé JSON livrée → parseur → champ → alerte). Chaque
+      seuil est comparé en inégalité stricte, jamais par égalité. Le câblage de chacun est
+      vérifié par `tests/test_spec_thresholds.py`.
 - [ ] D5. La remédiation n'applique jamais une règle de sécurité, ni une règle hors liste, ni plus
       d'1 fichier ; en cas d'échec de post-vérification, tout est restauré.
 - [ ] D6. La dérive d'architecture (R6) produit un finding **observation-only** (`observation_only`,
