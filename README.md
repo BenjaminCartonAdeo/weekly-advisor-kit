@@ -171,8 +171,9 @@ restent dans `weekly-timings-<date>.json`.
 Désactivées par défaut (défaut opencode seul, rétrocompatible). Chemin
 auto-détecté : CLI `~/.copilot` (Linux) / `%USERPROFILE%\.copilot` (Windows,
 surcharge `COPILOT_CONFIG_DIR`). Exemple `session_sources` (opencode +
-CLI avec vrais tokens estimés à 2,5 $/Mtok, recherche FTS) : [`INSTALL.md`](INSTALL.md)
-§2.3.1.
+CLI avec vrais tokens estimés à 5,0 $/Mtok — le taux par défaut : aucun taux propre
+au CLI, seul opencode est surchargé (9,0) ; ordres de grandeur blended, jamais des
+montants facturés — recherche FTS) : [`INSTALL.md`](INSTALL.md) §2.3.1.
 
 ## Contributing
 

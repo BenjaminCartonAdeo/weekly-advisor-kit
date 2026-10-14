@@ -63,11 +63,11 @@ configuration.
    avertissement `missing-pricing` est émis, la session reste dans les totaux de tokens et est
    exclue des totaux de coût. **Jamais de taux par défaut silencieux pour un coût enregistré.**
 9. **Coût estimé** : toute session **sans aucun coût enregistré** se voit attribuer un coût
-   estimé = `tokens totaux × taux du harnais`. Taux par défaut : **5,0** (harnais générique),
-   **9,0** (OpenCode), **2,5** (Copilot VS Code) USD par million de tokens, surchargeables par
-   source. Le coût estimé est **distinct** du coût facturé : les deux ne se somment jamais ; une
-   session sans coût enregistré reste dans les totaux de tokens, son coût estimé ne figure que
-   dans le champ « coûts estimés ».
+   estimé = `tokens totaux × taux du harnais`. Taux par défaut : **5,0** USD par million de
+   tokens pour tout harnais non surchargé (Copilot CLI compris) ; seul **OpenCode** est
+   surchargé, à **9,0**. Taux surchargeables par source. Le coût estimé est **distinct** du
+   coût facturé : les deux ne se somment jamais ; une session sans coût enregistré reste dans
+   les totaux de tokens, son coût estimé ne figure que dans le champ « coûts estimés ».
 10. **Prompts utilisateur répétés** : les tours utilisateur sont d'abord filtrés (bruit : séparateurs répétés ≥10, commandes de contrôle seules, préfixe système, >2000 caractères, réponses y/n courtes, « continue to iterate » court) puis normalisés (minuscules, blocs de code → `CODE`, citations → `STR`, chemins → `PATH`, nombres → `NUM`, ponctuation → espace, stop-list ~75 mots FR/EN, tokens >1 caractère) ; l'empreinte est les **4 premiers tokens triés joints par `|`** (bucket map **O(n)**, plus de comparaisons O(n²)). Une entrée est émise si le compte d'empreinte identique est ≥ **3** ; la liste est plafonnée à **20**, tri stable (-count, session_id). Le prompt canonique est le plus court ≥20 caractères normalisés, le label est tronqué à 80, avec agrégats déterministes : sessions/harnais distincts, taux d'annulation, tours de correction moyens, first/last seen, ≤5 exemples, brouillon de skill markdown et gain estimé (répétitions ×2 min). Les artefacts de compaction (`▣█░│⏿`, `dcp |…removed…summary`) et les sessions enfants (`parent_id` non nul) sont exclus.
 11. **Invocation de commands** : tout tour utilisateur commençant par `/` est compté comme
     invocation de command, par command et par session.
@@ -350,8 +350,8 @@ derniers résumés (historique local), seuils de configuration.
 
 | Règle | Condition | Sévérité |
 |---|---|---|
-| Budget hebdomadaire | coût total de la semaine > **25 $** | haute |
-| Budget mensuel | somme des résumés des **30** derniers jours > **100 $** | haute |
+| Budget hebdomadaire | coût total de la semaine > **35 $** | haute |
+| Budget mensuel | somme des résumés des **30** derniers jours > **500 $** | haute |
 | Pic journalier | z-score (médiane+MAD) d'un jour vs les jours des 4 résumés précédents ≥ **3,0** ; **z borné à 10,0** (un MAD ≈ 0 produit des z astronomiques, artefact et non signal plus fort ; l'intensité observée = min(z brut, 10), avec note « MAD≈0, z borné » si dépassé) | moyenne |
 | Cache bas | ratio de cache hebdomadaire < **0,6** | moyenne |
 | Coût WoW | hausse de coût > **15 %** — sautée si fenêtres hétérogènes (delta `null`) | moyenne |
