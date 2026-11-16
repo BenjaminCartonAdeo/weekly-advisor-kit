@@ -1,5 +1,15 @@
 """Rapport HTML autonome (v6.1) — rendu Jinja2 self-contained depuis le ctx de report_prep.
 
+Matrice de conversion MD → HTML (parité stricte des deux rendus) :
+  - titre `### Foo` du bloc qualitatif → `<h5>Foo</h5>` (offset +2)
+  - paragraphe séparé par ligne vide → `<p>…</p>`
+  - `[F:ses_x#cat]` / `[M:…]` / `[A:…]` → `<span class="tag tag-{f|m|a}">…</span>`
+  - `[N:19 findings]` → `19 findings` (chiffre arabe, marqueur retiré)
+  - `` `code` `` → `<code>code</code>`
+  - texte agent → `escape()` unique (sanitisation)
+  - section Sécurité → injectée avant `</main>` (counts-only)
+  - tableau markdown → tableau HTML (`<table>` avec `scope="col"`)
+
 Contrat : `render_html_report(cfg, *, anchor, ctx, quality_block) -> Path | None`.
 Best-effort total : toute OSError ou TemplateError → warning log + None (le run
 cron ne casse jamais, y compris en cas d'erreur de rendu Jinja). Branché en fin
@@ -527,22 +537,18 @@ def render_html_report(
         top_next_steps = ctx.get("top_next_steps", []) if isinstance(ctx, dict) else []
         if top_next_steps is None:
             top_next_steps = []
+        gate = ctx.get("gate_status", {}).get("security") if isinstance(ctx, dict) else None
+        security_section = _render_security_section(gate if isinstance(gate, dict) else None)
         rendered = template.render(
             **{
                 **ctx,
                 "date": date,
                 "payload_json": _payload_json(ctx),
                 "quality_html": _render_quality_block(quality_block),
+                "security_section": security_section,
                 "top_next_steps": top_next_steps,
             }
         )
-        # Task2 : section Sécurité repliée (counts-only Task1) sans toucher au gabarit.
-        gate = ctx.get("gate_status", {}).get("security") if isinstance(ctx, dict) else None
-        sec_html = str(_render_security_section(gate if isinstance(gate, dict) else None))
-        if "</main>" in rendered:
-            rendered = rendered.replace("</main>", sec_html + "\n</main>", 1)
-        else:
-            rendered += "\n" + sec_html + "\n"
 
         out_dir.mkdir(parents=True, exist_ok=True)
         dated = out_dir / f"weekly-report-{date}.html"

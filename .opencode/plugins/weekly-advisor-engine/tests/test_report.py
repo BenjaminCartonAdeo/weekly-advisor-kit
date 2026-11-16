@@ -71,6 +71,21 @@ def test_report_prep_renders_draft(tmp_path: Path):
     assert f"weekly-summary-{DATE}.json" in text
 
 
+def test_report_prep_smoke_sections_and_quality_block(tmp_path: Path):
+    _write_summary(tmp_path)
+    cfg = _cfg(tmp_path)
+    draft, ctx = report_prep(cfg, anchor=RUN.isoformat())
+    assert draft is not None and ctx is not None
+    text = draft.read_text(encoding="utf-8")
+    for n in range(1, 9):
+        assert f"## {n}." in text, f"section {n} manquante dans le draft"
+    assert "<!-- QUALITY_BLOCK -->" in text
+    final_path, warnings, rc = report_assemble(cfg, anchor=RUN.isoformat())
+    assert final_path is not None
+    final_text = final_path.read_text(encoding="utf-8")
+    assert "<!-- QUALITY_BLOCK -->" not in final_text
+
+
 def test_report_context_exposes_deterministic_provenance(tmp_path: Path):
     _write_summary(tmp_path)
     from weekly_telemetry_aggregator.report import build_report_context

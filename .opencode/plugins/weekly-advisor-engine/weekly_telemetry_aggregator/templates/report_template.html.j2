@@ -149,6 +149,8 @@ html { scroll-behavior: smooth; }
 body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   background: var(--bg); color: var(--fg); line-height: 1.6; font-size: 15.5px; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.skip-link { position: absolute; left: -9999px; top: 0; z-index: 100; padding: 8px 12px; background: var(--accent); color: var(--card); border-radius: 0 0 8px 0; font-weight: 600; text-decoration: none; }
+.skip-link:focus { left: 0; }
 ::selection { background: var(--accent-soft); }
 a { color: var(--accent-strong); }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .86em;
@@ -170,8 +172,9 @@ header.page .subtitle { margin: 0 0 10px; color: var(--muted); font-size: .92rem
 .next-steps li { margin: 3px 0; }
 .next-steps b { color: var(--fg); }
 /* TOC sticky Exec|Annexes */
-nav#toc { position: sticky; top: 0; z-index: 20; background: color-mix(in srgb, var(--bg) 88%, transparent);
-  backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
+nav#toc { position: sticky; top: 0; z-index: 20; background: var(--bg);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
 nav#toc .toc-inner { max-width: 1060px; margin: 0 auto; padding: 8px 20px;
   display: flex; flex-wrap: wrap; gap: 2px 6px; align-items: center; }
 nav#toc a { color: var(--muted); text-decoration: none; font-size: .86rem;
@@ -198,6 +201,7 @@ details.exec-fold .exec-body { padding: 6px 22px 18px; }
 .annexes-wrapper { margin: 18px 0; }
 .annexes-wrapper > h2 { font-size: 1.18rem; margin: 8px 0 10px; color: var(--muted); letter-spacing: -.01em; }
 details.annex { background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+  content-visibility: auto; contain-intrinsic-size: 0 400px;
   box-shadow: var(--shadow); margin: 12px 0; scroll-margin-top: calc(var(--nav-h) + 12px);
   transition: box-shadow .18s ease; }
 details.annex:hover { box-shadow: var(--shadow-hover); }
@@ -316,9 +320,25 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
   details.exec-fold, details.annex, details.disc { display: block !important; }
   details.exec-fold .exec-body, details.annex .annex-body, details.disc .disc-body { display: block !important; }
 }
+@media (prefers-contrast: high) {
+  :root { --border: var(--fg); --border-strong: var(--fg); --muted: var(--fg); }
+  details.annex, .card, table.data { border-width: 2px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+@supports not (backdrop-filter: blur(1px)) {
+  nav#toc { background: var(--bg); }
+}
 </style>
-</head>
 <body>
+<a class="skip-link" href="#main">Skip to main content / Aller au contenu principal</a>
 <header class="page">
   <h1>{{ thesis }}</h1>
   <p class="subtitle">Revue d'usage générée par le pipeline weekly-advisor v{{ engine_version }}</p>
@@ -346,7 +366,9 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     <a href="#annex-h">H</a>
   </div>
 </nav>
-<main>
+<main id="main">
+<span id="main-content" tabindex="-1"></span>
+<span id="content" tabindex="-1"></span>
 <!-- compat anchors for legacy tests -->
 <span id="synthese" hidden></span>
 <span id="vue-ensemble" hidden></span>
@@ -529,7 +551,7 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     <h3>Top modèles</h3>
     {% if models_top %}
     <div class="chart-wrap"><table class="data">
-      <thead><tr><th>Modèle</th><th class="num">Sessions</th><th class="num">Tokens</th><th class="num">Coût ($)</th></tr></thead>
+      <thead><tr><th scope="col">Modèle</th><th scope="col" class="num">Sessions</th><th scope="col" class="num">Tokens</th><th scope="col" class="num">Coût ($)</th></tr></thead>
       <tbody>
         {% for m in models_top %}
         <tr>
@@ -548,7 +570,7 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     <h3>Ventilation par harnais</h3>
     {% if hb %}
     <div class="chart-wrap"><table class="data">
-      <thead><tr><th>Harnais</th><th class="num">Sessions</th><th class="num">Tokens</th><th class="num">Coût ($)</th></tr></thead>
+      <thead><tr><th scope="col">Harnais</th><th scope="col" class="num">Sessions</th><th scope="col" class="num">Tokens</th><th scope="col" class="num">Coût ($)</th></tr></thead>
       <tbody>
         {% for h in hb %}
         <tr>
@@ -579,7 +601,7 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
         {% if top_sessions %}
         <h4>Sessions les plus coûteuses</h4>
         <div class="chart-wrap"><table class="data">
-          <thead><tr><th>Session</th><th>Harnais</th><th class="num">Coût ($)</th><th class="num">Tokens</th><th class="num">Durée</th><th class="num">Actif</th><th class="num">$/min actif</th><th class="num">Appels API</th></tr></thead>
+          <thead><tr><th scope="col">Session</th><th scope="col">Harnais</th><th scope="col" class="num">Coût ($)</th><th scope="col" class="num">Tokens</th><th scope="col" class="num">Durée</th><th scope="col" class="num">Actif</th><th scope="col" class="num">$/min actif</th><th scope="col" class="num">Appels API</th></tr></thead>
           <tbody>
             {% for s in top_sessions %}
             <tr>
@@ -610,7 +632,7 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     <h3>Outils</h3>
     {% if tool_usage %}
     <div class="chart-wrap"><table class="data">
-      <thead><tr><th>Outil</th><th class="num">Appels</th><th class="num">Tokens estimés</th></tr></thead>
+      <thead><tr><th scope="col">Outil</th><th scope="col" class="num">Appels</th><th scope="col" class="num">Tokens estimés</th></tr></thead>
       <tbody>
         {% for t in tool_usage %}
         <tr><td>{{ t.get("tool") }}</td><td class="num">{{ intfr(t.get("call_count")) }}</td><td class="num">{{ compact(t.get("estimated_input_tokens")) }}</td></tr>
@@ -928,7 +950,7 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     <p><input type="search" id="allsess-q" placeholder="Filtrer par titre / session…" aria-label="Filtrer les sessions">
     <select id="allsess-h" aria-label="Filtrer par harnais"><option value="">Tous harnais</option>{% for h in (hb if hb is defined else []) %}<option value="{{ h.get('harness') or '' }}">{{ h.get("harness") or "n/a" }}</option>{% endfor %}</select></p>
     <div class="chart-wrap"><table class="data" id="allsess-table">
-      <thead><tr><th>Session</th><th>Harnais</th><th class="num">Coût ($)</th><th class="num">Tokens</th><th>Titre</th></tr></thead>
+      <thead><tr><th scope="col">Session</th><th scope="col">Harnais</th><th scope="col" class="num">Coût ($)</th><th scope="col" class="num">Tokens</th><th scope="col">Titre</th></tr></thead>
       <tbody>
         {% for s in allss %}
         {# Pas de coupe `[:80]` (jumeau markdown l. 379) : la troncature a une source
@@ -948,6 +970,7 @@ footer.pagefoot { max-width: 1060px; margin: 0 auto; padding: 18px 20px 40px; co
     </div>
   </details>
 </section>
+{{ security_section|safe }}
 </main>
 <footer class="pagefoot">
   Page autonome générée depuis les artefacts du run — le payload JSON embarqué dans cette page

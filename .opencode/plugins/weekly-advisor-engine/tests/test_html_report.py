@@ -924,3 +924,14 @@ def test_quality_block_hash_inside_line_is_not_a_heading(tmp_path: Path):
     assert "<h" not in html.split("quality-cards")[1][:400]
     assert "issue #42" in html
     assert "<code>&lt;script&gt;</code>" in html
+
+
+def test_quality_block_parity_matrix(tmp_path: Path):
+    block = "### Titre\n\nTexte [F:ses_1#cat] avec [N:5 findings] et `code`."
+    dated = render_html_report(_cfg(tmp_path), anchor=DATE, ctx=_ctx(), quality_block=block)
+    html = dated.read_text(encoding="utf-8")
+    assert "<h5>Titre</h5>" in html
+    assert "5 findings" in html
+    assert "<code>code</code>" in html
+    assert '<span class="tag tag-f">F:ses_1#cat</span>' in html
+    assert "[N:5 findings]" not in html

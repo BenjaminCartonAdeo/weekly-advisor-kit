@@ -41,6 +41,14 @@ markers = [
     "slow: budget/e2e assertions on the golden fixture (deselect with -m 'not slow')",
 ]
 
+[tool.coverage.run]
+branch = true
+source = ["weekly_telemetry_aggregator"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

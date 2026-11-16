@@ -24,6 +24,7 @@ def _cmd_report_prep(args, cfg) -> int:
     from .report import (
         _audit_artifact_declarations,
         _branch_applicability,
+        _json_file_state,
         applicable_summary_rc,
         report_prep,
         validate_required_artifacts,
@@ -41,13 +42,10 @@ def _cmd_report_prep(args, cfg) -> int:
     run_time = _parse_anchor(args.anchor)
     date = run_time.strftime("%Y-%m-%d")
     out = _out_dir(cfg, date)
-    timings: object = None
     timings_path = out / f"weekly-timings-{date}.json"
-    if timings_path.is_file():
-        try:
-            timings = json.loads(timings_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            timings = None
+    timings, timings_state = _json_file_state(timings_path)
+    if timings_state != "present":
+        timings = None
     if (
         validate_required_artifacts(
             out,
@@ -129,19 +127,11 @@ def _cmd_report_blocks_check(args, cfg) -> int:
 
     findings = load_json(out / f"weekly-quality-findings-{date}.json")
     insights = load_json(out / f"weekly-insights-{date}.json")
-    violations, coverage = validate_llm_blocks(text, findings, insights)
+    violations, coverage = validate_llm_blocks(
+        text, findings, insights, blocks_min_words=cfg.blocks_min_words
+    )
     n_lines = len(text.splitlines())
     n_words = len(text.split())
-    # `validate_llm_blocks` ne couvre pas le plancher de mots : c'est
-    # `_assemble_quality_block` qui rejette en dessous. Même seuil, même calcul
-    # (`len(text.split())`), sinon le check validerait un bloc que l'assemble
-    # rejetterait quand même — exactement le faux vert qu'on veut supprimer.
-    if n_words < cfg.blocks_min_words:
-        violations = [
-            *violations,
-            f"bloc trop court ({n_words} mots < {cfg.blocks_min_words}) — "
-            f"détailler les constats, ne pas résumer",
-        ]
 
     for warning in coverage:
         print(f"report-blocks-check: WARNING: {warning}", flush=True)
