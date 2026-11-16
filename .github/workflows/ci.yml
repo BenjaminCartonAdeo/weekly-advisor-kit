@@ -72,7 +72,7 @@ jobs:
           node-version: "24"
 
       - name: TS dependencies (weekly-advisor)
-        run: npm ci
+        run: npm install
         working-directory: .opencode/plugins/weekly-advisor
 
       - name: Typecheck (tsc) weekly-advisor
