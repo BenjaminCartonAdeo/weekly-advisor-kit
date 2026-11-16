@@ -55,4 +55,4 @@ jobs:
         # passer un garde qui n'a rien vérifié).
         # shellcheck et pyflakes sont facultatifs : actionlint saute ces
         # contrôles s'ils sont absents, il ne les exige pas.
-        run: actionlint .github/workflows/*.yml
+        run: ./actionlint .github/workflows/*.yml
