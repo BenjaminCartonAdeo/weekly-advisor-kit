@@ -58,4 +58,5 @@ select = ["E", "W", "F", "I", "UP", "B", "SIM", "ARG", "PTH"]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
+"weekly_telemetry_aggregator/report_context.py" = ["F821"]
 "tests/**/*.py" = ["ARG001", "ARG002", "ARG005"]

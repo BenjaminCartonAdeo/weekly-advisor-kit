@@ -4,8 +4,6 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from .config import TelemetryConfig
-
 
 def render_report_draft(ctx: dict, out: Path, date: str) -> Path:
     env = Environment(

@@ -1,4 +1,5 @@
 """Validation des blocs LLM du rapport."""
+
 import re
 from collections.abc import Iterable, Mapping
 
@@ -323,5 +324,3 @@ def validate_llm_blocks(
                 coverage.append(f"constat high non couvert par le bloc : [F:{ref}]")
 
     return violations, coverage
-
-

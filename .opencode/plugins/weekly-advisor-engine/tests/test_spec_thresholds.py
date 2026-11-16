@@ -288,7 +288,6 @@ def _case_exclusion_rate():
     )
 
 
-
 #: (champ `InsightsConfig`, nom d'alerte, cas qui la déclenche,
 #:  seuil qui éteint, seuil qui déplace l'alerte).
 #: Le champ est un *nom*, jamais un nombre de D4 : le test ne doit pas recopier

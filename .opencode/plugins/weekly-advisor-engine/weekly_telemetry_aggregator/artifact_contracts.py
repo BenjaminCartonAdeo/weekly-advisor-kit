@@ -193,6 +193,8 @@ _ARTIFACT_CONTRACTS: dict[str, Callable[[Mapping], bool]] = {
     "weekly-harness-remediation": _valid_remediation,
     "weekly-timings": _valid_timings,
 }
+
+
 def _artifact_contract_valid(
     name: str,
     value: object,
@@ -219,3 +221,99 @@ def _artifact_contract_valid(
     # name are validated by ``validate_required_artifacts`` below.
     return True
 
+
+def _audit_envelope_reason(value: object, session_id: str) -> str:
+    """Return a stable machine-readable cause for an invalid audit envelope."""
+    if not isinstance(value, Mapping):
+        return "not-mapping"
+    if not _valid_schema_version(value.get("schema_version"), 1):
+        return "bad-schema-version"
+    if value.get("session_id") != session_id:
+        return "sid-mismatch"
+    if not _nonempty_text(value.get("summary")):
+        return "empty-summary"
+    if not isinstance(value.get("findings"), list):
+        return "bad-findings"
+    if _coerce_rc(value.get("rc"), default=None) not in {0, 1}:
+        return "bad-rc"
+    if not isinstance(value.get("warnings"), list):
+        return "bad-warnings"
+    return "ok"
+
+
+def _audit_declaration_values(record: object) -> list[str]:
+    """Return structured audit artifact declarations without parsing text."""
+    if not isinstance(record, Mapping):
+        return []
+    values: list[str] = []
+
+    def collect(value: object) -> None:
+        if isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, Mapping):
+            for key in (
+                "path",
+                "artifact",
+                "artifact_path",
+                "audit_artifact",
+                "audit_artifact_path",
+            ):
+                if key in value:
+                    collect(value[key])
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+
+    for key in (
+        "audit_artifact",
+        "audit_artifact_path",
+        "artifact",
+        "artifact_path",
+        "artifacts",
+        "required_artifact",
+        "required_artifacts",
+    ):
+        if key in record:
+            collect(record[key])
+    return values
+
+
+def _canonical_audit_path(out: Path, session_id: str) -> Path | None:
+    """Build the only accepted audit path for one session id."""
+    if not session_id or "/" in session_id or "\\" in session_id or session_id in {".", ".."}:
+        return None
+    path = out / f"audit-findings-{session_id}.json"
+    try:
+        if path.resolve(strict=False).parent != out.resolve(strict=False):
+            return None
+    except (OSError, RuntimeError):
+        return None
+    return path
+
+
+def _audit_declaration_matches(out: Path, session_id: str, record: object) -> bool:
+    """Require a declaration equal to the exact canonical run-local filename."""
+
+
+def _declared_run_filename(item: str, out: Path | None = None) -> str | None:
+    """Return a declaration filename only when its run-local path is exact."""
+    if not item:
+        return None
+    path = Path(item)
+    if path.is_absolute():
+        if out is None:
+            return None
+        try:
+            resolved = path.resolve(strict=False)
+            run_root = out.resolve(strict=False)
+            if resolved.parent != run_root:
+                return None
+            return resolved.name
+        except (OSError, RuntimeError):
+            return None
+    # Relatif : un séparateur (ou un préfixe « . ») signalerait une traversée. Le
+    # garde « \ » ne vaut que pour les chemins relatifs — sous Windows c'est le
+    # séparateur natif, et un chemin absolu est déjà traité ci-dessus.
+    if "\\" in item or "/" in item or item.startswith("."):
+        return None
+    return item

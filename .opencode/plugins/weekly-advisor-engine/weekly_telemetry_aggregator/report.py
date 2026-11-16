@@ -1,3 +1,4 @@
+# ruff: noqa: F401
 """Deterministic report rendering — report-prep + report-assemble (Partie 7).
 
 `report-prep` renders every section that comes from JSON artefacts + git log
@@ -15,18 +16,42 @@ import re
 import subprocess
 import sys
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
+from datetime import timedelta
+from pathlib import Path
+
+from . import __version__
 from .artifact_contracts import (
-    _artifact_contract_valid,
     _ARTIFACT_CONTRACTS,
+    _artifact_contract_valid,
+    _audit_declaration_values,
+    _audit_envelope_reason,
+    _canonical_audit_path,
     _coerce_rc,
+    _declared_run_filename,
+    _has_findings_list,
     _json_file_state,
     _nonempty_text,
+    _valid_audit_candidates,
+    _valid_coherence,
     _valid_date,
+    _valid_ecosystem,
+    _valid_harness_digest,
+    _valid_remediation,
     _valid_remediation_proposals,
     _valid_schema_version,
     _valid_skill_curate,
+    _valid_timings,
+    _valid_watch_candidates,
+    _valid_watch_context,
+    _valid_watch_findings,
+    _valid_weekly_insights,
+    _valid_weekly_summary,
 )
+from .config import TelemetryConfig
+from .harness_scope import harness_digest_problems
+from .html_report import open_html_report, render_html_report, resolve_number_bands
+from .insights import flatten_harness_findings
 from .report_blocks import (
     number_band_index,
     published_number_bands,
@@ -40,16 +65,6 @@ from .report_gates import (
     _summarize_artifact_gate,
     validate_required_artifacts,
 )
-from datetime import timedelta
-from pathlib import Path
-
-from jinja2 import Environment, FileSystemLoader, select_autoescape
-
-from . import __version__
-from .config import TelemetryConfig
-from .harness_scope import harness_digest_problems
-from .html_report import open_html_report, render_html_report, resolve_number_bands
-from .insights import flatten_harness_findings
 from .run_state import (
     active_run_meta,
     record_resilience_event,
@@ -1348,9 +1363,6 @@ def _record_field(record: Mapping[str, object], *keys: str) -> object | None:
     return None
 
 
-
-
-
 def _text_values(value: object) -> Iterable[str]:
     """Yield searchable text from one warning/manifest record."""
     if isinstance(value, str):
@@ -1496,77 +1508,7 @@ _AUDIT_ENVELOPE_REASONS = frozenset(
 )
 
 
-def _audit_envelope_reason(value: object, session_id: str) -> str:
-    """Return a stable machine-readable cause for an invalid audit envelope."""
-    if not isinstance(value, Mapping):
-        return "not-mapping"
-    if not _valid_schema_version(value.get("schema_version"), 1):
-        return "bad-schema-version"
-    if value.get("session_id") != session_id:
-        return "sid-mismatch"
-    if not _nonempty_text(value.get("summary")):
-        return "empty-summary"
-    if not isinstance(value.get("findings"), list):
-        return "bad-findings"
-    if _coerce_rc(value.get("rc"), default=None) not in {0, 1}:
-        return "bad-rc"
-    if not isinstance(value.get("warnings"), list):
-        return "bad-warnings"
-    return "ok"
-
-
-def _audit_declaration_values(record: object) -> list[str]:
-    """Return structured audit artifact declarations without parsing text."""
-    if not isinstance(record, Mapping):
-        return []
-    values: list[str] = []
-
-    def collect(value: object) -> None:
-        if isinstance(value, str):
-            values.append(value)
-        elif isinstance(value, Mapping):
-            for key in (
-                "path",
-                "artifact",
-                "artifact_path",
-                "audit_artifact",
-                "audit_artifact_path",
-            ):
-                if key in value:
-                    collect(value[key])
-        elif isinstance(value, list):
-            for item in value:
-                collect(item)
-
-    for key in (
-        "audit_artifact",
-        "audit_artifact_path",
-        "artifact",
-        "artifact_path",
-        "artifacts",
-        "required_artifact",
-        "required_artifacts",
-    ):
-        if key in record:
-            collect(record[key])
-    return values
-
-
-def _canonical_audit_path(out: Path, session_id: str) -> Path | None:
-    """Build the only accepted audit path for one session id."""
-    if not session_id or "/" in session_id or "\\" in session_id or session_id in {".", ".."}:
-        return None
-    path = out / f"audit-findings-{session_id}.json"
-    try:
-        if path.resolve(strict=False).parent != out.resolve(strict=False):
-            return None
-    except (OSError, RuntimeError):
-        return None
-    return path
-
-
 def _audit_declaration_matches(out: Path, session_id: str, record: object) -> bool:
-    """Require a declaration equal to the exact canonical run-local filename."""
     canonical = _canonical_audit_path(out, session_id)
     if canonical is None:
         return False
@@ -1727,30 +1669,6 @@ def _audit_artifact_declarations(payload: object) -> list[str]:
 
     visit(payload)
     return declarations
-
-
-def _declared_run_filename(item: str, out: Path | None = None) -> str | None:
-    """Return a declaration filename only when its run-local path is exact."""
-    if not item:
-        return None
-    path = Path(item)
-    if path.is_absolute():
-        if out is None:
-            return None
-        try:
-            resolved = path.resolve(strict=False)
-            run_root = out.resolve(strict=False)
-            if resolved.parent != run_root:
-                return None
-            return resolved.name
-        except (OSError, RuntimeError):
-            return None
-    # Relatif : un séparateur (ou un préfixe « . ») signalerait une traversée. Le
-    # garde « \ » ne vaut que pour les chemins relatifs — sous Windows c'est le
-    # séparateur natif, et un chemin absolu est déjà traité ci-dessus.
-    if "\\" in item or "/" in item or item.startswith("."):
-        return None
-    return item
 
 
 def _branch_applicability(
@@ -2795,9 +2713,7 @@ def _assemble_security_gate(
 # ---------------------------------------------------------------------------
 # Statuts / placeholders unifiés de la section 4 (bloc qualitatif).
 QUALITY_BLOCK_STATUS_PLACEHOLDER = "non disponible (placeholder)"
-QUALITY_BLOCK_STATUS_AUTO_DRAFT = (
-    "brouillon automatique (report-blocks-draft) — auto_draft_fallback; prose absente; never validated"
-)
+QUALITY_BLOCK_STATUS_AUTO_DRAFT = "brouillon automatique (report-blocks-draft) — auto_draft_fallback; prose absente; never validated"
 QUALITY_BLOCK_STATUS_AGENT_PROSE = "prose agent (7b LLM)"
 QUALITY_BLOCK_STATUS_AUTO_DRAFT_REJECTED = (
     "brouillon automatique (bloc LLM rejeté : {violation}) — auto_draft_fallback; never validated"
@@ -2840,11 +2756,7 @@ def _assemble_quality_block(
                 f"bloc LLM rejeté — fallback brouillon automatique : {' ; '.join(violations)}"
             )
             replacement = (
-                auto_text
-                if auto_text is not None
-                else (
-                    QUALITY_BLOCK_PLACEHOLDER_MISSING_AUTO
-                )
+                auto_text if auto_text is not None else (QUALITY_BLOCK_PLACEHOLDER_MISSING_AUTO)
             )
         else:
             status = QUALITY_BLOCK_STATUS_AGENT_PROSE

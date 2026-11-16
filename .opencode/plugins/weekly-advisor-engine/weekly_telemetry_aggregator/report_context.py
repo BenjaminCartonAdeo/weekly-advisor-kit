@@ -168,5 +168,3 @@ def build_report_context(cfg, *, anchor=None):
         **_self_cost_context(cfg, out, date),
     }
     return ctx
-
-

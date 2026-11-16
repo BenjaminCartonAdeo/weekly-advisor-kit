@@ -547,9 +547,7 @@ def _parse_audit_insights(raw: dict, cfg: TelemetryConfig) -> None:
         ),
         session_token_cap=int(ins.get("session_token_cap", cfg.insights.session_token_cap)),
         session_cost_cap=float(ins.get("session_cost_cap", cfg.insights.session_cost_cap)),
-        exclusion_rate_max=float(
-            ins.get("exclusion_rate_max", cfg.insights.exclusion_rate_max)
-        ),
+        exclusion_rate_max=float(ins.get("exclusion_rate_max", cfg.insights.exclusion_rate_max)),
     )
 
 

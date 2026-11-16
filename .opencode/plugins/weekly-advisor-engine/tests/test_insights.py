@@ -1293,8 +1293,7 @@ def test_exclusion_rate_threshold_override():
     # c'est le SEUIL qui tranche, et il vient bien de la configuration.
     assert not any(a["rule"] == "exclusion_rate" for a in _compute(summary)["alerts"])
     assert not any(
-        a["rule"] == "exclusion_rate"
-        for a in _compute(summary, exclusion_rate_max=0.5)["alerts"]
+        a["rule"] == "exclusion_rate" for a in _compute(summary, exclusion_rate_max=0.5)["alerts"]
     ), "un seuil de 0,50 doit étouffer un observé de 0,10"
 
     # sous 0,05 (0,10 > 0,05) l'alerte part et publie la valeur CONFIGURÉE,

@@ -5,7 +5,14 @@ import re
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
-from .artifact_contracts import _artifact_contract_valid, _json_file_state, _valid_date
+from .artifact_contracts import (
+    _artifact_contract_valid,
+    _audit_envelope_reason,
+    _canonical_audit_path,
+    _declared_run_filename,
+    _json_file_state,
+    _valid_date,
+)
 
 
 def _check_required_json(
@@ -52,8 +59,6 @@ def _check_required_json(
 def _check_dynamic_audit_artifact(
     declaration: object, out: Path, taken: int
 ) -> tuple[str, dict[str, object]] | None:
-    from .report import _audit_envelope_reason, _canonical_audit_path, _declared_run_filename
-
     raw_declaration = str(declaration) if isinstance(declaration, str) else ""
     filename = _declared_run_filename(raw_declaration, out)
     match = re.fullmatch(r"audit-findings-(.+)\.json", filename) if filename is not None else None
@@ -149,7 +154,6 @@ def validate_required_artifacts(
     applicability: Mapping[str, bool] | None = None,
     dynamic_audit_artifacts: Iterable[object] = (),
 ) -> dict[str, object]:
-    from .artifact_contracts import _valid_date
 
     names = {
         "required": tuple(required_names or ("weekly-summary",)),
