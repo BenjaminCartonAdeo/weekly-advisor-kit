@@ -73,7 +73,10 @@ import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
-const REGISTRY_FILE = path.join(ROOT, ".opencode", "plugins", "weekly-advisor", "tool-registry-tools.ts")
+const REGISTRY_FILES = [
+  path.join(ROOT, ".opencode", "plugins", "weekly-advisor", "tool-registry-specs.ts"),
+  path.join(ROOT, ".opencode", "plugins", "weekly-advisor", "tool-registry-tools.ts"),
+]
 const ENGINE = path.join(ROOT, ".opencode", "plugins", "weekly-advisor-engine")
 const CLI_DIR = path.join(ENGINE, "weekly_telemetry_aggregator")
 const CLI_FACADE_FILE = path.join(CLI_DIR, "cli.py")
@@ -332,7 +335,7 @@ function enginePythonFiles() {
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 
 if (isMain) {
-const registrySrc = read(REGISTRY_FILE)
+const registrySrc = REGISTRY_FILES.map(read).join("\n")
 const cliSrc = cliModuleSources()
 const tsCmds = registryCLICommands(registrySrc)
 const cliCmds = cliCommands(cliSrc)
