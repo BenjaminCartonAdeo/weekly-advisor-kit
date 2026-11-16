@@ -6,7 +6,10 @@ import path from "node:path"
 import { canonicalPytestCommand, checkTestCounts, collectPytest, documentedTestCounts, tsCommands, registryCLICommands } from "../check-flow-docs.mjs"
 
 const ROOT = path.resolve(import.meta.dirname, "../..")
-const REGISTRY_PATH = path.join(ROOT, ".opencode", "plugins", "weekly-advisor", "tool-registry.ts")
+const REGISTRY_PATHS = [
+  path.join(ROOT, ".opencode", "plugins", "weekly-advisor", "tool-registry-specs.ts"),
+  path.join(ROOT, ".opencode", "plugins", "weekly-advisor", "tool-registry-tools.ts"),
+]
 
 test("collection probe invokes uv python module pytest with quiet collection", () => {
   let invocation
@@ -154,7 +157,7 @@ test("tsCommands extracts command literals from multi-line argv arrays and decla
 })
 
 test("registryCLICommands discovers every CLI-mediating tool in the neutral registry (19 commands)", () => {
-  const ts = fs.readFileSync(REGISTRY_PATH, "utf8")
+  const ts = REGISTRY_PATHS.map((p) => fs.readFileSync(p, "utf8")).join("\n")
   const cmds = [...registryCLICommands(ts)].sort()
   assert.equal(cmds.length, 19, `expected 19 CLI commands from registry, got ${cmds.length}`)
   assert.ok(cmds.includes("harness-remediate"))

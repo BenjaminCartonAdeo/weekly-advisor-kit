@@ -723,7 +723,7 @@ test("V2 : le point d'entrée prime sur un ctx.location et un projet V2 étrange
 // qu'il prétend corriger.
 // ---------------------------------------------------------------------------
 
-const REGISTRY_FILE = path.join(ROOT, ".opencode", "plugins", "weekly-advisor", "tool-registry.ts")
+const REGISTRY_FILE = path.join(ROOT, ".opencode", "plugins", "weekly-advisor", "tool-registry-specs.ts")
 const ENGINE_REPORT = path.join(
   ROOT,
   ".opencode",
@@ -833,8 +833,8 @@ test("weekly_report_contract : le handler rend le contrat en JSON, sans effet de
 })
 
 test("parité : REPORT_ARTIFACT_CONTRACT suit les littéraux de report.py", () => {
-  const reportSrc = fs.readFileSync(ENGINE_REPORT, "utf8")
-  const contracts = reportSrc.match(/_ARTIFACT_CONTRACTS: dict\[str, Callable\[\[Mapping\], bool\]\] = \{([\s\S]*?)\n\}/)
+  const contractsSrc = fs.readFileSync(path.join(ROOT, ".opencode", "plugins", "weekly-advisor-engine", "weekly_telemetry_aggregator", "artifact_contracts.py"), "utf8")
+  const contracts = contractsSrc.match(/_ARTIFACT_CONTRACTS: dict\[str, Callable\[\[Mapping\], bool\]\] = \{([\s\S]*?)\n\}/)
   assert.ok(contracts, "_ARTIFACT_CONTRACTS introuvable dans report.py")
   const pyNames = [...contracts[1].matchAll(/"([a-z][a-z0-9-]*)":/g)].map((m) => m[1])
   assert.deepEqual(
@@ -843,7 +843,8 @@ test("parité : REPORT_ARTIFACT_CONTRACT suit les littéraux de report.py", () =
     "artifactContracts a dérivé de _ARTIFACT_CONTRACTS",
   )
   // `validate_required_artifacts` : la liste `optional` du moteur.
-  const optional = reportSrc.match(/"optional": \(([\s\S]*?)\n\s{8}\),/)
+  const gatesSrc = fs.readFileSync(path.join(ROOT, ".opencode", "plugins", "weekly-advisor-engine", "weekly_telemetry_aggregator", "report_gates.py"), "utf8")
+  const optional = gatesSrc.match(/"optional": \(([\s\S]*?)\n\s{8}\),/)
   assert.ok(optional, "liste optional de validate_required_artifacts introuvable")
   const pyOptional = [...optional[1].matchAll(/"([a-z][a-z0-9-]*)",/g)].map((m) => m[1])
   assert.deepEqual(
