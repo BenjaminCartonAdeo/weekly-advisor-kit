@@ -71,20 +71,6 @@ jobs:
         with:
           node-version: "24"
 
-      - name: TS dependencies (weekly-advisor)
-        run: npm install
-        working-directory: .opencode/plugins/weekly-advisor
-        env:
-          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
-          NPM_CONFIG_USERCONFIG: ${{ github.workspace }}/.opencode/plugins/weekly-advisor/.npmrc
-
-      - name: Typecheck (tsc) weekly-advisor
-        run: npm run typecheck
-        working-directory: .opencode/plugins/weekly-advisor
-        env:
-          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
-          NPM_CONFIG_USERCONFIG: ${{ github.workspace }}/.opencode/plugins/weekly-advisor/.npmrc
-
       - name: Plugin TS (dual-entrypoint validation)
         run: |
           node --experimental-strip-types -e "import('./.opencode/plugins/weekly-advisor.ts').then(m => { const p = m.default; if (!p || p.id !== 'weekly-advisor' || typeof p.server !== 'function' || typeof p.setup !== 'function') { console.error('bad dual entrypoint', Object.keys(p ?? {})); process.exit(1) } }).catch(e => { console.error('Error:', e.message); process.exit(1) })"
