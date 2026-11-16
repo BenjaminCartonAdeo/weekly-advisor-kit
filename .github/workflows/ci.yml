@@ -74,10 +74,16 @@ jobs:
       - name: TS dependencies (weekly-advisor)
         run: npm install
         working-directory: .opencode/plugins/weekly-advisor
+        env:
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+          NPM_CONFIG_USERCONFIG: ${{ github.workspace }}/.opencode/plugins/weekly-advisor/.npmrc
 
       - name: Typecheck (tsc) weekly-advisor
         run: npm run typecheck
         working-directory: .opencode/plugins/weekly-advisor
+        env:
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+          NPM_CONFIG_USERCONFIG: ${{ github.workspace }}/.opencode/plugins/weekly-advisor/.npmrc
 
       - name: Plugin TS (dual-entrypoint validation)
         run: |
