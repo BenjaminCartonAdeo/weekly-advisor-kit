@@ -368,7 +368,7 @@ def _security_rule_counts(security: dict | None, key: str) -> dict[str, int]:
     return out
 
 
-# FIXME 8 : allowlist bloquante du gate. Les trois règles sont nommées
+# Allowlist bloquante du gate. Les trois règles sont nommées
 # explicitement dans le rendu (MD comme HTML) pour que le lecteur puisse
 # vérifier d'où vient `blocking_count`.
 # Source unique partagée avec le rendu MD : ``security_rules.py``.
