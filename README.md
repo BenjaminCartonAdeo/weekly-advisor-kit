@@ -3,7 +3,7 @@
 Revue hebdomadaire automatisée de vos agents de code : analyse de la télémétrie locale, veille écosystème, audit des sessions coûteuses et rapport HTML interactif, avec un moteur 100 % déterministe, zéro LLM pour les chiffres.
 
 [![CI](https://github.com/BenjaminCartonAdeo/weekly-advisor-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/BenjaminCartonAdeo/weekly-advisor-kit/actions/workflows/ci.yml)
-[![tests 1212](https://img.shields.io/badge/tests-1212-brightgreen)](.opencode/plugins/weekly-advisor-engine)
+[![pytest](https://img.shields.io/badge/pytest-via%20%60uv%20run%20python%20-m%20pytest%20-q%60-informative)](.opencode/plugins/weekly-advisor-engine)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Schéma d'architecture : [`doc/diagrams/architecture.html`](doc/diagrams/architecture.html).
@@ -12,13 +12,13 @@ Schéma d'architecture : [`doc/diagrams/architecture.html`](doc/diagrams/archite
 
 Chaque lundi, le kit produit un rapport unique qui répond à vos questions : combien vous avez dépensé, ce qui a coûté cher et pourquoi, quels skills et commands sont inutilisés ou redondants, quoi surveiller dans l'écosystème, et quelles corrections peuvent être auto-rédigées (proposées, jamais imposées).
 
-Le cœur est 100 % déterministe : le moteur Python lit directement la télémétrie locale des harnais actifs (base SQLite OpenCode, transcripts JSONL Claude Code, sessions Copilot VS Code) et produit des JSON reproductibles, sans SDK ni serveur. Le LLM n'intervient que sur les étapes qualitatives, encadrées par des skills dédiés et des contrats anti-hallucination. Le pipeline complet (8 étapes, de la télémétrie au rapport final) est décrit dans la [spécification](doc/spec/README.md).
+Le cœur est 100 % déterministe : le moteur Python lit directement la télémétrie locale des harnais actifs (base SQLite OpenCode, transcripts JSONL Claude Code, base SQLite Copilot CLI (`~/.copilot/session-store.db`)) et produit des JSON reproductibles, sans SDK ni serveur. Le LLM n'intervient que sur les étapes qualitatives, encadrées par des skills dédiés et des contrats anti-hallucination. Le pipeline complet (8 étapes, de la télémétrie au rapport final) est décrit dans la [spécification](doc/spec/README.md).
 
 ## Fonctionnalités clés
 
 | Fonctionnalité | Ce que vous obtenez |
 |---|---|
-| Multi-harnais | Télémétrie OpenCode, Claude Code et Copilot VS Code via `session_sources`, extensible par source ; **Codex n'est jamais un provider de télémétrie** — cible de drafting seule (`.agents/`) |
+| Multi-harnais | Télémétrie OpenCode, Claude Code et Copilot CLI via `session_sources`, extensible par source ; **Codex n'est jamais un provider de télémétrie** — cible de drafting seule (`.agents/`) |
 | Chiffres déterministes | Moteur Python pur, zéro LLM sur les données : coûts, tokens, cache, outliers, prompts répétés par fingerprint (O(n)) |
 | Classification déterministe | Intent, spec-driven, relecture production (gap > 30 s), maturité de prompt (grades A–F) par session, sans LLM ; alimente l'audit |
 | Règles d'audit déclaratives | Règles `.md` versionnées + DSL `scan/match/aggregate/check`, tests embarqués, playground `debug-rule` en lecture seule |
@@ -171,8 +171,9 @@ restent dans `weekly-timings-<date>.json`.
 Désactivées par défaut (défaut opencode seul, rétrocompatible). Chemin
 auto-détecté : CLI `~/.copilot` (Linux) / `%USERPROFILE%\.copilot` (Windows,
 surcharge `COPILOT_CONFIG_DIR`). Exemple `session_sources` (opencode +
-CLI avec vrais tokens estimés à 2,5 $/Mtok, recherche FTS) : [`INSTALL.md`](INSTALL.md)
-§2.3.1.
+CLI avec vrais tokens estimés à 5,0 $/Mtok — le taux par défaut : aucun taux propre
+au CLI, seul opencode est surchargé (9,0) ; ordres de grandeur blended, jamais des
+montants facturés) : [`INSTALL.md`](INSTALL.md) §2.3.
 
 ## Contributing
 
@@ -181,7 +182,7 @@ Contributions bienvenues, en particulier : nouveaux providers de harnais, règle
 Validation locale (depuis le dossier moteur `.opencode/plugins/weekly-advisor-engine`) :
 
 ```sh
-uv run python -m pytest -q    # 1212 tests
+uv run python -m pytest -q    # le compte des tests collectés s'affiche ici
 uv run ruff check .           # lint
 uv run ruff format --check .  # format
 ```
@@ -190,8 +191,10 @@ uv run ruff format --check .  # format
 (toutes les tests passent) fait foi. Une collecte séparée (`uv run python -m
 pytest --collect-only -q`) est un **diagnostic explicite** uniquement : elle aide à
 expliquer une différence de décompte, mais ne remplace pas l'exécution des tests.
-Un écart entre le nombre affiché ici et le nombre collecté est **warning-only** ;
-il ne bloque pas le run. Les contrats de gate (contrats de flux, lint/format et
+Aucun compte n'est écrit dans cette page : il change à chaque test ajouté, donc
+un nombre ici serait un point de dérive à maintenir à la main. La gate G1 refuse
+quand même toute **dérive** — un compte publié qui contredit la collecte réelle est
+un échec, pas un avertissement. Les autres contrats de gate (lint/format et
 gates de portabilité) restent bloquants lorsqu'ils échouent.
 
 Gate docs ↔ code (depuis la racine du repo, node requis) :
@@ -200,7 +203,7 @@ Gate docs ↔ code (depuis la racine du repo, node requis) :
 node scripts/check-flow-docs.mjs   # G1 : comptes de tests cohérents + contrats de flux
 ```
 
-Le CI (`.github/workflows/ci.yml`) répète lint, format, 1212 tests et packaging sur Ubuntu et Windows, puis exécute les tests de contrat node (Ubuntu) et la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec/`](doc/spec/README.md), l'architecture dans [`doc/architecture/`](doc/architecture/README.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
+Le CI (`.github/workflows/ci.yml`) répète lint, format, la suite complète des tests et packaging sur Ubuntu et Windows, puis exécute les tests de contrat node (Ubuntu) et la gate G1. Commits en [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`…). La spécification vit dans [`doc/spec/`](doc/spec/README.md), l'architecture dans [`doc/architecture/`](doc/architecture/README.md), l'installation pas à pas dans [`INSTALL.md`](INSTALL.md).
 
 ## Documentation
 

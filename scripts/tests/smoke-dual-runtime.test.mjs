@@ -126,11 +126,11 @@ test("registry: exports TOOL_REGISTRY and CLI_COMMANDS", () => {
   
   const content = fs.readFileSync(registryPath, "utf8")
   assert.ok(
-    /export\s+const\s+TOOL_REGISTRY:/m.test(content),
+    /export\s+(const\s+)?({[^}]*\b)?TOOL_REGISTRY\b/m.test(content),
     "registry should export TOOL_REGISTRY"
   )
   assert.ok(
-    /export\s+const\s+CLI_COMMANDS:/m.test(content),
+    /export\s+(const\s+)?({[^}]*\b)?CLI_COMMANDS\b/m.test(content),
     "registry should export CLI_COMMANDS"
   )
 })

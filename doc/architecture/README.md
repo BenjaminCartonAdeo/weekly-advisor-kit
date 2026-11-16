@@ -125,9 +125,10 @@ pas une source de télémétrie : c'est uniquement une cible de drafting.
 ## Coûts
 
 Le coût facturé lu dans les données est la référence : il n'est jamais recalculé.
-Quand un harnais n'enregistre pas de coût (Claude Code), un coût **estimé**
-(tokens × taux, 5.0 $/Mtok par défaut, 9.0 pour OpenCode, 2.5 pour Copilot,
-override `cost_rate_usd_per_mtok`) est produit dans `cost_estimates`, distinct et
+Quand un harnais n'enregistre pas de coût, un coût **estimé**
+(tokens × taux, 5.0 $/Mtok par défaut pour tout harnais non surchargé —
+Copilot CLI compris — 9.0 pour OpenCode, seul harnais surchargé, override
+`cost_rate_usd_per_mtok`) est produit dans `cost_estimates`, distinct et
 jamais additionné au coût facturé.
 
 ## Diagnostic et mono-cible

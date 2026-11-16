@@ -63,11 +63,11 @@ configuration.
    avertissement `missing-pricing` est émis, la session reste dans les totaux de tokens et est
    exclue des totaux de coût. **Jamais de taux par défaut silencieux pour un coût enregistré.**
 9. **Coût estimé** : toute session **sans aucun coût enregistré** se voit attribuer un coût
-   estimé = `tokens totaux × taux du harnais`. Taux par défaut : **5,0** (harnais générique),
-   **9,0** (OpenCode), **2,5** (Copilot VS Code) USD par million de tokens, surchargeables par
-   source. Le coût estimé est **distinct** du coût facturé : les deux ne se somment jamais ; une
-   session sans coût enregistré reste dans les totaux de tokens, son coût estimé ne figure que
-   dans le champ « coûts estimés ».
+   estimé = `tokens totaux × taux du harnais`. Taux par défaut : **5,0** USD par million de
+   tokens pour tout harnais non surchargé (Copilot CLI compris) ; seul **OpenCode** est
+   surchargé, à **9,0**. Taux surchargeables par source. Le coût estimé est **distinct** du
+   coût facturé : les deux ne se somment jamais ; une session sans coût enregistré reste dans
+   les totaux de tokens, son coût estimé ne figure que dans le champ « coûts estimés ».
 10. **Prompts utilisateur répétés** : les tours utilisateur sont d'abord filtrés (bruit : séparateurs répétés ≥10, commandes de contrôle seules, préfixe système, >2000 caractères, réponses y/n courtes, « continue to iterate » court) puis normalisés (minuscules, blocs de code → `CODE`, citations → `STR`, chemins → `PATH`, nombres → `NUM`, ponctuation → espace, stop-list ~75 mots FR/EN, tokens >1 caractère) ; l'empreinte est les **4 premiers tokens triés joints par `|`** (bucket map **O(n)**, plus de comparaisons O(n²)). Une entrée est émise si le compte d'empreinte identique est ≥ **3** ; la liste est plafonnée à **20**, tri stable (-count, session_id). Le prompt canonique est le plus court ≥20 caractères normalisés, le label est tronqué à 80, avec agrégats déterministes : sessions/harnais distincts, taux d'annulation, tours de correction moyens, first/last seen, ≤5 exemples, brouillon de skill markdown et gain estimé (répétitions ×2 min). Les artefacts de compaction (`▣█░│⏿`, `dcp |…removed…summary`) et les sessions enfants (`parent_id` non nul) sont exclus.
 11. **Invocation de commands** : tout tour utilisateur commençant par `/` est compté comme
     invocation de command, par command et par session.
@@ -332,7 +332,7 @@ findings.
 appliquer des seuils configurables, et émettre des candidats d'action de maintenance. **100 %
 déterministe.**
 
-**Entrées** : résumé hebdo courant + précédent, digest déclaratif courant + précédent, les 4
+**Entrées** : résumé hebdo courant + précédent, digest déclaratif courant + précédent, les 7
 derniers résumés (historique local), seuils de configuration.
 
 **Sorties** : une donnée structurée « insights » (§7.6).
@@ -346,16 +346,34 @@ derniers résumés (historique local), seuils de configuration.
 3. **Écrasement protecteur** : ré-exécuter un run du même jour avec une fenêtre de durée différente
    détruit la baseline de comparaison ; le produit en avertit explicitement.
 
-**Règles — alertes (seuils en configuration)**
+**Règles — alertes (neuf seuils en configuration)**
 
-| Règle | Condition | Sévérité |
-|---|---|---|
-| Budget hebdomadaire | coût total de la semaine > **25 $** | haute |
-| Budget mensuel | somme des résumés des **30** derniers jours > **100 $** | haute |
-| Pic journalier | z-score (médiane+MAD) d'un jour vs les jours des 4 résumés précédents ≥ **3,0** ; **z borné à 10,0** (un MAD ≈ 0 produit des z astronomiques, artefact et non signal plus fort ; l'intensité observée = min(z brut, 10), avec note « MAD≈0, z borné » si dépassé) | moyenne |
-| Cache bas | ratio de cache hebdomadaire < **0,6** | moyenne |
-| Coût WoW | hausse de coût > **15 %** — sautée si fenêtres hétérogènes (delta `null`) | moyenne |
-| Violations déclaratives | somme des violations du digest > **10** | moyenne |
+Neuf alertes à seuil. La colonne *Source* donne la ligne qui porte le seuil et
+celle qui décide : le tableau se relit sans ouvrir le code, et se casse seul si
+le code dérive. Le câblage de chaque seuil est vérifié par
+`tests/test_spec_thresholds.py`.
+
+| Règle | Condition | Sévérité | Source |
+|---|---|---|---|
+| Budget hebdomadaire | coût total de la semaine > **35 $** | haute | `config.py:112`, `insights.py:161` |
+| Budget mensuel | somme des résumés des **30** derniers jours > **500 $** | haute | `config.py:113`, `insights.py:177` |
+| Pic journalier | z-score (médiane+MAD) d'un jour vs les jours des 7 résumés précédents ≥ **3,0** ; **z borné à 10,0** (un MAD ≈ 0 produit des z astronomiques, artefact et non signal plus fort ; l'intensité observée = min(z brut, 10), avec note « MAD≈0, z borné » si dépassé) | moyenne | `config.py:114`, cap `insights.py:63` ; détecteur déclaratif `rules/daily-spike.md` |
+| Cache bas | ratio de cache hebdomadaire < **0,6** | moyenne | `config.py:115`, `insights.py:192` |
+| Coût WoW | hausse de coût > **15 %** — sautée si fenêtres hétérogènes (delta `null`) | moyenne | `config.py:116`, `insights.py:202` |
+| Violations déclaratives | somme des violations du digest > **10** | moyenne | `config.py:117`, `insights.py:661` |
+| Couverture lint | couverture des surfaces `.opencode/` = scannées ÷ (scannées + hors allowlist) < **0,70** | basse | `config.py:119`, `insights.py:685` |
+| Sessions exclues | part des sessions « active » exclues (exclues ÷ sessions touchées) > **0,20** | moyenne | `config.py:140`, `insights.py:741` |
+| Cache non écrit | `cache_write_tokens = 0` sur **≥ 2** runs consécutifs | moyenne | `config.py:125`, `insights.py:770` |
+
+> **« Sessions exclues » : historiquement non câblable, désormais un champ.** Ce seuil
+> était la constante de module `EXCLUSION_RATE_MAX_DEFAULT`, relue par
+> `getattr(insights_cfg, "exclusion_rate_max", …)` alors que `InsightsConfig` est
+> `slots=True` : la branche était inatteignable, la valeur effective était figée,
+> et ajouter la clé au JSON aurait produit une clé paraissant configurable que
+> rien n'exécute. Il est désormais le champ `InsightsConfig.exclusion_rate_max`
+> (`config.py:140`), lu par `insights.py:740`. Verrou : `test_spec_thresholds.py`
+> — y compris la chaîne complète (clé du JSON livré → parseur → champ → alerte),
+> le maillon que « le champ existe » ne prouve pas.
 
 **Règles — maintenance (déterministe, R1-R6)** — les règles ignorent les constats listés en
 snooze manuel.

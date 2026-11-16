@@ -24,7 +24,7 @@ a coûté un `report-prep` complet.
 | 1 | **Longueur** | **≤ 60 lignes**, cible ~40 | `validate_llm_blocks` |
 | 2 | **Volume** | **≥ 40 mots** | `_assemble_quality_block` (`blocks_min_words`) |
 | 3 | **IDs de source** | **`[F:<session_id>#<cat>]` avec l'ID COMPLET** — jamais tronqué, jamais abrégé | `validate_llm_blocks` |
-| 4 | **Pas de titre** | **1re ligne non vide ≠ `##`** — commencer par une phrase ou un `###` | `validate_llm_blocks` |
+| 4 | **Pas de titre** | **Aucun titre, à aucun niveau (`#`, `##`, `###`, …), nulle part dans le bloc** — commencer par une phrase. | `validate_llm_blocks` |
 
 Le seuil 3 est un vice de fond : un ID tronqué ne résout dans aucun artefact
 d'entrée, la balise est donc traitée comme **inconnue** et le bloc rejeté.

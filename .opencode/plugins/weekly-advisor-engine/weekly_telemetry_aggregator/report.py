@@ -1,3 +1,4 @@
+# ruff: noqa: F401
 """Deterministic report rendering — report-prep + report-assemble (Partie 7).
 
 `report-prep` renders every section that comes from JSON artefacts + git log
@@ -15,17 +16,55 @@ import re
 import subprocess
 import sys
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from datetime import timedelta
 from pathlib import Path
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
-
 from . import __version__
+from .artifact_contracts import (
+    _ARTIFACT_CONTRACTS,
+    _artifact_contract_valid,
+    _audit_declaration_values,
+    _audit_envelope_reason,
+    _canonical_audit_path,
+    _coerce_rc,
+    _declared_run_filename,
+    _has_findings_list,
+    _json_file_state,
+    _nonempty_text,
+    _valid_audit_candidates,
+    _valid_coherence,
+    _valid_date,
+    _valid_ecosystem,
+    _valid_harness_digest,
+    _valid_remediation,
+    _valid_remediation_proposals,
+    _valid_schema_version,
+    _valid_skill_curate,
+    _valid_timings,
+    _valid_watch_candidates,
+    _valid_watch_context,
+    _valid_watch_findings,
+    _valid_weekly_insights,
+    _valid_weekly_summary,
+)
 from .config import TelemetryConfig
 from .harness_scope import harness_digest_problems
 from .html_report import open_html_report, render_html_report, resolve_number_bands
 from .insights import flatten_harness_findings
+from .report_blocks import (
+    number_band_index,
+    published_number_bands,
+    validate_llm_blocks,
+)
+from .report_context import build_report_context
+from .report_gates import (
+    _check_html_artifact,
+    _check_required_json,
+    _html_gate_status,
+    _summarize_artifact_gate,
+    validate_required_artifacts,
+)
 from .run_state import (
     active_run_meta,
     record_resilience_event,
@@ -1324,222 +1363,6 @@ def _record_field(record: Mapping[str, object], *keys: str) -> object | None:
     return None
 
 
-def _coerce_rc(value: object, *, default: int | None = None) -> int | None:
-    """Return a bounded process status, rejecting malformed values.
-
-    JSON manifests are agent-facing inputs.  Treat booleans, empty strings and
-    arbitrary text as malformed instead of accidentally turning them into a
-    successful status with ``int(...)``.
-    """
-    if isinstance(value, bool) or value is None:
-        return default
-    if isinstance(value, int):
-        return value if value >= 0 else default
-    if isinstance(value, str) and value.strip().isdigit():
-        return int(value.strip())
-    return default
-
-
-def _json_file_state(path: Path) -> tuple[object | None, str]:
-    """Read one JSON artifact and distinguish absent from malformed input."""
-    if not path.is_file():
-        return None, "absent"
-    try:
-        text = path.read_text(encoding="utf-8")
-        if not text.strip():
-            return None, "ill_readable"
-        value = json.loads(text)
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return None, "ill_readable"
-    return (value, "present") if isinstance(value, dict) else (None, "ill_readable")
-
-
-def _valid_schema_version(value: object, expected: int) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value == expected
-
-
-def _nonempty_text(value: object) -> bool:
-    return isinstance(value, str) and bool(value.strip())
-
-
-def _valid_date(date: object) -> bool:
-    return isinstance(date, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) is not None
-
-
-def _valid_weekly_summary(value: Mapping) -> bool:
-    period = value.get("period")
-    return (
-        _valid_schema_version(value.get("schema_version"), 2)
-        and isinstance(period, Mapping)
-        and _nonempty_text(period.get("start"))
-        and _nonempty_text(period.get("end"))
-        and _nonempty_text(value.get("generated_at"))
-        and isinstance(value.get("totals"), Mapping)
-    )
-
-
-def _valid_weekly_insights(value: Mapping) -> bool:
-    return (
-        _valid_schema_version(value.get("schema_version"), 1)
-        and isinstance(value.get("period"), Mapping)
-        and _nonempty_text(value.get("generated_at"))
-        and isinstance(value.get("deltas"), Mapping)
-        and isinstance(value.get("alerts"), list)
-        and isinstance(value.get("maintenance"), Mapping)
-    )
-
-
-def _valid_harness_digest(value: Mapping) -> bool:
-    inspection = value.get("inspection")
-    return (
-        (isinstance(inspection, Mapping) and bool(inspection))
-        or (isinstance(value.get("rules"), list) and bool(value["rules"]))
-        or (isinstance(value.get("findings"), list) and bool(value["findings"]))
-    )
-
-
-def _valid_ecosystem(value: Mapping) -> bool:
-    return (
-        _valid_schema_version(value.get("schema_version"), 2)
-        and isinstance(value.get("new_items"), list)
-        and isinstance(value.get("core_changes"), list)
-        and isinstance(value.get("warnings"), list)
-    )
-
-
-def _has_findings_list(value: Mapping) -> bool:
-    return isinstance(value.get("findings"), list)
-
-
-def _valid_coherence(value: Mapping) -> bool:
-    return isinstance(value.get("findings"), list) or isinstance(
-        value.get("curation_signal"), (list, Mapping)
-    )
-
-
-def _valid_audit_candidates(value: Mapping) -> bool:
-    return (
-        _valid_schema_version(value.get("schema_version"), 1)
-        and isinstance(value.get("audited"), list)
-        and isinstance(value.get("unaudited"), list)
-        and isinstance(value.get("limit"), int)
-        and not isinstance(value.get("limit"), bool)
-    )
-
-
-def _valid_watch_context(value: Mapping) -> bool:
-    return _valid_schema_version(value.get("schema_version"), 1) and isinstance(
-        value.get("market_matches"), list
-    )
-
-
-def _valid_watch_findings(value: Mapping) -> bool:
-    return (
-        _valid_schema_version(value.get("schema_version"), 2)
-        and isinstance(value.get("findings"), list)
-        and isinstance(value.get("validation"), Mapping)
-    )
-
-
-def _valid_watch_candidates(value: Mapping) -> bool:
-    return (
-        _valid_schema_version(value.get("schema_version"), 1)
-        and isinstance(value.get("candidates"), list)
-        and isinstance(value.get("security_annex"), list)
-    )
-
-
-def _valid_remediation(value: Mapping) -> bool:
-    return isinstance(value.get("summary"), Mapping) and isinstance(value.get("postcheck"), Mapping)
-
-
-def _valid_timings(value: Mapping) -> bool:
-    return isinstance(value.get("branches"), Mapping) or isinstance(
-        value.get("steps"), (list, Mapping)
-    )
-
-
-def _valid_remediation_proposals(value: Mapping, date: str | None) -> bool:
-    envelope = (
-        _valid_date(value.get("date"))
-        and (date is None or value.get("date") == date)
-        and isinstance(value.get("proposals"), list)
-    )
-    # The remediation producer currently emits v1. Keep v1 as the
-    # canonical proposal contract until the producer is versioned to v2.
-    return envelope and (
-        _valid_schema_version(value.get("schema_version"), 1)
-        or _valid_schema_version(value.get("schema_version"), 2)
-    )
-
-
-def _valid_skill_curate(value: Mapping, date: str | None, allow_legacy_v1: bool) -> bool:
-    mode = value.get("mode")
-    common = (
-        mode in {"dry-run", "dry_run", "apply"}
-        and isinstance(value.get("dry_run"), bool)
-        and isinstance(value.get("decisions"), list)
-        and _coerce_rc(value.get("rc"), default=None) is not None
-        and _valid_date(value.get("date"))
-        and (date is None or value.get("date") == date)
-    )
-    if not common:
-        return False
-    if _valid_schema_version(value.get("schema_version"), 2):
-        return (
-            _nonempty_text(value.get("generated_at"))
-            and _nonempty_text(value.get("anchor"))
-            and isinstance(value.get("summary"), Mapping)
-            and isinstance(value.get("skipped_details"), list)
-        )
-    return allow_legacy_v1 and _valid_schema_version(value.get("schema_version"), 1)
-
-
-#: Artifact name → shape validator (date/legacy variants handled separately).
-_ARTIFACT_CONTRACTS: dict[str, Callable[[Mapping], bool]] = {
-    "weekly-summary": _valid_weekly_summary,
-    "weekly-insights": _valid_weekly_insights,
-    "weekly-harness-digest": _valid_harness_digest,
-    "weekly-ecosystem": _valid_ecosystem,
-    "weekly-quality-findings": _has_findings_list,
-    "weekly-watch-findings-raw": _has_findings_list,
-    "weekly-coherence-findings": _valid_coherence,
-    "weekly-audit-candidates": _valid_audit_candidates,
-    "weekly-watch-context": _valid_watch_context,
-    "weekly-watch-findings": _valid_watch_findings,
-    "watch-candidates": _valid_watch_candidates,
-    "weekly-harness-remediation": _valid_remediation,
-    "weekly-timings": _valid_timings,
-}
-
-
-def _artifact_contract_valid(
-    name: str,
-    value: object,
-    *,
-    date: str | None = None,
-    allow_legacy_v1: bool = False,
-) -> bool:
-    """Validate the exact JSON shape of a required/recovered artifact.
-
-    The report gate must not treat ``{}`` as a successful producer output.  A
-    compact contract is kept here rather than importing producer modules so the
-    report remains usable when an optional branch is not installed.
-    """
-    if not isinstance(value, Mapping) or not value:
-        return False
-    if name == "weekly-harness-remediation-proposals":
-        return _valid_remediation_proposals(value, date)
-    if name == "skill-curate":
-        return _valid_skill_curate(value, date=date, allow_legacy_v1=allow_legacy_v1)
-    validator = _ARTIFACT_CONTRACTS.get(name)
-    if validator is not None:
-        return validator(value)
-    # Unknown required names still need a non-empty object.  The path and file
-    # name are validated by ``validate_required_artifacts`` below.
-    return True
-
-
 def _text_values(value: object) -> Iterable[str]:
     """Yield searchable text from one warning/manifest record."""
     if isinstance(value, str):
@@ -1685,77 +1508,7 @@ _AUDIT_ENVELOPE_REASONS = frozenset(
 )
 
 
-def _audit_envelope_reason(value: object, session_id: str) -> str:
-    """Return a stable machine-readable cause for an invalid audit envelope."""
-    if not isinstance(value, Mapping):
-        return "not-mapping"
-    if not _valid_schema_version(value.get("schema_version"), 1):
-        return "bad-schema-version"
-    if value.get("session_id") != session_id:
-        return "sid-mismatch"
-    if not _nonempty_text(value.get("summary")):
-        return "empty-summary"
-    if not isinstance(value.get("findings"), list):
-        return "bad-findings"
-    if _coerce_rc(value.get("rc"), default=None) not in {0, 1}:
-        return "bad-rc"
-    if not isinstance(value.get("warnings"), list):
-        return "bad-warnings"
-    return "ok"
-
-
-def _audit_declaration_values(record: object) -> list[str]:
-    """Return structured audit artifact declarations without parsing text."""
-    if not isinstance(record, Mapping):
-        return []
-    values: list[str] = []
-
-    def collect(value: object) -> None:
-        if isinstance(value, str):
-            values.append(value)
-        elif isinstance(value, Mapping):
-            for key in (
-                "path",
-                "artifact",
-                "artifact_path",
-                "audit_artifact",
-                "audit_artifact_path",
-            ):
-                if key in value:
-                    collect(value[key])
-        elif isinstance(value, list):
-            for item in value:
-                collect(item)
-
-    for key in (
-        "audit_artifact",
-        "audit_artifact_path",
-        "artifact",
-        "artifact_path",
-        "artifacts",
-        "required_artifact",
-        "required_artifacts",
-    ):
-        if key in record:
-            collect(record[key])
-    return values
-
-
-def _canonical_audit_path(out: Path, session_id: str) -> Path | None:
-    """Build the only accepted audit path for one session id."""
-    if not session_id or "/" in session_id or "\\" in session_id or session_id in {".", ".."}:
-        return None
-    path = out / f"audit-findings-{session_id}.json"
-    try:
-        if path.resolve(strict=False).parent != out.resolve(strict=False):
-            return None
-    except (OSError, RuntimeError):
-        return None
-    return path
-
-
 def _audit_declaration_matches(out: Path, session_id: str, record: object) -> bool:
-    """Require a declaration equal to the exact canonical run-local filename."""
     canonical = _canonical_audit_path(out, session_id)
     if canonical is None:
         return False
@@ -1916,30 +1669,6 @@ def _audit_artifact_declarations(payload: object) -> list[str]:
 
     visit(payload)
     return declarations
-
-
-def _declared_run_filename(item: str, out: Path | None = None) -> str | None:
-    """Return a declaration filename only when its run-local path is exact."""
-    if not item:
-        return None
-    path = Path(item)
-    if path.is_absolute():
-        if out is None:
-            return None
-        try:
-            resolved = path.resolve(strict=False)
-            run_root = out.resolve(strict=False)
-            if resolved.parent != run_root:
-                return None
-            return resolved.name
-        except (OSError, RuntimeError):
-            return None
-    # Relatif : un séparateur (ou un préfixe « . ») signalerait une traversée. Le
-    # garde « \ » ne vaut que pour les chemins relatifs — sous Windows c'est le
-    # séparateur natif, et un chemin absolu est déjà traité ci-dessus.
-    if "\\" in item or "/" in item or item.startswith("."):
-        return None
-    return item
 
 
 def _branch_applicability(
@@ -2227,218 +1956,6 @@ def applicable_summary_rc(
 def _artifact_provenance(out: Path, date: str) -> dict[str, dict[str, object]]:
     """Describe report inputs without relying on mutable process state."""
     return validate_required_artifacts(out, date)["artifacts"]
-
-
-def _check_required_json(
-    out: Path,
-    name: str,
-    date: str,
-    required_set: set[str],
-    applicable: Mapping[str, bool],
-) -> dict[str, object]:
-    """État d'un artefact JSON : lu exactement une fois, gate requis/optionnel."""
-    path = out / f"{name}-{date}.json"
-    status = "absent"
-    path_valid = (
-        _valid_date(date)
-        and isinstance(name, str)
-        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name) is not None
-        and path.name == f"{name}-{date}.json"
-    )
-    data: object | None = None
-    schema_valid = False
-    if not path_valid:
-        status = "ill_readable"
-    elif path.is_file():
-        try:
-            text = path.read_text(encoding="utf-8")
-            data = json.loads(text) if text.strip() else None
-            parsed = isinstance(data, dict)
-            strict = name in required_set
-            schema_valid = parsed and _artifact_contract_valid(name, data, date=date)
-            status = "present" if parsed and (schema_valid or not strict) else "ill_readable"
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            status = "ill_readable"
-    applicable_default = name in required_set or status != "absent"
-    return {
-        "path": str(path),
-        "present": status == "present",
-        "status": status,
-        "required": name in required_set,
-        "path_valid": path_valid,
-        "schema_valid": schema_valid,
-        # Un producteur optionnel absent n'est pas la preuve que sa branche
-        # était activée et a échoué ; les fichiers existants sont applicables
-        # par définition.
-        "applicable": bool(applicable.get(name, applicable_default)),
-    }
-
-
-def _check_dynamic_audit_artifact(
-    declaration: object, out: Path, taken: int
-) -> tuple[str, dict[str, object]] | None:
-    """Un artefact d'audit dynamique : (clé, fiche) — None si clé déjà prise."""
-    raw_declaration = str(declaration) if isinstance(declaration, str) else ""
-    filename = _declared_run_filename(raw_declaration, out)
-    match = re.fullmatch(r"audit-findings-(.+)\.json", filename) if filename is not None else None
-    key = filename or f"audit-findings-declaration-{taken}"
-    path = out / filename if filename is not None else out / raw_declaration
-    sid = match.group(1) if match else ""
-    data, state = _json_file_state(path) if match else (None, "ill_readable")
-    path_ok = bool(match and _canonical_audit_path(out, sid) == path)
-    envelope_reason = _audit_envelope_reason(data, sid) if path_ok and state == "present" else "ok"
-    # Un artefact absent/illisible n'est jamais valide : sans le `state ==
-    # "present"`, un audit manquant passait la gate en `present` (run 16/09).
-    valid = bool(path_ok and state == "present" and envelope_reason == "ok")
-    if not path_ok:
-        reason = "path-mismatch"
-    elif state == "absent":
-        reason = "absent"
-    elif state != "present":
-        reason = "ill-readable"
-    else:
-        reason = envelope_reason
-    return key, {
-        "path": str(path),
-        "present": valid,
-        "status": "present" if valid else ("absent" if state == "absent" else "ill_readable"),
-        "required": True,
-        "path_valid": path_ok,
-        "schema_valid": valid,
-        "reason": reason,
-        "applicable": True,
-    }
-
-
-def _check_html_artifact(path: Path | None) -> dict[str, object]:
-    """État d'un artefact HTML : absent / illisible / présent."""
-    result: dict[str, object] = {"status": "absent", "path": str(path) if path else None}
-    if path is None:
-        return result
-    try:
-        if not path.is_file():
-            result["status"] = "absent"
-        elif not path.read_text(encoding="utf-8").strip():
-            result["status"] = "ill_readable"
-        else:
-            result["status"] = "present"
-    except (OSError, UnicodeError):
-        result["status"] = "ill_readable"
-    return result
-
-
-def _html_gate_status(html_path: Path | None, html_enabled: bool) -> dict[str, object]:
-    """Gate HTML : un fichier réellement produit prime sur le flag de config."""
-    if html_path is not None:
-        return _check_html_artifact(html_path)
-    if html_enabled:
-        return {"status": "absent", "path": None}
-    return {"status": "disabled", "path": None}
-
-
-def _summarize_artifact_gate(
-    required: dict[str, dict[str, object]],
-    optional: dict[str, dict[str, object]],
-    html: dict[str, object],
-) -> dict[str, object]:
-    """Verdict final : required pass/incomplete + listes optionnelles manquantes."""
-    required_status = (
-        "pass"
-        if required and all(a["status"] == "present" for a in required.values())
-        else "incomplete"
-    )
-    optional_missing = [
-        entry["path"]
-        for entry in optional.values()
-        if entry["status"] == "absent" and entry.get("applicable", True)
-    ]
-    optional_ill_readable = [
-        entry["path"]
-        for entry in optional.values()
-        if entry["status"] == "ill_readable" and entry.get("applicable", True)
-    ]
-    return {
-        "required": required,
-        "optional": optional,
-        "artifacts": {**required, **optional},
-        "status": required_status,
-        "optional_missing": optional_missing,
-        "optional_ill_readable": optional_ill_readable,
-        "html": html,
-    }
-
-
-def validate_required_artifacts(
-    out: Path,
-    date: str,
-    *,
-    html_enabled: bool = False,
-    html_path: Path | None = None,
-    required_names: Iterable[str] | None = None,
-    applicability: Mapping[str, bool] | None = None,
-    dynamic_audit_artifacts: Iterable[object] = (),
-) -> dict[str, object]:
-    """Validate report inputs once, with deterministic required/optional gates.
-
-    JSON inputs are read exactly once each.  Optional upstream artefacts remain
-    visible when absent, but cannot make an otherwise usable report fail.  HTML
-    is a conditional artefact: callers can pass ``html_path`` after rendering
-    to distinguish a renderer failure from a missing or unreadable output.
-    """
-    names = {
-        "required": tuple(required_names or ("weekly-summary",)),
-        "optional": (
-            "weekly-insights",
-            "weekly-harness-digest",
-            "weekly-ecosystem",
-            "weekly-quality-findings",
-            "weekly-coherence-findings",
-            "skill-curate",
-            "weekly-audit-candidates",
-            "weekly-watch-context",
-            "weekly-watch-findings",
-            "weekly-watch-findings-raw",
-            "weekly-harness-remediation",
-            "weekly-harness-remediation-proposals",
-            "weekly-timings",
-        ),
-    }
-    explicit_required = {str(name) for name in names["required"]}
-    # A branch explicitly marked applicable is required even when its producer
-    # is normally optional.  Disabled branches stay visible in ``optional`` and
-    # cannot fail the gate merely because they have no output.
-    branch_required = {
-        str(name) for name, enabled in (applicability or {}).items() if enabled is True
-    }
-    required_set = explicit_required | branch_required
-    optional_names = tuple(name for name in names["optional"] if name not in required_set)
-    names["optional"] = optional_names
-    applicable = applicability or {}
-
-    required = {
-        f"{name}-{date}.json": _check_required_json(out, name, date, required_set, applicable)
-        for name in sorted(required_set)
-    }
-
-    dynamic_required: dict[str, dict[str, object]] = {}
-    for declaration in dynamic_audit_artifacts:
-        checked = _check_dynamic_audit_artifact(declaration, out, len(dynamic_required))
-        if checked is None:
-            continue
-        key, record = checked
-        if key in dynamic_required:
-            continue
-        dynamic_required[key] = record
-    required.update(dynamic_required)
-    optional = {
-        f"{name}-{date}.json": _check_required_json(out, name, date, required_set, applicable)
-        for name in names["optional"]
-    }
-
-    # P0 : un fichier HTML réellement produit prime sur le flag de config —
-    # `disabled` uniquement si rendu off ET aucun fichier produit.
-    html = _html_gate_status(html_path, html_enabled)
-    return _summarize_artifact_gate(required, optional, html)
 
 
 _BLOCKING_SECURITY_RULES = BLOCKING_RULES
@@ -2845,190 +2362,34 @@ def _load_report_artifacts(out, date: str) -> dict | None:
     }
 
 
-def build_report_context(cfg: TelemetryConfig, *, anchor: str | None = None) -> dict | None:
-    """Construit le ctx Jinja du rapport (v6.1) — partagé par prep et assemble.
-
-    Reconstruit intégralement depuis les artefacts JSON du run actif à chaque
-    appel : prep et assemble tournent comme sous-commandes CLI séparées, il n'y
-    a donc aucune persistance inter-process. Retourne None si la summary du run
-    est absente (le rapport HTML est alors silencieusement ignoré).
-    """
-    run_time = _parse_anchor(anchor)
-    date = run_time.strftime("%Y-%m-%d")
-    out = resolve_active_run_dir(cfg.output_dir, date)
-
-    artifacts = _load_report_artifacts(out, date)
-    if artifacts is None:
-        return None
-    summary = artifacts["summary"]
-    insights = artifacts["insights"]
-    digest = artifacts["digest"]
-    ecosystem = artifacts["ecosystem"]
-    findings = artifacts["findings"]
-    coherence_findings = artifacts["coherence_findings"]
-    skill_curate = artifacts["skill_curate"]
-
-    # FIX 6 : les résultats ENREGISTRÉS des appels `commit-draft` sont FUSIONNÉS
-    # avec le git log, pas comptés à sa place. Borné par l'ancre de DÉBUT de run,
-    # `git log` ne peut structurellement pas voir les commits que ce run vient de
-    # drafter (ils sont postérieurs) : le décompte valait 0 à chaque run. Le log
-    # reste par ailleurs SANS borne haute (cf. `_auto_commits` / `_pending_auto_commits`).
-    timings = _load_json(out / f"weekly-timings-{date}.json")
-    git_commits = _auto_commits(
-        cfg.project_root,
-        _iso(run_time - timedelta(hours=cfg.window_hours())),
-        timings,
-    )
-    pending = _pending_auto_commits(
-        cfg.project_root,
-        _iso(run_time - timedelta(weeks=cfg.review_window_weeks)),
-        timings,
-    )
-    head_commit = _head_commit(cfg.project_root)
-    dirty_files = _dirty_files(cfg.project_root)
-    # v6.0.l (E11) : delta par règle vs run précédent (null en first-run).
-    lint_delta = ((insights or {}).get("deltas") or {}).get("lint_violations_delta_by_rule") or {}
-    # C6 : l'écosystème est projeté (descriptions/résumés déjà tronqués sur frontière
-    # de mot) AVANT le contexte, pour que le markdown et le HTML tronquent identiquement.
-    eco_view = _ecosystem_view(ecosystem)
-    raw_sessions = summary.get("all_sessions", [])
-    if not isinstance(raw_sessions, list):
-        raw_sessions = []
-    all_sessions = [
-        {
-            **s,
-            "title_short": truncate_text(
-                s.get("title_or_topic") or s.get("session_id"), _SESSION_TITLE_LIMIT
-            ),
-        }
-        if isinstance(s, dict)
-        else s
-        for s in raw_sessions
-    ]
-
-    provenance = {
-        "anchor": run_time.isoformat(),
-        "artifact_inputs": _artifact_provenance(out, date),
-        "run_provenance": summary.get("run_provenance"),
-    }
-    # C8 : inventaire réel du run dir, une fois pour les DEUX rendus. Il est
-    # dérivé après `provenance` parce qu'il se réconcilie avec les artefacts
-    # déclarés par le gate — pas de liste de noms en dur dans un `.j2`.
-    run_artifacts = _run_artifact_inventory(out, provenance["artifact_inputs"])
-    warnings_grouped = _group_warnings(summary.get("warnings", []))
-    ctx = {
-        "date": date,
-        "engine_version": __version__,
-        "period": summary.get("period", {}),
-        "summary": summary,
-        "insights": insights,
-        "digest": digest,
-        "ecosystem": eco_view,
-        "findings": findings,
-        "models_top": _top_models(summary),
-        "top_sessions": summary.get("top_sessions_by_cost", []),
-        "all_sessions": all_sessions,
-        "harness_breakdown": _harness_breakdown(summary),
-        "harness_ignored_rules": list(cfg.harness_ignored_rules),
-        "harness_top_rules": [
-            {
-                "rule": rule,
-                "count": count,
-                "delta": lint_delta.get(rule),
-            }
-            for rule, count in _top_harness_rules(digest, cfg.harness_ignored_rules)
-        ],
-        "top_next_steps": _top_next_steps(
-            digest, insights, findings, ignored_rules=cfg.harness_ignored_rules
-        ),
-        "cost_outliers_state": summary.get("cost_outliers_state", "computed"),
-        "outliers": {o["session_id"] for o in summary.get("cost_outliers", [])},
-        "audit_candidates": artifacts["audit_candidates"],
-        "audit_worker_statuses": ((artifacts["audit_candidates"] or {}).get("worker_statuses", [])),
-        # C11 : section Drafting — candidats + cible hors périmètre nommée (D5).
-        "draft_candidates": artifacts["draft_candidates"],
-        "drafting": _drafting_view(artifacts["draft_candidates"], summary, cfg.project_root),
-        "drafting_project_root": str(cfg.project_root or ""),
-        "watch_findings": artifacts["watch_findings"],
-        # C5/C6/C7 : la condensation et la troncature sont faites ICI, une fois pour
-        # les deux rendus. Les gabarits ne portent plus ni limite en dur ni
-        # déduplication : ils consomment `coherence_items` / `maint_sorted` /
-        # `watch_groups` déjà projetés.
-        "watch_groups": _group_watch_findings(artifacts["watch_findings"]),
-        "coherence_findings": coherence_findings,
-        "coherence_items": _dedupe_findings(
-            _project_finding(f, evidence_limit=_EVIDENCE_LIMIT)
-            for f in _coherence_findings(coherence_findings)
-        ),
-        "skill_curate": skill_curate,
-        "curation_detail": _curation_manifest_detail(skill_curate),
-        "coherence_curation_signal": _coherence_has_curation_signal(coherence_findings),
-        "harness_budget": (digest or {}).get("budget"),
-        "harness_triggers": (digest or {}).get("triggers"),
-        "harness_dependencies": (digest or {}).get("dependencies"),
-        "harness_scope": (digest or {}).get("harness_scope")
-        or (digest or {}).get("harness_include"),
-        "harness_counts": (digest or {}).get("harness_counts"),
-        "run_dir": (active_run_meta(cfg.output_dir, date) or {}).get("run_dir"),
-        "provenance": provenance,
-        "gate_status": _gate_status(provenance["artifact_inputs"]),
-        "harness_remediation": artifacts["harness_remediation"],
-        "warnings_grouped": warnings_grouped,
-        # D5 : `summary.warnings` ne porte plus les occurrences mais les ENTITÉS
-        # (agrégateur regroupé) — la somme des `count` est le total réel.
-        "warnings_occurrences": sum(int(g["count"]) for g in warnings_grouped),
-        "run_artifacts": run_artifacts,
-        "run_artifacts_total": len(run_artifacts),
-        "run_artifacts_shown": min(_RUN_ARTIFACTS_LIST_LIMIT, len(run_artifacts)),
-        "maint_sorted": _dedupe_findings(
-            _project_finding(f, evidence_limit=_WATCH_EVIDENCE_LIMIT)
-            for f in _sort_maintenance_findings(insights)
-        ),
-        "watch_warned": any(
-            w.get("source") == "github:watch-repos" for w in (ecosystem or {}).get("warnings", [])
-        ),
-        "watch_items": [
-            i
-            for i in eco_view.get("new_items", [])
-            if any(
-                fv == "github:watch-repos" or fv.startswith("watch:")
-                for fv in (i.get("found_via") or [])
-            )
-        ],
-        "daily_totals": _complete_daily(summary.get("period", {}), summary.get("daily_totals", [])),
-        "auto_commits": git_commits,
-        "pending_auto_commits": pending,
-        "head_commit": head_commit,
-        "dirty_files": dirty_files,
-        # E4 : une seule valeur de self-cost (artefact post-assemblage s'il
-        # existe, sinon mesure live étiquetée « mesuré à l'assemblage »).
-        **_self_cost_context(cfg, out, date),
-    }
-    return ctx
-
-
 def report_prep(
     cfg: TelemetryConfig, *, anchor: str | None = None
 ) -> tuple[Path | None, dict | None]:
-    """Render deterministic sections into `weekly-report-draft-<date>.md`."""
+    """Render deterministic sections into `weekly-report-draft-<date>.md`.
+
+    Valide les artefacts requis (gate) AVANT d'écrire le draft : si la gate
+    échoue, aucun draft partiel n'est laissé sur disque (nettoyage du draft
+    éventuellement présent) et la fonction renvoie (None, None). Documenté :
+    la summary doit être présente et lisible ; les artefacts optionnels
+    manquants ne font pas échouer la gate.
+    """
     ctx = build_report_context(cfg, anchor=anchor)
     if ctx is None:
         return None, None
 
     date = ctx["date"]
     out = resolve_active_run_dir(cfg.output_dir, date)
-    env = Environment(
-        loader=FileSystemLoader(str(Path(__file__).parent / "templates")),
-        autoescape=select_autoescape(("html",)),
-        trim_blocks=True,
-        lstrip_blocks=True,
-        keep_trailing_newline=True,
-    )
-    template = env.get_template("report_template.md.j2")
-    rendered = template.render(**ctx)
 
-    draft = out / f"weekly-report-draft-{date}.md"
-    draft.write_text(rendered, encoding="utf-8")
+    # Gate artefacts : on valide AVANT d'écrire le draft.
+    gate = validate_required_artifacts(out, date)
+    if gate.get("status") != "pass":
+        draft = out / f"weekly-report-draft-{date}.md"
+        draft.unlink(missing_ok=True)
+        return None, None
+
+    from .report_render import render_report_draft
+
+    draft = render_report_draft(ctx, out, date)
     return draft, ctx
 
 
@@ -3126,303 +2487,8 @@ def report_blocks_draft(
 
 #: Bande `[N:19 findings]` (C2) : charge utile = nombre + unité libre. Le nombre
 #: doit résoudre vers un scalaire des artefacts, l'unité n'est pas validée.
-_NUMBER_BAND_RE = re.compile(r"\[N:([^\[\]]*)\]")
-
-#: Titre Markdown dans le bloc qualitatif (C1) : `# Foo` … `###### Foo`, plus le
-#: `#` nu (`^#{1,6}(\s|$)`). La garde `line.startswith("#")` du validateur ratisse
-#: le reste (`###Foo`, `#######Foo`), donc les deux formes sont nécessaires.
-_MD_HEADING_RE = re.compile(r"^#{1,6}(\s|$)")
-
-#: Unités décomptables du rapport — ce qui suit un nombre en français.
-_COUNT_UNITS = (
-    r"findings?|constats?|alertes?|sessions?|skills?|règles?|violations?|fichiers?|"
-    r"catégories|occurrences?|éléments?|entrées?|lignes?|points?|appels?|tests?|"
-    r"jours?|semaines?|heures?|fois|tokens?|dossiers?|commits?|cas"
-)
-
-#: Forme écrite d'un décompte (C4) — le contournement du check « chiffres », où
-#: l'agent écrit « huit sessions » au lieu de « [N:8] sessions ».
-#:
-#: Deux tiers, parce que la forme écrite n'est pas une catégorie uniforme :
-#: - « huit », « dix-neuf », « quatre-vingt-dix » n'ont AUCUN autre sens que
-#:   numérique → insensibles à la casse, ancrés sur une unité comptable ;
-#: - « un constat », « une alerte » sont du français normal : les petits nombres
-#:   (un→sept) ne sont refusés qu'en position de décompte, derrière un cue
-#:   (« sur quatre sessions », « au total trois alertes »). Sans ce cue, la règle
-#:   tuerait la moitié des blocs valides.
-_WRITTEN_COUNT_RE = re.compile(
-    r"(?<![\w-])(?i:"
-    r"soixante-dix-neuf|soixante-dix-huit|soixante-dix-sept|soixante-et-onze|soixante-dix|"
-    r"quatre-vingt-onze|quatre-vingt-dix|quatre-vingts|quatre-vingt|"
-    r"vingt-et-un|dix-neuf|dix-huit|dix-sept|"
-    r"zéro|huit|neuf|dix|onze|douze|treize|quatorze|quinze|seize|"
-    r"vingt|trente|quarante|cinquante|soixante|cent|mille"
-    r")\s+(?:" + _COUNT_UNITS + r")(?![\w-])"
-)
-#: Cue FAIBLE : admis devant deux→sept, mais PAS devant un/une. « sur une
-#: session » est l'article indéfini (« on a session »), pas un décompte : le cue
-#: `sur` est trop faible pour transformer « une » en nombre.
-_WRITTEN_COUNT_CUE_RE = re.compile(
-    r"(?<![\w-])(?:plus de|plus qu[ei']|sur|exactement|au total|total de|en tout|"
-    r"au nombre de|combien de)\s+(?:deux|trois|quatre|cinq|six|sept)"
-    r"\s+(?:" + _COUNT_UNITS + r")(?![\w-])"
-)
-#: Cue FORT : seul contexte où « un/une » dénote réellement un décompte
-#: (« exactement une alerte », « au total une session »). `sur` est exclu.
-_WRITTEN_COUNT_STRONG_CUE_RE = re.compile(
-    r"(?<![\w-])(?:exactement|au total|total de|en tout|au nombre de|combien de)"
-    r"\s+(?:un|une)\s+(?:" + _COUNT_UNITS + r")(?![\w-])"
-)
-
-#: Entrées de l'index publiées dans weekly-report-gates.json. L'index complet sert
-#: à la résolution ; le gates reste lisible (borné, avec son total pour vérifier
-#: que la troncature n'a rien caché).
-_INDEX_PUBLISH_LIMIT = 200
-
-
-def _iter_scalar_numbers(node: object, path: str = "") -> Iterable[tuple[str, float]]:
-    """Scalaires numériques d'un artefact JSON, avec leur chemin d-dot.
-
-    Les booléens sont exclus (`isinstance(True, int)` est vrai en Python) et une
-    chaîne n'est retenue que si elle EST un nombre — pas un nombre contenu dans
-    une phrase, sinon n'importe quel décompte cité en prose deviendrait résolvable.
-    """
-    if isinstance(node, Mapping):
-        for key, value in node.items():
-            yield from _iter_scalar_numbers(value, f"{path}.{key}" if path else str(key))
-    elif isinstance(node, list | tuple):
-        for idx, value in enumerate(node):
-            yield from _iter_scalar_numbers(value, f"{path}[{idx}]")
-    elif isinstance(node, bool) or node is None:
-        return
-    elif isinstance(node, int | float):
-        yield path, float(node)
-    elif isinstance(node, str):
-        try:
-            yield path, float(node.strip().replace(",", "."))
-        except ValueError:
-            return
-
-
-def number_band_index(findings: dict | None, insights: dict | None) -> dict[str, object]:
-    """Scalaires vers lesquels une bande `[N:…]` doit résoudre (C2, politique D2).
-
-    Deux familles, toutes deux publiées dans `weekly-report-gates.json` pour que
-    le refus soit auditable sans relire le validateur :
-    - `scalars`  : chaque valeur numérique des deux artefacts de la section 4
-      (`weekly-quality-findings`, `weekly-insights`), par chemin d-dot ;
-    - `counts`   : les cardinances dérivées (nombre de findings, d'alertes, de
-      constats de maintenance, par sévérité) — un décompte d'agents est un
-      agrégat, pas un scalaire stocké.
-
-    Index COMPLET : la résolution d'une bande ne doit pas dépendre du formatage
-    du gates. La troncature d'affichage est faite par `published_number_bands`.
-    """
-    findings_list = (findings or {}).get("findings", []) if findings else []
-    alerts = (insights or {}).get("alerts", []) if insights else []
-    maint = (insights or {}).get("maintenance", {}).get("findings", []) if insights else []
-
-    scalars = dict(_iter_scalar_numbers(findings or {}))
-    scalars.update(_iter_scalar_numbers(insights or {}))
-
-    counts: dict[str, int] = {
-        "findings_total": len(findings_list),
-        "alerts_total": len(alerts),
-        "maintenance_total": len(maint),
-    }
-    for severity in ("high", "medium", "low"):
-        counts[f"findings_{severity}"] = sum(
-            1 for f in findings_list if f.get("severity") == severity
-        )
-    return {"scalars": scalars, "scalars_total": len(scalars), "counts": counts}
-
-
-def published_number_bands(index: dict[str, object]) -> dict[str, object]:
-    """Vue lisible de l'index pour le gates : `scalars` borné, total conservé.
-
-    Un gates de plusieurs milliers d'entrées serait illisible ; `scalars_total`
-    permet au lecteur de voir que la troncature existe au lieu de le deviner.
-    """
-    scalars = index.get("scalars", {})
-    items = list(scalars.items()) if isinstance(scalars, Mapping) else []
-    return {**index, "scalars": dict(items[:_INDEX_PUBLISH_LIMIT])}
-
-
-def _band_resolves(raw: str, index: dict[str, object]) -> bool:
-    """La charge utile `[N:…]` est-elle un nombre, et présent dans l'index ?"""
-    head = raw.split()[0] if raw.split() else ""
-    try:
-        value = float(head.replace(",", "."))
-    except ValueError:
-        return False
-    scalars = index.get("scalars", {})
-    counts = index.get("counts", {})
-    candidates = [*(scalars.values() if isinstance(scalars, Mapping) else []), *counts.values()]
-    return any(abs(float(candidate) - value) < 1e-9 for candidate in candidates)
-
-
-def validate_llm_blocks(text: str, findings: dict | None, insights: dict | None):
-    """Garde-fous anti-hallucination du bloc 7b LLM (v5.29, hybride).
-
-    Retourne (violations, coverage_warnings) :
-    - violations → le bloc est REJETÉ, report-assemble bascule sur le brouillon
-      déterministe (fallback) ;
-    - coverage_warnings → le bloc est accepté mais l'annexe signale les constats
-      high non cités (omission ≠ hallucination).
-    Checks : zéro chiffre (spec : le bloc ne cite que catégories/sévérités) ;
-    balises de source [F:ses_xxx#cat] / [M:cat] / [A:rule] résolues dans les
-    entrées ; bandes [N:…] résolues vers un scalaire des artefacts ; aucune
-    ligne de titre Markdown ; aucune forme écrite d'un décompte ; taille ≤ 60
-    lignes ; 1re ligne non vide ≠ titre `##`/`#` (le gabarit fournit déjà le
-    titre de la section 4) ; tout finding high doit être cité.
-
-    Portée : ce validateur ne voit QUE la prose de l'agent. Le brouillon
-    automatique `-auto-` (qui porte volontairement des `###`) n'est jamais
-    validé — il est injecté tel quel, cf. `_assemble_quality_block`.
-    """
-    violations: list[str] = []
-    coverage: list[str] = []
-
-    # les balises [F:...]/[M:...]/[A:...] portent des ids/session_ids (chiffres) —
-    # le check chiffres ne s'applique qu'au texte visible (hors balises). Les
-    # bandes [N:…] portent un nombre par construction : elles sont neutralisées
-    # ici et contrôlées plus bas (C2), sinon toute bande serait un « chiffre libre ».
-    text_no_tags = re.sub(r"\[[FMA]:[^\]]+\]", "", text)
-    text_no_tags = _NUMBER_BAND_RE.sub("", text_no_tags)
-    # chiffres autorisés hors balise : dates ISO, pourcentages, numéros de version.
-    # la spec interdit toujours les chiffres « libres » (coûts, décomptes, durées).
-    _ALLOWED_NUM = re.compile(
-        r"\b\d{4}-\d{2}-\d{2}\b"  # date ISO
-        r"|\b\d{1,3}([.,]\d+)?%"  # pourcentage
-        r"|\bv?\d+\.\d+(\.\d+)?\b"  # version sémantique
-    )
-    text_no_allowed = _ALLOWED_NUM.sub(" ", text_no_tags)
-    illegal_digits = re.findall(r"\d+", text_no_allowed)
-    if illegal_digits:
-        snippet = ", ".join(illegal_digits[:5])
-        first_digit = re.search(r"\d+", text_no_allowed)
-        line = text_no_allowed.count("\n", 0, first_digit.start()) + 1 if first_digit else 1
-        violations.append(
-            "chiffres interdits dans le bloc LLM (spec : catégories/sévérités "
-            f"uniquement) — ligne {line}, chiffres hors date/pourcentage/version : {snippet}"
-        )
-
-    body_lines = text.splitlines()
-    n_lines = len(body_lines)
-    if n_lines > 60:
-        violations.append(f"bloc trop long (ligne {n_lines}, {n_lines} lignes > 60)")
-
-    # Le gabarit fournit déjà le titre de la section 4 : un titre en tête de bloc
-    # le dupliquerait dans le rapport assemblé (2 H2). On vise la 1re ligne NON
-    # vide — une ligne vide en tête ne doit pas servir d'échappatoire.
-    head = next((i for i, ln in enumerate(body_lines) if ln.strip()), None)
-    head_reported = head is not None and re.match(r"^#{1,2}\s", body_lines[head]) is not None
-    if head_reported:
-        violations.append(
-            f"titre Markdown interdit en tête de bloc (ligne {head + 1}) — le gabarit "
-            f"fournit déjà le titre de la section 4 : {body_lines[head].strip()[:60]!r}"
-        )
-
-    # C1 : AUCUNE ligne de titre, n'importe où et n'importe quel niveau. Les
-    # `###` de l'agent passaient la validation et n'existaient que dans le rendu
-    # markdown — le HTML, lui, échappe le texte puis le paraphe, donc il affichait
-    # littéralement « <p>###…</p> » (run 2026-10-03, 4 sous-titres). Deux rendus,
-    # deux sémantiques : on ferme la divergence à la racine, à l'écriture, plutôt
-    # qu'en essayant d'apprendre le markdown au renderer HTML.
-    for idx, line in enumerate(body_lines):
-        # La ligne de tête n'est ignorée que si le message « en tête de bloc » la
-        # a déjà signalée : sinon `### Foo` en 1re ligne passerait par les deux
-        # checks (le check de tête ne couvre que `#{1,2}`).
-        if idx == head and head_reported:
-            continue
-        if _MD_HEADING_RE.match(line) or line.startswith("#"):
-            violations.append(
-                f"titre Markdown interdit dans le bloc (ligne {idx + 1}) — le bloc "
-                f"qualitatif est de la prose, pas du markdown structuré : "
-                f"{line.strip()[:60]!r}"
-            )
-            break  # une seule occurrence suffit : le bloc est rejeté dans tous les cas
-
-    # C4 : la forme écrite est le contournement du check « chiffres » — « huit
-    # sessions » passe là où « 8 sessions » est refusé. Ancrée sur une unité
-    # comptable (+ cue pour les petits nombres) pour ne pas tuer « un constat ».
-    for pattern in (_WRITTEN_COUNT_RE, _WRITTEN_COUNT_CUE_RE, _WRITTEN_COUNT_STRONG_CUE_RE):
-        match = pattern.search(text)
-        if match:
-            line = text.count("\n", 0, match.start()) + 1
-            violations.append(
-                f"nombre écrit interdit (ligne {line}) — un décompte s'écrit en chiffre "
-                f"arabe dans une bande [N:…] résolue, pas en toutes lettres : "
-                f"{match.group(0)[:60]!r}"
-            )
-            break
-
-    findings_list = (findings or {}).get("findings", []) if findings else []
-    alerts = (insights or {}).get("alerts", []) if insights else []
-    maint = (insights or {}).get("maintenance", {}).get("findings", []) if insights else []
-
-    f_refs = {f"{f.get('session_id')}#{f.get('category')}" for f in findings_list}
-    m_refs = {f.get("category") for f in maint}
-    a_refs = {a.get("rule") for a in alerts}
-    seen_f: set[str] = set()
-
-    # Empty source references are not merely unknown: report them as malformed so
-    # the author can repair the exact traceability marker instead of guessing.
-    for match in re.finditer(r"\[([FMA]):([^\]]*)\]", text):
-        kind, ref = match.group(1), match.group(2)
-        line = text.count("\n", 0, match.start()) + 1
-        if not ref.strip():
-            violations.append(f"balise de source mal formée [{kind}:] — ligne {line}")
-            continue
-        if kind == "F":
-            if ref not in f_refs:
-                violations.append(
-                    f"balise inconnue [F:{ref}] — ligne {line}, aucun finding correspondant"
-                )
-            else:
-                seen_f.add(ref)
-        elif kind == "M":
-            if ref not in m_refs:
-                violations.append(
-                    f"balise inconnue [M:{ref}] — ligne {line}, aucun constat de maintenance"
-                )
-        elif kind == "A" and ref not in a_refs:
-            violations.append(f"balise inconnue [A:{ref}] — ligne {line}, aucune alerte")
-
-    # C2 : une bande [N:…] est une AFFIRMATION chiffrée, donc elle se résout comme
-    # une balise de source : vers un scalaire réellement présent dans les artefacts
-    # de la section 4. Pas d'assouplissement « petits entiers autorisés » (D2) — un
-    # décompte juste par hasard reste un décompte inventé.
-    band_index = number_band_index(findings, insights)
-    for match in _NUMBER_BAND_RE.finditer(text):
-        line = text.count("\n", 0, match.start()) + 1
-        raw = match.group(1).strip()
-        if not raw:
-            violations.append(f"bande de chiffre mal formée [N:] — ligne {line}")
-            continue
-        head_token = raw.split()[0]
-        if not re.fullmatch(r"\d+(?:[.,]\d+)?", head_token):
-            violations.append(
-                f"bande de chiffre non numérique [N:{raw[:40]}] — ligne {line}, "
-                "un décompte s'écrit en chiffre arabe (la forme écrite est refusée)"
-            )
-        elif not _band_resolves(raw, band_index):
-            violations.append(
-                f"bande de chiffre non résolue [N:{raw[:40]}] — ligne {line}, aucun "
-                "scalaire correspondant dans weekly-quality-findings / weekly-insights"
-            )
-
-    for f in findings_list:
-        if f.get("severity") == "high":
-            ref = f"{f.get('session_id')}#{f.get('category')}"
-            if ref not in seen_f:
-                coverage.append(f"constat high non couvert par le bloc : [F:{ref}]")
-
-    return violations, coverage
-
-
 def report_assemble(
-    cfg: TelemetryConfig, *, anchor: str | None = None
+    cfg: TelemetryConfig, *, anchor: str | None = None, ctx: dict | None = None
 ) -> tuple[Path | None, list[str], int]:
     """Inject the LLM blocks file into the draft → final report.
 
@@ -3430,7 +2496,7 @@ def report_assemble(
     l'alias ``runs/current`` est restauré sur le run précédent — il désigne
     toujours le dernier run avec un livrable, jamais un run vide.
     """
-    path, warnings, rc = _report_assemble_inner(cfg, anchor=anchor)
+    path, warnings, rc = _report_assemble_inner(cfg, anchor=anchor, ctx=ctx)
     if path is None and rc >= 2 and rollback_current_link(cfg.output_dir):
         warnings = [
             *warnings,
@@ -3644,6 +2710,26 @@ def _assemble_security_gate(
     )
 
 
+# ---------------------------------------------------------------------------
+# Statuts / placeholders unifiés de la section 4 (bloc qualitatif).
+QUALITY_BLOCK_STATUS_PLACEHOLDER = "non disponible (placeholder)"
+QUALITY_BLOCK_STATUS_AUTO_DRAFT = "brouillon automatique (report-blocks-draft) — auto_draft_fallback; prose absente; never validated"
+QUALITY_BLOCK_STATUS_AGENT_PROSE = "prose agent (7b LLM)"
+QUALITY_BLOCK_STATUS_AUTO_DRAFT_REJECTED = (
+    "brouillon automatique (bloc LLM rejeté : {violation}) — auto_draft_fallback; never validated"
+)
+QUALITY_BLOCK_PLACEHOLDER_MISSING_AUTO = (
+    "*Section 4 non disponible (bloc LLM rejeté et brouillon automatique absent — "
+    "lancer report-blocks-draft).*\n"
+)
+QUALITY_BLOCK_PLACEHOLDER_MISSING_BLOCKS = (
+    "*Section 4 non disponible (bloc de constats absent — ni l'agent (7b) ni "
+    "report-blocks-draft n'ont produit de bloc).*\n\n"
+    "Lancer report-blocks-draft, ou coller les constats dans "
+    "`weekly-report-blocks-<date>.md` puis relancer report-assemble."
+)
+
+
 def _assemble_quality_block(
     out: Path,
     date: str,
@@ -3654,55 +2740,32 @@ def _assemble_quality_block(
 ) -> tuple[str, str]:
     """Résolution prose LLM vs brouillon auto → (replacement, status)."""
     replacement: str | None = None
-    status = "non disponible (placeholder)"
+    status = QUALITY_BLOCK_STATUS_PLACEHOLDER
     if llm_text is not None:
-        word_count = len(llm_text.split())
-        if word_count < cfg.blocks_min_words:
-            violation = (
-                f"bloc LLM trop court ({word_count} mots < {cfg.blocks_min_words}) — "
-                f"revoir weekly-report-blocks-{date}.md"
+        findings = _load_json(out / f"weekly-quality-findings-{date}.json")
+        insights = _load_json(out / f"weekly-insights-{date}.json")
+        violations, coverage = validate_llm_blocks(
+            llm_text, findings, insights, blocks_min_words=cfg.blocks_min_words
+        )
+        warnings.extend(f"bloc LLM : {v}" for v in coverage)
+        if violations:
+            status = QUALITY_BLOCK_STATUS_AUTO_DRAFT_REJECTED.format(
+                violation=" ; ".join(violations)
             )
-            status = f"brouillon automatique (bloc LLM rejeté : {violation}) — auto_draft_fallback; never validated"
-            warnings.append(f"bloc LLM rejeté — fallback brouillon automatique : {violation}")
+            warnings.append(
+                f"bloc LLM rejeté — fallback brouillon automatique : {' ; '.join(violations)}"
+            )
             replacement = (
-                auto_text
-                if auto_text is not None
-                else (
-                    "*Section 4 non disponible (bloc LLM rejeté et brouillon automatique absent — "
-                    "lancer report-blocks-draft).*\n"
-                )
+                auto_text if auto_text is not None else (QUALITY_BLOCK_PLACEHOLDER_MISSING_AUTO)
             )
         else:
-            findings = _load_json(out / f"weekly-quality-findings-{date}.json")
-            insights = _load_json(out / f"weekly-insights-{date}.json")
-            violations, coverage = validate_llm_blocks(llm_text, findings, insights)
-            warnings.extend(f"bloc LLM : {v}" for v in coverage)
-            if violations:
-                status = f"brouillon automatique (bloc LLM rejeté : {' ; '.join(violations)}) — auto_draft_fallback; never validated"
-                warnings.append(
-                    f"bloc LLM rejeté — fallback brouillon automatique ({len(violations)} violation(s))"
-                )
-                replacement = (
-                    auto_text
-                    if auto_text is not None
-                    else (
-                        "*Section 4 non disponible (bloc LLM rejeté et brouillon automatique absent — "
-                        "lancer report-blocks-draft).*\n"
-                    )
-                )
-            else:
-                status = "prose agent (7b LLM)"
-                replacement = llm_text
+            status = QUALITY_BLOCK_STATUS_AGENT_PROSE
+            replacement = llm_text
     elif auto_text is not None:
-        status = "brouillon automatique (report-blocks-draft) — auto_draft_fallback; prose absente; never validated"
+        status = QUALITY_BLOCK_STATUS_AUTO_DRAFT
         replacement = auto_text
     else:
-        replacement = (
-            "*Section 4 non disponible (bloc de constats absent — ni l'agent (7b) ni "
-            "report-blocks-draft n'ont produit de bloc).*\n\n"
-            "Lancer report-blocks-draft, ou coller les constats dans "
-            "`weekly-report-blocks-<date>.md` puis relancer report-assemble."
-        )
+        replacement = QUALITY_BLOCK_PLACEHOLDER_MISSING_BLOCKS
         warnings.append("bloc de constats absent — section 4 remplacée par un placeholder")
     return replacement, status
 
@@ -3714,9 +2777,11 @@ def _assemble_html_gate(
     date: str,
     replacement: str,
     warnings: list[str],
+    ctx: dict | None = None,
 ) -> tuple[dict | None, int]:
     """Rendu HTML best-effort + fusion gate → (ctx, rc)."""
-    ctx = build_report_context(cfg, anchor=anchor)
+    if ctx is None:
+        ctx = build_report_context(cfg, anchor=anchor)
     rc = 0
     if ctx is None:
         return None, 0
@@ -3814,7 +2879,7 @@ def _persist_gate_state(
 
 
 def _report_assemble_inner(
-    cfg: TelemetryConfig, *, anchor: str | None = None
+    cfg: TelemetryConfig, *, anchor: str | None = None, ctx: dict | None = None
 ) -> tuple[Path | None, list[str], int]:
     """Inject the LLM blocks file into the draft → final report."""
     run_time = _parse_anchor(anchor)
@@ -3891,7 +2956,7 @@ def _report_assemble_inner(
     # fatal). Le ctx est reconstruit depuis les artefacts — prep et assemble
     # tournent comme sous-commandes CLI séparées — et le bloc qualité injecté
     # ci-dessus (prose LLM validée ou fallback auto) alimente la section 4.
-    ctx, html_rc = _assemble_html_gate(cfg, anchor, out, date, replacement, warnings)
+    ctx, html_rc = _assemble_html_gate(cfg, anchor, out, date, replacement, warnings, ctx=ctx)
     rc = max(rc, html_rc)
 
     # Persist machine-readable gate state alongside final report metadata.

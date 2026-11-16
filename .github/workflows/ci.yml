@@ -52,8 +52,19 @@ jobs:
           if-no-files-found: error
       - name: Packaging
         run: uv build
-      - name: Wheel content (template inclus)
-        run: uv run python -c "import zipfile,glob,sys; names=zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist(); sys.exit(0 if any('templates/report_template.md.j2' in n for n in names) else 1)"
+      - name: Wheel content (rules + templates)
+        # Assert BOTH package-data directories. A single-directory assertion let a
+        # wheel ship with 0 rules/*.md: rule_loader.py reads them from inside the
+        # package, so load_rules() raised RuleError (rc=2) on every wheel install.
+        #
+        # Block scalar, NOT a plain scalar. The failure message carries ': ', which
+        # YAML reads as a mapping-value indicator inside a plain scalar ("mapping
+        # values are not allowed here"). Shipped that way in the lot that added
+        # the gate, so GitHub Actions could not load this workflow and the step
+        # never ran at all. A block scalar keeps the shell command byte-identical
+        # while immunising the message against the next ': ' someone adds.
+        run: |
+          uv run python -c "import zipfile,glob,sys; names=zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist(); want=['templates/report_template.md.j2','templates/report_template.html.j2','rules/agent-loop.md']; missing=[w for w in want if not any(w in n for n in names)]; sys.exit('missing from wheel: '+', '.join(missing)) if missing else None"
 
       - name: Node 24 (type stripping TS natif)
         uses: actions/setup-node@v4
@@ -72,9 +83,19 @@ jobs:
         run: node --test scripts/tests/*.test.mjs
         working-directory: .
 
-      - name: Contrat de flux docs ↔ code (G1, 7 surfaces)
+      - name: Contrat de flux docs ↔ code (G1, 9 surfaces)
         # Mediation TS→CLI, handlers, artefacts par étape, chaînage d'ordre,
-        # collecte pytest exécutable (documentation counts are advisory).
+        # collecte pytest exécutable.
+        #
+        # Les COMPTES DE TESTS (surface 5) sont BLOQUANTS, pas advisory :
+        # trois états — aucun littéral = vert, littéraux tous égaux au collect
+        # réel = vert, sinon exit 1. L'ex-WARN « advisory » a été supprimé au
+        # commit 362dab1 ; ne pas réintroduire cette formulation.
+        #
+        # CE FICHIER EST L'UN DES TROIS LUS PAR LA SURFACE 5 (README, INSTALL,
+        # ci.yml). Tout littéral « N tests » / « tests-N » y serait comparé au
+        # collect réel et aux deux autres docs → n'en introduire aucun ici ;
+        # `pytest -q` affiche le compte sur stdout quand on en a besoin.
         run: node scripts/check-flow-docs.mjs
         working-directory: .
 

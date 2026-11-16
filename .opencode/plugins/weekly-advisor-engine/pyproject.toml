@@ -27,7 +27,10 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-weekly_telemetry_aggregator = ["templates/*.j2"]
+# rules/*.md : lu DEPUIS l'intérieur du paquet par rule_loader.py
+# (DEFAULT_RULES_DIR = Path(__file__).resolve().parent / "rules"). Sans cette
+# entrée, l'absence est silencieuse au build et RuleError à l'exécution.
+weekly_telemetry_aggregator = ["templates/*.j2", "rules/*.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -38,6 +41,14 @@ markers = [
     "slow: budget/e2e assertions on the golden fixture (deselect with -m 'not slow')",
 ]
 
+[tool.coverage.run]
+branch = true
+source = ["weekly_telemetry_aggregator"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
@@ -47,4 +58,5 @@ select = ["E", "W", "F", "I", "UP", "B", "SIM", "ARG", "PTH"]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
+"weekly_telemetry_aggregator/report_context.py" = ["F821"]
 "tests/**/*.py" = ["ARG001", "ARG002", "ARG005"]

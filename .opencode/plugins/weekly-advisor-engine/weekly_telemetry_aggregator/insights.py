@@ -61,11 +61,11 @@ DEFAULT_CATALOG_COUNT = 0
 #: plafond du z-score daily_spike — un MAD≈0 produit des z astronomiques
 #: (ex. 99,19) qui sont un artefact, pas un signal plus fort (v5.31).
 DAILY_SPIKE_Z_CAP = 10.0
-#: D5 — part maximale de sessions « active » exclues avant alerte. Au-delà, les
-#: totaux du run sont biaisés (télémétrie incomplète) : le run 2026-10-03 était à
-#: 53/178 = 29,8 %. Constante module (config.py hors périmètre) ; surchargeable
-#: via un attribut `exclusion_rate_max` sur InsightsConfig.
-EXCLUSION_RATE_MAX_DEFAULT = 0.20
+#: D5 — le seuil `exclusion_rate` n'est plus une constante de module : c'est
+#: `InsightsConfig.exclusion_rate_max` (config.py), configurable, et la raison
+#: du 0,20 est sur le champ. Avant, `EXCLUSION_RATE_MAX_DEFAULT` était relu par
+#: un `getattr` sur une dataclass `slots=True` — branche inatteignable, seuil non
+#: configurable ; la garder aurait doublonné la valeur (même refus que ci-dessus).
 
 
 def _window_hours(period: dict) -> float | None:
@@ -736,7 +736,7 @@ def _exclusion_rate_alert(current_summary: dict, insights_cfg: InsightsConfig) -
     active = selection.get("excluded_active")
     if not isinstance(active, int):
         return None
-    threshold = getattr(insights_cfg, "exclusion_rate_max", EXCLUSION_RATE_MAX_DEFAULT)
+    threshold = insights_cfg.exclusion_rate_max
     rate = active / touched
     if rate <= threshold:
         return None
